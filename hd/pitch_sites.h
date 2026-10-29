@@ -11,32 +11,469 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x0040a8eb, 1, 640, 1, 0 }, // 0040a80e: MOV EAX,0x280
 	{ 0x0040aaa7, 1, 640, 1, 0 }, // 0040a9b0: MOV EAX,0x280
 	{ 0x0040ac98, 1, 640, 1, 0 }, // 0040ab6c: MOV EAX,0x280
+	{ 0x00452864, 2, 666, 1, 26 }, // 00452820: MOV dword ptr [EDI + 0x29a],EAX
+	{ 0x0045286e, 3, 670, 1, 30 }, // 00452820: MOV word ptr [EDI + 0x29e],AX
+	{ 0x00452878, 2, 1304, 2, 24 }, // 00452820: MOV dword ptr [EDI + 0x518],EAX
+	{ 0x00452881, 2, 1308, 2, 28 }, // 00452820: MOV dword ptr [EDI + 0x51c],EAX
+	{ 0x0045288b, 3, 1312, 2, 32 }, // 00452820: MOV word ptr [EDI + 0x520],AX
+	{ 0x00452895, 2, 1942, 3, 22 }, // 00452820: MOV dword ptr [EDI + 0x796],EAX
+	{ 0x0045289e, 2, 1946, 3, 26 }, // 00452820: MOV dword ptr [EDI + 0x79a],EAX
+	{ 0x004528a7, 2, 1950, 3, 30 }, // 00452820: MOV dword ptr [EDI + 0x79e],EAX
+	{ 0x004528b1, 3, 1954, 3, 34 }, // 00452820: MOV word ptr [EDI + 0x7a2],AX
+	{ 0x004528bb, 2, 2580, 4, 20 }, // 00452820: MOV dword ptr [EDI + 0xa14],EAX
+	{ 0x004528c4, 2, 2584, 4, 24 }, // 00452820: MOV dword ptr [EDI + 0xa18],EAX
+	{ 0x004528cd, 2, 2588, 4, 28 }, // 00452820: MOV dword ptr [EDI + 0xa1c],EAX
+	{ 0x004528d6, 2, 2592, 4, 32 }, // 00452820: MOV dword ptr [EDI + 0xa20],EAX
+	{ 0x004528e0, 3, 2596, 4, 36 }, // 00452820: MOV word ptr [EDI + 0xa24],AX
+	{ 0x004528ea, 2, 3218, 5, 18 }, // 00452820: MOV dword ptr [EDI + 0xc92],EAX
+	{ 0x004528f3, 2, 3222, 5, 22 }, // 00452820: MOV dword ptr [EDI + 0xc96],EAX
+	{ 0x004528fc, 2, 3226, 5, 26 }, // 00452820: MOV dword ptr [EDI + 0xc9a],EAX
+	{ 0x00452905, 2, 3230, 5, 30 }, // 00452820: MOV dword ptr [EDI + 0xc9e],EAX
+	{ 0x0045290e, 2, 3234, 5, 34 }, // 00452820: MOV dword ptr [EDI + 0xca2],EAX
+	{ 0x00452918, 3, 3238, 5, 38 }, // 00452820: MOV word ptr [EDI + 0xca6],AX
+	{ 0x00452922, 2, 3856, 6, 16 }, // 00452820: MOV dword ptr [EDI + 0xf10],EAX
+	{ 0x0045292b, 2, 3860, 6, 20 }, // 00452820: MOV dword ptr [EDI + 0xf14],EAX
+	{ 0x00452934, 2, 3864, 6, 24 }, // 00452820: MOV dword ptr [EDI + 0xf18],EAX
+	{ 0x0045293d, 2, 3868, 6, 28 }, // 00452820: MOV dword ptr [EDI + 0xf1c],EAX
+	{ 0x00452946, 2, 3872, 6, 32 }, // 00452820: MOV dword ptr [EDI + 0xf20],EAX
+	{ 0x0045294f, 2, 3876, 6, 36 }, // 00452820: MOV dword ptr [EDI + 0xf24],EAX
+	{ 0x00452959, 3, 3880, 6, 40 }, // 00452820: MOV word ptr [EDI + 0xf28],AX
+	{ 0x00452963, 2, 4494, 7, 14 }, // 00452820: MOV dword ptr [EDI + 0x118e],EAX
+	{ 0x0045296c, 2, 4498, 7, 18 }, // 00452820: MOV dword ptr [EDI + 0x1192],EAX
+	{ 0x00452975, 2, 4502, 7, 22 }, // 00452820: MOV dword ptr [EDI + 0x1196],EAX
+	{ 0x0045297e, 2, 4506, 7, 26 }, // 00452820: MOV dword ptr [EDI + 0x119a],EAX
+	{ 0x00452987, 2, 4510, 7, 30 }, // 00452820: MOV dword ptr [EDI + 0x119e],EAX
+	{ 0x00452990, 2, 4514, 7, 34 }, // 00452820: MOV dword ptr [EDI + 0x11a2],EAX
+	{ 0x00452999, 2, 4518, 7, 38 }, // 00452820: MOV dword ptr [EDI + 0x11a6],EAX
+	{ 0x004529a3, 3, 4522, 7, 42 }, // 00452820: MOV word ptr [EDI + 0x11aa],AX
+	{ 0x004529b0, 2, 5132, 8, 12 }, // 00452820: MOV dword ptr [EDI + 0x140c],EAX
+	{ 0x004529bc, 2, 5136, 8, 16 }, // 00452820: MOV dword ptr [EDI + 0x1410],EAX
+	{ 0x004529c8, 2, 5140, 8, 20 }, // 00452820: MOV dword ptr [EDI + 0x1414],EAX
+	{ 0x004529d4, 2, 5144, 8, 24 }, // 00452820: MOV dword ptr [EDI + 0x1418],EAX
+	{ 0x004529e0, 2, 5148, 8, 28 }, // 00452820: MOV dword ptr [EDI + 0x141c],EAX
+	{ 0x004529ec, 2, 5152, 8, 32 }, // 00452820: MOV dword ptr [EDI + 0x1420],EAX
+	{ 0x004529f8, 2, 5156, 8, 36 }, // 00452820: MOV dword ptr [EDI + 0x1424],EAX
+	{ 0x00452a04, 2, 5160, 8, 40 }, // 00452820: MOV dword ptr [EDI + 0x1428],EAX
+	{ 0x00452a11, 3, 5164, 8, 44 }, // 00452820: MOV word ptr [EDI + 0x142c],AX
+	{ 0x00452a1e, 2, 5770, 9, 10 }, // 00452820: MOV dword ptr [EDI + 0x168a],EAX
+	{ 0x00452a2a, 2, 5774, 9, 14 }, // 00452820: MOV dword ptr [EDI + 0x168e],EAX
+	{ 0x00452a36, 2, 5778, 9, 18 }, // 00452820: MOV dword ptr [EDI + 0x1692],EAX
+	{ 0x00452a42, 2, 5782, 9, 22 }, // 00452820: MOV dword ptr [EDI + 0x1696],EAX
+	{ 0x00452a4e, 2, 5786, 9, 26 }, // 00452820: MOV dword ptr [EDI + 0x169a],EAX
+	{ 0x00452a5a, 2, 5790, 9, 30 }, // 00452820: MOV dword ptr [EDI + 0x169e],EAX
+	{ 0x00452a66, 2, 5794, 9, 34 }, // 00452820: MOV dword ptr [EDI + 0x16a2],EAX
+	{ 0x00452a72, 2, 5798, 9, 38 }, // 00452820: MOV dword ptr [EDI + 0x16a6],EAX
+	{ 0x00452a7e, 2, 5802, 9, 42 }, // 00452820: MOV dword ptr [EDI + 0x16aa],EAX
+	{ 0x00452a8b, 3, 5806, 9, 46 }, // 00452820: MOV word ptr [EDI + 0x16ae],AX
+	{ 0x00452a98, 2, 6408, 10, 8 }, // 00452820: MOV dword ptr [EDI + 0x1908],EAX
+	{ 0x00452aa4, 2, 6412, 10, 12 }, // 00452820: MOV dword ptr [EDI + 0x190c],EAX
+	{ 0x00452ab0, 2, 6416, 10, 16 }, // 00452820: MOV dword ptr [EDI + 0x1910],EAX
+	{ 0x00452abc, 2, 6420, 10, 20 }, // 00452820: MOV dword ptr [EDI + 0x1914],EAX
+	{ 0x00452ac8, 2, 6424, 10, 24 }, // 00452820: MOV dword ptr [EDI + 0x1918],EAX
+	{ 0x00452ad4, 2, 6428, 10, 28 }, // 00452820: MOV dword ptr [EDI + 0x191c],EAX
+	{ 0x00452ae0, 2, 6432, 10, 32 }, // 00452820: MOV dword ptr [EDI + 0x1920],EAX
+	{ 0x00452aec, 2, 6436, 10, 36 }, // 00452820: MOV dword ptr [EDI + 0x1924],EAX
+	{ 0x00452af8, 2, 6440, 10, 40 }, // 00452820: MOV dword ptr [EDI + 0x1928],EAX
+	{ 0x00452b04, 2, 6444, 10, 44 }, // 00452820: MOV dword ptr [EDI + 0x192c],EAX
+	{ 0x00452b11, 3, 6448, 10, 48 }, // 00452820: MOV word ptr [EDI + 0x1930],AX
+	{ 0x00452b1e, 2, 7046, 11, 6 }, // 00452820: MOV dword ptr [EDI + 0x1b86],EAX
+	{ 0x00452b2a, 2, 7050, 11, 10 }, // 00452820: MOV dword ptr [EDI + 0x1b8a],EAX
+	{ 0x00452b36, 2, 7054, 11, 14 }, // 00452820: MOV dword ptr [EDI + 0x1b8e],EAX
+	{ 0x00452b42, 2, 7058, 11, 18 }, // 00452820: MOV dword ptr [EDI + 0x1b92],EAX
+	{ 0x00452b4e, 2, 7062, 11, 22 }, // 00452820: MOV dword ptr [EDI + 0x1b96],EAX
+	{ 0x00452b5a, 2, 7066, 11, 26 }, // 00452820: MOV dword ptr [EDI + 0x1b9a],EAX
+	{ 0x00452b66, 2, 7070, 11, 30 }, // 00452820: MOV dword ptr [EDI + 0x1b9e],EAX
+	{ 0x00452b72, 2, 7074, 11, 34 }, // 00452820: MOV dword ptr [EDI + 0x1ba2],EAX
+	{ 0x00452b7e, 2, 7078, 11, 38 }, // 00452820: MOV dword ptr [EDI + 0x1ba6],EAX
+	{ 0x00452b8a, 2, 7082, 11, 42 }, // 00452820: MOV dword ptr [EDI + 0x1baa],EAX
+	{ 0x00452b96, 2, 7086, 11, 46 }, // 00452820: MOV dword ptr [EDI + 0x1bae],EAX
+	{ 0x00452ba3, 3, 7090, 11, 50 }, // 00452820: MOV word ptr [EDI + 0x1bb2],AX
+	{ 0x00452bb0, 2, 7684, 12, 4 }, // 00452820: MOV dword ptr [EDI + 0x1e04],EAX
+	{ 0x00452bbc, 2, 7688, 12, 8 }, // 00452820: MOV dword ptr [EDI + 0x1e08],EAX
+	{ 0x00452bc8, 2, 7692, 12, 12 }, // 00452820: MOV dword ptr [EDI + 0x1e0c],EAX
+	{ 0x00452bd4, 2, 7696, 12, 16 }, // 00452820: MOV dword ptr [EDI + 0x1e10],EAX
+	{ 0x00452be0, 2, 7700, 12, 20 }, // 00452820: MOV dword ptr [EDI + 0x1e14],EAX
+	{ 0x00452bec, 2, 7704, 12, 24 }, // 00452820: MOV dword ptr [EDI + 0x1e18],EAX
+	{ 0x00452bf8, 2, 7708, 12, 28 }, // 00452820: MOV dword ptr [EDI + 0x1e1c],EAX
+	{ 0x00452c04, 2, 7712, 12, 32 }, // 00452820: MOV dword ptr [EDI + 0x1e20],EAX
+	{ 0x00452c10, 2, 7716, 12, 36 }, // 00452820: MOV dword ptr [EDI + 0x1e24],EAX
+	{ 0x00452c1c, 2, 7720, 12, 40 }, // 00452820: MOV dword ptr [EDI + 0x1e28],EAX
+	{ 0x00452c28, 2, 7724, 12, 44 }, // 00452820: MOV dword ptr [EDI + 0x1e2c],EAX
+	{ 0x00452c34, 2, 7728, 12, 48 }, // 00452820: MOV dword ptr [EDI + 0x1e30],EAX
+	{ 0x00452c41, 3, 7732, 12, 52 }, // 00452820: MOV word ptr [EDI + 0x1e34],AX
 	{ 0x00452c4e, 2, 8322, 13, 2 }, // 00452820: MOV dword ptr [EDI + 0x2082],EAX
+	{ 0x00452c5a, 2, 8326, 13, 6 }, // 00452820: MOV dword ptr [EDI + 0x2086],EAX
+	{ 0x00452c66, 2, 8330, 13, 10 }, // 00452820: MOV dword ptr [EDI + 0x208a],EAX
+	{ 0x00452c72, 2, 8334, 13, 14 }, // 00452820: MOV dword ptr [EDI + 0x208e],EAX
+	{ 0x00452c7e, 2, 8338, 13, 18 }, // 00452820: MOV dword ptr [EDI + 0x2092],EAX
+	{ 0x00452c8a, 2, 8342, 13, 22 }, // 00452820: MOV dword ptr [EDI + 0x2096],EAX
+	{ 0x00452c96, 2, 8346, 13, 26 }, // 00452820: MOV dword ptr [EDI + 0x209a],EAX
+	{ 0x00452ca2, 2, 8350, 13, 30 }, // 00452820: MOV dword ptr [EDI + 0x209e],EAX
+	{ 0x00452cae, 2, 8354, 13, 34 }, // 00452820: MOV dword ptr [EDI + 0x20a2],EAX
+	{ 0x00452cba, 2, 8358, 13, 38 }, // 00452820: MOV dword ptr [EDI + 0x20a6],EAX
+	{ 0x00452cc6, 2, 8362, 13, 42 }, // 00452820: MOV dword ptr [EDI + 0x20aa],EAX
+	{ 0x00452cd2, 2, 8366, 13, 46 }, // 00452820: MOV dword ptr [EDI + 0x20ae],EAX
+	{ 0x00452cde, 2, 8370, 13, 50 }, // 00452820: MOV dword ptr [EDI + 0x20b2],EAX
+	{ 0x00452ceb, 3, 8374, 13, 54 }, // 00452820: MOV word ptr [EDI + 0x20b6],AX
 	{ 0x00452cf8, 2, 8960, 14, 0 }, // 00452820: MOV dword ptr [EDI + 0x2300],EAX
+	{ 0x00452d04, 2, 8964, 14, 4 }, // 00452820: MOV dword ptr [EDI + 0x2304],EAX
+	{ 0x00452d10, 2, 8968, 14, 8 }, // 00452820: MOV dword ptr [EDI + 0x2308],EAX
+	{ 0x00452d1c, 2, 8972, 14, 12 }, // 00452820: MOV dword ptr [EDI + 0x230c],EAX
+	{ 0x00452d28, 2, 8976, 14, 16 }, // 00452820: MOV dword ptr [EDI + 0x2310],EAX
+	{ 0x00452d34, 2, 8980, 14, 20 }, // 00452820: MOV dword ptr [EDI + 0x2314],EAX
+	{ 0x00452d40, 2, 8984, 14, 24 }, // 00452820: MOV dword ptr [EDI + 0x2318],EAX
+	{ 0x00452d4c, 2, 8988, 14, 28 }, // 00452820: MOV dword ptr [EDI + 0x231c],EAX
+	{ 0x00452d58, 2, 8992, 14, 32 }, // 00452820: MOV dword ptr [EDI + 0x2320],EAX
+	{ 0x00452d64, 2, 8996, 14, 36 }, // 00452820: MOV dword ptr [EDI + 0x2324],EAX
+	{ 0x00452d70, 2, 9000, 14, 40 }, // 00452820: MOV dword ptr [EDI + 0x2328],EAX
+	{ 0x00452d7c, 2, 9004, 14, 44 }, // 00452820: MOV dword ptr [EDI + 0x232c],EAX
+	{ 0x00452d88, 2, 9008, 14, 48 }, // 00452820: MOV dword ptr [EDI + 0x2330],EAX
+	{ 0x00452d94, 2, 9012, 14, 52 }, // 00452820: MOV dword ptr [EDI + 0x2334],EAX
+	{ 0x00452da1, 3, 9016, 14, 56 }, // 00452820: MOV word ptr [EDI + 0x2338],AX
 	{ 0x00452dbd, 2, 9600, 15, 0 }, // 00452820: MOV dword ptr [EDI + 0x2580],EAX
+	{ 0x00452dc9, 2, 9604, 15, 4 }, // 00452820: MOV dword ptr [EDI + 0x2584],EAX
+	{ 0x00452dd5, 2, 9608, 15, 8 }, // 00452820: MOV dword ptr [EDI + 0x2588],EAX
+	{ 0x00452de1, 2, 9612, 15, 12 }, // 00452820: MOV dword ptr [EDI + 0x258c],EAX
+	{ 0x00452ded, 2, 9616, 15, 16 }, // 00452820: MOV dword ptr [EDI + 0x2590],EAX
+	{ 0x00452df9, 2, 9620, 15, 20 }, // 00452820: MOV dword ptr [EDI + 0x2594],EAX
+	{ 0x00452e05, 2, 9624, 15, 24 }, // 00452820: MOV dword ptr [EDI + 0x2598],EAX
+	{ 0x00452e11, 2, 9628, 15, 28 }, // 00452820: MOV dword ptr [EDI + 0x259c],EAX
+	{ 0x00452e1d, 2, 9632, 15, 32 }, // 00452820: MOV dword ptr [EDI + 0x25a0],EAX
+	{ 0x00452e29, 2, 9636, 15, 36 }, // 00452820: MOV dword ptr [EDI + 0x25a4],EAX
+	{ 0x00452e35, 2, 9640, 15, 40 }, // 00452820: MOV dword ptr [EDI + 0x25a8],EAX
+	{ 0x00452e41, 2, 9644, 15, 44 }, // 00452820: MOV dword ptr [EDI + 0x25ac],EAX
+	{ 0x00452e4d, 2, 9648, 15, 48 }, // 00452820: MOV dword ptr [EDI + 0x25b0],EAX
+	{ 0x00452e59, 2, 9652, 15, 52 }, // 00452820: MOV dword ptr [EDI + 0x25b4],EAX
+	{ 0x00452e66, 3, 9656, 15, 56 }, // 00452820: MOV word ptr [EDI + 0x25b8],AX
 	{ 0x00452e73, 2, 10242, 16, 2 }, // 00452820: MOV dword ptr [EDI + 0x2802],EAX
-	{ 0x00453009, 2, 640, 1, 0 }, // 00452820: MOV EAX,dword ptr [ESI + 0x280]
+	{ 0x00452e7f, 2, 10246, 16, 6 }, // 00452820: MOV dword ptr [EDI + 0x2806],EAX
+	{ 0x00452e8b, 2, 10250, 16, 10 }, // 00452820: MOV dword ptr [EDI + 0x280a],EAX
+	{ 0x00452e97, 2, 10254, 16, 14 }, // 00452820: MOV dword ptr [EDI + 0x280e],EAX
+	{ 0x00452ea3, 2, 10258, 16, 18 }, // 00452820: MOV dword ptr [EDI + 0x2812],EAX
+	{ 0x00452eaf, 2, 10262, 16, 22 }, // 00452820: MOV dword ptr [EDI + 0x2816],EAX
+	{ 0x00452ebb, 2, 10266, 16, 26 }, // 00452820: MOV dword ptr [EDI + 0x281a],EAX
+	{ 0x00452ec7, 2, 10270, 16, 30 }, // 00452820: MOV dword ptr [EDI + 0x281e],EAX
+	{ 0x00452ed3, 2, 10274, 16, 34 }, // 00452820: MOV dword ptr [EDI + 0x2822],EAX
+	{ 0x00452edf, 2, 10278, 16, 38 }, // 00452820: MOV dword ptr [EDI + 0x2826],EAX
+	{ 0x00452eeb, 2, 10282, 16, 42 }, // 00452820: MOV dword ptr [EDI + 0x282a],EAX
+	{ 0x00452ef7, 2, 10286, 16, 46 }, // 00452820: MOV dword ptr [EDI + 0x282e],EAX
+	{ 0x00452f03, 2, 10290, 16, 50 }, // 00452820: MOV dword ptr [EDI + 0x2832],EAX
+	{ 0x00452f10, 3, 10294, 16, 54 }, // 00452820: MOV word ptr [EDI + 0x2836],AX
+	{ 0x00452f1d, 2, 10884, 17, 4 }, // 00452820: MOV dword ptr [EDI + 0x2a84],EAX
+	{ 0x00452f29, 2, 10888, 17, 8 }, // 00452820: MOV dword ptr [EDI + 0x2a88],EAX
+	{ 0x00452f35, 2, 10892, 17, 12 }, // 00452820: MOV dword ptr [EDI + 0x2a8c],EAX
+	{ 0x00452f41, 2, 10896, 17, 16 }, // 00452820: MOV dword ptr [EDI + 0x2a90],EAX
+	{ 0x00452f4d, 2, 10900, 17, 20 }, // 00452820: MOV dword ptr [EDI + 0x2a94],EAX
+	{ 0x00452f59, 2, 10904, 17, 24 }, // 00452820: MOV dword ptr [EDI + 0x2a98],EAX
+	{ 0x00452f65, 2, 10908, 17, 28 }, // 00452820: MOV dword ptr [EDI + 0x2a9c],EAX
+	{ 0x00452f71, 2, 10912, 17, 32 }, // 00452820: MOV dword ptr [EDI + 0x2aa0],EAX
+	{ 0x00452f7d, 2, 10916, 17, 36 }, // 00452820: MOV dword ptr [EDI + 0x2aa4],EAX
+	{ 0x00452f89, 2, 10920, 17, 40 }, // 00452820: MOV dword ptr [EDI + 0x2aa8],EAX
+	{ 0x00452f95, 2, 10924, 17, 44 }, // 00452820: MOV dword ptr [EDI + 0x2aac],EAX
+	{ 0x00452fa1, 2, 10928, 17, 48 }, // 00452820: MOV dword ptr [EDI + 0x2ab0],EAX
+	{ 0x00452fae, 3, 10932, 17, 52 }, // 00452820: MOV word ptr [EDI + 0x2ab4],AX
+	{ 0x00452fbb, 2, 11526, 18, 6 }, // 00452820: MOV dword ptr [EDI + 0x2d06],EAX
+	{ 0x00452fc7, 2, 11530, 18, 10 }, // 00452820: MOV dword ptr [EDI + 0x2d0a],EAX
+	{ 0x00452fd3, 2, 11534, 18, 14 }, // 00452820: MOV dword ptr [EDI + 0x2d0e],EAX
+	{ 0x00452fdf, 2, 11538, 18, 18 }, // 00452820: MOV dword ptr [EDI + 0x2d12],EAX
+	{ 0x00452feb, 2, 11542, 18, 22 }, // 00452820: MOV dword ptr [EDI + 0x2d16],EAX
+	{ 0x00452ff7, 2, 11546, 18, 26 }, // 00452820: MOV dword ptr [EDI + 0x2d1a],EAX
+	{ 0x00453003, 2, 11550, 18, 30 }, // 00452820: MOV dword ptr [EDI + 0x2d1e],EAX
+	{ 0x0045300f, 2, 11554, 18, 34 }, // 00452820: MOV dword ptr [EDI + 0x2d22],EAX
+	{ 0x0045301b, 2, 11558, 18, 38 }, // 00452820: MOV dword ptr [EDI + 0x2d26],EAX
+	{ 0x00453027, 2, 11562, 18, 42 }, // 00452820: MOV dword ptr [EDI + 0x2d2a],EAX
+	{ 0x00453033, 2, 11566, 18, 46 }, // 00452820: MOV dword ptr [EDI + 0x2d2e],EAX
+	{ 0x00453040, 3, 11570, 18, 50 }, // 00452820: MOV word ptr [EDI + 0x2d32],AX
+	{ 0x0045304d, 2, 12168, 19, 8 }, // 00452820: MOV dword ptr [EDI + 0x2f88],EAX
+	{ 0x00453059, 2, 12172, 19, 12 }, // 00452820: MOV dword ptr [EDI + 0x2f8c],EAX
+	{ 0x00453065, 2, 12176, 19, 16 }, // 00452820: MOV dword ptr [EDI + 0x2f90],EAX
+	{ 0x00453071, 2, 12180, 19, 20 }, // 00452820: MOV dword ptr [EDI + 0x2f94],EAX
+	{ 0x0045307d, 2, 12184, 19, 24 }, // 00452820: MOV dword ptr [EDI + 0x2f98],EAX
+	{ 0x00453089, 2, 12188, 19, 28 }, // 00452820: MOV dword ptr [EDI + 0x2f9c],EAX
+	{ 0x00453095, 2, 12192, 19, 32 }, // 00452820: MOV dword ptr [EDI + 0x2fa0],EAX
+	{ 0x004530a1, 2, 12196, 19, 36 }, // 00452820: MOV dword ptr [EDI + 0x2fa4],EAX
+	{ 0x004530ad, 2, 12200, 19, 40 }, // 00452820: MOV dword ptr [EDI + 0x2fa8],EAX
+	{ 0x004530b9, 2, 12204, 19, 44 }, // 00452820: MOV dword ptr [EDI + 0x2fac],EAX
+	{ 0x004530c6, 3, 12208, 19, 48 }, // 00452820: MOV word ptr [EDI + 0x2fb0],AX
+	{ 0x004530d3, 2, 12810, 20, 10 }, // 00452820: MOV dword ptr [EDI + 0x320a],EAX
+	{ 0x004530df, 2, 12814, 20, 14 }, // 00452820: MOV dword ptr [EDI + 0x320e],EAX
+	{ 0x004530eb, 2, 12818, 20, 18 }, // 00452820: MOV dword ptr [EDI + 0x3212],EAX
+	{ 0x004530f7, 2, 12822, 20, 22 }, // 00452820: MOV dword ptr [EDI + 0x3216],EAX
+	{ 0x00453103, 2, 12826, 20, 26 }, // 00452820: MOV dword ptr [EDI + 0x321a],EAX
+	{ 0x0045310f, 2, 12830, 20, 30 }, // 00452820: MOV dword ptr [EDI + 0x321e],EAX
+	{ 0x0045311b, 2, 12834, 20, 34 }, // 00452820: MOV dword ptr [EDI + 0x3222],EAX
+	{ 0x00453127, 2, 12838, 20, 38 }, // 00452820: MOV dword ptr [EDI + 0x3226],EAX
+	{ 0x00453133, 2, 12842, 20, 42 }, // 00452820: MOV dword ptr [EDI + 0x322a],EAX
+	{ 0x00453140, 3, 12846, 20, 46 }, // 00452820: MOV word ptr [EDI + 0x322e],AX
+	{ 0x0045314d, 2, 13452, 21, 12 }, // 00452820: MOV dword ptr [EDI + 0x348c],EAX
+	{ 0x00453159, 2, 13456, 21, 16 }, // 00452820: MOV dword ptr [EDI + 0x3490],EAX
+	{ 0x00453165, 2, 13460, 21, 20 }, // 00452820: MOV dword ptr [EDI + 0x3494],EAX
+	{ 0x00453171, 2, 13464, 21, 24 }, // 00452820: MOV dword ptr [EDI + 0x3498],EAX
+	{ 0x0045317d, 2, 13468, 21, 28 }, // 00452820: MOV dword ptr [EDI + 0x349c],EAX
+	{ 0x00453189, 2, 13472, 21, 32 }, // 00452820: MOV dword ptr [EDI + 0x34a0],EAX
+	{ 0x00453195, 2, 13476, 21, 36 }, // 00452820: MOV dword ptr [EDI + 0x34a4],EAX
+	{ 0x004531a1, 2, 13480, 21, 40 }, // 00452820: MOV dword ptr [EDI + 0x34a8],EAX
+	{ 0x004531ae, 3, 13484, 21, 44 }, // 00452820: MOV word ptr [EDI + 0x34ac],AX
+	{ 0x004531bb, 2, 14094, 22, 14 }, // 00452820: MOV dword ptr [EDI + 0x370e],EAX
+	{ 0x004531c7, 2, 14098, 22, 18 }, // 00452820: MOV dword ptr [EDI + 0x3712],EAX
+	{ 0x004531d3, 2, 14102, 22, 22 }, // 00452820: MOV dword ptr [EDI + 0x3716],EAX
+	{ 0x004531df, 2, 14106, 22, 26 }, // 00452820: MOV dword ptr [EDI + 0x371a],EAX
+	{ 0x004531eb, 2, 14110, 22, 30 }, // 00452820: MOV dword ptr [EDI + 0x371e],EAX
+	{ 0x004531f7, 2, 14114, 22, 34 }, // 00452820: MOV dword ptr [EDI + 0x3722],EAX
+	{ 0x00453203, 2, 14118, 22, 38 }, // 00452820: MOV dword ptr [EDI + 0x3726],EAX
+	{ 0x00453210, 3, 14122, 22, 42 }, // 00452820: MOV word ptr [EDI + 0x372a],AX
+	{ 0x0045321d, 2, 14736, 23, 16 }, // 00452820: MOV dword ptr [EDI + 0x3990],EAX
+	{ 0x00453229, 2, 14740, 23, 20 }, // 00452820: MOV dword ptr [EDI + 0x3994],EAX
+	{ 0x00453235, 2, 14744, 23, 24 }, // 00452820: MOV dword ptr [EDI + 0x3998],EAX
+	{ 0x00453241, 2, 14748, 23, 28 }, // 00452820: MOV dword ptr [EDI + 0x399c],EAX
+	{ 0x0045324d, 2, 14752, 23, 32 }, // 00452820: MOV dword ptr [EDI + 0x39a0],EAX
+	{ 0x00453259, 2, 14756, 23, 36 }, // 00452820: MOV dword ptr [EDI + 0x39a4],EAX
+	{ 0x00453266, 3, 14760, 23, 40 }, // 00452820: MOV word ptr [EDI + 0x39a8],AX
+	{ 0x00453273, 2, 15378, 24, 18 }, // 00452820: MOV dword ptr [EDI + 0x3c12],EAX
+	{ 0x0045327f, 2, 15382, 24, 22 }, // 00452820: MOV dword ptr [EDI + 0x3c16],EAX
+	{ 0x0045328b, 2, 15386, 24, 26 }, // 00452820: MOV dword ptr [EDI + 0x3c1a],EAX
+	{ 0x00453297, 2, 15390, 24, 30 }, // 00452820: MOV dword ptr [EDI + 0x3c1e],EAX
+	{ 0x004532a3, 2, 15394, 24, 34 }, // 00452820: MOV dword ptr [EDI + 0x3c22],EAX
+	{ 0x004532b0, 3, 15398, 24, 38 }, // 00452820: MOV word ptr [EDI + 0x3c26],AX
+	{ 0x004532bd, 2, 16020, 25, 20 }, // 00452820: MOV dword ptr [EDI + 0x3e94],EAX
+	{ 0x004532c9, 2, 16024, 25, 24 }, // 00452820: MOV dword ptr [EDI + 0x3e98],EAX
+	{ 0x004532d5, 2, 16028, 25, 28 }, // 00452820: MOV dword ptr [EDI + 0x3e9c],EAX
+	{ 0x004532e1, 2, 16032, 25, 32 }, // 00452820: MOV dword ptr [EDI + 0x3ea0],EAX
+	{ 0x004532ee, 3, 16036, 25, 36 }, // 00452820: MOV word ptr [EDI + 0x3ea4],AX
+	{ 0x004532fb, 2, 16662, 26, 22 }, // 00452820: MOV dword ptr [EDI + 0x4116],EAX
+	{ 0x00453307, 2, 16666, 26, 26 }, // 00452820: MOV dword ptr [EDI + 0x411a],EAX
+	{ 0x00453313, 2, 16670, 26, 30 }, // 00452820: MOV dword ptr [EDI + 0x411e],EAX
+	{ 0x00453320, 3, 16674, 26, 34 }, // 00452820: MOV word ptr [EDI + 0x4122],AX
+	{ 0x0045332d, 2, 17304, 27, 24 }, // 00452820: MOV dword ptr [EDI + 0x4398],EAX
+	{ 0x00453339, 2, 17308, 27, 28 }, // 00452820: MOV dword ptr [EDI + 0x439c],EAX
+	{ 0x00453346, 3, 17312, 27, 32 }, // 00452820: MOV word ptr [EDI + 0x43a0],AX
+	{ 0x00453353, 2, 17946, 28, 26 }, // 00452820: MOV dword ptr [EDI + 0x461a],EAX
+	{ 0x00453360, 3, 17950, 28, 30 }, // 00452820: MOV word ptr [EDI + 0x461e],AX
+	{ 0x0045336e, 3, 18588, 29, 28 }, // 00452820: MOV word ptr [EDI + 0x489c],AX
 	{ 0x004533b9, 3, 640, 1, 0 }, // 0045337b: MOV word ptr [EDI + 0x280],AX
 	{ 0x004533c3, 2, 1280, 2, 0 }, // 0045337b: MOV dword ptr [EDI + 0x500],EAX
 	{ 0x004533cc, 2, 1920, 3, 0 }, // 0045337b: MOV dword ptr [EDI + 0x780],EAX
+	{ 0x004533d6, 3, 1924, 3, 4 }, // 0045337b: MOV word ptr [EDI + 0x784],AX
 	{ 0x004533e0, 2, 2560, 4, 0 }, // 0045337b: MOV dword ptr [EDI + 0xa00],EAX
+	{ 0x004533e9, 2, 2564, 4, 4 }, // 0045337b: MOV dword ptr [EDI + 0xa04],EAX
 	{ 0x004533f2, 2, 3200, 5, 0 }, // 0045337b: MOV dword ptr [EDI + 0xc80],EAX
+	{ 0x004533fb, 2, 3204, 5, 4 }, // 0045337b: MOV dword ptr [EDI + 0xc84],EAX
+	{ 0x00453405, 3, 3208, 5, 8 }, // 0045337b: MOV word ptr [EDI + 0xc88],AX
 	{ 0x0045340f, 2, 3840, 6, 0 }, // 0045337b: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x00453418, 2, 3844, 6, 4 }, // 0045337b: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x00453421, 2, 3848, 6, 8 }, // 0045337b: MOV dword ptr [EDI + 0xf08],EAX
 	{ 0x0045342a, 2, 4480, 7, 0 }, // 0045337b: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x00453433, 2, 4484, 7, 4 }, // 0045337b: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x0045343c, 2, 4488, 7, 8 }, // 0045337b: MOV dword ptr [EDI + 0x1188],EAX
+	{ 0x00453446, 3, 4492, 7, 12 }, // 0045337b: MOV word ptr [EDI + 0x118c],AX
 	{ 0x00453453, 2, 5120, 8, 0 }, // 0045337b: MOV dword ptr [EDI + 0x1400],EAX
+	{ 0x0045345f, 2, 5124, 8, 4 }, // 0045337b: MOV dword ptr [EDI + 0x1404],EAX
+	{ 0x0045346b, 2, 5128, 8, 8 }, // 0045337b: MOV dword ptr [EDI + 0x1408],EAX
+	{ 0x00453477, 2, 5132, 8, 12 }, // 0045337b: MOV dword ptr [EDI + 0x140c],EAX
 	{ 0x00453483, 2, 5760, 9, 0 }, // 0045337b: MOV dword ptr [EDI + 0x1680],EAX
+	{ 0x0045348f, 2, 5764, 9, 4 }, // 0045337b: MOV dword ptr [EDI + 0x1684],EAX
+	{ 0x0045349b, 2, 5768, 9, 8 }, // 0045337b: MOV dword ptr [EDI + 0x1688],EAX
+	{ 0x004534a7, 2, 5772, 9, 12 }, // 0045337b: MOV dword ptr [EDI + 0x168c],EAX
+	{ 0x004534b4, 3, 5776, 9, 16 }, // 0045337b: MOV word ptr [EDI + 0x1690],AX
 	{ 0x004534c1, 2, 6400, 10, 0 }, // 0045337b: MOV dword ptr [EDI + 0x1900],EAX
+	{ 0x004534cd, 2, 6404, 10, 4 }, // 0045337b: MOV dword ptr [EDI + 0x1904],EAX
+	{ 0x004534d9, 2, 6408, 10, 8 }, // 0045337b: MOV dword ptr [EDI + 0x1908],EAX
+	{ 0x004534e5, 2, 6412, 10, 12 }, // 0045337b: MOV dword ptr [EDI + 0x190c],EAX
+	{ 0x004534f1, 2, 6416, 10, 16 }, // 0045337b: MOV dword ptr [EDI + 0x1910],EAX
 	{ 0x004534fd, 2, 7040, 11, 0 }, // 0045337b: MOV dword ptr [EDI + 0x1b80],EAX
+	{ 0x00453509, 2, 7044, 11, 4 }, // 0045337b: MOV dword ptr [EDI + 0x1b84],EAX
+	{ 0x00453515, 2, 7048, 11, 8 }, // 0045337b: MOV dword ptr [EDI + 0x1b88],EAX
+	{ 0x00453521, 2, 7052, 11, 12 }, // 0045337b: MOV dword ptr [EDI + 0x1b8c],EAX
+	{ 0x0045352d, 2, 7056, 11, 16 }, // 0045337b: MOV dword ptr [EDI + 0x1b90],EAX
+	{ 0x0045353a, 3, 7060, 11, 20 }, // 0045337b: MOV word ptr [EDI + 0x1b94],AX
 	{ 0x00453547, 2, 7680, 12, 0 }, // 0045337b: MOV dword ptr [EDI + 0x1e00],EAX
+	{ 0x00453553, 2, 7684, 12, 4 }, // 0045337b: MOV dword ptr [EDI + 0x1e04],EAX
+	{ 0x0045355f, 2, 7688, 12, 8 }, // 0045337b: MOV dword ptr [EDI + 0x1e08],EAX
+	{ 0x0045356b, 2, 7692, 12, 12 }, // 0045337b: MOV dword ptr [EDI + 0x1e0c],EAX
+	{ 0x00453577, 2, 7696, 12, 16 }, // 0045337b: MOV dword ptr [EDI + 0x1e10],EAX
+	{ 0x00453583, 2, 7700, 12, 20 }, // 0045337b: MOV dword ptr [EDI + 0x1e14],EAX
 	{ 0x0045358f, 2, 8320, 13, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2080],EAX
+	{ 0x0045359b, 2, 8324, 13, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2084],EAX
+	{ 0x004535a7, 2, 8328, 13, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2088],EAX
+	{ 0x004535b3, 2, 8332, 13, 12 }, // 0045337b: MOV dword ptr [EDI + 0x208c],EAX
+	{ 0x004535bf, 2, 8336, 13, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2090],EAX
+	{ 0x004535cb, 2, 8340, 13, 20 }, // 0045337b: MOV dword ptr [EDI + 0x2094],EAX
+	{ 0x004535d8, 3, 8344, 13, 24 }, // 0045337b: MOV word ptr [EDI + 0x2098],AX
 	{ 0x004535e5, 2, 8960, 14, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2300],EAX
+	{ 0x004535f1, 2, 8964, 14, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2304],EAX
+	{ 0x004535fd, 2, 8968, 14, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2308],EAX
+	{ 0x00453609, 2, 8972, 14, 12 }, // 0045337b: MOV dword ptr [EDI + 0x230c],EAX
+	{ 0x00453615, 2, 8976, 14, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2310],EAX
+	{ 0x00453621, 2, 8980, 14, 20 }, // 0045337b: MOV dword ptr [EDI + 0x2314],EAX
+	{ 0x0045362d, 2, 8984, 14, 24 }, // 0045337b: MOV dword ptr [EDI + 0x2318],EAX
 	{ 0x00453648, 2, 9600, 15, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2580],EAX
+	{ 0x00453654, 2, 9604, 15, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2584],EAX
+	{ 0x00453660, 2, 9608, 15, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2588],EAX
+	{ 0x0045366c, 2, 9612, 15, 12 }, // 0045337b: MOV dword ptr [EDI + 0x258c],EAX
+	{ 0x00453678, 2, 9616, 15, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2590],EAX
+	{ 0x00453684, 2, 9620, 15, 20 }, // 0045337b: MOV dword ptr [EDI + 0x2594],EAX
+	{ 0x00453690, 2, 9624, 15, 24 }, // 0045337b: MOV dword ptr [EDI + 0x2598],EAX
 	{ 0x0045369c, 2, 10240, 16, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2800],EAX
-	{ 0x00453740, 2, 640, 1, 0 }, // 0045337b: MOV EAX,dword ptr [ESI + 0x280]
+	{ 0x004536a8, 2, 10244, 16, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2804],EAX
+	{ 0x004536b4, 2, 10248, 16, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2808],EAX
+	{ 0x004536c0, 2, 10252, 16, 12 }, // 0045337b: MOV dword ptr [EDI + 0x280c],EAX
+	{ 0x004536cc, 2, 10256, 16, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2810],EAX
+	{ 0x004536d8, 2, 10260, 16, 20 }, // 0045337b: MOV dword ptr [EDI + 0x2814],EAX
+	{ 0x004536e5, 3, 10264, 16, 24 }, // 0045337b: MOV word ptr [EDI + 0x2818],AX
+	{ 0x004536f2, 2, 10880, 17, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2a80],EAX
+	{ 0x004536fe, 2, 10884, 17, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2a84],EAX
+	{ 0x0045370a, 2, 10888, 17, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2a88],EAX
+	{ 0x00453716, 2, 10892, 17, 12 }, // 0045337b: MOV dword ptr [EDI + 0x2a8c],EAX
+	{ 0x00453722, 2, 10896, 17, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2a90],EAX
+	{ 0x0045372e, 2, 10900, 17, 20 }, // 0045337b: MOV dword ptr [EDI + 0x2a94],EAX
+	{ 0x0045373a, 2, 11520, 18, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2d00],EAX
+	{ 0x00453746, 2, 11524, 18, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2d04],EAX
+	{ 0x00453752, 2, 11528, 18, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2d08],EAX
+	{ 0x0045375e, 2, 11532, 18, 12 }, // 0045337b: MOV dword ptr [EDI + 0x2d0c],EAX
+	{ 0x0045376a, 2, 11536, 18, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2d10],EAX
+	{ 0x00453777, 3, 11540, 18, 20 }, // 0045337b: MOV word ptr [EDI + 0x2d14],AX
+	{ 0x00453784, 2, 12160, 19, 0 }, // 0045337b: MOV dword ptr [EDI + 0x2f80],EAX
+	{ 0x00453790, 2, 12164, 19, 4 }, // 0045337b: MOV dword ptr [EDI + 0x2f84],EAX
+	{ 0x0045379c, 2, 12168, 19, 8 }, // 0045337b: MOV dword ptr [EDI + 0x2f88],EAX
+	{ 0x004537a8, 2, 12172, 19, 12 }, // 0045337b: MOV dword ptr [EDI + 0x2f8c],EAX
+	{ 0x004537b4, 2, 12176, 19, 16 }, // 0045337b: MOV dword ptr [EDI + 0x2f90],EAX
+	{ 0x004537c0, 2, 12800, 20, 0 }, // 0045337b: MOV dword ptr [EDI + 0x3200],EAX
+	{ 0x004537cc, 2, 12804, 20, 4 }, // 0045337b: MOV dword ptr [EDI + 0x3204],EAX
+	{ 0x004537d8, 2, 12808, 20, 8 }, // 0045337b: MOV dword ptr [EDI + 0x3208],EAX
+	{ 0x004537e4, 2, 12812, 20, 12 }, // 0045337b: MOV dword ptr [EDI + 0x320c],EAX
+	{ 0x004537f1, 3, 12816, 20, 16 }, // 0045337b: MOV word ptr [EDI + 0x3210],AX
+	{ 0x004537fe, 2, 13440, 21, 0 }, // 0045337b: MOV dword ptr [EDI + 0x3480],EAX
+	{ 0x0045380a, 2, 13444, 21, 4 }, // 0045337b: MOV dword ptr [EDI + 0x3484],EAX
+	{ 0x00453816, 2, 13448, 21, 8 }, // 0045337b: MOV dword ptr [EDI + 0x3488],EAX
+	{ 0x00453822, 2, 13452, 21, 12 }, // 0045337b: MOV dword ptr [EDI + 0x348c],EAX
+	{ 0x0045382e, 2, 14080, 22, 0 }, // 0045337b: MOV dword ptr [EDI + 0x3700],EAX
+	{ 0x0045383a, 2, 14084, 22, 4 }, // 0045337b: MOV dword ptr [EDI + 0x3704],EAX
+	{ 0x00453846, 2, 14088, 22, 8 }, // 0045337b: MOV dword ptr [EDI + 0x3708],EAX
+	{ 0x00453853, 3, 14092, 22, 12 }, // 0045337b: MOV word ptr [EDI + 0x370c],AX
+	{ 0x00453860, 2, 14720, 23, 0 }, // 0045337b: MOV dword ptr [EDI + 0x3980],EAX
+	{ 0x0045386c, 2, 14724, 23, 4 }, // 0045337b: MOV dword ptr [EDI + 0x3984],EAX
+	{ 0x00453878, 2, 14728, 23, 8 }, // 0045337b: MOV dword ptr [EDI + 0x3988],EAX
+	{ 0x00453884, 2, 15360, 24, 0 }, // 0045337b: MOV dword ptr [EDI + 0x3c00],EAX
+	{ 0x00453890, 2, 15364, 24, 4 }, // 0045337b: MOV dword ptr [EDI + 0x3c04],EAX
+	{ 0x0045389d, 3, 15368, 24, 8 }, // 0045337b: MOV word ptr [EDI + 0x3c08],AX
+	{ 0x004538aa, 2, 16000, 25, 0 }, // 0045337b: MOV dword ptr [EDI + 0x3e80],EAX
+	{ 0x004538b6, 2, 16004, 25, 4 }, // 0045337b: MOV dword ptr [EDI + 0x3e84],EAX
+	{ 0x004538c2, 2, 16640, 26, 0 }, // 0045337b: MOV dword ptr [EDI + 0x4100],EAX
+	{ 0x004538cf, 3, 16644, 26, 4 }, // 0045337b: MOV word ptr [EDI + 0x4104],AX
+	{ 0x004538dc, 2, 17280, 27, 0 }, // 0045337b: MOV dword ptr [EDI + 0x4380],EAX
+	{ 0x004538e9, 3, 17920, 28, 0 }, // 0045337b: MOV word ptr [EDI + 0x4600],AX
+	{ 0x00453934, 3, 666, 1, 26 }, // 004538f6: MOV word ptr [EDI + 0x29a],AX
+	{ 0x0045393e, 2, 1304, 2, 24 }, // 004538f6: MOV dword ptr [EDI + 0x518],EAX
+	{ 0x00453947, 2, 1942, 3, 22 }, // 004538f6: MOV dword ptr [EDI + 0x796],EAX
+	{ 0x00453951, 3, 1946, 3, 26 }, // 004538f6: MOV word ptr [EDI + 0x79a],AX
+	{ 0x0045395b, 2, 2580, 4, 20 }, // 004538f6: MOV dword ptr [EDI + 0xa14],EAX
+	{ 0x00453964, 2, 2584, 4, 24 }, // 004538f6: MOV dword ptr [EDI + 0xa18],EAX
+	{ 0x0045396d, 2, 3218, 5, 18 }, // 004538f6: MOV dword ptr [EDI + 0xc92],EAX
+	{ 0x00453976, 2, 3222, 5, 22 }, // 004538f6: MOV dword ptr [EDI + 0xc96],EAX
+	{ 0x00453980, 3, 3226, 5, 26 }, // 004538f6: MOV word ptr [EDI + 0xc9a],AX
+	{ 0x0045398a, 2, 3856, 6, 16 }, // 004538f6: MOV dword ptr [EDI + 0xf10],EAX
+	{ 0x00453993, 2, 3860, 6, 20 }, // 004538f6: MOV dword ptr [EDI + 0xf14],EAX
+	{ 0x0045399c, 2, 3864, 6, 24 }, // 004538f6: MOV dword ptr [EDI + 0xf18],EAX
+	{ 0x004539a5, 2, 4494, 7, 14 }, // 004538f6: MOV dword ptr [EDI + 0x118e],EAX
+	{ 0x004539ae, 2, 4498, 7, 18 }, // 004538f6: MOV dword ptr [EDI + 0x1192],EAX
+	{ 0x004539b7, 2, 4502, 7, 22 }, // 004538f6: MOV dword ptr [EDI + 0x1196],EAX
+	{ 0x004539c1, 3, 4506, 7, 26 }, // 004538f6: MOV word ptr [EDI + 0x119a],AX
+	{ 0x004539ce, 2, 5132, 8, 12 }, // 004538f6: MOV dword ptr [EDI + 0x140c],EAX
+	{ 0x004539da, 2, 5136, 8, 16 }, // 004538f6: MOV dword ptr [EDI + 0x1410],EAX
+	{ 0x004539e6, 2, 5140, 8, 20 }, // 004538f6: MOV dword ptr [EDI + 0x1414],EAX
+	{ 0x004539f2, 2, 5144, 8, 24 }, // 004538f6: MOV dword ptr [EDI + 0x1418],EAX
+	{ 0x004539fe, 2, 5770, 9, 10 }, // 004538f6: MOV dword ptr [EDI + 0x168a],EAX
+	{ 0x00453a0a, 2, 5774, 9, 14 }, // 004538f6: MOV dword ptr [EDI + 0x168e],EAX
+	{ 0x00453a16, 2, 5778, 9, 18 }, // 004538f6: MOV dword ptr [EDI + 0x1692],EAX
+	{ 0x00453a22, 2, 5782, 9, 22 }, // 004538f6: MOV dword ptr [EDI + 0x1696],EAX
+	{ 0x00453a2f, 3, 5786, 9, 26 }, // 004538f6: MOV word ptr [EDI + 0x169a],AX
+	{ 0x00453a3c, 2, 6408, 10, 8 }, // 004538f6: MOV dword ptr [EDI + 0x1908],EAX
+	{ 0x00453a48, 2, 6412, 10, 12 }, // 004538f6: MOV dword ptr [EDI + 0x190c],EAX
+	{ 0x00453a54, 2, 6416, 10, 16 }, // 004538f6: MOV dword ptr [EDI + 0x1910],EAX
+	{ 0x00453a60, 2, 6420, 10, 20 }, // 004538f6: MOV dword ptr [EDI + 0x1914],EAX
+	{ 0x00453a6c, 2, 6424, 10, 24 }, // 004538f6: MOV dword ptr [EDI + 0x1918],EAX
+	{ 0x00453a78, 2, 7046, 11, 6 }, // 004538f6: MOV dword ptr [EDI + 0x1b86],EAX
+	{ 0x00453a84, 2, 7050, 11, 10 }, // 004538f6: MOV dword ptr [EDI + 0x1b8a],EAX
+	{ 0x00453a90, 2, 7054, 11, 14 }, // 004538f6: MOV dword ptr [EDI + 0x1b8e],EAX
+	{ 0x00453a9c, 2, 7058, 11, 18 }, // 004538f6: MOV dword ptr [EDI + 0x1b92],EAX
+	{ 0x00453aa8, 2, 7062, 11, 22 }, // 004538f6: MOV dword ptr [EDI + 0x1b96],EAX
+	{ 0x00453ab5, 3, 7066, 11, 26 }, // 004538f6: MOV word ptr [EDI + 0x1b9a],AX
+	{ 0x00453ac2, 2, 7684, 12, 4 }, // 004538f6: MOV dword ptr [EDI + 0x1e04],EAX
+	{ 0x00453ace, 2, 7688, 12, 8 }, // 004538f6: MOV dword ptr [EDI + 0x1e08],EAX
+	{ 0x00453ada, 2, 7692, 12, 12 }, // 004538f6: MOV dword ptr [EDI + 0x1e0c],EAX
+	{ 0x00453ae6, 2, 7696, 12, 16 }, // 004538f6: MOV dword ptr [EDI + 0x1e10],EAX
+	{ 0x00453af2, 2, 7700, 12, 20 }, // 004538f6: MOV dword ptr [EDI + 0x1e14],EAX
+	{ 0x00453afe, 2, 7704, 12, 24 }, // 004538f6: MOV dword ptr [EDI + 0x1e18],EAX
 	{ 0x00453b0a, 2, 8322, 13, 2 }, // 004538f6: MOV dword ptr [EDI + 0x2082],EAX
+	{ 0x00453b16, 2, 8326, 13, 6 }, // 004538f6: MOV dword ptr [EDI + 0x2086],EAX
+	{ 0x00453b22, 2, 8330, 13, 10 }, // 004538f6: MOV dword ptr [EDI + 0x208a],EAX
+	{ 0x00453b2e, 2, 8334, 13, 14 }, // 004538f6: MOV dword ptr [EDI + 0x208e],EAX
+	{ 0x00453b3a, 2, 8338, 13, 18 }, // 004538f6: MOV dword ptr [EDI + 0x2092],EAX
+	{ 0x00453b46, 2, 8342, 13, 22 }, // 004538f6: MOV dword ptr [EDI + 0x2096],EAX
+	{ 0x00453b53, 3, 8346, 13, 26 }, // 004538f6: MOV word ptr [EDI + 0x209a],AX
 	{ 0x00453b60, 2, 8960, 14, 0 }, // 004538f6: MOV dword ptr [EDI + 0x2300],EAX
+	{ 0x00453b6c, 2, 8964, 14, 4 }, // 004538f6: MOV dword ptr [EDI + 0x2304],EAX
+	{ 0x00453b78, 2, 8968, 14, 8 }, // 004538f6: MOV dword ptr [EDI + 0x2308],EAX
+	{ 0x00453b84, 2, 8972, 14, 12 }, // 004538f6: MOV dword ptr [EDI + 0x230c],EAX
+	{ 0x00453b90, 2, 8976, 14, 16 }, // 004538f6: MOV dword ptr [EDI + 0x2310],EAX
+	{ 0x00453b9c, 2, 8980, 14, 20 }, // 004538f6: MOV dword ptr [EDI + 0x2314],EAX
+	{ 0x00453ba8, 2, 8984, 14, 24 }, // 004538f6: MOV dword ptr [EDI + 0x2318],EAX
 	{ 0x00453bc3, 2, 9600, 15, 0 }, // 004538f6: MOV dword ptr [EDI + 0x2580],EAX
+	{ 0x00453bcf, 2, 9604, 15, 4 }, // 004538f6: MOV dword ptr [EDI + 0x2584],EAX
+	{ 0x00453bdb, 2, 9608, 15, 8 }, // 004538f6: MOV dword ptr [EDI + 0x2588],EAX
+	{ 0x00453be7, 2, 9612, 15, 12 }, // 004538f6: MOV dword ptr [EDI + 0x258c],EAX
+	{ 0x00453bf3, 2, 9616, 15, 16 }, // 004538f6: MOV dword ptr [EDI + 0x2590],EAX
+	{ 0x00453bff, 2, 9620, 15, 20 }, // 004538f6: MOV dword ptr [EDI + 0x2594],EAX
+	{ 0x00453c0b, 2, 9624, 15, 24 }, // 004538f6: MOV dword ptr [EDI + 0x2598],EAX
 	{ 0x00453c17, 2, 10242, 16, 2 }, // 004538f6: MOV dword ptr [EDI + 0x2802],EAX
+	{ 0x00453c23, 2, 10246, 16, 6 }, // 004538f6: MOV dword ptr [EDI + 0x2806],EAX
+	{ 0x00453c2f, 2, 10250, 16, 10 }, // 004538f6: MOV dword ptr [EDI + 0x280a],EAX
+	{ 0x00453c3b, 2, 10254, 16, 14 }, // 004538f6: MOV dword ptr [EDI + 0x280e],EAX
+	{ 0x00453c47, 2, 10258, 16, 18 }, // 004538f6: MOV dword ptr [EDI + 0x2812],EAX
+	{ 0x00453c53, 2, 10262, 16, 22 }, // 004538f6: MOV dword ptr [EDI + 0x2816],EAX
+	{ 0x00453c60, 3, 10266, 16, 26 }, // 004538f6: MOV word ptr [EDI + 0x281a],AX
+	{ 0x00453c6d, 2, 10884, 17, 4 }, // 004538f6: MOV dword ptr [EDI + 0x2a84],EAX
+	{ 0x00453c79, 2, 10888, 17, 8 }, // 004538f6: MOV dword ptr [EDI + 0x2a88],EAX
+	{ 0x00453c85, 2, 10892, 17, 12 }, // 004538f6: MOV dword ptr [EDI + 0x2a8c],EAX
+	{ 0x00453c91, 2, 10896, 17, 16 }, // 004538f6: MOV dword ptr [EDI + 0x2a90],EAX
+	{ 0x00453c9d, 2, 10900, 17, 20 }, // 004538f6: MOV dword ptr [EDI + 0x2a94],EAX
+	{ 0x00453ca9, 2, 10904, 17, 24 }, // 004538f6: MOV dword ptr [EDI + 0x2a98],EAX
+	{ 0x00453cb5, 2, 11526, 18, 6 }, // 004538f6: MOV dword ptr [EDI + 0x2d06],EAX
+	{ 0x00453cc1, 2, 11530, 18, 10 }, // 004538f6: MOV dword ptr [EDI + 0x2d0a],EAX
+	{ 0x00453ccd, 2, 11534, 18, 14 }, // 004538f6: MOV dword ptr [EDI + 0x2d0e],EAX
+	{ 0x00453cd9, 2, 11538, 18, 18 }, // 004538f6: MOV dword ptr [EDI + 0x2d12],EAX
+	{ 0x00453ce5, 2, 11542, 18, 22 }, // 004538f6: MOV dword ptr [EDI + 0x2d16],EAX
+	{ 0x00453cf2, 3, 11546, 18, 26 }, // 004538f6: MOV word ptr [EDI + 0x2d1a],AX
+	{ 0x00453cff, 2, 12168, 19, 8 }, // 004538f6: MOV dword ptr [EDI + 0x2f88],EAX
+	{ 0x00453d0b, 2, 12172, 19, 12 }, // 004538f6: MOV dword ptr [EDI + 0x2f8c],EAX
+	{ 0x00453d17, 2, 12176, 19, 16 }, // 004538f6: MOV dword ptr [EDI + 0x2f90],EAX
+	{ 0x00453d23, 2, 12180, 19, 20 }, // 004538f6: MOV dword ptr [EDI + 0x2f94],EAX
+	{ 0x00453d2f, 2, 12184, 19, 24 }, // 004538f6: MOV dword ptr [EDI + 0x2f98],EAX
+	{ 0x00453d3b, 2, 12810, 20, 10 }, // 004538f6: MOV dword ptr [EDI + 0x320a],EAX
+	{ 0x00453d47, 2, 12814, 20, 14 }, // 004538f6: MOV dword ptr [EDI + 0x320e],EAX
+	{ 0x00453d53, 2, 12818, 20, 18 }, // 004538f6: MOV dword ptr [EDI + 0x3212],EAX
+	{ 0x00453d5f, 2, 12822, 20, 22 }, // 004538f6: MOV dword ptr [EDI + 0x3216],EAX
+	{ 0x00453d6c, 3, 12826, 20, 26 }, // 004538f6: MOV word ptr [EDI + 0x321a],AX
+	{ 0x00453d79, 2, 13452, 21, 12 }, // 004538f6: MOV dword ptr [EDI + 0x348c],EAX
+	{ 0x00453d85, 2, 13456, 21, 16 }, // 004538f6: MOV dword ptr [EDI + 0x3490],EAX
+	{ 0x00453d91, 2, 13460, 21, 20 }, // 004538f6: MOV dword ptr [EDI + 0x3494],EAX
+	{ 0x00453d9d, 2, 13464, 21, 24 }, // 004538f6: MOV dword ptr [EDI + 0x3498],EAX
+	{ 0x00453da9, 2, 14094, 22, 14 }, // 004538f6: MOV dword ptr [EDI + 0x370e],EAX
+	{ 0x00453db5, 2, 14098, 22, 18 }, // 004538f6: MOV dword ptr [EDI + 0x3712],EAX
+	{ 0x00453dc1, 2, 14102, 22, 22 }, // 004538f6: MOV dword ptr [EDI + 0x3716],EAX
+	{ 0x00453dce, 3, 14106, 22, 26 }, // 004538f6: MOV word ptr [EDI + 0x371a],AX
+	{ 0x00453ddb, 2, 14736, 23, 16 }, // 004538f6: MOV dword ptr [EDI + 0x3990],EAX
+	{ 0x00453de7, 2, 14740, 23, 20 }, // 004538f6: MOV dword ptr [EDI + 0x3994],EAX
+	{ 0x00453df3, 2, 14744, 23, 24 }, // 004538f6: MOV dword ptr [EDI + 0x3998],EAX
+	{ 0x00453dff, 2, 15378, 24, 18 }, // 004538f6: MOV dword ptr [EDI + 0x3c12],EAX
+	{ 0x00453e0b, 2, 15382, 24, 22 }, // 004538f6: MOV dword ptr [EDI + 0x3c16],EAX
+	{ 0x00453e18, 3, 15386, 24, 26 }, // 004538f6: MOV word ptr [EDI + 0x3c1a],AX
+	{ 0x00453e25, 2, 16020, 25, 20 }, // 004538f6: MOV dword ptr [EDI + 0x3e94],EAX
+	{ 0x00453e31, 2, 16024, 25, 24 }, // 004538f6: MOV dword ptr [EDI + 0x3e98],EAX
+	{ 0x00453e3d, 2, 16662, 26, 22 }, // 004538f6: MOV dword ptr [EDI + 0x4116],EAX
+	{ 0x00453e4a, 3, 16666, 26, 26 }, // 004538f6: MOV word ptr [EDI + 0x411a],AX
+	{ 0x00453e57, 2, 17304, 27, 24 }, // 004538f6: MOV dword ptr [EDI + 0x4398],EAX
+	{ 0x00453e64, 3, 17946, 28, 26 }, // 004538f6: MOV word ptr [EDI + 0x461a],AX
 	{ 0x00453ebd, 2, 8960, 14, 0 }, // 00453e71: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x00453ece, 2, 8961, 14, 1 }, // 00453e71: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x00453ee2, 2, 8320, 13, 0 }, // 00453e71: MOV byte ptr [EDI + 0x2080],AL
@@ -96,41 +533,367 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x004542fa, 2, 8320, 13, 0 }, // 00453e71: MOV byte ptr [EDI + 0x2080],AL
 	{ 0x0045430b, 2, 8321, 13, 1 }, // 00453e71: MOV byte ptr [EDI + 0x2081],AL
 	{ 0x0045431c, 2, 7682, 12, 2 }, // 00453e71: MOV byte ptr [EDI + 0x1e02],AL
+	{ 0x0045432d, 2, 7683, 12, 3 }, // 00453e71: MOV byte ptr [EDI + 0x1e03],AL
+	{ 0x0045433e, 2, 7044, 11, 4 }, // 00453e71: MOV byte ptr [EDI + 0x1b84],AL
+	{ 0x0045434f, 2, 7045, 11, 5 }, // 00453e71: MOV byte ptr [EDI + 0x1b85],AL
+	{ 0x00454360, 2, 6406, 10, 6 }, // 00453e71: MOV byte ptr [EDI + 0x1906],AL
+	{ 0x00454371, 2, 6407, 10, 7 }, // 00453e71: MOV byte ptr [EDI + 0x1907],AL
+	{ 0x00454382, 2, 5768, 9, 8 }, // 00453e71: MOV byte ptr [EDI + 0x1688],AL
+	{ 0x00454393, 2, 5769, 9, 9 }, // 00453e71: MOV byte ptr [EDI + 0x1689],AL
+	{ 0x004543a4, 2, 5130, 8, 10 }, // 00453e71: MOV byte ptr [EDI + 0x140a],AL
+	{ 0x004543b5, 2, 5131, 8, 11 }, // 00453e71: MOV byte ptr [EDI + 0x140b],AL
+	{ 0x004543c6, 2, 4492, 7, 12 }, // 00453e71: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x004543d7, 2, 4493, 7, 13 }, // 00453e71: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x004543e8, 2, 3854, 6, 14 }, // 00453e71: MOV byte ptr [EDI + 0xf0e],AL
+	{ 0x004543f9, 2, 3855, 6, 15 }, // 00453e71: MOV byte ptr [EDI + 0xf0f],AL
+	{ 0x0045440a, 2, 3216, 5, 16 }, // 00453e71: MOV byte ptr [EDI + 0xc90],AL
+	{ 0x0045441b, 2, 3217, 5, 17 }, // 00453e71: MOV byte ptr [EDI + 0xc91],AL
+	{ 0x0045442c, 2, 2578, 4, 18 }, // 00453e71: MOV byte ptr [EDI + 0xa12],AL
+	{ 0x0045443d, 2, 2579, 4, 19 }, // 00453e71: MOV byte ptr [EDI + 0xa13],AL
+	{ 0x0045444e, 2, 1940, 3, 20 }, // 00453e71: MOV byte ptr [EDI + 0x794],AL
+	{ 0x0045445f, 2, 1941, 3, 21 }, // 00453e71: MOV byte ptr [EDI + 0x795],AL
+	{ 0x00454470, 2, 1302, 2, 22 }, // 00453e71: MOV byte ptr [EDI + 0x516],AL
+	{ 0x00454481, 2, 1303, 2, 23 }, // 00453e71: MOV byte ptr [EDI + 0x517],AL
+	{ 0x00454492, 2, 664, 1, 24 }, // 00453e71: MOV byte ptr [EDI + 0x298],AL
+	{ 0x004544a3, 2, 665, 1, 25 }, // 00453e71: MOV byte ptr [EDI + 0x299],AL
+	{ 0x004544ef, 2, 672, 1, 32 }, // 00453e71: MOV byte ptr [EDI + 0x2a0],AL
+	{ 0x00454500, 2, 673, 1, 33 }, // 00453e71: MOV byte ptr [EDI + 0x2a1],AL
+	{ 0x00454511, 2, 1314, 2, 34 }, // 00453e71: MOV byte ptr [EDI + 0x522],AL
+	{ 0x00454522, 2, 1315, 2, 35 }, // 00453e71: MOV byte ptr [EDI + 0x523],AL
+	{ 0x00454533, 2, 1956, 3, 36 }, // 00453e71: MOV byte ptr [EDI + 0x7a4],AL
+	{ 0x00454544, 2, 1957, 3, 37 }, // 00453e71: MOV byte ptr [EDI + 0x7a5],AL
+	{ 0x00454555, 2, 2598, 4, 38 }, // 00453e71: MOV byte ptr [EDI + 0xa26],AL
+	{ 0x00454566, 2, 2599, 4, 39 }, // 00453e71: MOV byte ptr [EDI + 0xa27],AL
+	{ 0x00454577, 2, 3240, 5, 40 }, // 00453e71: MOV byte ptr [EDI + 0xca8],AL
+	{ 0x00454588, 2, 3241, 5, 41 }, // 00453e71: MOV byte ptr [EDI + 0xca9],AL
+	{ 0x00454599, 2, 3882, 6, 42 }, // 00453e71: MOV byte ptr [EDI + 0xf2a],AL
+	{ 0x004545aa, 2, 3883, 6, 43 }, // 00453e71: MOV byte ptr [EDI + 0xf2b],AL
+	{ 0x004545bb, 2, 4524, 7, 44 }, // 00453e71: MOV byte ptr [EDI + 0x11ac],AL
+	{ 0x004545cc, 2, 4525, 7, 45 }, // 00453e71: MOV byte ptr [EDI + 0x11ad],AL
+	{ 0x004545dd, 2, 5166, 8, 46 }, // 00453e71: MOV byte ptr [EDI + 0x142e],AL
+	{ 0x004545ee, 2, 5167, 8, 47 }, // 00453e71: MOV byte ptr [EDI + 0x142f],AL
+	{ 0x004545ff, 2, 5808, 9, 48 }, // 00453e71: MOV byte ptr [EDI + 0x16b0],AL
+	{ 0x00454610, 2, 5809, 9, 49 }, // 00453e71: MOV byte ptr [EDI + 0x16b1],AL
+	{ 0x00454621, 2, 6450, 10, 50 }, // 00453e71: MOV byte ptr [EDI + 0x1932],AL
+	{ 0x00454632, 2, 6451, 10, 51 }, // 00453e71: MOV byte ptr [EDI + 0x1933],AL
+	{ 0x00454643, 2, 7092, 11, 52 }, // 00453e71: MOV byte ptr [EDI + 0x1bb4],AL
+	{ 0x00454654, 2, 7093, 11, 53 }, // 00453e71: MOV byte ptr [EDI + 0x1bb5],AL
+	{ 0x00454665, 2, 7734, 12, 54 }, // 00453e71: MOV byte ptr [EDI + 0x1e36],AL
+	{ 0x00454676, 2, 7735, 12, 55 }, // 00453e71: MOV byte ptr [EDI + 0x1e37],AL
+	{ 0x00454687, 2, 8376, 13, 56 }, // 00453e71: MOV byte ptr [EDI + 0x20b8],AL
+	{ 0x00454698, 2, 8377, 13, 57 }, // 00453e71: MOV byte ptr [EDI + 0x20b9],AL
 	{ 0x004546b6, 2, 7680, 12, 0 }, // 00453e71: MOV byte ptr [EDI + 0x1e00],AL
 	{ 0x004546c7, 2, 7681, 12, 1 }, // 00453e71: MOV byte ptr [EDI + 0x1e01],AL
 	{ 0x004546d8, 2, 7042, 11, 2 }, // 00453e71: MOV byte ptr [EDI + 0x1b82],AL
+	{ 0x004546e9, 2, 7043, 11, 3 }, // 00453e71: MOV byte ptr [EDI + 0x1b83],AL
+	{ 0x004546fa, 2, 6404, 10, 4 }, // 00453e71: MOV byte ptr [EDI + 0x1904],AL
+	{ 0x0045470b, 2, 6405, 10, 5 }, // 00453e71: MOV byte ptr [EDI + 0x1905],AL
+	{ 0x0045471c, 2, 5766, 9, 6 }, // 00453e71: MOV byte ptr [EDI + 0x1686],AL
+	{ 0x0045472d, 2, 5767, 9, 7 }, // 00453e71: MOV byte ptr [EDI + 0x1687],AL
+	{ 0x0045473e, 2, 5128, 8, 8 }, // 00453e71: MOV byte ptr [EDI + 0x1408],AL
+	{ 0x0045474f, 2, 5129, 8, 9 }, // 00453e71: MOV byte ptr [EDI + 0x1409],AL
+	{ 0x00454760, 2, 4490, 7, 10 }, // 00453e71: MOV byte ptr [EDI + 0x118a],AL
+	{ 0x00454771, 2, 4491, 7, 11 }, // 00453e71: MOV byte ptr [EDI + 0x118b],AL
+	{ 0x00454782, 2, 3852, 6, 12 }, // 00453e71: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x00454793, 2, 3853, 6, 13 }, // 00453e71: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x004547a4, 2, 3214, 5, 14 }, // 00453e71: MOV byte ptr [EDI + 0xc8e],AL
+	{ 0x004547b5, 2, 3215, 5, 15 }, // 00453e71: MOV byte ptr [EDI + 0xc8f],AL
+	{ 0x004547c6, 2, 2576, 4, 16 }, // 00453e71: MOV byte ptr [EDI + 0xa10],AL
+	{ 0x004547d7, 2, 2577, 4, 17 }, // 00453e71: MOV byte ptr [EDI + 0xa11],AL
+	{ 0x004547e8, 2, 1938, 3, 18 }, // 00453e71: MOV byte ptr [EDI + 0x792],AL
+	{ 0x004547f9, 2, 1939, 3, 19 }, // 00453e71: MOV byte ptr [EDI + 0x793],AL
+	{ 0x0045480a, 2, 1300, 2, 20 }, // 00453e71: MOV byte ptr [EDI + 0x514],AL
+	{ 0x0045481b, 2, 1301, 2, 21 }, // 00453e71: MOV byte ptr [EDI + 0x515],AL
+	{ 0x0045482c, 2, 662, 1, 22 }, // 00453e71: MOV byte ptr [EDI + 0x296],AL
+	{ 0x0045483d, 2, 663, 1, 23 }, // 00453e71: MOV byte ptr [EDI + 0x297],AL
+	{ 0x00454889, 2, 674, 1, 34 }, // 00453e71: MOV byte ptr [EDI + 0x2a2],AL
+	{ 0x0045489a, 2, 675, 1, 35 }, // 00453e71: MOV byte ptr [EDI + 0x2a3],AL
+	{ 0x004548ab, 2, 1316, 2, 36 }, // 00453e71: MOV byte ptr [EDI + 0x524],AL
+	{ 0x004548bc, 2, 1317, 2, 37 }, // 00453e71: MOV byte ptr [EDI + 0x525],AL
+	{ 0x004548cd, 2, 1958, 3, 38 }, // 00453e71: MOV byte ptr [EDI + 0x7a6],AL
+	{ 0x004548de, 2, 1959, 3, 39 }, // 00453e71: MOV byte ptr [EDI + 0x7a7],AL
+	{ 0x004548ef, 2, 2600, 4, 40 }, // 00453e71: MOV byte ptr [EDI + 0xa28],AL
+	{ 0x00454900, 2, 2601, 4, 41 }, // 00453e71: MOV byte ptr [EDI + 0xa29],AL
+	{ 0x00454911, 2, 3242, 5, 42 }, // 00453e71: MOV byte ptr [EDI + 0xcaa],AL
+	{ 0x00454922, 2, 3243, 5, 43 }, // 00453e71: MOV byte ptr [EDI + 0xcab],AL
+	{ 0x00454933, 2, 3884, 6, 44 }, // 00453e71: MOV byte ptr [EDI + 0xf2c],AL
+	{ 0x00454944, 2, 3885, 6, 45 }, // 00453e71: MOV byte ptr [EDI + 0xf2d],AL
+	{ 0x00454955, 2, 4526, 7, 46 }, // 00453e71: MOV byte ptr [EDI + 0x11ae],AL
+	{ 0x00454966, 2, 4527, 7, 47 }, // 00453e71: MOV byte ptr [EDI + 0x11af],AL
+	{ 0x00454977, 2, 5168, 8, 48 }, // 00453e71: MOV byte ptr [EDI + 0x1430],AL
+	{ 0x00454988, 2, 5169, 8, 49 }, // 00453e71: MOV byte ptr [EDI + 0x1431],AL
+	{ 0x00454999, 2, 5810, 9, 50 }, // 00453e71: MOV byte ptr [EDI + 0x16b2],AL
+	{ 0x004549aa, 2, 5811, 9, 51 }, // 00453e71: MOV byte ptr [EDI + 0x16b3],AL
+	{ 0x004549bb, 2, 6452, 10, 52 }, // 00453e71: MOV byte ptr [EDI + 0x1934],AL
+	{ 0x004549cc, 2, 6453, 10, 53 }, // 00453e71: MOV byte ptr [EDI + 0x1935],AL
+	{ 0x004549dd, 2, 7094, 11, 54 }, // 00453e71: MOV byte ptr [EDI + 0x1bb6],AL
+	{ 0x004549ee, 2, 7095, 11, 55 }, // 00453e71: MOV byte ptr [EDI + 0x1bb7],AL
+	{ 0x004549ff, 2, 7736, 12, 56 }, // 00453e71: MOV byte ptr [EDI + 0x1e38],AL
+	{ 0x00454a10, 2, 7737, 12, 57 }, // 00453e71: MOV byte ptr [EDI + 0x1e39],AL
 	{ 0x00454a2e, 2, 7040, 11, 0 }, // 00453e71: MOV byte ptr [EDI + 0x1b80],AL
 	{ 0x00454a3f, 2, 7041, 11, 1 }, // 00453e71: MOV byte ptr [EDI + 0x1b81],AL
 	{ 0x00454a50, 2, 6402, 10, 2 }, // 00453e71: MOV byte ptr [EDI + 0x1902],AL
+	{ 0x00454a61, 2, 6403, 10, 3 }, // 00453e71: MOV byte ptr [EDI + 0x1903],AL
+	{ 0x00454a72, 2, 5764, 9, 4 }, // 00453e71: MOV byte ptr [EDI + 0x1684],AL
+	{ 0x00454a83, 2, 5765, 9, 5 }, // 00453e71: MOV byte ptr [EDI + 0x1685],AL
+	{ 0x00454a94, 2, 5126, 8, 6 }, // 00453e71: MOV byte ptr [EDI + 0x1406],AL
+	{ 0x00454aa5, 2, 5127, 8, 7 }, // 00453e71: MOV byte ptr [EDI + 0x1407],AL
+	{ 0x00454ab6, 2, 4488, 7, 8 }, // 00453e71: MOV byte ptr [EDI + 0x1188],AL
+	{ 0x00454ac7, 2, 4489, 7, 9 }, // 00453e71: MOV byte ptr [EDI + 0x1189],AL
+	{ 0x00454ad8, 2, 3850, 6, 10 }, // 00453e71: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x00454ae9, 2, 3851, 6, 11 }, // 00453e71: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x00454afa, 2, 3212, 5, 12 }, // 00453e71: MOV byte ptr [EDI + 0xc8c],AL
+	{ 0x00454b0b, 2, 3213, 5, 13 }, // 00453e71: MOV byte ptr [EDI + 0xc8d],AL
+	{ 0x00454b1c, 2, 2574, 4, 14 }, // 00453e71: MOV byte ptr [EDI + 0xa0e],AL
+	{ 0x00454b2d, 2, 2575, 4, 15 }, // 00453e71: MOV byte ptr [EDI + 0xa0f],AL
+	{ 0x00454b3e, 2, 1936, 3, 16 }, // 00453e71: MOV byte ptr [EDI + 0x790],AL
+	{ 0x00454b4f, 2, 1937, 3, 17 }, // 00453e71: MOV byte ptr [EDI + 0x791],AL
+	{ 0x00454b60, 2, 1298, 2, 18 }, // 00453e71: MOV byte ptr [EDI + 0x512],AL
+	{ 0x00454b71, 2, 1299, 2, 19 }, // 00453e71: MOV byte ptr [EDI + 0x513],AL
+	{ 0x00454b82, 2, 660, 1, 20 }, // 00453e71: MOV byte ptr [EDI + 0x294],AL
+	{ 0x00454b93, 2, 661, 1, 21 }, // 00453e71: MOV byte ptr [EDI + 0x295],AL
+	{ 0x00454bdf, 2, 676, 1, 36 }, // 00453e71: MOV byte ptr [EDI + 0x2a4],AL
+	{ 0x00454bf0, 2, 677, 1, 37 }, // 00453e71: MOV byte ptr [EDI + 0x2a5],AL
+	{ 0x00454c01, 2, 1318, 2, 38 }, // 00453e71: MOV byte ptr [EDI + 0x526],AL
+	{ 0x00454c12, 2, 1319, 2, 39 }, // 00453e71: MOV byte ptr [EDI + 0x527],AL
+	{ 0x00454c23, 2, 1960, 3, 40 }, // 00453e71: MOV byte ptr [EDI + 0x7a8],AL
+	{ 0x00454c34, 2, 1961, 3, 41 }, // 00453e71: MOV byte ptr [EDI + 0x7a9],AL
+	{ 0x00454c45, 2, 2602, 4, 42 }, // 00453e71: MOV byte ptr [EDI + 0xa2a],AL
+	{ 0x00454c56, 2, 2603, 4, 43 }, // 00453e71: MOV byte ptr [EDI + 0xa2b],AL
+	{ 0x00454c67, 2, 3244, 5, 44 }, // 00453e71: MOV byte ptr [EDI + 0xcac],AL
+	{ 0x00454c78, 2, 3245, 5, 45 }, // 00453e71: MOV byte ptr [EDI + 0xcad],AL
+	{ 0x00454c89, 2, 3886, 6, 46 }, // 00453e71: MOV byte ptr [EDI + 0xf2e],AL
+	{ 0x00454c9a, 2, 3887, 6, 47 }, // 00453e71: MOV byte ptr [EDI + 0xf2f],AL
+	{ 0x00454cab, 2, 4528, 7, 48 }, // 00453e71: MOV byte ptr [EDI + 0x11b0],AL
+	{ 0x00454cbc, 2, 4529, 7, 49 }, // 00453e71: MOV byte ptr [EDI + 0x11b1],AL
+	{ 0x00454ccd, 2, 5170, 8, 50 }, // 00453e71: MOV byte ptr [EDI + 0x1432],AL
+	{ 0x00454cde, 2, 5171, 8, 51 }, // 00453e71: MOV byte ptr [EDI + 0x1433],AL
+	{ 0x00454cef, 2, 5812, 9, 52 }, // 00453e71: MOV byte ptr [EDI + 0x16b4],AL
+	{ 0x00454d00, 2, 5813, 9, 53 }, // 00453e71: MOV byte ptr [EDI + 0x16b5],AL
+	{ 0x00454d11, 2, 6454, 10, 54 }, // 00453e71: MOV byte ptr [EDI + 0x1936],AL
+	{ 0x00454d22, 2, 6455, 10, 55 }, // 00453e71: MOV byte ptr [EDI + 0x1937],AL
+	{ 0x00454d33, 2, 7096, 11, 56 }, // 00453e71: MOV byte ptr [EDI + 0x1bb8],AL
+	{ 0x00454d44, 2, 7097, 11, 57 }, // 00453e71: MOV byte ptr [EDI + 0x1bb9],AL
 	{ 0x00454d62, 2, 6400, 10, 0 }, // 00453e71: MOV byte ptr [EDI + 0x1900],AL
 	{ 0x00454d73, 2, 6401, 10, 1 }, // 00453e71: MOV byte ptr [EDI + 0x1901],AL
 	{ 0x00454d84, 2, 5762, 9, 2 }, // 00453e71: MOV byte ptr [EDI + 0x1682],AL
+	{ 0x00454d95, 2, 5763, 9, 3 }, // 00453e71: MOV byte ptr [EDI + 0x1683],AL
+	{ 0x00454da6, 2, 5124, 8, 4 }, // 00453e71: MOV byte ptr [EDI + 0x1404],AL
+	{ 0x00454db7, 2, 5125, 8, 5 }, // 00453e71: MOV byte ptr [EDI + 0x1405],AL
+	{ 0x00454dc8, 2, 4486, 7, 6 }, // 00453e71: MOV byte ptr [EDI + 0x1186],AL
+	{ 0x00454dd9, 2, 4487, 7, 7 }, // 00453e71: MOV byte ptr [EDI + 0x1187],AL
+	{ 0x00454dea, 2, 3848, 6, 8 }, // 00453e71: MOV byte ptr [EDI + 0xf08],AL
+	{ 0x00454dfb, 2, 3849, 6, 9 }, // 00453e71: MOV byte ptr [EDI + 0xf09],AL
+	{ 0x00454e0c, 2, 3210, 5, 10 }, // 00453e71: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x00454e1d, 2, 3211, 5, 11 }, // 00453e71: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x00454e2e, 2, 2572, 4, 12 }, // 00453e71: MOV byte ptr [EDI + 0xa0c],AL
+	{ 0x00454e3f, 2, 2573, 4, 13 }, // 00453e71: MOV byte ptr [EDI + 0xa0d],AL
+	{ 0x00454e50, 2, 1934, 3, 14 }, // 00453e71: MOV byte ptr [EDI + 0x78e],AL
+	{ 0x00454e61, 2, 1935, 3, 15 }, // 00453e71: MOV byte ptr [EDI + 0x78f],AL
+	{ 0x00454e72, 2, 1296, 2, 16 }, // 00453e71: MOV byte ptr [EDI + 0x510],AL
+	{ 0x00454e83, 2, 1297, 2, 17 }, // 00453e71: MOV byte ptr [EDI + 0x511],AL
+	{ 0x00454e94, 2, 658, 1, 18 }, // 00453e71: MOV byte ptr [EDI + 0x292],AL
+	{ 0x00454ea5, 2, 659, 1, 19 }, // 00453e71: MOV byte ptr [EDI + 0x293],AL
+	{ 0x00454ef1, 2, 678, 1, 38 }, // 00453e71: MOV byte ptr [EDI + 0x2a6],AL
+	{ 0x00454f02, 2, 679, 1, 39 }, // 00453e71: MOV byte ptr [EDI + 0x2a7],AL
+	{ 0x00454f13, 2, 1320, 2, 40 }, // 00453e71: MOV byte ptr [EDI + 0x528],AL
+	{ 0x00454f24, 2, 1321, 2, 41 }, // 00453e71: MOV byte ptr [EDI + 0x529],AL
+	{ 0x00454f35, 2, 1962, 3, 42 }, // 00453e71: MOV byte ptr [EDI + 0x7aa],AL
+	{ 0x00454f46, 2, 1963, 3, 43 }, // 00453e71: MOV byte ptr [EDI + 0x7ab],AL
+	{ 0x00454f57, 2, 2604, 4, 44 }, // 00453e71: MOV byte ptr [EDI + 0xa2c],AL
+	{ 0x00454f68, 2, 2605, 4, 45 }, // 00453e71: MOV byte ptr [EDI + 0xa2d],AL
+	{ 0x00454f79, 2, 3246, 5, 46 }, // 00453e71: MOV byte ptr [EDI + 0xcae],AL
+	{ 0x00454f8a, 2, 3247, 5, 47 }, // 00453e71: MOV byte ptr [EDI + 0xcaf],AL
+	{ 0x00454f9b, 2, 3888, 6, 48 }, // 00453e71: MOV byte ptr [EDI + 0xf30],AL
+	{ 0x00454fac, 2, 3889, 6, 49 }, // 00453e71: MOV byte ptr [EDI + 0xf31],AL
+	{ 0x00454fbd, 2, 4530, 7, 50 }, // 00453e71: MOV byte ptr [EDI + 0x11b2],AL
+	{ 0x00454fce, 2, 4531, 7, 51 }, // 00453e71: MOV byte ptr [EDI + 0x11b3],AL
+	{ 0x00454fdf, 2, 5172, 8, 52 }, // 00453e71: MOV byte ptr [EDI + 0x1434],AL
+	{ 0x00454ff0, 2, 5173, 8, 53 }, // 00453e71: MOV byte ptr [EDI + 0x1435],AL
+	{ 0x00455001, 2, 5814, 9, 54 }, // 00453e71: MOV byte ptr [EDI + 0x16b6],AL
+	{ 0x00455012, 2, 5815, 9, 55 }, // 00453e71: MOV byte ptr [EDI + 0x16b7],AL
+	{ 0x00455023, 2, 6456, 10, 56 }, // 00453e71: MOV byte ptr [EDI + 0x1938],AL
+	{ 0x00455034, 2, 6457, 10, 57 }, // 00453e71: MOV byte ptr [EDI + 0x1939],AL
 	{ 0x00455052, 2, 5760, 9, 0 }, // 00453e71: MOV byte ptr [EDI + 0x1680],AL
 	{ 0x00455063, 2, 5761, 9, 1 }, // 00453e71: MOV byte ptr [EDI + 0x1681],AL
 	{ 0x00455074, 2, 5122, 8, 2 }, // 00453e71: MOV byte ptr [EDI + 0x1402],AL
+	{ 0x00455085, 2, 5123, 8, 3 }, // 00453e71: MOV byte ptr [EDI + 0x1403],AL
+	{ 0x00455096, 2, 4484, 7, 4 }, // 00453e71: MOV byte ptr [EDI + 0x1184],AL
+	{ 0x004550a7, 2, 4485, 7, 5 }, // 00453e71: MOV byte ptr [EDI + 0x1185],AL
+	{ 0x004550b8, 2, 3846, 6, 6 }, // 00453e71: MOV byte ptr [EDI + 0xf06],AL
+	{ 0x004550c9, 2, 3847, 6, 7 }, // 00453e71: MOV byte ptr [EDI + 0xf07],AL
+	{ 0x004550da, 2, 3208, 5, 8 }, // 00453e71: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x004550eb, 2, 3209, 5, 9 }, // 00453e71: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x004550fc, 2, 2570, 4, 10 }, // 00453e71: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x0045510d, 2, 2571, 4, 11 }, // 00453e71: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x0045511e, 2, 1932, 3, 12 }, // 00453e71: MOV byte ptr [EDI + 0x78c],AL
+	{ 0x0045512f, 2, 1933, 3, 13 }, // 00453e71: MOV byte ptr [EDI + 0x78d],AL
+	{ 0x00455140, 2, 1294, 2, 14 }, // 00453e71: MOV byte ptr [EDI + 0x50e],AL
+	{ 0x00455151, 2, 1295, 2, 15 }, // 00453e71: MOV byte ptr [EDI + 0x50f],AL
+	{ 0x00455162, 2, 656, 1, 16 }, // 00453e71: MOV byte ptr [EDI + 0x290],AL
+	{ 0x00455173, 2, 657, 1, 17 }, // 00453e71: MOV byte ptr [EDI + 0x291],AL
+	{ 0x004551bf, 2, 680, 1, 40 }, // 00453e71: MOV byte ptr [EDI + 0x2a8],AL
+	{ 0x004551d0, 2, 681, 1, 41 }, // 00453e71: MOV byte ptr [EDI + 0x2a9],AL
+	{ 0x004551e1, 2, 1322, 2, 42 }, // 00453e71: MOV byte ptr [EDI + 0x52a],AL
+	{ 0x004551f2, 2, 1323, 2, 43 }, // 00453e71: MOV byte ptr [EDI + 0x52b],AL
+	{ 0x00455203, 2, 1964, 3, 44 }, // 00453e71: MOV byte ptr [EDI + 0x7ac],AL
+	{ 0x00455214, 2, 1965, 3, 45 }, // 00453e71: MOV byte ptr [EDI + 0x7ad],AL
+	{ 0x00455225, 2, 2606, 4, 46 }, // 00453e71: MOV byte ptr [EDI + 0xa2e],AL
+	{ 0x00455236, 2, 2607, 4, 47 }, // 00453e71: MOV byte ptr [EDI + 0xa2f],AL
+	{ 0x00455247, 2, 3248, 5, 48 }, // 00453e71: MOV byte ptr [EDI + 0xcb0],AL
+	{ 0x00455258, 2, 3249, 5, 49 }, // 00453e71: MOV byte ptr [EDI + 0xcb1],AL
+	{ 0x00455269, 2, 3890, 6, 50 }, // 00453e71: MOV byte ptr [EDI + 0xf32],AL
+	{ 0x0045527a, 2, 3891, 6, 51 }, // 00453e71: MOV byte ptr [EDI + 0xf33],AL
+	{ 0x0045528b, 2, 4532, 7, 52 }, // 00453e71: MOV byte ptr [EDI + 0x11b4],AL
+	{ 0x0045529c, 2, 4533, 7, 53 }, // 00453e71: MOV byte ptr [EDI + 0x11b5],AL
+	{ 0x004552ad, 2, 5174, 8, 54 }, // 00453e71: MOV byte ptr [EDI + 0x1436],AL
+	{ 0x004552be, 2, 5175, 8, 55 }, // 00453e71: MOV byte ptr [EDI + 0x1437],AL
+	{ 0x004552cf, 2, 5816, 9, 56 }, // 00453e71: MOV byte ptr [EDI + 0x16b8],AL
+	{ 0x004552e0, 2, 5817, 9, 57 }, // 00453e71: MOV byte ptr [EDI + 0x16b9],AL
 	{ 0x004552fe, 2, 5120, 8, 0 }, // 00453e71: MOV byte ptr [EDI + 0x1400],AL
 	{ 0x0045530f, 2, 5121, 8, 1 }, // 00453e71: MOV byte ptr [EDI + 0x1401],AL
 	{ 0x00455320, 2, 4482, 7, 2 }, // 00453e71: MOV byte ptr [EDI + 0x1182],AL
+	{ 0x00455331, 2, 4483, 7, 3 }, // 00453e71: MOV byte ptr [EDI + 0x1183],AL
+	{ 0x00455342, 2, 3844, 6, 4 }, // 00453e71: MOV byte ptr [EDI + 0xf04],AL
+	{ 0x00455353, 2, 3845, 6, 5 }, // 00453e71: MOV byte ptr [EDI + 0xf05],AL
+	{ 0x00455364, 2, 3206, 5, 6 }, // 00453e71: MOV byte ptr [EDI + 0xc86],AL
+	{ 0x00455375, 2, 3207, 5, 7 }, // 00453e71: MOV byte ptr [EDI + 0xc87],AL
+	{ 0x00455386, 2, 2568, 4, 8 }, // 00453e71: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00455397, 2, 2569, 4, 9 }, // 00453e71: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x004553a8, 2, 1930, 3, 10 }, // 00453e71: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x004553b9, 2, 1931, 3, 11 }, // 00453e71: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x004553ca, 2, 1292, 2, 12 }, // 00453e71: MOV byte ptr [EDI + 0x50c],AL
+	{ 0x004553db, 2, 1293, 2, 13 }, // 00453e71: MOV byte ptr [EDI + 0x50d],AL
+	{ 0x004553ec, 2, 654, 1, 14 }, // 00453e71: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x004553fd, 2, 655, 1, 15 }, // 00453e71: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x00455449, 2, 682, 1, 42 }, // 00453e71: MOV byte ptr [EDI + 0x2aa],AL
+	{ 0x0045545a, 2, 683, 1, 43 }, // 00453e71: MOV byte ptr [EDI + 0x2ab],AL
+	{ 0x0045546b, 2, 1324, 2, 44 }, // 00453e71: MOV byte ptr [EDI + 0x52c],AL
+	{ 0x0045547c, 2, 1325, 2, 45 }, // 00453e71: MOV byte ptr [EDI + 0x52d],AL
+	{ 0x0045548d, 2, 1966, 3, 46 }, // 00453e71: MOV byte ptr [EDI + 0x7ae],AL
+	{ 0x0045549e, 2, 1967, 3, 47 }, // 00453e71: MOV byte ptr [EDI + 0x7af],AL
+	{ 0x004554af, 2, 2608, 4, 48 }, // 00453e71: MOV byte ptr [EDI + 0xa30],AL
+	{ 0x004554c0, 2, 2609, 4, 49 }, // 00453e71: MOV byte ptr [EDI + 0xa31],AL
+	{ 0x004554d1, 2, 3250, 5, 50 }, // 00453e71: MOV byte ptr [EDI + 0xcb2],AL
+	{ 0x004554e2, 2, 3251, 5, 51 }, // 00453e71: MOV byte ptr [EDI + 0xcb3],AL
+	{ 0x004554f3, 2, 3892, 6, 52 }, // 00453e71: MOV byte ptr [EDI + 0xf34],AL
+	{ 0x00455504, 2, 3893, 6, 53 }, // 00453e71: MOV byte ptr [EDI + 0xf35],AL
+	{ 0x00455515, 2, 4534, 7, 54 }, // 00453e71: MOV byte ptr [EDI + 0x11b6],AL
+	{ 0x00455526, 2, 4535, 7, 55 }, // 00453e71: MOV byte ptr [EDI + 0x11b7],AL
+	{ 0x00455537, 2, 5176, 8, 56 }, // 00453e71: MOV byte ptr [EDI + 0x1438],AL
+	{ 0x00455548, 2, 5177, 8, 57 }, // 00453e71: MOV byte ptr [EDI + 0x1439],AL
 	{ 0x00455566, 2, 4480, 7, 0 }, // 00453e71: MOV byte ptr [EDI + 0x1180],AL
 	{ 0x00455577, 2, 4481, 7, 1 }, // 00453e71: MOV byte ptr [EDI + 0x1181],AL
 	{ 0x00455588, 2, 3842, 6, 2 }, // 00453e71: MOV byte ptr [EDI + 0xf02],AL
+	{ 0x00455599, 2, 3843, 6, 3 }, // 00453e71: MOV byte ptr [EDI + 0xf03],AL
+	{ 0x004555aa, 2, 3204, 5, 4 }, // 00453e71: MOV byte ptr [EDI + 0xc84],AL
+	{ 0x004555bb, 2, 3205, 5, 5 }, // 00453e71: MOV byte ptr [EDI + 0xc85],AL
+	{ 0x004555cc, 2, 2566, 4, 6 }, // 00453e71: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x004555dd, 2, 2567, 4, 7 }, // 00453e71: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x004555ee, 2, 1928, 3, 8 }, // 00453e71: MOV byte ptr [EDI + 0x788],AL
+	{ 0x004555ff, 2, 1929, 3, 9 }, // 00453e71: MOV byte ptr [EDI + 0x789],AL
+	{ 0x00455610, 2, 1290, 2, 10 }, // 00453e71: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x00455621, 2, 1291, 2, 11 }, // 00453e71: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x00455632, 2, 652, 1, 12 }, // 00453e71: MOV byte ptr [EDI + 0x28c],AL
+	{ 0x00455643, 2, 653, 1, 13 }, // 00453e71: MOV byte ptr [EDI + 0x28d],AL
+	{ 0x0045568f, 2, 684, 1, 44 }, // 00453e71: MOV byte ptr [EDI + 0x2ac],AL
+	{ 0x004556a0, 2, 685, 1, 45 }, // 00453e71: MOV byte ptr [EDI + 0x2ad],AL
+	{ 0x004556b1, 2, 1326, 2, 46 }, // 00453e71: MOV byte ptr [EDI + 0x52e],AL
+	{ 0x004556c2, 2, 1327, 2, 47 }, // 00453e71: MOV byte ptr [EDI + 0x52f],AL
+	{ 0x004556d3, 2, 1968, 3, 48 }, // 00453e71: MOV byte ptr [EDI + 0x7b0],AL
+	{ 0x004556e4, 2, 1969, 3, 49 }, // 00453e71: MOV byte ptr [EDI + 0x7b1],AL
+	{ 0x004556f5, 2, 2610, 4, 50 }, // 00453e71: MOV byte ptr [EDI + 0xa32],AL
+	{ 0x00455706, 2, 2611, 4, 51 }, // 00453e71: MOV byte ptr [EDI + 0xa33],AL
+	{ 0x00455717, 2, 3252, 5, 52 }, // 00453e71: MOV byte ptr [EDI + 0xcb4],AL
+	{ 0x00455728, 2, 3253, 5, 53 }, // 00453e71: MOV byte ptr [EDI + 0xcb5],AL
+	{ 0x00455739, 2, 3894, 6, 54 }, // 00453e71: MOV byte ptr [EDI + 0xf36],AL
+	{ 0x0045574a, 2, 3895, 6, 55 }, // 00453e71: MOV byte ptr [EDI + 0xf37],AL
+	{ 0x0045575b, 2, 4536, 7, 56 }, // 00453e71: MOV byte ptr [EDI + 0x11b8],AL
+	{ 0x0045576c, 2, 4537, 7, 57 }, // 00453e71: MOV byte ptr [EDI + 0x11b9],AL
 	{ 0x0045578a, 2, 3840, 6, 0 }, // 00453e71: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x0045579b, 2, 3841, 6, 1 }, // 00453e71: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x004557ac, 2, 3202, 5, 2 }, // 00453e71: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x004557bd, 2, 3203, 5, 3 }, // 00453e71: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x004557ce, 2, 2564, 4, 4 }, // 00453e71: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x004557df, 2, 2565, 4, 5 }, // 00453e71: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x004557f0, 2, 1926, 3, 6 }, // 00453e71: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00455801, 2, 1927, 3, 7 }, // 00453e71: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00455812, 2, 1288, 2, 8 }, // 00453e71: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00455823, 2, 1289, 2, 9 }, // 00453e71: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00455834, 2, 650, 1, 10 }, // 00453e71: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00455845, 2, 651, 1, 11 }, // 00453e71: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00455891, 2, 686, 1, 46 }, // 00453e71: MOV byte ptr [EDI + 0x2ae],AL
+	{ 0x004558a2, 2, 687, 1, 47 }, // 00453e71: MOV byte ptr [EDI + 0x2af],AL
+	{ 0x004558b3, 2, 1328, 2, 48 }, // 00453e71: MOV byte ptr [EDI + 0x530],AL
+	{ 0x004558c4, 2, 1329, 2, 49 }, // 00453e71: MOV byte ptr [EDI + 0x531],AL
+	{ 0x004558d5, 2, 1970, 3, 50 }, // 00453e71: MOV byte ptr [EDI + 0x7b2],AL
+	{ 0x004558e6, 2, 1971, 3, 51 }, // 00453e71: MOV byte ptr [EDI + 0x7b3],AL
+	{ 0x004558f7, 2, 2612, 4, 52 }, // 00453e71: MOV byte ptr [EDI + 0xa34],AL
+	{ 0x00455908, 2, 2613, 4, 53 }, // 00453e71: MOV byte ptr [EDI + 0xa35],AL
+	{ 0x00455919, 2, 3254, 5, 54 }, // 00453e71: MOV byte ptr [EDI + 0xcb6],AL
+	{ 0x0045592a, 2, 3255, 5, 55 }, // 00453e71: MOV byte ptr [EDI + 0xcb7],AL
+	{ 0x0045593b, 2, 3896, 6, 56 }, // 00453e71: MOV byte ptr [EDI + 0xf38],AL
+	{ 0x0045594c, 2, 3897, 6, 57 }, // 00453e71: MOV byte ptr [EDI + 0xf39],AL
 	{ 0x0045596a, 2, 3200, 5, 0 }, // 00453e71: MOV byte ptr [EDI + 0xc80],AL
 	{ 0x0045597b, 2, 3201, 5, 1 }, // 00453e71: MOV byte ptr [EDI + 0xc81],AL
 	{ 0x0045598c, 2, 2562, 4, 2 }, // 00453e71: MOV byte ptr [EDI + 0xa02],AL
+	{ 0x0045599d, 2, 2563, 4, 3 }, // 00453e71: MOV byte ptr [EDI + 0xa03],AL
+	{ 0x004559ae, 2, 1924, 3, 4 }, // 00453e71: MOV byte ptr [EDI + 0x784],AL
+	{ 0x004559bf, 2, 1925, 3, 5 }, // 00453e71: MOV byte ptr [EDI + 0x785],AL
+	{ 0x004559d0, 2, 1286, 2, 6 }, // 00453e71: MOV byte ptr [EDI + 0x506],AL
+	{ 0x004559e1, 2, 1287, 2, 7 }, // 00453e71: MOV byte ptr [EDI + 0x507],AL
+	{ 0x004559f2, 2, 648, 1, 8 }, // 00453e71: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00455a03, 2, 649, 1, 9 }, // 00453e71: MOV byte ptr [EDI + 0x289],AL
+	{ 0x00455a4f, 2, 688, 1, 48 }, // 00453e71: MOV byte ptr [EDI + 0x2b0],AL
+	{ 0x00455a60, 2, 689, 1, 49 }, // 00453e71: MOV byte ptr [EDI + 0x2b1],AL
+	{ 0x00455a71, 2, 1330, 2, 50 }, // 00453e71: MOV byte ptr [EDI + 0x532],AL
+	{ 0x00455a82, 2, 1331, 2, 51 }, // 00453e71: MOV byte ptr [EDI + 0x533],AL
+	{ 0x00455a93, 2, 1972, 3, 52 }, // 00453e71: MOV byte ptr [EDI + 0x7b4],AL
+	{ 0x00455aa4, 2, 1973, 3, 53 }, // 00453e71: MOV byte ptr [EDI + 0x7b5],AL
+	{ 0x00455ab5, 2, 2614, 4, 54 }, // 00453e71: MOV byte ptr [EDI + 0xa36],AL
+	{ 0x00455ac6, 2, 2615, 4, 55 }, // 00453e71: MOV byte ptr [EDI + 0xa37],AL
+	{ 0x00455ad7, 2, 3256, 5, 56 }, // 00453e71: MOV byte ptr [EDI + 0xcb8],AL
+	{ 0x00455ae8, 2, 3257, 5, 57 }, // 00453e71: MOV byte ptr [EDI + 0xcb9],AL
 	{ 0x00455b06, 2, 2560, 4, 0 }, // 00453e71: MOV byte ptr [EDI + 0xa00],AL
 	{ 0x00455b17, 2, 2561, 4, 1 }, // 00453e71: MOV byte ptr [EDI + 0xa01],AL
 	{ 0x00455b28, 2, 1922, 3, 2 }, // 00453e71: MOV byte ptr [EDI + 0x782],AL
+	{ 0x00455b39, 2, 1923, 3, 3 }, // 00453e71: MOV byte ptr [EDI + 0x783],AL
+	{ 0x00455b4a, 2, 1284, 2, 4 }, // 00453e71: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00455b5b, 2, 1285, 2, 5 }, // 00453e71: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00455b6c, 2, 646, 1, 6 }, // 00453e71: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00455b7d, 2, 647, 1, 7 }, // 00453e71: MOV byte ptr [EDI + 0x287],AL
+	{ 0x00455bc9, 2, 690, 1, 50 }, // 00453e71: MOV byte ptr [EDI + 0x2b2],AL
+	{ 0x00455bda, 2, 691, 1, 51 }, // 00453e71: MOV byte ptr [EDI + 0x2b3],AL
+	{ 0x00455beb, 2, 1332, 2, 52 }, // 00453e71: MOV byte ptr [EDI + 0x534],AL
+	{ 0x00455bfc, 2, 1333, 2, 53 }, // 00453e71: MOV byte ptr [EDI + 0x535],AL
+	{ 0x00455c0d, 2, 1974, 3, 54 }, // 00453e71: MOV byte ptr [EDI + 0x7b6],AL
+	{ 0x00455c1e, 2, 1975, 3, 55 }, // 00453e71: MOV byte ptr [EDI + 0x7b7],AL
+	{ 0x00455c2f, 2, 2616, 4, 56 }, // 00453e71: MOV byte ptr [EDI + 0xa38],AL
+	{ 0x00455c40, 2, 2617, 4, 57 }, // 00453e71: MOV byte ptr [EDI + 0xa39],AL
 	{ 0x00455c5e, 2, 1920, 3, 0 }, // 00453e71: MOV byte ptr [EDI + 0x780],AL
 	{ 0x00455c6f, 2, 1921, 3, 1 }, // 00453e71: MOV byte ptr [EDI + 0x781],AL
 	{ 0x00455c80, 2, 1282, 2, 2 }, // 00453e71: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00455c91, 2, 1283, 2, 3 }, // 00453e71: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00455ca2, 2, 644, 1, 4 }, // 00453e71: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00455cb3, 2, 645, 1, 5 }, // 00453e71: MOV byte ptr [EDI + 0x285],AL
+	{ 0x00455cff, 2, 692, 1, 52 }, // 00453e71: MOV byte ptr [EDI + 0x2b4],AL
+	{ 0x00455d10, 2, 693, 1, 53 }, // 00453e71: MOV byte ptr [EDI + 0x2b5],AL
+	{ 0x00455d21, 2, 1334, 2, 54 }, // 00453e71: MOV byte ptr [EDI + 0x536],AL
+	{ 0x00455d32, 2, 1335, 2, 55 }, // 00453e71: MOV byte ptr [EDI + 0x537],AL
+	{ 0x00455d43, 2, 1976, 3, 56 }, // 00453e71: MOV byte ptr [EDI + 0x7b8],AL
+	{ 0x00455d54, 2, 1977, 3, 57 }, // 00453e71: MOV byte ptr [EDI + 0x7b9],AL
 	{ 0x00455d72, 2, 1280, 2, 0 }, // 00453e71: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00455d83, 2, 1281, 2, 1 }, // 00453e71: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00455d94, 2, 642, 1, 2 }, // 00453e71: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00455da5, 2, 643, 1, 3 }, // 00453e71: MOV byte ptr [EDI + 0x283],AL
+	{ 0x00455df1, 2, 694, 1, 54 }, // 00453e71: MOV byte ptr [EDI + 0x2b6],AL
+	{ 0x00455e02, 2, 695, 1, 55 }, // 00453e71: MOV byte ptr [EDI + 0x2b7],AL
+	{ 0x00455e13, 2, 1336, 2, 56 }, // 00453e71: MOV byte ptr [EDI + 0x538],AL
+	{ 0x00455e24, 2, 1337, 2, 57 }, // 00453e71: MOV byte ptr [EDI + 0x539],AL
 	{ 0x00455e42, 2, 640, 1, 0 }, // 00453e71: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00455e53, 2, 641, 1, 1 }, // 00453e71: MOV byte ptr [EDI + 0x281],AL
+	{ 0x00455e9f, 2, 696, 1, 56 }, // 00453e71: MOV byte ptr [EDI + 0x2b8],AL
+	{ 0x00455eb0, 2, 697, 1, 57 }, // 00453e71: MOV byte ptr [EDI + 0x2b9],AL
 	{ 0x00455f53, 2, 640, 1, 0 }, // 00455f04: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00455f64, 2, 641, 1, 1 }, // 00455f04: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00455f78, 2, 1280, 2, 0 }, // 00455f04: MOV byte ptr [EDI + 0x500],AL
@@ -160,6 +923,187 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x00456134, 2, 8960, 14, 0 }, // 00455f04: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x00456145, 2, 8961, 14, 1 }, // 00455f04: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x0045618a, 2, 642, 1, 2 }, // 00455f04: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045619b, 2, 643, 1, 3 }, // 00455f04: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004561ac, 2, 1284, 2, 4 }, // 00455f04: MOV byte ptr [EDI + 0x504],AL
+	{ 0x004561bd, 2, 1285, 2, 5 }, // 00455f04: MOV byte ptr [EDI + 0x505],AL
+	{ 0x004561ce, 2, 1926, 3, 6 }, // 00455f04: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004561df, 2, 1927, 3, 7 }, // 00455f04: MOV byte ptr [EDI + 0x787],AL
+	{ 0x004561f0, 2, 2568, 4, 8 }, // 00455f04: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00456201, 2, 2569, 4, 9 }, // 00455f04: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x00456212, 2, 3210, 5, 10 }, // 00455f04: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x00456223, 2, 3211, 5, 11 }, // 00455f04: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x00456234, 2, 3852, 6, 12 }, // 00455f04: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x00456245, 2, 3853, 6, 13 }, // 00455f04: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x00456256, 2, 4494, 7, 14 }, // 00455f04: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x00456267, 2, 4495, 7, 15 }, // 00455f04: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x00456278, 2, 5136, 8, 16 }, // 00455f04: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x00456289, 2, 5137, 8, 17 }, // 00455f04: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045629a, 2, 5778, 9, 18 }, // 00455f04: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x004562ab, 2, 5779, 9, 19 }, // 00455f04: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x004562bc, 2, 6420, 10, 20 }, // 00455f04: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x004562cd, 2, 6421, 10, 21 }, // 00455f04: MOV byte ptr [EDI + 0x1915],AL
+	{ 0x004562de, 2, 7062, 11, 22 }, // 00455f04: MOV byte ptr [EDI + 0x1b96],AL
+	{ 0x004562ef, 2, 7063, 11, 23 }, // 00455f04: MOV byte ptr [EDI + 0x1b97],AL
+	{ 0x00456300, 2, 7704, 12, 24 }, // 00455f04: MOV byte ptr [EDI + 0x1e18],AL
+	{ 0x00456311, 2, 7705, 12, 25 }, // 00455f04: MOV byte ptr [EDI + 0x1e19],AL
+	{ 0x00456322, 2, 8346, 13, 26 }, // 00455f04: MOV byte ptr [EDI + 0x209a],AL
+	{ 0x00456333, 2, 8347, 13, 27 }, // 00455f04: MOV byte ptr [EDI + 0x209b],AL
+	{ 0x00456370, 2, 644, 1, 4 }, // 00455f04: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00456381, 2, 645, 1, 5 }, // 00455f04: MOV byte ptr [EDI + 0x285],AL
+	{ 0x00456392, 2, 1286, 2, 6 }, // 00455f04: MOV byte ptr [EDI + 0x506],AL
+	{ 0x004563a3, 2, 1287, 2, 7 }, // 00455f04: MOV byte ptr [EDI + 0x507],AL
+	{ 0x004563b4, 2, 1928, 3, 8 }, // 00455f04: MOV byte ptr [EDI + 0x788],AL
+	{ 0x004563c5, 2, 1929, 3, 9 }, // 00455f04: MOV byte ptr [EDI + 0x789],AL
+	{ 0x004563d6, 2, 2570, 4, 10 }, // 00455f04: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x004563e7, 2, 2571, 4, 11 }, // 00455f04: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x004563f8, 2, 3212, 5, 12 }, // 00455f04: MOV byte ptr [EDI + 0xc8c],AL
+	{ 0x00456409, 2, 3213, 5, 13 }, // 00455f04: MOV byte ptr [EDI + 0xc8d],AL
+	{ 0x0045641a, 2, 3854, 6, 14 }, // 00455f04: MOV byte ptr [EDI + 0xf0e],AL
+	{ 0x0045642b, 2, 3855, 6, 15 }, // 00455f04: MOV byte ptr [EDI + 0xf0f],AL
+	{ 0x0045643c, 2, 4496, 7, 16 }, // 00455f04: MOV byte ptr [EDI + 0x1190],AL
+	{ 0x0045644d, 2, 4497, 7, 17 }, // 00455f04: MOV byte ptr [EDI + 0x1191],AL
+	{ 0x0045645e, 2, 5138, 8, 18 }, // 00455f04: MOV byte ptr [EDI + 0x1412],AL
+	{ 0x0045646f, 2, 5139, 8, 19 }, // 00455f04: MOV byte ptr [EDI + 0x1413],AL
+	{ 0x00456480, 2, 5780, 9, 20 }, // 00455f04: MOV byte ptr [EDI + 0x1694],AL
+	{ 0x00456491, 2, 5781, 9, 21 }, // 00455f04: MOV byte ptr [EDI + 0x1695],AL
+	{ 0x004564a2, 2, 6422, 10, 22 }, // 00455f04: MOV byte ptr [EDI + 0x1916],AL
+	{ 0x004564b3, 2, 6423, 10, 23 }, // 00455f04: MOV byte ptr [EDI + 0x1917],AL
+	{ 0x004564c4, 2, 7064, 11, 24 }, // 00455f04: MOV byte ptr [EDI + 0x1b98],AL
+	{ 0x004564d5, 2, 7065, 11, 25 }, // 00455f04: MOV byte ptr [EDI + 0x1b99],AL
+	{ 0x004564e6, 2, 7706, 12, 26 }, // 00455f04: MOV byte ptr [EDI + 0x1e1a],AL
+	{ 0x004564f7, 2, 7707, 12, 27 }, // 00455f04: MOV byte ptr [EDI + 0x1e1b],AL
+	{ 0x00456534, 2, 646, 1, 6 }, // 00455f04: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00456545, 2, 647, 1, 7 }, // 00455f04: MOV byte ptr [EDI + 0x287],AL
+	{ 0x00456556, 2, 1288, 2, 8 }, // 00455f04: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00456567, 2, 1289, 2, 9 }, // 00455f04: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00456578, 2, 1930, 3, 10 }, // 00455f04: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x00456589, 2, 1931, 3, 11 }, // 00455f04: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x0045659a, 2, 2572, 4, 12 }, // 00455f04: MOV byte ptr [EDI + 0xa0c],AL
+	{ 0x004565ab, 2, 2573, 4, 13 }, // 00455f04: MOV byte ptr [EDI + 0xa0d],AL
+	{ 0x004565bc, 2, 3214, 5, 14 }, // 00455f04: MOV byte ptr [EDI + 0xc8e],AL
+	{ 0x004565cd, 2, 3215, 5, 15 }, // 00455f04: MOV byte ptr [EDI + 0xc8f],AL
+	{ 0x004565de, 2, 3856, 6, 16 }, // 00455f04: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x004565ef, 2, 3857, 6, 17 }, // 00455f04: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x00456600, 2, 4498, 7, 18 }, // 00455f04: MOV byte ptr [EDI + 0x1192],AL
+	{ 0x00456611, 2, 4499, 7, 19 }, // 00455f04: MOV byte ptr [EDI + 0x1193],AL
+	{ 0x00456622, 2, 5140, 8, 20 }, // 00455f04: MOV byte ptr [EDI + 0x1414],AL
+	{ 0x00456633, 2, 5141, 8, 21 }, // 00455f04: MOV byte ptr [EDI + 0x1415],AL
+	{ 0x00456644, 2, 5782, 9, 22 }, // 00455f04: MOV byte ptr [EDI + 0x1696],AL
+	{ 0x00456655, 2, 5783, 9, 23 }, // 00455f04: MOV byte ptr [EDI + 0x1697],AL
+	{ 0x00456666, 2, 6424, 10, 24 }, // 00455f04: MOV byte ptr [EDI + 0x1918],AL
+	{ 0x00456677, 2, 6425, 10, 25 }, // 00455f04: MOV byte ptr [EDI + 0x1919],AL
+	{ 0x00456688, 2, 7066, 11, 26 }, // 00455f04: MOV byte ptr [EDI + 0x1b9a],AL
+	{ 0x00456699, 2, 7067, 11, 27 }, // 00455f04: MOV byte ptr [EDI + 0x1b9b],AL
+	{ 0x004566d6, 2, 648, 1, 8 }, // 00455f04: MOV byte ptr [EDI + 0x288],AL
+	{ 0x004566e7, 2, 649, 1, 9 }, // 00455f04: MOV byte ptr [EDI + 0x289],AL
+	{ 0x004566f8, 2, 1290, 2, 10 }, // 00455f04: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x00456709, 2, 1291, 2, 11 }, // 00455f04: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x0045671a, 2, 1932, 3, 12 }, // 00455f04: MOV byte ptr [EDI + 0x78c],AL
+	{ 0x0045672b, 2, 1933, 3, 13 }, // 00455f04: MOV byte ptr [EDI + 0x78d],AL
+	{ 0x0045673c, 2, 2574, 4, 14 }, // 00455f04: MOV byte ptr [EDI + 0xa0e],AL
+	{ 0x0045674d, 2, 2575, 4, 15 }, // 00455f04: MOV byte ptr [EDI + 0xa0f],AL
+	{ 0x0045675e, 2, 3216, 5, 16 }, // 00455f04: MOV byte ptr [EDI + 0xc90],AL
+	{ 0x0045676f, 2, 3217, 5, 17 }, // 00455f04: MOV byte ptr [EDI + 0xc91],AL
+	{ 0x00456780, 2, 3858, 6, 18 }, // 00455f04: MOV byte ptr [EDI + 0xf12],AL
+	{ 0x00456791, 2, 3859, 6, 19 }, // 00455f04: MOV byte ptr [EDI + 0xf13],AL
+	{ 0x004567a2, 2, 4500, 7, 20 }, // 00455f04: MOV byte ptr [EDI + 0x1194],AL
+	{ 0x004567b3, 2, 4501, 7, 21 }, // 00455f04: MOV byte ptr [EDI + 0x1195],AL
+	{ 0x004567c4, 2, 5142, 8, 22 }, // 00455f04: MOV byte ptr [EDI + 0x1416],AL
+	{ 0x004567d5, 2, 5143, 8, 23 }, // 00455f04: MOV byte ptr [EDI + 0x1417],AL
+	{ 0x004567e6, 2, 5784, 9, 24 }, // 00455f04: MOV byte ptr [EDI + 0x1698],AL
+	{ 0x004567f7, 2, 5785, 9, 25 }, // 00455f04: MOV byte ptr [EDI + 0x1699],AL
+	{ 0x00456808, 2, 6426, 10, 26 }, // 00455f04: MOV byte ptr [EDI + 0x191a],AL
+	{ 0x00456819, 2, 6427, 10, 27 }, // 00455f04: MOV byte ptr [EDI + 0x191b],AL
+	{ 0x00456856, 2, 650, 1, 10 }, // 00455f04: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00456867, 2, 651, 1, 11 }, // 00455f04: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00456878, 2, 1292, 2, 12 }, // 00455f04: MOV byte ptr [EDI + 0x50c],AL
+	{ 0x00456889, 2, 1293, 2, 13 }, // 00455f04: MOV byte ptr [EDI + 0x50d],AL
+	{ 0x0045689a, 2, 1934, 3, 14 }, // 00455f04: MOV byte ptr [EDI + 0x78e],AL
+	{ 0x004568ab, 2, 1935, 3, 15 }, // 00455f04: MOV byte ptr [EDI + 0x78f],AL
+	{ 0x004568bc, 2, 2576, 4, 16 }, // 00455f04: MOV byte ptr [EDI + 0xa10],AL
+	{ 0x004568cd, 2, 2577, 4, 17 }, // 00455f04: MOV byte ptr [EDI + 0xa11],AL
+	{ 0x004568de, 2, 3218, 5, 18 }, // 00455f04: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x004568ef, 2, 3219, 5, 19 }, // 00455f04: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x00456900, 2, 3860, 6, 20 }, // 00455f04: MOV byte ptr [EDI + 0xf14],AL
+	{ 0x00456911, 2, 3861, 6, 21 }, // 00455f04: MOV byte ptr [EDI + 0xf15],AL
+	{ 0x00456922, 2, 4502, 7, 22 }, // 00455f04: MOV byte ptr [EDI + 0x1196],AL
+	{ 0x00456933, 2, 4503, 7, 23 }, // 00455f04: MOV byte ptr [EDI + 0x1197],AL
+	{ 0x00456944, 2, 5144, 8, 24 }, // 00455f04: MOV byte ptr [EDI + 0x1418],AL
+	{ 0x00456955, 2, 5145, 8, 25 }, // 00455f04: MOV byte ptr [EDI + 0x1419],AL
+	{ 0x00456966, 2, 5786, 9, 26 }, // 00455f04: MOV byte ptr [EDI + 0x169a],AL
+	{ 0x00456977, 2, 5787, 9, 27 }, // 00455f04: MOV byte ptr [EDI + 0x169b],AL
+	{ 0x004569b4, 2, 652, 1, 12 }, // 00455f04: MOV byte ptr [EDI + 0x28c],AL
+	{ 0x004569c5, 2, 653, 1, 13 }, // 00455f04: MOV byte ptr [EDI + 0x28d],AL
+	{ 0x004569d6, 2, 1294, 2, 14 }, // 00455f04: MOV byte ptr [EDI + 0x50e],AL
+	{ 0x004569e7, 2, 1295, 2, 15 }, // 00455f04: MOV byte ptr [EDI + 0x50f],AL
+	{ 0x004569f8, 2, 1936, 3, 16 }, // 00455f04: MOV byte ptr [EDI + 0x790],AL
+	{ 0x00456a09, 2, 1937, 3, 17 }, // 00455f04: MOV byte ptr [EDI + 0x791],AL
+	{ 0x00456a1a, 2, 2578, 4, 18 }, // 00455f04: MOV byte ptr [EDI + 0xa12],AL
+	{ 0x00456a2b, 2, 2579, 4, 19 }, // 00455f04: MOV byte ptr [EDI + 0xa13],AL
+	{ 0x00456a3c, 2, 3220, 5, 20 }, // 00455f04: MOV byte ptr [EDI + 0xc94],AL
+	{ 0x00456a4d, 2, 3221, 5, 21 }, // 00455f04: MOV byte ptr [EDI + 0xc95],AL
+	{ 0x00456a5e, 2, 3862, 6, 22 }, // 00455f04: MOV byte ptr [EDI + 0xf16],AL
+	{ 0x00456a6f, 2, 3863, 6, 23 }, // 00455f04: MOV byte ptr [EDI + 0xf17],AL
+	{ 0x00456a80, 2, 4504, 7, 24 }, // 00455f04: MOV byte ptr [EDI + 0x1198],AL
+	{ 0x00456a91, 2, 4505, 7, 25 }, // 00455f04: MOV byte ptr [EDI + 0x1199],AL
+	{ 0x00456aa2, 2, 5146, 8, 26 }, // 00455f04: MOV byte ptr [EDI + 0x141a],AL
+	{ 0x00456ab3, 2, 5147, 8, 27 }, // 00455f04: MOV byte ptr [EDI + 0x141b],AL
+	{ 0x00456af0, 2, 654, 1, 14 }, // 00455f04: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x00456b01, 2, 655, 1, 15 }, // 00455f04: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x00456b12, 2, 1296, 2, 16 }, // 00455f04: MOV byte ptr [EDI + 0x510],AL
+	{ 0x00456b23, 2, 1297, 2, 17 }, // 00455f04: MOV byte ptr [EDI + 0x511],AL
+	{ 0x00456b34, 2, 1938, 3, 18 }, // 00455f04: MOV byte ptr [EDI + 0x792],AL
+	{ 0x00456b45, 2, 1939, 3, 19 }, // 00455f04: MOV byte ptr [EDI + 0x793],AL
+	{ 0x00456b56, 2, 2580, 4, 20 }, // 00455f04: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x00456b67, 2, 2581, 4, 21 }, // 00455f04: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x00456b78, 2, 3222, 5, 22 }, // 00455f04: MOV byte ptr [EDI + 0xc96],AL
+	{ 0x00456b89, 2, 3223, 5, 23 }, // 00455f04: MOV byte ptr [EDI + 0xc97],AL
+	{ 0x00456b9a, 2, 3864, 6, 24 }, // 00455f04: MOV byte ptr [EDI + 0xf18],AL
+	{ 0x00456bab, 2, 3865, 6, 25 }, // 00455f04: MOV byte ptr [EDI + 0xf19],AL
+	{ 0x00456bbc, 2, 4506, 7, 26 }, // 00455f04: MOV byte ptr [EDI + 0x119a],AL
+	{ 0x00456bcd, 2, 4507, 7, 27 }, // 00455f04: MOV byte ptr [EDI + 0x119b],AL
+	{ 0x00456c0a, 2, 656, 1, 16 }, // 00455f04: MOV byte ptr [EDI + 0x290],AL
+	{ 0x00456c1b, 2, 657, 1, 17 }, // 00455f04: MOV byte ptr [EDI + 0x291],AL
+	{ 0x00456c2c, 2, 1298, 2, 18 }, // 00455f04: MOV byte ptr [EDI + 0x512],AL
+	{ 0x00456c3d, 2, 1299, 2, 19 }, // 00455f04: MOV byte ptr [EDI + 0x513],AL
+	{ 0x00456c4e, 2, 1940, 3, 20 }, // 00455f04: MOV byte ptr [EDI + 0x794],AL
+	{ 0x00456c5f, 2, 1941, 3, 21 }, // 00455f04: MOV byte ptr [EDI + 0x795],AL
+	{ 0x00456c70, 2, 2582, 4, 22 }, // 00455f04: MOV byte ptr [EDI + 0xa16],AL
+	{ 0x00456c81, 2, 2583, 4, 23 }, // 00455f04: MOV byte ptr [EDI + 0xa17],AL
+	{ 0x00456c92, 2, 3224, 5, 24 }, // 00455f04: MOV byte ptr [EDI + 0xc98],AL
+	{ 0x00456ca3, 2, 3225, 5, 25 }, // 00455f04: MOV byte ptr [EDI + 0xc99],AL
+	{ 0x00456cb4, 2, 3866, 6, 26 }, // 00455f04: MOV byte ptr [EDI + 0xf1a],AL
+	{ 0x00456cc5, 2, 3867, 6, 27 }, // 00455f04: MOV byte ptr [EDI + 0xf1b],AL
+	{ 0x00456d02, 2, 658, 1, 18 }, // 00455f04: MOV byte ptr [EDI + 0x292],AL
+	{ 0x00456d13, 2, 659, 1, 19 }, // 00455f04: MOV byte ptr [EDI + 0x293],AL
+	{ 0x00456d24, 2, 1300, 2, 20 }, // 00455f04: MOV byte ptr [EDI + 0x514],AL
+	{ 0x00456d35, 2, 1301, 2, 21 }, // 00455f04: MOV byte ptr [EDI + 0x515],AL
+	{ 0x00456d46, 2, 1942, 3, 22 }, // 00455f04: MOV byte ptr [EDI + 0x796],AL
+	{ 0x00456d57, 2, 1943, 3, 23 }, // 00455f04: MOV byte ptr [EDI + 0x797],AL
+	{ 0x00456d68, 2, 2584, 4, 24 }, // 00455f04: MOV byte ptr [EDI + 0xa18],AL
+	{ 0x00456d79, 2, 2585, 4, 25 }, // 00455f04: MOV byte ptr [EDI + 0xa19],AL
+	{ 0x00456d8a, 2, 3226, 5, 26 }, // 00455f04: MOV byte ptr [EDI + 0xc9a],AL
+	{ 0x00456d9b, 2, 3227, 5, 27 }, // 00455f04: MOV byte ptr [EDI + 0xc9b],AL
+	{ 0x00456dd8, 2, 660, 1, 20 }, // 00455f04: MOV byte ptr [EDI + 0x294],AL
+	{ 0x00456de9, 2, 661, 1, 21 }, // 00455f04: MOV byte ptr [EDI + 0x295],AL
+	{ 0x00456dfa, 2, 1302, 2, 22 }, // 00455f04: MOV byte ptr [EDI + 0x516],AL
+	{ 0x00456e0b, 2, 1303, 2, 23 }, // 00455f04: MOV byte ptr [EDI + 0x517],AL
+	{ 0x00456e1c, 2, 1944, 3, 24 }, // 00455f04: MOV byte ptr [EDI + 0x798],AL
+	{ 0x00456e2d, 2, 1945, 3, 25 }, // 00455f04: MOV byte ptr [EDI + 0x799],AL
+	{ 0x00456e3e, 2, 2586, 4, 26 }, // 00455f04: MOV byte ptr [EDI + 0xa1a],AL
+	{ 0x00456e4f, 2, 2587, 4, 27 }, // 00455f04: MOV byte ptr [EDI + 0xa1b],AL
+	{ 0x00456e8c, 2, 662, 1, 22 }, // 00455f04: MOV byte ptr [EDI + 0x296],AL
+	{ 0x00456e9d, 2, 663, 1, 23 }, // 00455f04: MOV byte ptr [EDI + 0x297],AL
+	{ 0x00456eae, 2, 1304, 2, 24 }, // 00455f04: MOV byte ptr [EDI + 0x518],AL
+	{ 0x00456ebf, 2, 1305, 2, 25 }, // 00455f04: MOV byte ptr [EDI + 0x519],AL
+	{ 0x00456ed0, 2, 1946, 3, 26 }, // 00455f04: MOV byte ptr [EDI + 0x79a],AL
+	{ 0x00456ee1, 2, 1947, 3, 27 }, // 00455f04: MOV byte ptr [EDI + 0x79b],AL
+	{ 0x00456f1e, 2, 664, 1, 24 }, // 00455f04: MOV byte ptr [EDI + 0x298],AL
+	{ 0x00456f2f, 2, 665, 1, 25 }, // 00455f04: MOV byte ptr [EDI + 0x299],AL
+	{ 0x00456f40, 2, 1306, 2, 26 }, // 00455f04: MOV byte ptr [EDI + 0x51a],AL
+	{ 0x00456f51, 2, 1307, 2, 27 }, // 00455f04: MOV byte ptr [EDI + 0x51b],AL
+	{ 0x00456f8e, 2, 666, 1, 26 }, // 00455f04: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x00456f9f, 2, 667, 1, 27 }, // 00455f04: MOV byte ptr [EDI + 0x29b],AL
 	{ 0x00457024, 2, 8960, 14, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x00457035, 2, 8961, 14, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x00457049, 2, 8320, 13, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x2080],AL
@@ -191,39 +1135,183 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x00457240, 2, 8320, 13, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x2080],AL
 	{ 0x00457251, 2, 8321, 13, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x2081],AL
 	{ 0x00457262, 2, 7682, 12, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x1e02],AL
+	{ 0x00457273, 2, 7683, 12, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x1e03],AL
+	{ 0x00457284, 2, 7044, 11, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x1b84],AL
+	{ 0x00457295, 2, 7045, 11, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x1b85],AL
+	{ 0x004572a6, 2, 6406, 10, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x1906],AL
+	{ 0x004572b7, 2, 6407, 10, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x1907],AL
+	{ 0x004572c8, 2, 5768, 9, 8 }, // 00456fd8: MOV byte ptr [EDI + 0x1688],AL
+	{ 0x004572d9, 2, 5769, 9, 9 }, // 00456fd8: MOV byte ptr [EDI + 0x1689],AL
+	{ 0x004572ea, 2, 5130, 8, 10 }, // 00456fd8: MOV byte ptr [EDI + 0x140a],AL
+	{ 0x004572fb, 2, 5131, 8, 11 }, // 00456fd8: MOV byte ptr [EDI + 0x140b],AL
+	{ 0x0045730c, 2, 4492, 7, 12 }, // 00456fd8: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045731d, 2, 4493, 7, 13 }, // 00456fd8: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045732e, 2, 3854, 6, 14 }, // 00456fd8: MOV byte ptr [EDI + 0xf0e],AL
+	{ 0x0045733f, 2, 3855, 6, 15 }, // 00456fd8: MOV byte ptr [EDI + 0xf0f],AL
+	{ 0x00457350, 2, 3216, 5, 16 }, // 00456fd8: MOV byte ptr [EDI + 0xc90],AL
+	{ 0x00457361, 2, 3217, 5, 17 }, // 00456fd8: MOV byte ptr [EDI + 0xc91],AL
+	{ 0x00457372, 2, 2578, 4, 18 }, // 00456fd8: MOV byte ptr [EDI + 0xa12],AL
+	{ 0x00457383, 2, 2579, 4, 19 }, // 00456fd8: MOV byte ptr [EDI + 0xa13],AL
+	{ 0x00457394, 2, 1940, 3, 20 }, // 00456fd8: MOV byte ptr [EDI + 0x794],AL
+	{ 0x004573a5, 2, 1941, 3, 21 }, // 00456fd8: MOV byte ptr [EDI + 0x795],AL
+	{ 0x004573b6, 2, 1302, 2, 22 }, // 00456fd8: MOV byte ptr [EDI + 0x516],AL
+	{ 0x004573c7, 2, 1303, 2, 23 }, // 00456fd8: MOV byte ptr [EDI + 0x517],AL
+	{ 0x004573d8, 2, 664, 1, 24 }, // 00456fd8: MOV byte ptr [EDI + 0x298],AL
+	{ 0x004573e9, 2, 665, 1, 25 }, // 00456fd8: MOV byte ptr [EDI + 0x299],AL
 	{ 0x00457426, 2, 7680, 12, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x1e00],AL
 	{ 0x00457437, 2, 7681, 12, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x1e01],AL
 	{ 0x00457448, 2, 7042, 11, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x1b82],AL
+	{ 0x00457459, 2, 7043, 11, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x1b83],AL
+	{ 0x0045746a, 2, 6404, 10, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x1904],AL
+	{ 0x0045747b, 2, 6405, 10, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x1905],AL
+	{ 0x0045748c, 2, 5766, 9, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x1686],AL
+	{ 0x0045749d, 2, 5767, 9, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x1687],AL
+	{ 0x004574ae, 2, 5128, 8, 8 }, // 00456fd8: MOV byte ptr [EDI + 0x1408],AL
+	{ 0x004574bf, 2, 5129, 8, 9 }, // 00456fd8: MOV byte ptr [EDI + 0x1409],AL
+	{ 0x004574d0, 2, 4490, 7, 10 }, // 00456fd8: MOV byte ptr [EDI + 0x118a],AL
+	{ 0x004574e1, 2, 4491, 7, 11 }, // 00456fd8: MOV byte ptr [EDI + 0x118b],AL
+	{ 0x004574f2, 2, 3852, 6, 12 }, // 00456fd8: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x00457503, 2, 3853, 6, 13 }, // 00456fd8: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x00457514, 2, 3214, 5, 14 }, // 00456fd8: MOV byte ptr [EDI + 0xc8e],AL
+	{ 0x00457525, 2, 3215, 5, 15 }, // 00456fd8: MOV byte ptr [EDI + 0xc8f],AL
+	{ 0x00457536, 2, 2576, 4, 16 }, // 00456fd8: MOV byte ptr [EDI + 0xa10],AL
+	{ 0x00457547, 2, 2577, 4, 17 }, // 00456fd8: MOV byte ptr [EDI + 0xa11],AL
+	{ 0x00457558, 2, 1938, 3, 18 }, // 00456fd8: MOV byte ptr [EDI + 0x792],AL
+	{ 0x00457569, 2, 1939, 3, 19 }, // 00456fd8: MOV byte ptr [EDI + 0x793],AL
+	{ 0x0045757a, 2, 1300, 2, 20 }, // 00456fd8: MOV byte ptr [EDI + 0x514],AL
+	{ 0x0045758b, 2, 1301, 2, 21 }, // 00456fd8: MOV byte ptr [EDI + 0x515],AL
+	{ 0x0045759c, 2, 662, 1, 22 }, // 00456fd8: MOV byte ptr [EDI + 0x296],AL
+	{ 0x004575ad, 2, 663, 1, 23 }, // 00456fd8: MOV byte ptr [EDI + 0x297],AL
 	{ 0x004575ea, 2, 7040, 11, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x1b80],AL
 	{ 0x004575fb, 2, 7041, 11, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x1b81],AL
 	{ 0x0045760c, 2, 6402, 10, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x1902],AL
+	{ 0x0045761d, 2, 6403, 10, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x1903],AL
+	{ 0x0045762e, 2, 5764, 9, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x1684],AL
+	{ 0x0045763f, 2, 5765, 9, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x1685],AL
+	{ 0x00457650, 2, 5126, 8, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x1406],AL
+	{ 0x00457661, 2, 5127, 8, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x1407],AL
+	{ 0x00457672, 2, 4488, 7, 8 }, // 00456fd8: MOV byte ptr [EDI + 0x1188],AL
+	{ 0x00457683, 2, 4489, 7, 9 }, // 00456fd8: MOV byte ptr [EDI + 0x1189],AL
+	{ 0x00457694, 2, 3850, 6, 10 }, // 00456fd8: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x004576a5, 2, 3851, 6, 11 }, // 00456fd8: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x004576b6, 2, 3212, 5, 12 }, // 00456fd8: MOV byte ptr [EDI + 0xc8c],AL
+	{ 0x004576c7, 2, 3213, 5, 13 }, // 00456fd8: MOV byte ptr [EDI + 0xc8d],AL
+	{ 0x004576d8, 2, 2574, 4, 14 }, // 00456fd8: MOV byte ptr [EDI + 0xa0e],AL
+	{ 0x004576e9, 2, 2575, 4, 15 }, // 00456fd8: MOV byte ptr [EDI + 0xa0f],AL
+	{ 0x004576fa, 2, 1936, 3, 16 }, // 00456fd8: MOV byte ptr [EDI + 0x790],AL
+	{ 0x0045770b, 2, 1937, 3, 17 }, // 00456fd8: MOV byte ptr [EDI + 0x791],AL
+	{ 0x0045771c, 2, 1298, 2, 18 }, // 00456fd8: MOV byte ptr [EDI + 0x512],AL
+	{ 0x0045772d, 2, 1299, 2, 19 }, // 00456fd8: MOV byte ptr [EDI + 0x513],AL
+	{ 0x0045773e, 2, 660, 1, 20 }, // 00456fd8: MOV byte ptr [EDI + 0x294],AL
+	{ 0x0045774f, 2, 661, 1, 21 }, // 00456fd8: MOV byte ptr [EDI + 0x295],AL
 	{ 0x0045778c, 2, 6400, 10, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x1900],AL
 	{ 0x0045779d, 2, 6401, 10, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x1901],AL
 	{ 0x004577ae, 2, 5762, 9, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x1682],AL
+	{ 0x004577bf, 2, 5763, 9, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x1683],AL
+	{ 0x004577d0, 2, 5124, 8, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x1404],AL
+	{ 0x004577e1, 2, 5125, 8, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x1405],AL
+	{ 0x004577f2, 2, 4486, 7, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x1186],AL
+	{ 0x00457803, 2, 4487, 7, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x1187],AL
+	{ 0x00457814, 2, 3848, 6, 8 }, // 00456fd8: MOV byte ptr [EDI + 0xf08],AL
+	{ 0x00457825, 2, 3849, 6, 9 }, // 00456fd8: MOV byte ptr [EDI + 0xf09],AL
+	{ 0x00457836, 2, 3210, 5, 10 }, // 00456fd8: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x00457847, 2, 3211, 5, 11 }, // 00456fd8: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x00457858, 2, 2572, 4, 12 }, // 00456fd8: MOV byte ptr [EDI + 0xa0c],AL
+	{ 0x00457869, 2, 2573, 4, 13 }, // 00456fd8: MOV byte ptr [EDI + 0xa0d],AL
+	{ 0x0045787a, 2, 1934, 3, 14 }, // 00456fd8: MOV byte ptr [EDI + 0x78e],AL
+	{ 0x0045788b, 2, 1935, 3, 15 }, // 00456fd8: MOV byte ptr [EDI + 0x78f],AL
+	{ 0x0045789c, 2, 1296, 2, 16 }, // 00456fd8: MOV byte ptr [EDI + 0x510],AL
+	{ 0x004578ad, 2, 1297, 2, 17 }, // 00456fd8: MOV byte ptr [EDI + 0x511],AL
+	{ 0x004578be, 2, 658, 1, 18 }, // 00456fd8: MOV byte ptr [EDI + 0x292],AL
+	{ 0x004578cf, 2, 659, 1, 19 }, // 00456fd8: MOV byte ptr [EDI + 0x293],AL
 	{ 0x0045790c, 2, 5760, 9, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x1680],AL
 	{ 0x0045791d, 2, 5761, 9, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x1681],AL
 	{ 0x0045792e, 2, 5122, 8, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x1402],AL
+	{ 0x0045793f, 2, 5123, 8, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x1403],AL
+	{ 0x00457950, 2, 4484, 7, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x1184],AL
+	{ 0x00457961, 2, 4485, 7, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x1185],AL
+	{ 0x00457972, 2, 3846, 6, 6 }, // 00456fd8: MOV byte ptr [EDI + 0xf06],AL
+	{ 0x00457983, 2, 3847, 6, 7 }, // 00456fd8: MOV byte ptr [EDI + 0xf07],AL
+	{ 0x00457994, 2, 3208, 5, 8 }, // 00456fd8: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x004579a5, 2, 3209, 5, 9 }, // 00456fd8: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x004579b6, 2, 2570, 4, 10 }, // 00456fd8: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x004579c7, 2, 2571, 4, 11 }, // 00456fd8: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x004579d8, 2, 1932, 3, 12 }, // 00456fd8: MOV byte ptr [EDI + 0x78c],AL
+	{ 0x004579e9, 2, 1933, 3, 13 }, // 00456fd8: MOV byte ptr [EDI + 0x78d],AL
+	{ 0x004579fa, 2, 1294, 2, 14 }, // 00456fd8: MOV byte ptr [EDI + 0x50e],AL
+	{ 0x00457a0b, 2, 1295, 2, 15 }, // 00456fd8: MOV byte ptr [EDI + 0x50f],AL
+	{ 0x00457a1c, 2, 656, 1, 16 }, // 00456fd8: MOV byte ptr [EDI + 0x290],AL
+	{ 0x00457a2d, 2, 657, 1, 17 }, // 00456fd8: MOV byte ptr [EDI + 0x291],AL
 	{ 0x00457a6a, 2, 5120, 8, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x1400],AL
 	{ 0x00457a7b, 2, 5121, 8, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x1401],AL
 	{ 0x00457a8c, 2, 4482, 7, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x1182],AL
+	{ 0x00457a9d, 2, 4483, 7, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x1183],AL
+	{ 0x00457aae, 2, 3844, 6, 4 }, // 00456fd8: MOV byte ptr [EDI + 0xf04],AL
+	{ 0x00457abf, 2, 3845, 6, 5 }, // 00456fd8: MOV byte ptr [EDI + 0xf05],AL
+	{ 0x00457ad0, 2, 3206, 5, 6 }, // 00456fd8: MOV byte ptr [EDI + 0xc86],AL
+	{ 0x00457ae1, 2, 3207, 5, 7 }, // 00456fd8: MOV byte ptr [EDI + 0xc87],AL
+	{ 0x00457af2, 2, 2568, 4, 8 }, // 00456fd8: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00457b03, 2, 2569, 4, 9 }, // 00456fd8: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x00457b14, 2, 1930, 3, 10 }, // 00456fd8: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x00457b25, 2, 1931, 3, 11 }, // 00456fd8: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x00457b36, 2, 1292, 2, 12 }, // 00456fd8: MOV byte ptr [EDI + 0x50c],AL
+	{ 0x00457b47, 2, 1293, 2, 13 }, // 00456fd8: MOV byte ptr [EDI + 0x50d],AL
+	{ 0x00457b58, 2, 654, 1, 14 }, // 00456fd8: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x00457b69, 2, 655, 1, 15 }, // 00456fd8: MOV byte ptr [EDI + 0x28f],AL
 	{ 0x00457ba6, 2, 4480, 7, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x1180],AL
 	{ 0x00457bb7, 2, 4481, 7, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x1181],AL
 	{ 0x00457bc8, 2, 3842, 6, 2 }, // 00456fd8: MOV byte ptr [EDI + 0xf02],AL
+	{ 0x00457bd9, 2, 3843, 6, 3 }, // 00456fd8: MOV byte ptr [EDI + 0xf03],AL
+	{ 0x00457bea, 2, 3204, 5, 4 }, // 00456fd8: MOV byte ptr [EDI + 0xc84],AL
+	{ 0x00457bfb, 2, 3205, 5, 5 }, // 00456fd8: MOV byte ptr [EDI + 0xc85],AL
+	{ 0x00457c0c, 2, 2566, 4, 6 }, // 00456fd8: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x00457c1d, 2, 2567, 4, 7 }, // 00456fd8: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x00457c2e, 2, 1928, 3, 8 }, // 00456fd8: MOV byte ptr [EDI + 0x788],AL
+	{ 0x00457c3f, 2, 1929, 3, 9 }, // 00456fd8: MOV byte ptr [EDI + 0x789],AL
+	{ 0x00457c50, 2, 1290, 2, 10 }, // 00456fd8: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x00457c61, 2, 1291, 2, 11 }, // 00456fd8: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x00457c72, 2, 652, 1, 12 }, // 00456fd8: MOV byte ptr [EDI + 0x28c],AL
+	{ 0x00457c83, 2, 653, 1, 13 }, // 00456fd8: MOV byte ptr [EDI + 0x28d],AL
 	{ 0x00457cc0, 2, 3840, 6, 0 }, // 00456fd8: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x00457cd1, 2, 3841, 6, 1 }, // 00456fd8: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x00457ce2, 2, 3202, 5, 2 }, // 00456fd8: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x00457cf3, 2, 3203, 5, 3 }, // 00456fd8: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x00457d04, 2, 2564, 4, 4 }, // 00456fd8: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x00457d15, 2, 2565, 4, 5 }, // 00456fd8: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x00457d26, 2, 1926, 3, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00457d37, 2, 1927, 3, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00457d48, 2, 1288, 2, 8 }, // 00456fd8: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00457d59, 2, 1289, 2, 9 }, // 00456fd8: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00457d6a, 2, 650, 1, 10 }, // 00456fd8: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00457d7b, 2, 651, 1, 11 }, // 00456fd8: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x00457db8, 2, 3200, 5, 0 }, // 00456fd8: MOV byte ptr [EDI + 0xc80],AL
 	{ 0x00457dc9, 2, 3201, 5, 1 }, // 00456fd8: MOV byte ptr [EDI + 0xc81],AL
 	{ 0x00457dda, 2, 2562, 4, 2 }, // 00456fd8: MOV byte ptr [EDI + 0xa02],AL
+	{ 0x00457deb, 2, 2563, 4, 3 }, // 00456fd8: MOV byte ptr [EDI + 0xa03],AL
+	{ 0x00457dfc, 2, 1924, 3, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00457e0d, 2, 1925, 3, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00457e1e, 2, 1286, 2, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x506],AL
+	{ 0x00457e2f, 2, 1287, 2, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x507],AL
+	{ 0x00457e40, 2, 648, 1, 8 }, // 00456fd8: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00457e51, 2, 649, 1, 9 }, // 00456fd8: MOV byte ptr [EDI + 0x289],AL
 	{ 0x00457e8e, 2, 2560, 4, 0 }, // 00456fd8: MOV byte ptr [EDI + 0xa00],AL
 	{ 0x00457e9f, 2, 2561, 4, 1 }, // 00456fd8: MOV byte ptr [EDI + 0xa01],AL
 	{ 0x00457eb0, 2, 1922, 3, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x782],AL
+	{ 0x00457ec1, 2, 1923, 3, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x783],AL
+	{ 0x00457ed2, 2, 1284, 2, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00457ee3, 2, 1285, 2, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00457ef4, 2, 646, 1, 6 }, // 00456fd8: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00457f05, 2, 647, 1, 7 }, // 00456fd8: MOV byte ptr [EDI + 0x287],AL
 	{ 0x00457f42, 2, 1920, 3, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x780],AL
 	{ 0x00457f53, 2, 1921, 3, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x781],AL
 	{ 0x00457f64, 2, 1282, 2, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00457f75, 2, 1283, 2, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00457f86, 2, 644, 1, 4 }, // 00456fd8: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00457f97, 2, 645, 1, 5 }, // 00456fd8: MOV byte ptr [EDI + 0x285],AL
 	{ 0x00457fd4, 2, 1280, 2, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00457fe5, 2, 1281, 2, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00457ff6, 2, 642, 1, 2 }, // 00456fd8: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00458007, 2, 643, 1, 3 }, // 00456fd8: MOV byte ptr [EDI + 0x283],AL
 	{ 0x00458044, 2, 640, 1, 0 }, // 00456fd8: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00458055, 2, 641, 1, 1 }, // 00456fd8: MOV byte ptr [EDI + 0x281],AL
 	{ 0x004580f5, 2, 8960, 14, 0 }, // 004580a9: MOV byte ptr [EDI + 0x2300],AL
@@ -257,39 +1345,183 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x0045833c, 2, 8320, 13, 0 }, // 004580a9: MOV byte ptr [EDI + 0x2080],AL
 	{ 0x0045834d, 2, 8321, 13, 1 }, // 004580a9: MOV byte ptr [EDI + 0x2081],AL
 	{ 0x0045835e, 2, 7682, 12, 2 }, // 004580a9: MOV byte ptr [EDI + 0x1e02],AL
+	{ 0x0045836f, 2, 7683, 12, 3 }, // 004580a9: MOV byte ptr [EDI + 0x1e03],AL
+	{ 0x00458380, 2, 7044, 11, 4 }, // 004580a9: MOV byte ptr [EDI + 0x1b84],AL
+	{ 0x00458391, 2, 7045, 11, 5 }, // 004580a9: MOV byte ptr [EDI + 0x1b85],AL
+	{ 0x004583a2, 2, 6406, 10, 6 }, // 004580a9: MOV byte ptr [EDI + 0x1906],AL
+	{ 0x004583b3, 2, 6407, 10, 7 }, // 004580a9: MOV byte ptr [EDI + 0x1907],AL
+	{ 0x004583c4, 2, 5768, 9, 8 }, // 004580a9: MOV byte ptr [EDI + 0x1688],AL
+	{ 0x004583d5, 2, 5769, 9, 9 }, // 004580a9: MOV byte ptr [EDI + 0x1689],AL
+	{ 0x004583e6, 2, 5130, 8, 10 }, // 004580a9: MOV byte ptr [EDI + 0x140a],AL
+	{ 0x004583f7, 2, 5131, 8, 11 }, // 004580a9: MOV byte ptr [EDI + 0x140b],AL
+	{ 0x00458408, 2, 4492, 7, 12 }, // 004580a9: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x00458419, 2, 4493, 7, 13 }, // 004580a9: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045842a, 2, 3854, 6, 14 }, // 004580a9: MOV byte ptr [EDI + 0xf0e],AL
+	{ 0x0045843b, 2, 3855, 6, 15 }, // 004580a9: MOV byte ptr [EDI + 0xf0f],AL
+	{ 0x0045844c, 2, 3216, 5, 16 }, // 004580a9: MOV byte ptr [EDI + 0xc90],AL
+	{ 0x0045845d, 2, 3217, 5, 17 }, // 004580a9: MOV byte ptr [EDI + 0xc91],AL
+	{ 0x0045846e, 2, 2578, 4, 18 }, // 004580a9: MOV byte ptr [EDI + 0xa12],AL
+	{ 0x0045847f, 2, 2579, 4, 19 }, // 004580a9: MOV byte ptr [EDI + 0xa13],AL
+	{ 0x00458490, 2, 1940, 3, 20 }, // 004580a9: MOV byte ptr [EDI + 0x794],AL
+	{ 0x004584a1, 2, 1941, 3, 21 }, // 004580a9: MOV byte ptr [EDI + 0x795],AL
+	{ 0x004584b2, 2, 1302, 2, 22 }, // 004580a9: MOV byte ptr [EDI + 0x516],AL
+	{ 0x004584c3, 2, 1303, 2, 23 }, // 004580a9: MOV byte ptr [EDI + 0x517],AL
+	{ 0x004584d4, 2, 664, 1, 24 }, // 004580a9: MOV byte ptr [EDI + 0x298],AL
+	{ 0x004584e5, 2, 665, 1, 25 }, // 004580a9: MOV byte ptr [EDI + 0x299],AL
 	{ 0x0045852f, 2, 7680, 12, 0 }, // 004580a9: MOV byte ptr [EDI + 0x1e00],AL
 	{ 0x00458540, 2, 7681, 12, 1 }, // 004580a9: MOV byte ptr [EDI + 0x1e01],AL
 	{ 0x00458551, 2, 7042, 11, 2 }, // 004580a9: MOV byte ptr [EDI + 0x1b82],AL
+	{ 0x00458562, 2, 7043, 11, 3 }, // 004580a9: MOV byte ptr [EDI + 0x1b83],AL
+	{ 0x00458573, 2, 6404, 10, 4 }, // 004580a9: MOV byte ptr [EDI + 0x1904],AL
+	{ 0x00458584, 2, 6405, 10, 5 }, // 004580a9: MOV byte ptr [EDI + 0x1905],AL
+	{ 0x00458595, 2, 5766, 9, 6 }, // 004580a9: MOV byte ptr [EDI + 0x1686],AL
+	{ 0x004585a6, 2, 5767, 9, 7 }, // 004580a9: MOV byte ptr [EDI + 0x1687],AL
+	{ 0x004585b7, 2, 5128, 8, 8 }, // 004580a9: MOV byte ptr [EDI + 0x1408],AL
+	{ 0x004585c8, 2, 5129, 8, 9 }, // 004580a9: MOV byte ptr [EDI + 0x1409],AL
+	{ 0x004585d9, 2, 4490, 7, 10 }, // 004580a9: MOV byte ptr [EDI + 0x118a],AL
+	{ 0x004585ea, 2, 4491, 7, 11 }, // 004580a9: MOV byte ptr [EDI + 0x118b],AL
+	{ 0x004585fb, 2, 3852, 6, 12 }, // 004580a9: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045860c, 2, 3853, 6, 13 }, // 004580a9: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045861d, 2, 3214, 5, 14 }, // 004580a9: MOV byte ptr [EDI + 0xc8e],AL
+	{ 0x0045862e, 2, 3215, 5, 15 }, // 004580a9: MOV byte ptr [EDI + 0xc8f],AL
+	{ 0x0045863f, 2, 2576, 4, 16 }, // 004580a9: MOV byte ptr [EDI + 0xa10],AL
+	{ 0x00458650, 2, 2577, 4, 17 }, // 004580a9: MOV byte ptr [EDI + 0xa11],AL
+	{ 0x00458661, 2, 1938, 3, 18 }, // 004580a9: MOV byte ptr [EDI + 0x792],AL
+	{ 0x00458672, 2, 1939, 3, 19 }, // 004580a9: MOV byte ptr [EDI + 0x793],AL
+	{ 0x00458683, 2, 1300, 2, 20 }, // 004580a9: MOV byte ptr [EDI + 0x514],AL
+	{ 0x00458694, 2, 1301, 2, 21 }, // 004580a9: MOV byte ptr [EDI + 0x515],AL
+	{ 0x004586a5, 2, 662, 1, 22 }, // 004580a9: MOV byte ptr [EDI + 0x296],AL
+	{ 0x004586b6, 2, 663, 1, 23 }, // 004580a9: MOV byte ptr [EDI + 0x297],AL
 	{ 0x00458700, 2, 7040, 11, 0 }, // 004580a9: MOV byte ptr [EDI + 0x1b80],AL
 	{ 0x00458711, 2, 7041, 11, 1 }, // 004580a9: MOV byte ptr [EDI + 0x1b81],AL
 	{ 0x00458722, 2, 6402, 10, 2 }, // 004580a9: MOV byte ptr [EDI + 0x1902],AL
+	{ 0x00458733, 2, 6403, 10, 3 }, // 004580a9: MOV byte ptr [EDI + 0x1903],AL
+	{ 0x00458744, 2, 5764, 9, 4 }, // 004580a9: MOV byte ptr [EDI + 0x1684],AL
+	{ 0x00458755, 2, 5765, 9, 5 }, // 004580a9: MOV byte ptr [EDI + 0x1685],AL
+	{ 0x00458766, 2, 5126, 8, 6 }, // 004580a9: MOV byte ptr [EDI + 0x1406],AL
+	{ 0x00458777, 2, 5127, 8, 7 }, // 004580a9: MOV byte ptr [EDI + 0x1407],AL
+	{ 0x00458788, 2, 4488, 7, 8 }, // 004580a9: MOV byte ptr [EDI + 0x1188],AL
+	{ 0x00458799, 2, 4489, 7, 9 }, // 004580a9: MOV byte ptr [EDI + 0x1189],AL
+	{ 0x004587aa, 2, 3850, 6, 10 }, // 004580a9: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x004587bb, 2, 3851, 6, 11 }, // 004580a9: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x004587cc, 2, 3212, 5, 12 }, // 004580a9: MOV byte ptr [EDI + 0xc8c],AL
+	{ 0x004587dd, 2, 3213, 5, 13 }, // 004580a9: MOV byte ptr [EDI + 0xc8d],AL
+	{ 0x004587ee, 2, 2574, 4, 14 }, // 004580a9: MOV byte ptr [EDI + 0xa0e],AL
+	{ 0x004587ff, 2, 2575, 4, 15 }, // 004580a9: MOV byte ptr [EDI + 0xa0f],AL
+	{ 0x00458810, 2, 1936, 3, 16 }, // 004580a9: MOV byte ptr [EDI + 0x790],AL
+	{ 0x00458821, 2, 1937, 3, 17 }, // 004580a9: MOV byte ptr [EDI + 0x791],AL
+	{ 0x00458832, 2, 1298, 2, 18 }, // 004580a9: MOV byte ptr [EDI + 0x512],AL
+	{ 0x00458843, 2, 1299, 2, 19 }, // 004580a9: MOV byte ptr [EDI + 0x513],AL
+	{ 0x00458854, 2, 660, 1, 20 }, // 004580a9: MOV byte ptr [EDI + 0x294],AL
+	{ 0x00458865, 2, 661, 1, 21 }, // 004580a9: MOV byte ptr [EDI + 0x295],AL
 	{ 0x004588af, 2, 6400, 10, 0 }, // 004580a9: MOV byte ptr [EDI + 0x1900],AL
 	{ 0x004588c0, 2, 6401, 10, 1 }, // 004580a9: MOV byte ptr [EDI + 0x1901],AL
 	{ 0x004588d1, 2, 5762, 9, 2 }, // 004580a9: MOV byte ptr [EDI + 0x1682],AL
+	{ 0x004588e2, 2, 5763, 9, 3 }, // 004580a9: MOV byte ptr [EDI + 0x1683],AL
+	{ 0x004588f3, 2, 5124, 8, 4 }, // 004580a9: MOV byte ptr [EDI + 0x1404],AL
+	{ 0x00458904, 2, 5125, 8, 5 }, // 004580a9: MOV byte ptr [EDI + 0x1405],AL
+	{ 0x00458915, 2, 4486, 7, 6 }, // 004580a9: MOV byte ptr [EDI + 0x1186],AL
+	{ 0x00458926, 2, 4487, 7, 7 }, // 004580a9: MOV byte ptr [EDI + 0x1187],AL
+	{ 0x00458937, 2, 3848, 6, 8 }, // 004580a9: MOV byte ptr [EDI + 0xf08],AL
+	{ 0x00458948, 2, 3849, 6, 9 }, // 004580a9: MOV byte ptr [EDI + 0xf09],AL
+	{ 0x00458959, 2, 3210, 5, 10 }, // 004580a9: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045896a, 2, 3211, 5, 11 }, // 004580a9: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045897b, 2, 2572, 4, 12 }, // 004580a9: MOV byte ptr [EDI + 0xa0c],AL
+	{ 0x0045898c, 2, 2573, 4, 13 }, // 004580a9: MOV byte ptr [EDI + 0xa0d],AL
+	{ 0x0045899d, 2, 1934, 3, 14 }, // 004580a9: MOV byte ptr [EDI + 0x78e],AL
+	{ 0x004589ae, 2, 1935, 3, 15 }, // 004580a9: MOV byte ptr [EDI + 0x78f],AL
+	{ 0x004589bf, 2, 1296, 2, 16 }, // 004580a9: MOV byte ptr [EDI + 0x510],AL
+	{ 0x004589d0, 2, 1297, 2, 17 }, // 004580a9: MOV byte ptr [EDI + 0x511],AL
+	{ 0x004589e1, 2, 658, 1, 18 }, // 004580a9: MOV byte ptr [EDI + 0x292],AL
+	{ 0x004589f2, 2, 659, 1, 19 }, // 004580a9: MOV byte ptr [EDI + 0x293],AL
 	{ 0x00458a3c, 2, 5760, 9, 0 }, // 004580a9: MOV byte ptr [EDI + 0x1680],AL
 	{ 0x00458a4d, 2, 5761, 9, 1 }, // 004580a9: MOV byte ptr [EDI + 0x1681],AL
 	{ 0x00458a5e, 2, 5122, 8, 2 }, // 004580a9: MOV byte ptr [EDI + 0x1402],AL
+	{ 0x00458a6f, 2, 5123, 8, 3 }, // 004580a9: MOV byte ptr [EDI + 0x1403],AL
+	{ 0x00458a80, 2, 4484, 7, 4 }, // 004580a9: MOV byte ptr [EDI + 0x1184],AL
+	{ 0x00458a91, 2, 4485, 7, 5 }, // 004580a9: MOV byte ptr [EDI + 0x1185],AL
+	{ 0x00458aa2, 2, 3846, 6, 6 }, // 004580a9: MOV byte ptr [EDI + 0xf06],AL
+	{ 0x00458ab3, 2, 3847, 6, 7 }, // 004580a9: MOV byte ptr [EDI + 0xf07],AL
+	{ 0x00458ac4, 2, 3208, 5, 8 }, // 004580a9: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x00458ad5, 2, 3209, 5, 9 }, // 004580a9: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x00458ae6, 2, 2570, 4, 10 }, // 004580a9: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x00458af7, 2, 2571, 4, 11 }, // 004580a9: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x00458b08, 2, 1932, 3, 12 }, // 004580a9: MOV byte ptr [EDI + 0x78c],AL
+	{ 0x00458b19, 2, 1933, 3, 13 }, // 004580a9: MOV byte ptr [EDI + 0x78d],AL
+	{ 0x00458b2a, 2, 1294, 2, 14 }, // 004580a9: MOV byte ptr [EDI + 0x50e],AL
+	{ 0x00458b3b, 2, 1295, 2, 15 }, // 004580a9: MOV byte ptr [EDI + 0x50f],AL
+	{ 0x00458b4c, 2, 656, 1, 16 }, // 004580a9: MOV byte ptr [EDI + 0x290],AL
+	{ 0x00458b5d, 2, 657, 1, 17 }, // 004580a9: MOV byte ptr [EDI + 0x291],AL
 	{ 0x00458ba7, 2, 5120, 8, 0 }, // 004580a9: MOV byte ptr [EDI + 0x1400],AL
 	{ 0x00458bb8, 2, 5121, 8, 1 }, // 004580a9: MOV byte ptr [EDI + 0x1401],AL
 	{ 0x00458bc9, 2, 4482, 7, 2 }, // 004580a9: MOV byte ptr [EDI + 0x1182],AL
+	{ 0x00458bda, 2, 4483, 7, 3 }, // 004580a9: MOV byte ptr [EDI + 0x1183],AL
+	{ 0x00458beb, 2, 3844, 6, 4 }, // 004580a9: MOV byte ptr [EDI + 0xf04],AL
+	{ 0x00458bfc, 2, 3845, 6, 5 }, // 004580a9: MOV byte ptr [EDI + 0xf05],AL
+	{ 0x00458c0d, 2, 3206, 5, 6 }, // 004580a9: MOV byte ptr [EDI + 0xc86],AL
+	{ 0x00458c1e, 2, 3207, 5, 7 }, // 004580a9: MOV byte ptr [EDI + 0xc87],AL
+	{ 0x00458c2f, 2, 2568, 4, 8 }, // 004580a9: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00458c40, 2, 2569, 4, 9 }, // 004580a9: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x00458c51, 2, 1930, 3, 10 }, // 004580a9: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x00458c62, 2, 1931, 3, 11 }, // 004580a9: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x00458c73, 2, 1292, 2, 12 }, // 004580a9: MOV byte ptr [EDI + 0x50c],AL
+	{ 0x00458c84, 2, 1293, 2, 13 }, // 004580a9: MOV byte ptr [EDI + 0x50d],AL
+	{ 0x00458c95, 2, 654, 1, 14 }, // 004580a9: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x00458ca6, 2, 655, 1, 15 }, // 004580a9: MOV byte ptr [EDI + 0x28f],AL
 	{ 0x00458cf0, 2, 4480, 7, 0 }, // 004580a9: MOV byte ptr [EDI + 0x1180],AL
 	{ 0x00458d01, 2, 4481, 7, 1 }, // 004580a9: MOV byte ptr [EDI + 0x1181],AL
 	{ 0x00458d12, 2, 3842, 6, 2 }, // 004580a9: MOV byte ptr [EDI + 0xf02],AL
+	{ 0x00458d23, 2, 3843, 6, 3 }, // 004580a9: MOV byte ptr [EDI + 0xf03],AL
+	{ 0x00458d34, 2, 3204, 5, 4 }, // 004580a9: MOV byte ptr [EDI + 0xc84],AL
+	{ 0x00458d45, 2, 3205, 5, 5 }, // 004580a9: MOV byte ptr [EDI + 0xc85],AL
+	{ 0x00458d56, 2, 2566, 4, 6 }, // 004580a9: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x00458d67, 2, 2567, 4, 7 }, // 004580a9: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x00458d78, 2, 1928, 3, 8 }, // 004580a9: MOV byte ptr [EDI + 0x788],AL
+	{ 0x00458d89, 2, 1929, 3, 9 }, // 004580a9: MOV byte ptr [EDI + 0x789],AL
+	{ 0x00458d9a, 2, 1290, 2, 10 }, // 004580a9: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x00458dab, 2, 1291, 2, 11 }, // 004580a9: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x00458dbc, 2, 652, 1, 12 }, // 004580a9: MOV byte ptr [EDI + 0x28c],AL
+	{ 0x00458dcd, 2, 653, 1, 13 }, // 004580a9: MOV byte ptr [EDI + 0x28d],AL
 	{ 0x00458e17, 2, 3840, 6, 0 }, // 004580a9: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x00458e28, 2, 3841, 6, 1 }, // 004580a9: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x00458e39, 2, 3202, 5, 2 }, // 004580a9: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x00458e4a, 2, 3203, 5, 3 }, // 004580a9: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x00458e5b, 2, 2564, 4, 4 }, // 004580a9: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x00458e6c, 2, 2565, 4, 5 }, // 004580a9: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x00458e7d, 2, 1926, 3, 6 }, // 004580a9: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00458e8e, 2, 1927, 3, 7 }, // 004580a9: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00458e9f, 2, 1288, 2, 8 }, // 004580a9: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00458eb0, 2, 1289, 2, 9 }, // 004580a9: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00458ec1, 2, 650, 1, 10 }, // 004580a9: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00458ed2, 2, 651, 1, 11 }, // 004580a9: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x00458f1c, 2, 3200, 5, 0 }, // 004580a9: MOV byte ptr [EDI + 0xc80],AL
 	{ 0x00458f2d, 2, 3201, 5, 1 }, // 004580a9: MOV byte ptr [EDI + 0xc81],AL
 	{ 0x00458f3e, 2, 2562, 4, 2 }, // 004580a9: MOV byte ptr [EDI + 0xa02],AL
+	{ 0x00458f4f, 2, 2563, 4, 3 }, // 004580a9: MOV byte ptr [EDI + 0xa03],AL
+	{ 0x00458f60, 2, 1924, 3, 4 }, // 004580a9: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00458f71, 2, 1925, 3, 5 }, // 004580a9: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00458f82, 2, 1286, 2, 6 }, // 004580a9: MOV byte ptr [EDI + 0x506],AL
+	{ 0x00458f93, 2, 1287, 2, 7 }, // 004580a9: MOV byte ptr [EDI + 0x507],AL
+	{ 0x00458fa4, 2, 648, 1, 8 }, // 004580a9: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00458fb5, 2, 649, 1, 9 }, // 004580a9: MOV byte ptr [EDI + 0x289],AL
 	{ 0x00458fff, 2, 2560, 4, 0 }, // 004580a9: MOV byte ptr [EDI + 0xa00],AL
 	{ 0x00459010, 2, 2561, 4, 1 }, // 004580a9: MOV byte ptr [EDI + 0xa01],AL
 	{ 0x00459021, 2, 1922, 3, 2 }, // 004580a9: MOV byte ptr [EDI + 0x782],AL
+	{ 0x00459032, 2, 1923, 3, 3 }, // 004580a9: MOV byte ptr [EDI + 0x783],AL
+	{ 0x00459043, 2, 1284, 2, 4 }, // 004580a9: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00459054, 2, 1285, 2, 5 }, // 004580a9: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00459065, 2, 646, 1, 6 }, // 004580a9: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00459076, 2, 647, 1, 7 }, // 004580a9: MOV byte ptr [EDI + 0x287],AL
 	{ 0x004590c0, 2, 1920, 3, 0 }, // 004580a9: MOV byte ptr [EDI + 0x780],AL
 	{ 0x004590d1, 2, 1921, 3, 1 }, // 004580a9: MOV byte ptr [EDI + 0x781],AL
 	{ 0x004590e2, 2, 1282, 2, 2 }, // 004580a9: MOV byte ptr [EDI + 0x502],AL
+	{ 0x004590f3, 2, 1283, 2, 3 }, // 004580a9: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00459104, 2, 644, 1, 4 }, // 004580a9: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00459115, 2, 645, 1, 5 }, // 004580a9: MOV byte ptr [EDI + 0x285],AL
 	{ 0x0045915f, 2, 1280, 2, 0 }, // 004580a9: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00459170, 2, 1281, 2, 1 }, // 004580a9: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00459181, 2, 642, 1, 2 }, // 004580a9: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00459192, 2, 643, 1, 3 }, // 004580a9: MOV byte ptr [EDI + 0x283],AL
 	{ 0x004591dc, 2, 640, 1, 0 }, // 004580a9: MOV byte ptr [EDI + 0x280],AL
 	{ 0x004591ed, 2, 641, 1, 1 }, // 004580a9: MOV byte ptr [EDI + 0x281],AL
 	{ 0x004592df, 2, 640, 1, 0 }, // 00459258: MOV byte ptr [EDI + 0x280],AL
@@ -321,93 +1553,1550 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x004594c0, 2, 8960, 14, 0 }, // 00459258: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x004594d1, 2, 8961, 14, 1 }, // 00459258: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x00459523, 2, 642, 1, 2 }, // 00459258: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00459534, 2, 643, 1, 3 }, // 00459258: MOV byte ptr [EDI + 0x283],AL
+	{ 0x00459545, 2, 1284, 2, 4 }, // 00459258: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00459556, 2, 1285, 2, 5 }, // 00459258: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00459567, 2, 1926, 3, 6 }, // 00459258: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00459578, 2, 1927, 3, 7 }, // 00459258: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00459589, 2, 2568, 4, 8 }, // 00459258: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045959a, 2, 2569, 4, 9 }, // 00459258: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x004595ab, 2, 3210, 5, 10 }, // 00459258: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x004595bc, 2, 3211, 5, 11 }, // 00459258: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x004595cd, 2, 3852, 6, 12 }, // 00459258: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x004595de, 2, 3853, 6, 13 }, // 00459258: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x004595ef, 2, 4494, 7, 14 }, // 00459258: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x00459600, 2, 4495, 7, 15 }, // 00459258: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x00459611, 2, 5136, 8, 16 }, // 00459258: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x00459622, 2, 5137, 8, 17 }, // 00459258: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x00459633, 2, 5778, 9, 18 }, // 00459258: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x00459644, 2, 5779, 9, 19 }, // 00459258: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x00459655, 2, 6420, 10, 20 }, // 00459258: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x00459666, 2, 6421, 10, 21 }, // 00459258: MOV byte ptr [EDI + 0x1915],AL
+	{ 0x00459677, 2, 7062, 11, 22 }, // 00459258: MOV byte ptr [EDI + 0x1b96],AL
+	{ 0x00459688, 2, 7063, 11, 23 }, // 00459258: MOV byte ptr [EDI + 0x1b97],AL
+	{ 0x00459699, 2, 7704, 12, 24 }, // 00459258: MOV byte ptr [EDI + 0x1e18],AL
+	{ 0x004596aa, 2, 7705, 12, 25 }, // 00459258: MOV byte ptr [EDI + 0x1e19],AL
+	{ 0x004596bb, 2, 8346, 13, 26 }, // 00459258: MOV byte ptr [EDI + 0x209a],AL
+	{ 0x004596cc, 2, 8347, 13, 27 }, // 00459258: MOV byte ptr [EDI + 0x209b],AL
+	{ 0x00459709, 2, 644, 1, 4 }, // 00459258: MOV byte ptr [EDI + 0x284],AL
+	{ 0x0045971a, 2, 645, 1, 5 }, // 00459258: MOV byte ptr [EDI + 0x285],AL
+	{ 0x0045972b, 2, 1286, 2, 6 }, // 00459258: MOV byte ptr [EDI + 0x506],AL
+	{ 0x0045973c, 2, 1287, 2, 7 }, // 00459258: MOV byte ptr [EDI + 0x507],AL
+	{ 0x0045974d, 2, 1928, 3, 8 }, // 00459258: MOV byte ptr [EDI + 0x788],AL
+	{ 0x0045975e, 2, 1929, 3, 9 }, // 00459258: MOV byte ptr [EDI + 0x789],AL
+	{ 0x0045976f, 2, 2570, 4, 10 }, // 00459258: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x00459780, 2, 2571, 4, 11 }, // 00459258: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x00459791, 2, 3212, 5, 12 }, // 00459258: MOV byte ptr [EDI + 0xc8c],AL
+	{ 0x004597a2, 2, 3213, 5, 13 }, // 00459258: MOV byte ptr [EDI + 0xc8d],AL
+	{ 0x004597b3, 2, 3854, 6, 14 }, // 00459258: MOV byte ptr [EDI + 0xf0e],AL
+	{ 0x004597c4, 2, 3855, 6, 15 }, // 00459258: MOV byte ptr [EDI + 0xf0f],AL
+	{ 0x004597d5, 2, 4496, 7, 16 }, // 00459258: MOV byte ptr [EDI + 0x1190],AL
+	{ 0x004597e6, 2, 4497, 7, 17 }, // 00459258: MOV byte ptr [EDI + 0x1191],AL
+	{ 0x004597f7, 2, 5138, 8, 18 }, // 00459258: MOV byte ptr [EDI + 0x1412],AL
+	{ 0x00459808, 2, 5139, 8, 19 }, // 00459258: MOV byte ptr [EDI + 0x1413],AL
+	{ 0x00459819, 2, 5780, 9, 20 }, // 00459258: MOV byte ptr [EDI + 0x1694],AL
+	{ 0x0045982a, 2, 5781, 9, 21 }, // 00459258: MOV byte ptr [EDI + 0x1695],AL
+	{ 0x0045983b, 2, 6422, 10, 22 }, // 00459258: MOV byte ptr [EDI + 0x1916],AL
+	{ 0x0045984c, 2, 6423, 10, 23 }, // 00459258: MOV byte ptr [EDI + 0x1917],AL
+	{ 0x0045985d, 2, 7064, 11, 24 }, // 00459258: MOV byte ptr [EDI + 0x1b98],AL
+	{ 0x0045986e, 2, 7065, 11, 25 }, // 00459258: MOV byte ptr [EDI + 0x1b99],AL
+	{ 0x0045987f, 2, 7706, 12, 26 }, // 00459258: MOV byte ptr [EDI + 0x1e1a],AL
+	{ 0x00459890, 2, 7707, 12, 27 }, // 00459258: MOV byte ptr [EDI + 0x1e1b],AL
+	{ 0x004598cd, 2, 646, 1, 6 }, // 00459258: MOV byte ptr [EDI + 0x286],AL
+	{ 0x004598de, 2, 647, 1, 7 }, // 00459258: MOV byte ptr [EDI + 0x287],AL
+	{ 0x004598ef, 2, 1288, 2, 8 }, // 00459258: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00459900, 2, 1289, 2, 9 }, // 00459258: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00459911, 2, 1930, 3, 10 }, // 00459258: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x00459922, 2, 1931, 3, 11 }, // 00459258: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x00459933, 2, 2572, 4, 12 }, // 00459258: MOV byte ptr [EDI + 0xa0c],AL
+	{ 0x00459944, 2, 2573, 4, 13 }, // 00459258: MOV byte ptr [EDI + 0xa0d],AL
+	{ 0x00459955, 2, 3214, 5, 14 }, // 00459258: MOV byte ptr [EDI + 0xc8e],AL
+	{ 0x00459966, 2, 3215, 5, 15 }, // 00459258: MOV byte ptr [EDI + 0xc8f],AL
+	{ 0x00459977, 2, 3856, 6, 16 }, // 00459258: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x00459988, 2, 3857, 6, 17 }, // 00459258: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x00459999, 2, 4498, 7, 18 }, // 00459258: MOV byte ptr [EDI + 0x1192],AL
+	{ 0x004599aa, 2, 4499, 7, 19 }, // 00459258: MOV byte ptr [EDI + 0x1193],AL
+	{ 0x004599bb, 2, 5140, 8, 20 }, // 00459258: MOV byte ptr [EDI + 0x1414],AL
+	{ 0x004599cc, 2, 5141, 8, 21 }, // 00459258: MOV byte ptr [EDI + 0x1415],AL
+	{ 0x004599dd, 2, 5782, 9, 22 }, // 00459258: MOV byte ptr [EDI + 0x1696],AL
+	{ 0x004599ee, 2, 5783, 9, 23 }, // 00459258: MOV byte ptr [EDI + 0x1697],AL
+	{ 0x004599ff, 2, 6424, 10, 24 }, // 00459258: MOV byte ptr [EDI + 0x1918],AL
+	{ 0x00459a10, 2, 6425, 10, 25 }, // 00459258: MOV byte ptr [EDI + 0x1919],AL
+	{ 0x00459a21, 2, 7066, 11, 26 }, // 00459258: MOV byte ptr [EDI + 0x1b9a],AL
+	{ 0x00459a32, 2, 7067, 11, 27 }, // 00459258: MOV byte ptr [EDI + 0x1b9b],AL
+	{ 0x00459a6f, 2, 648, 1, 8 }, // 00459258: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00459a80, 2, 649, 1, 9 }, // 00459258: MOV byte ptr [EDI + 0x289],AL
+	{ 0x00459a91, 2, 1290, 2, 10 }, // 00459258: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x00459aa2, 2, 1291, 2, 11 }, // 00459258: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x00459ab3, 2, 1932, 3, 12 }, // 00459258: MOV byte ptr [EDI + 0x78c],AL
+	{ 0x00459ac4, 2, 1933, 3, 13 }, // 00459258: MOV byte ptr [EDI + 0x78d],AL
+	{ 0x00459ad5, 2, 2574, 4, 14 }, // 00459258: MOV byte ptr [EDI + 0xa0e],AL
+	{ 0x00459ae6, 2, 2575, 4, 15 }, // 00459258: MOV byte ptr [EDI + 0xa0f],AL
+	{ 0x00459af7, 2, 3216, 5, 16 }, // 00459258: MOV byte ptr [EDI + 0xc90],AL
+	{ 0x00459b08, 2, 3217, 5, 17 }, // 00459258: MOV byte ptr [EDI + 0xc91],AL
+	{ 0x00459b19, 2, 3858, 6, 18 }, // 00459258: MOV byte ptr [EDI + 0xf12],AL
+	{ 0x00459b2a, 2, 3859, 6, 19 }, // 00459258: MOV byte ptr [EDI + 0xf13],AL
+	{ 0x00459b3b, 2, 4500, 7, 20 }, // 00459258: MOV byte ptr [EDI + 0x1194],AL
+	{ 0x00459b4c, 2, 4501, 7, 21 }, // 00459258: MOV byte ptr [EDI + 0x1195],AL
+	{ 0x00459b5d, 2, 5142, 8, 22 }, // 00459258: MOV byte ptr [EDI + 0x1416],AL
+	{ 0x00459b6e, 2, 5143, 8, 23 }, // 00459258: MOV byte ptr [EDI + 0x1417],AL
+	{ 0x00459b7f, 2, 5784, 9, 24 }, // 00459258: MOV byte ptr [EDI + 0x1698],AL
+	{ 0x00459b90, 2, 5785, 9, 25 }, // 00459258: MOV byte ptr [EDI + 0x1699],AL
+	{ 0x00459ba1, 2, 6426, 10, 26 }, // 00459258: MOV byte ptr [EDI + 0x191a],AL
+	{ 0x00459bb2, 2, 6427, 10, 27 }, // 00459258: MOV byte ptr [EDI + 0x191b],AL
+	{ 0x00459bef, 2, 650, 1, 10 }, // 00459258: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00459c00, 2, 651, 1, 11 }, // 00459258: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00459c11, 2, 1292, 2, 12 }, // 00459258: MOV byte ptr [EDI + 0x50c],AL
+	{ 0x00459c22, 2, 1293, 2, 13 }, // 00459258: MOV byte ptr [EDI + 0x50d],AL
+	{ 0x00459c33, 2, 1934, 3, 14 }, // 00459258: MOV byte ptr [EDI + 0x78e],AL
+	{ 0x00459c44, 2, 1935, 3, 15 }, // 00459258: MOV byte ptr [EDI + 0x78f],AL
+	{ 0x00459c55, 2, 2576, 4, 16 }, // 00459258: MOV byte ptr [EDI + 0xa10],AL
+	{ 0x00459c66, 2, 2577, 4, 17 }, // 00459258: MOV byte ptr [EDI + 0xa11],AL
+	{ 0x00459c77, 2, 3218, 5, 18 }, // 00459258: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x00459c88, 2, 3219, 5, 19 }, // 00459258: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x00459c99, 2, 3860, 6, 20 }, // 00459258: MOV byte ptr [EDI + 0xf14],AL
+	{ 0x00459caa, 2, 3861, 6, 21 }, // 00459258: MOV byte ptr [EDI + 0xf15],AL
+	{ 0x00459cbb, 2, 4502, 7, 22 }, // 00459258: MOV byte ptr [EDI + 0x1196],AL
+	{ 0x00459ccc, 2, 4503, 7, 23 }, // 00459258: MOV byte ptr [EDI + 0x1197],AL
+	{ 0x00459cdd, 2, 5144, 8, 24 }, // 00459258: MOV byte ptr [EDI + 0x1418],AL
+	{ 0x00459cee, 2, 5145, 8, 25 }, // 00459258: MOV byte ptr [EDI + 0x1419],AL
+	{ 0x00459cff, 2, 5786, 9, 26 }, // 00459258: MOV byte ptr [EDI + 0x169a],AL
+	{ 0x00459d10, 2, 5787, 9, 27 }, // 00459258: MOV byte ptr [EDI + 0x169b],AL
+	{ 0x00459d4d, 2, 652, 1, 12 }, // 00459258: MOV byte ptr [EDI + 0x28c],AL
+	{ 0x00459d5e, 2, 653, 1, 13 }, // 00459258: MOV byte ptr [EDI + 0x28d],AL
+	{ 0x00459d6f, 2, 1294, 2, 14 }, // 00459258: MOV byte ptr [EDI + 0x50e],AL
+	{ 0x00459d80, 2, 1295, 2, 15 }, // 00459258: MOV byte ptr [EDI + 0x50f],AL
+	{ 0x00459d91, 2, 1936, 3, 16 }, // 00459258: MOV byte ptr [EDI + 0x790],AL
+	{ 0x00459da2, 2, 1937, 3, 17 }, // 00459258: MOV byte ptr [EDI + 0x791],AL
+	{ 0x00459db3, 2, 2578, 4, 18 }, // 00459258: MOV byte ptr [EDI + 0xa12],AL
+	{ 0x00459dc4, 2, 2579, 4, 19 }, // 00459258: MOV byte ptr [EDI + 0xa13],AL
+	{ 0x00459dd5, 2, 3220, 5, 20 }, // 00459258: MOV byte ptr [EDI + 0xc94],AL
+	{ 0x00459de6, 2, 3221, 5, 21 }, // 00459258: MOV byte ptr [EDI + 0xc95],AL
+	{ 0x00459df7, 2, 3862, 6, 22 }, // 00459258: MOV byte ptr [EDI + 0xf16],AL
+	{ 0x00459e08, 2, 3863, 6, 23 }, // 00459258: MOV byte ptr [EDI + 0xf17],AL
+	{ 0x00459e19, 2, 4504, 7, 24 }, // 00459258: MOV byte ptr [EDI + 0x1198],AL
+	{ 0x00459e2a, 2, 4505, 7, 25 }, // 00459258: MOV byte ptr [EDI + 0x1199],AL
+	{ 0x00459e3b, 2, 5146, 8, 26 }, // 00459258: MOV byte ptr [EDI + 0x141a],AL
+	{ 0x00459e4c, 2, 5147, 8, 27 }, // 00459258: MOV byte ptr [EDI + 0x141b],AL
+	{ 0x00459e89, 2, 654, 1, 14 }, // 00459258: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x00459e9a, 2, 655, 1, 15 }, // 00459258: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x00459eab, 2, 1296, 2, 16 }, // 00459258: MOV byte ptr [EDI + 0x510],AL
+	{ 0x00459ebc, 2, 1297, 2, 17 }, // 00459258: MOV byte ptr [EDI + 0x511],AL
+	{ 0x00459ecd, 2, 1938, 3, 18 }, // 00459258: MOV byte ptr [EDI + 0x792],AL
+	{ 0x00459ede, 2, 1939, 3, 19 }, // 00459258: MOV byte ptr [EDI + 0x793],AL
+	{ 0x00459eef, 2, 2580, 4, 20 }, // 00459258: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x00459f00, 2, 2581, 4, 21 }, // 00459258: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x00459f11, 2, 3222, 5, 22 }, // 00459258: MOV byte ptr [EDI + 0xc96],AL
+	{ 0x00459f22, 2, 3223, 5, 23 }, // 00459258: MOV byte ptr [EDI + 0xc97],AL
+	{ 0x00459f33, 2, 3864, 6, 24 }, // 00459258: MOV byte ptr [EDI + 0xf18],AL
+	{ 0x00459f44, 2, 3865, 6, 25 }, // 00459258: MOV byte ptr [EDI + 0xf19],AL
+	{ 0x00459f55, 2, 4506, 7, 26 }, // 00459258: MOV byte ptr [EDI + 0x119a],AL
+	{ 0x00459f66, 2, 4507, 7, 27 }, // 00459258: MOV byte ptr [EDI + 0x119b],AL
+	{ 0x00459fa3, 2, 656, 1, 16 }, // 00459258: MOV byte ptr [EDI + 0x290],AL
+	{ 0x00459fb4, 2, 657, 1, 17 }, // 00459258: MOV byte ptr [EDI + 0x291],AL
+	{ 0x00459fc5, 2, 1298, 2, 18 }, // 00459258: MOV byte ptr [EDI + 0x512],AL
+	{ 0x00459fd6, 2, 1299, 2, 19 }, // 00459258: MOV byte ptr [EDI + 0x513],AL
+	{ 0x00459fe7, 2, 1940, 3, 20 }, // 00459258: MOV byte ptr [EDI + 0x794],AL
+	{ 0x00459ff8, 2, 1941, 3, 21 }, // 00459258: MOV byte ptr [EDI + 0x795],AL
+	{ 0x0045a009, 2, 2582, 4, 22 }, // 00459258: MOV byte ptr [EDI + 0xa16],AL
+	{ 0x0045a01a, 2, 2583, 4, 23 }, // 00459258: MOV byte ptr [EDI + 0xa17],AL
+	{ 0x0045a02b, 2, 3224, 5, 24 }, // 00459258: MOV byte ptr [EDI + 0xc98],AL
+	{ 0x0045a03c, 2, 3225, 5, 25 }, // 00459258: MOV byte ptr [EDI + 0xc99],AL
+	{ 0x0045a04d, 2, 3866, 6, 26 }, // 00459258: MOV byte ptr [EDI + 0xf1a],AL
+	{ 0x0045a05e, 2, 3867, 6, 27 }, // 00459258: MOV byte ptr [EDI + 0xf1b],AL
+	{ 0x0045a09b, 2, 658, 1, 18 }, // 00459258: MOV byte ptr [EDI + 0x292],AL
+	{ 0x0045a0ac, 2, 659, 1, 19 }, // 00459258: MOV byte ptr [EDI + 0x293],AL
+	{ 0x0045a0bd, 2, 1300, 2, 20 }, // 00459258: MOV byte ptr [EDI + 0x514],AL
+	{ 0x0045a0ce, 2, 1301, 2, 21 }, // 00459258: MOV byte ptr [EDI + 0x515],AL
+	{ 0x0045a0df, 2, 1942, 3, 22 }, // 00459258: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045a0f0, 2, 1943, 3, 23 }, // 00459258: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045a101, 2, 2584, 4, 24 }, // 00459258: MOV byte ptr [EDI + 0xa18],AL
+	{ 0x0045a112, 2, 2585, 4, 25 }, // 00459258: MOV byte ptr [EDI + 0xa19],AL
+	{ 0x0045a123, 2, 3226, 5, 26 }, // 00459258: MOV byte ptr [EDI + 0xc9a],AL
+	{ 0x0045a134, 2, 3227, 5, 27 }, // 00459258: MOV byte ptr [EDI + 0xc9b],AL
+	{ 0x0045a171, 2, 660, 1, 20 }, // 00459258: MOV byte ptr [EDI + 0x294],AL
+	{ 0x0045a182, 2, 661, 1, 21 }, // 00459258: MOV byte ptr [EDI + 0x295],AL
+	{ 0x0045a193, 2, 1302, 2, 22 }, // 00459258: MOV byte ptr [EDI + 0x516],AL
+	{ 0x0045a1a4, 2, 1303, 2, 23 }, // 00459258: MOV byte ptr [EDI + 0x517],AL
+	{ 0x0045a1b5, 2, 1944, 3, 24 }, // 00459258: MOV byte ptr [EDI + 0x798],AL
+	{ 0x0045a1c6, 2, 1945, 3, 25 }, // 00459258: MOV byte ptr [EDI + 0x799],AL
+	{ 0x0045a1d7, 2, 2586, 4, 26 }, // 00459258: MOV byte ptr [EDI + 0xa1a],AL
+	{ 0x0045a1e8, 2, 2587, 4, 27 }, // 00459258: MOV byte ptr [EDI + 0xa1b],AL
+	{ 0x0045a225, 2, 662, 1, 22 }, // 00459258: MOV byte ptr [EDI + 0x296],AL
+	{ 0x0045a236, 2, 663, 1, 23 }, // 00459258: MOV byte ptr [EDI + 0x297],AL
+	{ 0x0045a247, 2, 1304, 2, 24 }, // 00459258: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045a258, 2, 1305, 2, 25 }, // 00459258: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045a269, 2, 1946, 3, 26 }, // 00459258: MOV byte ptr [EDI + 0x79a],AL
+	{ 0x0045a27a, 2, 1947, 3, 27 }, // 00459258: MOV byte ptr [EDI + 0x79b],AL
+	{ 0x0045a2b7, 2, 664, 1, 24 }, // 00459258: MOV byte ptr [EDI + 0x298],AL
+	{ 0x0045a2c8, 2, 665, 1, 25 }, // 00459258: MOV byte ptr [EDI + 0x299],AL
+	{ 0x0045a2d9, 2, 1306, 2, 26 }, // 00459258: MOV byte ptr [EDI + 0x51a],AL
+	{ 0x0045a2ea, 2, 1307, 2, 27 }, // 00459258: MOV byte ptr [EDI + 0x51b],AL
+	{ 0x0045a327, 2, 666, 1, 26 }, // 00459258: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a338, 2, 667, 1, 27 }, // 00459258: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a3e1, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a3f2, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a41f, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045a430, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045a457, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045a468, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045a479, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a48a, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a4b7, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045a4c8, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045a4d9, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045a4ea, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045a511, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045a522, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045a533, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045a544, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045a555, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a566, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a593, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045a5a4, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045a5b5, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045a5c6, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045a5d7, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045a5e8, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045a60f, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045a620, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045a631, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045a642, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045a653, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045a664, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045a675, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a686, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a6b3, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045a6c4, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045a6d5, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045a6e6, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045a6f7, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045a708, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045a719, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045a72a, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045a751, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045a762, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045a773, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045a784, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045a795, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045a7a6, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045a7b7, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045a7c8, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045a7d9, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a7ea, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a817, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045a828, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045a839, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045a84a, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045a85b, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045a86c, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045a87d, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045a88e, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045a89f, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045a8b0, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045a8d7, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045a8e8, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045a8f9, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045a90a, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045a91b, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045a92c, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045a93d, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045a94e, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045a95f, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045a970, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045a981, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045a992, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045a9bf, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045a9d0, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045a9e1, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045a9f2, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045aa03, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045aa14, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045aa25, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045aa36, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045aa47, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045aa58, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045aa69, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045aa7a, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045aaa1, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045aab2, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045aac3, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045aad4, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045aae5, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045aaf6, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045ab07, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045ab18, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045ab29, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045ab3a, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045ab4b, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045ab5c, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045ab6d, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045ab7e, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045abab, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045abbc, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045abcd, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045abde, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045abef, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045ac00, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045ac11, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045ac22, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045ac33, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045ac44, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045ac55, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045ac66, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045ac77, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045ac88, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045acaf, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045acc0, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045acd1, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045ace2, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045acf3, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045ad04, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045ad15, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045ad26, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045ad37, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045ad48, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045ad59, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045ad6a, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045ad7b, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045ad8c, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045ad9d, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045adae, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045addb, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045adec, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045adfd, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045ae0e, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045ae1f, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045ae30, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045ae41, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045ae52, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045ae63, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045ae74, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045ae85, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045ae96, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045aea7, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045aeb8, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045aec9, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045aeda, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045af01, 2, 5770, 9, 10 }, // 0045a371: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045af12, 2, 5771, 9, 11 }, // 0045a371: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045af23, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045af34, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045af45, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045af56, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045af67, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045af78, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045af89, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045af9a, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045afab, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045afbc, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045afcd, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045afde, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045afef, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045b000, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045b011, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045b022, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045b04f, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045b060, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045b071, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045b082, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045b093, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045b0a4, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045b0b5, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045b0c6, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045b0d7, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045b0e8, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045b0f9, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045b10a, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045b11b, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045b12c, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045b13d, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045b14e, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045b15f, 2, 5806, 9, 46 }, // 0045a371: MOV byte ptr [EDI + 0x16ae],AL
+	{ 0x0045b170, 2, 5807, 9, 47 }, // 0045a371: MOV byte ptr [EDI + 0x16af],AL
+	{ 0x0045b197, 2, 6408, 10, 8 }, // 0045a371: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045b1a8, 2, 6409, 10, 9 }, // 0045a371: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045b1b9, 2, 5770, 9, 10 }, // 0045a371: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045b1ca, 2, 5771, 9, 11 }, // 0045a371: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045b1db, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045b1ec, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045b1fd, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045b20e, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045b21f, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045b230, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045b241, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045b252, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045b263, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045b274, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045b285, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045b296, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045b2a7, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045b2b8, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045b2c9, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045b2da, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045b307, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045b318, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045b329, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045b33a, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045b34b, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045b35c, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045b36d, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045b37e, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045b38f, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045b3a0, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045b3b1, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045b3c2, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045b3d3, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045b3e4, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045b3f5, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045b406, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045b417, 2, 5806, 9, 46 }, // 0045a371: MOV byte ptr [EDI + 0x16ae],AL
+	{ 0x0045b428, 2, 5807, 9, 47 }, // 0045a371: MOV byte ptr [EDI + 0x16af],AL
+	{ 0x0045b439, 2, 6448, 10, 48 }, // 0045a371: MOV byte ptr [EDI + 0x1930],AL
+	{ 0x0045b44a, 2, 6449, 10, 49 }, // 0045a371: MOV byte ptr [EDI + 0x1931],AL
+	{ 0x0045b471, 2, 7046, 11, 6 }, // 0045a371: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045b482, 2, 7047, 11, 7 }, // 0045a371: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045b493, 2, 6408, 10, 8 }, // 0045a371: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045b4a4, 2, 6409, 10, 9 }, // 0045a371: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045b4b5, 2, 5770, 9, 10 }, // 0045a371: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045b4c6, 2, 5771, 9, 11 }, // 0045a371: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045b4d7, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045b4e8, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045b4f9, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045b50a, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045b51b, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045b52c, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045b53d, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045b54e, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045b55f, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045b570, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045b581, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045b592, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045b5a3, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045b5b4, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045b5c5, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045b5d6, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045b603, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045b614, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045b625, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045b636, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045b647, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045b658, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045b669, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045b67a, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045b68b, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045b69c, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045b6ad, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045b6be, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045b6cf, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045b6e0, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045b6f1, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045b702, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045b713, 2, 5806, 9, 46 }, // 0045a371: MOV byte ptr [EDI + 0x16ae],AL
+	{ 0x0045b724, 2, 5807, 9, 47 }, // 0045a371: MOV byte ptr [EDI + 0x16af],AL
+	{ 0x0045b735, 2, 6448, 10, 48 }, // 0045a371: MOV byte ptr [EDI + 0x1930],AL
+	{ 0x0045b746, 2, 6449, 10, 49 }, // 0045a371: MOV byte ptr [EDI + 0x1931],AL
+	{ 0x0045b757, 2, 7090, 11, 50 }, // 0045a371: MOV byte ptr [EDI + 0x1bb2],AL
+	{ 0x0045b768, 2, 7091, 11, 51 }, // 0045a371: MOV byte ptr [EDI + 0x1bb3],AL
+	{ 0x0045b78f, 2, 7684, 12, 4 }, // 0045a371: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045b7a0, 2, 7685, 12, 5 }, // 0045a371: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045b7b1, 2, 7046, 11, 6 }, // 0045a371: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045b7c2, 2, 7047, 11, 7 }, // 0045a371: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045b7d3, 2, 6408, 10, 8 }, // 0045a371: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045b7e4, 2, 6409, 10, 9 }, // 0045a371: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045b7f5, 2, 5770, 9, 10 }, // 0045a371: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045b806, 2, 5771, 9, 11 }, // 0045a371: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045b817, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045b828, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045b839, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045b84a, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045b85b, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045b86c, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045b87d, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045b88e, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045b89f, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045b8b0, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045b8c1, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045b8d2, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045b8e3, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045b8f4, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045b905, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045b916, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045b943, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045b954, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045b965, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045b976, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045b987, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045b998, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045b9a9, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045b9ba, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045b9cb, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045b9dc, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045b9ed, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045b9fe, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045ba0f, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045ba20, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045ba31, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045ba42, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045ba53, 2, 5806, 9, 46 }, // 0045a371: MOV byte ptr [EDI + 0x16ae],AL
+	{ 0x0045ba64, 2, 5807, 9, 47 }, // 0045a371: MOV byte ptr [EDI + 0x16af],AL
+	{ 0x0045ba75, 2, 6448, 10, 48 }, // 0045a371: MOV byte ptr [EDI + 0x1930],AL
+	{ 0x0045ba86, 2, 6449, 10, 49 }, // 0045a371: MOV byte ptr [EDI + 0x1931],AL
+	{ 0x0045ba97, 2, 7090, 11, 50 }, // 0045a371: MOV byte ptr [EDI + 0x1bb2],AL
+	{ 0x0045baa8, 2, 7091, 11, 51 }, // 0045a371: MOV byte ptr [EDI + 0x1bb3],AL
+	{ 0x0045bab9, 2, 7732, 12, 52 }, // 0045a371: MOV byte ptr [EDI + 0x1e34],AL
+	{ 0x0045baca, 2, 7733, 12, 53 }, // 0045a371: MOV byte ptr [EDI + 0x1e35],AL
 	{ 0x0045baf1, 2, 8322, 13, 2 }, // 0045a371: MOV byte ptr [EDI + 0x2082],AL
+	{ 0x0045bb02, 2, 8323, 13, 3 }, // 0045a371: MOV byte ptr [EDI + 0x2083],AL
+	{ 0x0045bb13, 2, 7684, 12, 4 }, // 0045a371: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045bb24, 2, 7685, 12, 5 }, // 0045a371: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045bb35, 2, 7046, 11, 6 }, // 0045a371: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045bb46, 2, 7047, 11, 7 }, // 0045a371: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045bb57, 2, 6408, 10, 8 }, // 0045a371: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045bb68, 2, 6409, 10, 9 }, // 0045a371: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045bb79, 2, 5770, 9, 10 }, // 0045a371: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045bb8a, 2, 5771, 9, 11 }, // 0045a371: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045bb9b, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045bbac, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045bbbd, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045bbce, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045bbdf, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045bbf0, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045bc01, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045bc12, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045bc23, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045bc34, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045bc45, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045bc56, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045bc67, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045bc78, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045bc89, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045bc9a, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045bcc7, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045bcd8, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045bce9, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045bcfa, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045bd0b, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045bd1c, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045bd2d, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045bd3e, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045bd4f, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045bd60, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045bd71, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045bd82, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045bd93, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045bda4, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045bdb5, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045bdc6, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045bdd7, 2, 5806, 9, 46 }, // 0045a371: MOV byte ptr [EDI + 0x16ae],AL
+	{ 0x0045bde8, 2, 5807, 9, 47 }, // 0045a371: MOV byte ptr [EDI + 0x16af],AL
+	{ 0x0045bdf9, 2, 6448, 10, 48 }, // 0045a371: MOV byte ptr [EDI + 0x1930],AL
+	{ 0x0045be0a, 2, 6449, 10, 49 }, // 0045a371: MOV byte ptr [EDI + 0x1931],AL
+	{ 0x0045be1b, 2, 7090, 11, 50 }, // 0045a371: MOV byte ptr [EDI + 0x1bb2],AL
+	{ 0x0045be2c, 2, 7091, 11, 51 }, // 0045a371: MOV byte ptr [EDI + 0x1bb3],AL
+	{ 0x0045be3d, 2, 7732, 12, 52 }, // 0045a371: MOV byte ptr [EDI + 0x1e34],AL
+	{ 0x0045be4e, 2, 7733, 12, 53 }, // 0045a371: MOV byte ptr [EDI + 0x1e35],AL
+	{ 0x0045be5f, 2, 8374, 13, 54 }, // 0045a371: MOV byte ptr [EDI + 0x20b6],AL
+	{ 0x0045be70, 2, 8375, 13, 55 }, // 0045a371: MOV byte ptr [EDI + 0x20b7],AL
 	{ 0x0045be94, 2, 8960, 14, 0 }, // 0045a371: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x0045bea5, 2, 8961, 14, 1 }, // 0045a371: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x0045beb6, 2, 8322, 13, 2 }, // 0045a371: MOV byte ptr [EDI + 0x2082],AL
+	{ 0x0045bec7, 2, 8323, 13, 3 }, // 0045a371: MOV byte ptr [EDI + 0x2083],AL
+	{ 0x0045bed8, 2, 7684, 12, 4 }, // 0045a371: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045bee9, 2, 7685, 12, 5 }, // 0045a371: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045befa, 2, 7046, 11, 6 }, // 0045a371: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045bf0b, 2, 7047, 11, 7 }, // 0045a371: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045bf1c, 2, 6408, 10, 8 }, // 0045a371: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045bf2d, 2, 6409, 10, 9 }, // 0045a371: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045bf3e, 2, 5770, 9, 10 }, // 0045a371: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045bf4f, 2, 5771, 9, 11 }, // 0045a371: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045bf60, 2, 5132, 8, 12 }, // 0045a371: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045bf71, 2, 5133, 8, 13 }, // 0045a371: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045bf82, 2, 4494, 7, 14 }, // 0045a371: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045bf93, 2, 4495, 7, 15 }, // 0045a371: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045bfa4, 2, 3856, 6, 16 }, // 0045a371: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045bfb5, 2, 3857, 6, 17 }, // 0045a371: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045bfc6, 2, 3218, 5, 18 }, // 0045a371: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045bfd7, 2, 3219, 5, 19 }, // 0045a371: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045bfe8, 2, 2580, 4, 20 }, // 0045a371: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045bff9, 2, 2581, 4, 21 }, // 0045a371: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045c00a, 2, 1942, 3, 22 }, // 0045a371: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045c01b, 2, 1943, 3, 23 }, // 0045a371: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045c02c, 2, 1304, 2, 24 }, // 0045a371: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045c03d, 2, 1305, 2, 25 }, // 0045a371: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045c04e, 2, 666, 1, 26 }, // 0045a371: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045c05f, 2, 667, 1, 27 }, // 0045a371: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045c08c, 2, 670, 1, 30 }, // 0045a371: MOV byte ptr [EDI + 0x29e],AL
+	{ 0x0045c09d, 2, 671, 1, 31 }, // 0045a371: MOV byte ptr [EDI + 0x29f],AL
+	{ 0x0045c0ae, 2, 1312, 2, 32 }, // 0045a371: MOV byte ptr [EDI + 0x520],AL
+	{ 0x0045c0bf, 2, 1313, 2, 33 }, // 0045a371: MOV byte ptr [EDI + 0x521],AL
+	{ 0x0045c0d0, 2, 1954, 3, 34 }, // 0045a371: MOV byte ptr [EDI + 0x7a2],AL
+	{ 0x0045c0e1, 2, 1955, 3, 35 }, // 0045a371: MOV byte ptr [EDI + 0x7a3],AL
+	{ 0x0045c0f2, 2, 2596, 4, 36 }, // 0045a371: MOV byte ptr [EDI + 0xa24],AL
+	{ 0x0045c103, 2, 2597, 4, 37 }, // 0045a371: MOV byte ptr [EDI + 0xa25],AL
+	{ 0x0045c114, 2, 3238, 5, 38 }, // 0045a371: MOV byte ptr [EDI + 0xca6],AL
+	{ 0x0045c125, 2, 3239, 5, 39 }, // 0045a371: MOV byte ptr [EDI + 0xca7],AL
+	{ 0x0045c136, 2, 3880, 6, 40 }, // 0045a371: MOV byte ptr [EDI + 0xf28],AL
+	{ 0x0045c147, 2, 3881, 6, 41 }, // 0045a371: MOV byte ptr [EDI + 0xf29],AL
+	{ 0x0045c158, 2, 4522, 7, 42 }, // 0045a371: MOV byte ptr [EDI + 0x11aa],AL
+	{ 0x0045c169, 2, 4523, 7, 43 }, // 0045a371: MOV byte ptr [EDI + 0x11ab],AL
+	{ 0x0045c17a, 2, 5164, 8, 44 }, // 0045a371: MOV byte ptr [EDI + 0x142c],AL
+	{ 0x0045c18b, 2, 5165, 8, 45 }, // 0045a371: MOV byte ptr [EDI + 0x142d],AL
+	{ 0x0045c19c, 2, 5806, 9, 46 }, // 0045a371: MOV byte ptr [EDI + 0x16ae],AL
+	{ 0x0045c1ad, 2, 5807, 9, 47 }, // 0045a371: MOV byte ptr [EDI + 0x16af],AL
+	{ 0x0045c1be, 2, 6448, 10, 48 }, // 0045a371: MOV byte ptr [EDI + 0x1930],AL
+	{ 0x0045c1cf, 2, 6449, 10, 49 }, // 0045a371: MOV byte ptr [EDI + 0x1931],AL
+	{ 0x0045c1e0, 2, 7090, 11, 50 }, // 0045a371: MOV byte ptr [EDI + 0x1bb2],AL
+	{ 0x0045c1f1, 2, 7091, 11, 51 }, // 0045a371: MOV byte ptr [EDI + 0x1bb3],AL
+	{ 0x0045c202, 2, 7732, 12, 52 }, // 0045a371: MOV byte ptr [EDI + 0x1e34],AL
+	{ 0x0045c213, 2, 7733, 12, 53 }, // 0045a371: MOV byte ptr [EDI + 0x1e35],AL
+	{ 0x0045c224, 2, 8374, 13, 54 }, // 0045a371: MOV byte ptr [EDI + 0x20b6],AL
+	{ 0x0045c235, 2, 8375, 13, 55 }, // 0045a371: MOV byte ptr [EDI + 0x20b7],AL
+	{ 0x0045c246, 2, 9016, 14, 56 }, // 0045a371: MOV byte ptr [EDI + 0x2338],AL
+	{ 0x0045c257, 2, 9017, 14, 57 }, // 0045a371: MOV byte ptr [EDI + 0x2339],AL
 	{ 0x0045c2c5, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c2d6, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c2fd, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c30e, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c31f, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c330, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
 	{ 0x0045c357, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c368, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c379, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c38a, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c39b, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c3ac, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
 	{ 0x0045c3d3, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c3e4, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c3f5, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c406, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c417, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c428, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c439, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c44a, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
 	{ 0x0045c471, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c482, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c493, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c4a4, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c4b5, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c4c6, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c4d7, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c4e8, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045c4f9, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045c50a, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
 	{ 0x0045c531, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c542, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c553, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c564, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c575, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c586, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c597, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c5a8, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045c5b9, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045c5ca, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045c5db, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045c5ec, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
 	{ 0x0045c613, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c624, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c635, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c646, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c657, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c668, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c679, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c68a, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045c69b, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045c6ac, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045c6bd, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045c6ce, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045c6df, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045c6f0, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
 	{ 0x0045c717, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c728, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c739, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c74a, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c75b, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c76c, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c77d, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c78e, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045c79f, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045c7b0, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045c7c1, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045c7d2, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045c7e3, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045c7f4, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045c805, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045c816, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
 	{ 0x0045c83d, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c84e, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c85f, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c870, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c881, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c892, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c8a3, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c8b4, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045c8c5, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045c8d6, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045c8e7, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045c8f8, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045c909, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045c91a, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045c92b, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045c93c, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
+	{ 0x0045c94d, 2, 5776, 9, 16 }, // 0045c274: MOV byte ptr [EDI + 0x1690],AL
+	{ 0x0045c95e, 2, 5777, 9, 17 }, // 0045c274: MOV byte ptr [EDI + 0x1691],AL
 	{ 0x0045c985, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045c996, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045c9a7, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045c9b8, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045c9c9, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045c9da, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045c9eb, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045c9fc, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045ca0d, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045ca1e, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045ca2f, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045ca40, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045ca51, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045ca62, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045ca73, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045ca84, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
+	{ 0x0045ca95, 2, 5776, 9, 16 }, // 0045c274: MOV byte ptr [EDI + 0x1690],AL
+	{ 0x0045caa6, 2, 5777, 9, 17 }, // 0045c274: MOV byte ptr [EDI + 0x1691],AL
+	{ 0x0045cab7, 2, 6418, 10, 18 }, // 0045c274: MOV byte ptr [EDI + 0x1912],AL
+	{ 0x0045cac8, 2, 6419, 10, 19 }, // 0045c274: MOV byte ptr [EDI + 0x1913],AL
 	{ 0x0045caef, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045cb00, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045cb11, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045cb22, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045cb33, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045cb44, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045cb55, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045cb66, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045cb77, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045cb88, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045cb99, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045cbaa, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045cbbb, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045cbcc, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045cbdd, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045cbee, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
+	{ 0x0045cbff, 2, 5776, 9, 16 }, // 0045c274: MOV byte ptr [EDI + 0x1690],AL
+	{ 0x0045cc10, 2, 5777, 9, 17 }, // 0045c274: MOV byte ptr [EDI + 0x1691],AL
+	{ 0x0045cc21, 2, 6418, 10, 18 }, // 0045c274: MOV byte ptr [EDI + 0x1912],AL
+	{ 0x0045cc32, 2, 6419, 10, 19 }, // 0045c274: MOV byte ptr [EDI + 0x1913],AL
+	{ 0x0045cc43, 2, 7060, 11, 20 }, // 0045c274: MOV byte ptr [EDI + 0x1b94],AL
+	{ 0x0045cc54, 2, 7061, 11, 21 }, // 0045c274: MOV byte ptr [EDI + 0x1b95],AL
 	{ 0x0045cc7b, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045cc8c, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045cc9d, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045ccae, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045ccbf, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045ccd0, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045cce1, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045ccf2, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045cd03, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045cd14, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045cd25, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045cd36, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045cd47, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045cd58, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045cd69, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045cd7a, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
+	{ 0x0045cd8b, 2, 5776, 9, 16 }, // 0045c274: MOV byte ptr [EDI + 0x1690],AL
+	{ 0x0045cd9c, 2, 5777, 9, 17 }, // 0045c274: MOV byte ptr [EDI + 0x1691],AL
+	{ 0x0045cdad, 2, 6418, 10, 18 }, // 0045c274: MOV byte ptr [EDI + 0x1912],AL
+	{ 0x0045cdbe, 2, 6419, 10, 19 }, // 0045c274: MOV byte ptr [EDI + 0x1913],AL
+	{ 0x0045cdcf, 2, 7060, 11, 20 }, // 0045c274: MOV byte ptr [EDI + 0x1b94],AL
+	{ 0x0045cde0, 2, 7061, 11, 21 }, // 0045c274: MOV byte ptr [EDI + 0x1b95],AL
+	{ 0x0045cdf1, 2, 7702, 12, 22 }, // 0045c274: MOV byte ptr [EDI + 0x1e16],AL
+	{ 0x0045ce02, 2, 7703, 12, 23 }, // 0045c274: MOV byte ptr [EDI + 0x1e17],AL
 	{ 0x0045ce29, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045ce3a, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045ce4b, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045ce5c, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045ce6d, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045ce7e, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045ce8f, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045cea0, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045ceb1, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045cec2, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045ced3, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045cee4, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045cef5, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045cf06, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045cf17, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045cf28, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
+	{ 0x0045cf39, 2, 5776, 9, 16 }, // 0045c274: MOV byte ptr [EDI + 0x1690],AL
+	{ 0x0045cf4a, 2, 5777, 9, 17 }, // 0045c274: MOV byte ptr [EDI + 0x1691],AL
+	{ 0x0045cf5b, 2, 6418, 10, 18 }, // 0045c274: MOV byte ptr [EDI + 0x1912],AL
+	{ 0x0045cf6c, 2, 6419, 10, 19 }, // 0045c274: MOV byte ptr [EDI + 0x1913],AL
+	{ 0x0045cf7d, 2, 7060, 11, 20 }, // 0045c274: MOV byte ptr [EDI + 0x1b94],AL
+	{ 0x0045cf8e, 2, 7061, 11, 21 }, // 0045c274: MOV byte ptr [EDI + 0x1b95],AL
+	{ 0x0045cf9f, 2, 7702, 12, 22 }, // 0045c274: MOV byte ptr [EDI + 0x1e16],AL
+	{ 0x0045cfb0, 2, 7703, 12, 23 }, // 0045c274: MOV byte ptr [EDI + 0x1e17],AL
+	{ 0x0045cfc1, 2, 8344, 13, 24 }, // 0045c274: MOV byte ptr [EDI + 0x2098],AL
+	{ 0x0045cfd2, 2, 8345, 13, 25 }, // 0045c274: MOV byte ptr [EDI + 0x2099],AL
 	{ 0x0045cff9, 2, 640, 1, 0 }, // 0045c274: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0045d00a, 2, 641, 1, 1 }, // 0045c274: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0045d01b, 2, 1282, 2, 2 }, // 0045c274: MOV byte ptr [EDI + 0x502],AL
+	{ 0x0045d02c, 2, 1283, 2, 3 }, // 0045c274: MOV byte ptr [EDI + 0x503],AL
+	{ 0x0045d03d, 2, 1924, 3, 4 }, // 0045c274: MOV byte ptr [EDI + 0x784],AL
+	{ 0x0045d04e, 2, 1925, 3, 5 }, // 0045c274: MOV byte ptr [EDI + 0x785],AL
+	{ 0x0045d05f, 2, 2566, 4, 6 }, // 0045c274: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x0045d070, 2, 2567, 4, 7 }, // 0045c274: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x0045d081, 2, 3208, 5, 8 }, // 0045c274: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x0045d092, 2, 3209, 5, 9 }, // 0045c274: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x0045d0a3, 2, 3850, 6, 10 }, // 0045c274: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x0045d0b4, 2, 3851, 6, 11 }, // 0045c274: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x0045d0c5, 2, 4492, 7, 12 }, // 0045c274: MOV byte ptr [EDI + 0x118c],AL
+	{ 0x0045d0d6, 2, 4493, 7, 13 }, // 0045c274: MOV byte ptr [EDI + 0x118d],AL
+	{ 0x0045d0e7, 2, 5134, 8, 14 }, // 0045c274: MOV byte ptr [EDI + 0x140e],AL
+	{ 0x0045d0f8, 2, 5135, 8, 15 }, // 0045c274: MOV byte ptr [EDI + 0x140f],AL
+	{ 0x0045d109, 2, 5776, 9, 16 }, // 0045c274: MOV byte ptr [EDI + 0x1690],AL
+	{ 0x0045d11a, 2, 5777, 9, 17 }, // 0045c274: MOV byte ptr [EDI + 0x1691],AL
+	{ 0x0045d12b, 2, 6418, 10, 18 }, // 0045c274: MOV byte ptr [EDI + 0x1912],AL
+	{ 0x0045d13c, 2, 6419, 10, 19 }, // 0045c274: MOV byte ptr [EDI + 0x1913],AL
+	{ 0x0045d14d, 2, 7060, 11, 20 }, // 0045c274: MOV byte ptr [EDI + 0x1b94],AL
+	{ 0x0045d15e, 2, 7061, 11, 21 }, // 0045c274: MOV byte ptr [EDI + 0x1b95],AL
+	{ 0x0045d16f, 2, 7702, 12, 22 }, // 0045c274: MOV byte ptr [EDI + 0x1e16],AL
+	{ 0x0045d180, 2, 7703, 12, 23 }, // 0045c274: MOV byte ptr [EDI + 0x1e17],AL
+	{ 0x0045d191, 2, 8344, 13, 24 }, // 0045c274: MOV byte ptr [EDI + 0x2098],AL
+	{ 0x0045d1a2, 2, 8345, 13, 25 }, // 0045c274: MOV byte ptr [EDI + 0x2099],AL
+	{ 0x0045d1b3, 2, 8986, 14, 26 }, // 0045c274: MOV byte ptr [EDI + 0x231a],AL
+	{ 0x0045d1c4, 2, 8987, 14, 27 }, // 0045c274: MOV byte ptr [EDI + 0x231b],AL
+	{ 0x0045d232, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d243, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d26a, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d27b, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d28c, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d29d, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d2c4, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d2d5, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d2e6, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d2f7, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d308, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d319, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d340, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d351, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d362, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d373, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d384, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d395, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d3a6, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d3b7, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d3de, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045d3ef, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045d400, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d411, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d422, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d433, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d444, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d455, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d466, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d477, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d49e, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045d4af, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045d4c0, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045d4d1, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045d4e2, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d4f3, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d504, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d515, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d526, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d537, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d548, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d559, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d580, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045d591, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045d5a2, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045d5b3, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045d5c4, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045d5d5, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045d5e6, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d5f7, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d608, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d619, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d62a, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d63b, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d64c, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d65d, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d684, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045d695, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045d6a6, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045d6b7, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045d6c8, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045d6d9, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045d6ea, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045d6fb, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045d70c, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d71d, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d72e, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d73f, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d750, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d761, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d772, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d783, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d7aa, 2, 5770, 9, 10 }, // 0045d1e1: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045d7bb, 2, 5771, 9, 11 }, // 0045d1e1: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045d7cc, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045d7dd, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045d7ee, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045d7ff, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045d810, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045d821, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045d832, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045d843, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045d854, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d865, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d876, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d887, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045d898, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045d8a9, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045d8ba, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045d8cb, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045d8f2, 2, 6408, 10, 8 }, // 0045d1e1: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045d903, 2, 6409, 10, 9 }, // 0045d1e1: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045d914, 2, 5770, 9, 10 }, // 0045d1e1: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045d925, 2, 5771, 9, 11 }, // 0045d1e1: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045d936, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045d947, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045d958, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045d969, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045d97a, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045d98b, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045d99c, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045d9ad, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045d9be, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045d9cf, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045d9e0, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045d9f1, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045da02, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045da13, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045da24, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045da35, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045da5c, 2, 7046, 11, 6 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045da6d, 2, 7047, 11, 7 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045da7e, 2, 6408, 10, 8 }, // 0045d1e1: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045da8f, 2, 6409, 10, 9 }, // 0045d1e1: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045daa0, 2, 5770, 9, 10 }, // 0045d1e1: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045dab1, 2, 5771, 9, 11 }, // 0045d1e1: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045dac2, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045dad3, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045dae4, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045daf5, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045db06, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045db17, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045db28, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045db39, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045db4a, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045db5b, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045db6c, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045db7d, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045db8e, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045db9f, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045dbb0, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045dbc1, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045dbe8, 2, 7684, 12, 4 }, // 0045d1e1: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045dbf9, 2, 7685, 12, 5 }, // 0045d1e1: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045dc0a, 2, 7046, 11, 6 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045dc1b, 2, 7047, 11, 7 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045dc2c, 2, 6408, 10, 8 }, // 0045d1e1: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045dc3d, 2, 6409, 10, 9 }, // 0045d1e1: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045dc4e, 2, 5770, 9, 10 }, // 0045d1e1: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045dc5f, 2, 5771, 9, 11 }, // 0045d1e1: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045dc70, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045dc81, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045dc92, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045dca3, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045dcb4, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045dcc5, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045dcd6, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045dce7, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045dcf8, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045dd09, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045dd1a, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045dd2b, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045dd3c, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045dd4d, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045dd5e, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045dd6f, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
 	{ 0x0045dd96, 2, 8322, 13, 2 }, // 0045d1e1: MOV byte ptr [EDI + 0x2082],AL
+	{ 0x0045dda7, 2, 8323, 13, 3 }, // 0045d1e1: MOV byte ptr [EDI + 0x2083],AL
+	{ 0x0045ddb8, 2, 7684, 12, 4 }, // 0045d1e1: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045ddc9, 2, 7685, 12, 5 }, // 0045d1e1: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045ddda, 2, 7046, 11, 6 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045ddeb, 2, 7047, 11, 7 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045ddfc, 2, 6408, 10, 8 }, // 0045d1e1: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045de0d, 2, 6409, 10, 9 }, // 0045d1e1: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045de1e, 2, 5770, 9, 10 }, // 0045d1e1: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045de2f, 2, 5771, 9, 11 }, // 0045d1e1: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045de40, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045de51, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045de62, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045de73, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045de84, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045de95, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045dea6, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045deb7, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045dec8, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045ded9, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045deea, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045defb, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045df0c, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045df1d, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045df2e, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045df3f, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
 	{ 0x0045df63, 2, 8960, 14, 0 }, // 0045d1e1: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x0045df74, 2, 8961, 14, 1 }, // 0045d1e1: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x0045df85, 2, 8322, 13, 2 }, // 0045d1e1: MOV byte ptr [EDI + 0x2082],AL
+	{ 0x0045df96, 2, 8323, 13, 3 }, // 0045d1e1: MOV byte ptr [EDI + 0x2083],AL
+	{ 0x0045dfa7, 2, 7684, 12, 4 }, // 0045d1e1: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045dfb8, 2, 7685, 12, 5 }, // 0045d1e1: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045dfc9, 2, 7046, 11, 6 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045dfda, 2, 7047, 11, 7 }, // 0045d1e1: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045dfeb, 2, 6408, 10, 8 }, // 0045d1e1: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045dffc, 2, 6409, 10, 9 }, // 0045d1e1: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045e00d, 2, 5770, 9, 10 }, // 0045d1e1: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045e01e, 2, 5771, 9, 11 }, // 0045d1e1: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045e02f, 2, 5132, 8, 12 }, // 0045d1e1: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045e040, 2, 5133, 8, 13 }, // 0045d1e1: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045e051, 2, 4494, 7, 14 }, // 0045d1e1: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045e062, 2, 4495, 7, 15 }, // 0045d1e1: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045e073, 2, 3856, 6, 16 }, // 0045d1e1: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045e084, 2, 3857, 6, 17 }, // 0045d1e1: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045e095, 2, 3218, 5, 18 }, // 0045d1e1: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045e0a6, 2, 3219, 5, 19 }, // 0045d1e1: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045e0b7, 2, 2580, 4, 20 }, // 0045d1e1: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045e0c8, 2, 2581, 4, 21 }, // 0045d1e1: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045e0d9, 2, 1942, 3, 22 }, // 0045d1e1: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045e0ea, 2, 1943, 3, 23 }, // 0045d1e1: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045e0fb, 2, 1304, 2, 24 }, // 0045d1e1: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045e10c, 2, 1305, 2, 25 }, // 0045d1e1: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045e11d, 2, 666, 1, 26 }, // 0045d1e1: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045e12e, 2, 667, 1, 27 }, // 0045d1e1: MOV byte ptr [EDI + 0x29b],AL
 	{ 0x0045e209, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e21a, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
 	{ 0x0045e269, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e27a, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e28b, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e29c, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
 	{ 0x0045e2eb, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e2fc, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e30d, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e31e, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e32f, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e340, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
 	{ 0x0045e38f, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e3a0, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e3b1, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e3c2, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e3d3, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e3e4, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045e3f5, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045e406, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
 	{ 0x0045e455, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e466, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e477, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e488, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e499, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e4aa, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045e4bb, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045e4cc, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045e4dd, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045e4ee, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
 	{ 0x0045e53d, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e54e, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e55f, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e570, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e581, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e592, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045e5a3, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045e5b4, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045e5c5, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045e5d6, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045e5e7, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045e5f8, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
 	{ 0x0045e647, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e658, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e669, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e67a, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e68b, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e69c, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045e6ad, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045e6be, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045e6cf, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045e6e0, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045e6f1, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045e702, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045e713, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045e724, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
 	{ 0x0045e773, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e784, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e795, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e7a6, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e7b7, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e7c8, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045e7d9, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045e7ea, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045e7fb, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045e80c, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045e81d, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045e82e, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045e83f, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045e850, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045e861, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045e872, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
 	{ 0x0045e8c1, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045e8d2, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045e8e3, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045e8f4, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045e905, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045e916, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045e927, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045e938, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045e949, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045e95a, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045e96b, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045e97c, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045e98d, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045e99e, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045e9af, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045e9c0, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045e9d1, 2, 5778, 9, 18 }, // 0045e14e: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x0045e9e2, 2, 5779, 9, 19 }, // 0045e14e: MOV byte ptr [EDI + 0x1693],AL
 	{ 0x0045ea31, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045ea42, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045ea53, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045ea64, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045ea75, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045ea86, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045ea97, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045eaa8, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045eab9, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045eaca, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045eadb, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045eaec, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045eafd, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045eb0e, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045eb1f, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045eb30, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045eb41, 2, 5778, 9, 18 }, // 0045e14e: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x0045eb52, 2, 5779, 9, 19 }, // 0045e14e: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x0045eb63, 2, 6420, 10, 20 }, // 0045e14e: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x0045eb74, 2, 6421, 10, 21 }, // 0045e14e: MOV byte ptr [EDI + 0x1915],AL
 	{ 0x0045ebc3, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045ebd4, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045ebe5, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045ebf6, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045ec07, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045ec18, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045ec29, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045ec3a, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045ec4b, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045ec5c, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045ec6d, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045ec7e, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045ec8f, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045eca0, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045ecb1, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045ecc2, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045ecd3, 2, 5778, 9, 18 }, // 0045e14e: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x0045ece4, 2, 5779, 9, 19 }, // 0045e14e: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x0045ecf5, 2, 6420, 10, 20 }, // 0045e14e: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x0045ed06, 2, 6421, 10, 21 }, // 0045e14e: MOV byte ptr [EDI + 0x1915],AL
+	{ 0x0045ed17, 2, 7062, 11, 22 }, // 0045e14e: MOV byte ptr [EDI + 0x1b96],AL
+	{ 0x0045ed28, 2, 7063, 11, 23 }, // 0045e14e: MOV byte ptr [EDI + 0x1b97],AL
 	{ 0x0045ed77, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045ed88, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045ed99, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045edaa, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045edbb, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045edcc, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045eddd, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045edee, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045edff, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045ee10, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045ee21, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045ee32, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045ee43, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045ee54, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045ee65, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045ee76, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045ee87, 2, 5778, 9, 18 }, // 0045e14e: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x0045ee98, 2, 5779, 9, 19 }, // 0045e14e: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x0045eea9, 2, 6420, 10, 20 }, // 0045e14e: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x0045eeba, 2, 6421, 10, 21 }, // 0045e14e: MOV byte ptr [EDI + 0x1915],AL
+	{ 0x0045eecb, 2, 7062, 11, 22 }, // 0045e14e: MOV byte ptr [EDI + 0x1b96],AL
+	{ 0x0045eedc, 2, 7063, 11, 23 }, // 0045e14e: MOV byte ptr [EDI + 0x1b97],AL
+	{ 0x0045eeed, 2, 7704, 12, 24 }, // 0045e14e: MOV byte ptr [EDI + 0x1e18],AL
+	{ 0x0045eefe, 2, 7705, 12, 25 }, // 0045e14e: MOV byte ptr [EDI + 0x1e19],AL
 	{ 0x0045ef4d, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045ef5e, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045ef6f, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045ef80, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045ef91, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045efa2, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045efb3, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045efc4, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045efd5, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045efe6, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045eff7, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045f008, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045f019, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045f02a, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045f03b, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045f04c, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045f05d, 2, 5778, 9, 18 }, // 0045e14e: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x0045f06e, 2, 5779, 9, 19 }, // 0045e14e: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x0045f07f, 2, 6420, 10, 20 }, // 0045e14e: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x0045f090, 2, 6421, 10, 21 }, // 0045e14e: MOV byte ptr [EDI + 0x1915],AL
+	{ 0x0045f0a1, 2, 7062, 11, 22 }, // 0045e14e: MOV byte ptr [EDI + 0x1b96],AL
+	{ 0x0045f0b2, 2, 7063, 11, 23 }, // 0045e14e: MOV byte ptr [EDI + 0x1b97],AL
+	{ 0x0045f0c3, 2, 7704, 12, 24 }, // 0045e14e: MOV byte ptr [EDI + 0x1e18],AL
+	{ 0x0045f0d4, 2, 7705, 12, 25 }, // 0045e14e: MOV byte ptr [EDI + 0x1e19],AL
+	{ 0x0045f0e5, 2, 8346, 13, 26 }, // 0045e14e: MOV byte ptr [EDI + 0x209a],AL
+	{ 0x0045f0f6, 2, 8347, 13, 27 }, // 0045e14e: MOV byte ptr [EDI + 0x209b],AL
 	{ 0x0045f145, 2, 642, 1, 2 }, // 0045e14e: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0045f156, 2, 643, 1, 3 }, // 0045e14e: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0045f167, 2, 1284, 2, 4 }, // 0045e14e: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0045f178, 2, 1285, 2, 5 }, // 0045e14e: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0045f189, 2, 1926, 3, 6 }, // 0045e14e: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0045f19a, 2, 1927, 3, 7 }, // 0045e14e: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0045f1ab, 2, 2568, 4, 8 }, // 0045e14e: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0045f1bc, 2, 2569, 4, 9 }, // 0045e14e: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x0045f1cd, 2, 3210, 5, 10 }, // 0045e14e: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x0045f1de, 2, 3211, 5, 11 }, // 0045e14e: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0045f1ef, 2, 3852, 6, 12 }, // 0045e14e: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0045f200, 2, 3853, 6, 13 }, // 0045e14e: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x0045f211, 2, 4494, 7, 14 }, // 0045e14e: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045f222, 2, 4495, 7, 15 }, // 0045e14e: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045f233, 2, 5136, 8, 16 }, // 0045e14e: MOV byte ptr [EDI + 0x1410],AL
+	{ 0x0045f244, 2, 5137, 8, 17 }, // 0045e14e: MOV byte ptr [EDI + 0x1411],AL
+	{ 0x0045f255, 2, 5778, 9, 18 }, // 0045e14e: MOV byte ptr [EDI + 0x1692],AL
+	{ 0x0045f266, 2, 5779, 9, 19 }, // 0045e14e: MOV byte ptr [EDI + 0x1693],AL
+	{ 0x0045f277, 2, 6420, 10, 20 }, // 0045e14e: MOV byte ptr [EDI + 0x1914],AL
+	{ 0x0045f288, 2, 6421, 10, 21 }, // 0045e14e: MOV byte ptr [EDI + 0x1915],AL
+	{ 0x0045f299, 2, 7062, 11, 22 }, // 0045e14e: MOV byte ptr [EDI + 0x1b96],AL
+	{ 0x0045f2aa, 2, 7063, 11, 23 }, // 0045e14e: MOV byte ptr [EDI + 0x1b97],AL
+	{ 0x0045f2bb, 2, 7704, 12, 24 }, // 0045e14e: MOV byte ptr [EDI + 0x1e18],AL
+	{ 0x0045f2cc, 2, 7705, 12, 25 }, // 0045e14e: MOV byte ptr [EDI + 0x1e19],AL
+	{ 0x0045f2dd, 2, 8346, 13, 26 }, // 0045e14e: MOV byte ptr [EDI + 0x209a],AL
+	{ 0x0045f2ee, 2, 8347, 13, 27 }, // 0045e14e: MOV byte ptr [EDI + 0x209b],AL
+	{ 0x0045f2ff, 2, 8988, 14, 28 }, // 0045e14e: MOV byte ptr [EDI + 0x231c],AL
+	{ 0x0045f310, 2, 8989, 14, 29 }, // 0045e14e: MOV byte ptr [EDI + 0x231d],AL
+	{ 0x0045f3a7, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f3b8, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f408, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f419, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045f42a, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f43b, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f48b, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045f49c, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045f4ad, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f4be, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045f4cf, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f4e0, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f530, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045f541, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045f552, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045f563, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045f574, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f585, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045f596, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f5a7, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f5f7, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045f608, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045f619, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045f62a, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045f63b, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045f64c, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045f65d, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f66e, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045f67f, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f690, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f6e0, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045f6f1, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045f702, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045f713, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045f724, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045f735, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045f746, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045f757, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045f768, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f779, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045f78a, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f79b, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f7eb, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045f7fc, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045f80d, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045f81e, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045f82f, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045f840, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045f851, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045f862, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045f873, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045f884, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045f895, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f8a6, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045f8b7, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045f8c8, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045f918, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045f929, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045f93a, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045f94b, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045f95c, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045f96d, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045f97e, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045f98f, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045f9a0, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045f9b1, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045f9c2, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045f9d3, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045f9e4, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045f9f5, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045fa06, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045fa17, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045fa67, 2, 5770, 9, 10 }, // 0045f32d: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045fa78, 2, 5771, 9, 11 }, // 0045f32d: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045fa89, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045fa9a, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045faab, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045fabc, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045facd, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045fade, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045faef, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045fb00, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045fb11, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045fb22, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045fb33, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045fb44, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045fb55, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045fb66, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045fb77, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045fb88, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045fbd8, 2, 6408, 10, 8 }, // 0045f32d: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045fbe9, 2, 6409, 10, 9 }, // 0045f32d: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045fbfa, 2, 5770, 9, 10 }, // 0045f32d: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045fc0b, 2, 5771, 9, 11 }, // 0045f32d: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045fc1c, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045fc2d, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045fc3e, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045fc4f, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045fc60, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045fc71, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045fc82, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045fc93, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045fca4, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045fcb5, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045fcc6, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045fcd7, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045fce8, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045fcf9, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045fd0a, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045fd1b, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045fd6b, 2, 7046, 11, 6 }, // 0045f32d: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045fd7c, 2, 7047, 11, 7 }, // 0045f32d: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045fd8d, 2, 6408, 10, 8 }, // 0045f32d: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045fd9e, 2, 6409, 10, 9 }, // 0045f32d: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045fdaf, 2, 5770, 9, 10 }, // 0045f32d: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045fdc0, 2, 5771, 9, 11 }, // 0045f32d: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045fdd1, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045fde2, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045fdf3, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045fe04, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045fe15, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045fe26, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0045fe37, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0045fe48, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x0045fe59, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0045fe6a, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0045fe7b, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0045fe8c, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0045fe9d, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0045feae, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0045febf, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x0045fed0, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x0045ff20, 2, 7684, 12, 4 }, // 0045f32d: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0045ff31, 2, 7685, 12, 5 }, // 0045f32d: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0045ff42, 2, 7046, 11, 6 }, // 0045f32d: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0045ff53, 2, 7047, 11, 7 }, // 0045f32d: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0045ff64, 2, 6408, 10, 8 }, // 0045f32d: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0045ff75, 2, 6409, 10, 9 }, // 0045f32d: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0045ff86, 2, 5770, 9, 10 }, // 0045f32d: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x0045ff97, 2, 5771, 9, 11 }, // 0045f32d: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x0045ffa8, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x0045ffb9, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x0045ffca, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x0045ffdb, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x0045ffec, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0045fffd, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0046000e, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x0046001f, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x00460030, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x00460041, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x00460052, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x00460063, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x00460074, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x00460085, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x00460096, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x004600a7, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
 	{ 0x004600f7, 2, 8322, 13, 2 }, // 0045f32d: MOV byte ptr [EDI + 0x2082],AL
+	{ 0x00460108, 2, 8323, 13, 3 }, // 0045f32d: MOV byte ptr [EDI + 0x2083],AL
+	{ 0x00460119, 2, 7684, 12, 4 }, // 0045f32d: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x0046012a, 2, 7685, 12, 5 }, // 0045f32d: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x0046013b, 2, 7046, 11, 6 }, // 0045f32d: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x0046014c, 2, 7047, 11, 7 }, // 0045f32d: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x0046015d, 2, 6408, 10, 8 }, // 0045f32d: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x0046016e, 2, 6409, 10, 9 }, // 0045f32d: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x0046017f, 2, 5770, 9, 10 }, // 0045f32d: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x00460190, 2, 5771, 9, 11 }, // 0045f32d: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x004601a1, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x004601b2, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x004601c3, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x004601d4, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x004601e5, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x004601f6, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x00460207, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x00460218, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x00460229, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0046023a, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x0046024b, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x0046025c, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x0046026d, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0046027e, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x0046028f, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x004602a0, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
 	{ 0x004602ed, 2, 8960, 14, 0 }, // 0045f32d: MOV byte ptr [EDI + 0x2300],AL
 	{ 0x004602fe, 2, 8961, 14, 1 }, // 0045f32d: MOV byte ptr [EDI + 0x2301],AL
 	{ 0x0046030f, 2, 8322, 13, 2 }, // 0045f32d: MOV byte ptr [EDI + 0x2082],AL
+	{ 0x00460320, 2, 8323, 13, 3 }, // 0045f32d: MOV byte ptr [EDI + 0x2083],AL
+	{ 0x00460331, 2, 7684, 12, 4 }, // 0045f32d: MOV byte ptr [EDI + 0x1e04],AL
+	{ 0x00460342, 2, 7685, 12, 5 }, // 0045f32d: MOV byte ptr [EDI + 0x1e05],AL
+	{ 0x00460353, 2, 7046, 11, 6 }, // 0045f32d: MOV byte ptr [EDI + 0x1b86],AL
+	{ 0x00460364, 2, 7047, 11, 7 }, // 0045f32d: MOV byte ptr [EDI + 0x1b87],AL
+	{ 0x00460375, 2, 6408, 10, 8 }, // 0045f32d: MOV byte ptr [EDI + 0x1908],AL
+	{ 0x00460386, 2, 6409, 10, 9 }, // 0045f32d: MOV byte ptr [EDI + 0x1909],AL
+	{ 0x00460397, 2, 5770, 9, 10 }, // 0045f32d: MOV byte ptr [EDI + 0x168a],AL
+	{ 0x004603a8, 2, 5771, 9, 11 }, // 0045f32d: MOV byte ptr [EDI + 0x168b],AL
+	{ 0x004603b9, 2, 5132, 8, 12 }, // 0045f32d: MOV byte ptr [EDI + 0x140c],AL
+	{ 0x004603ca, 2, 5133, 8, 13 }, // 0045f32d: MOV byte ptr [EDI + 0x140d],AL
+	{ 0x004603db, 2, 4494, 7, 14 }, // 0045f32d: MOV byte ptr [EDI + 0x118e],AL
+	{ 0x004603ec, 2, 4495, 7, 15 }, // 0045f32d: MOV byte ptr [EDI + 0x118f],AL
+	{ 0x004603fd, 2, 3856, 6, 16 }, // 0045f32d: MOV byte ptr [EDI + 0xf10],AL
+	{ 0x0046040e, 2, 3857, 6, 17 }, // 0045f32d: MOV byte ptr [EDI + 0xf11],AL
+	{ 0x0046041f, 2, 3218, 5, 18 }, // 0045f32d: MOV byte ptr [EDI + 0xc92],AL
+	{ 0x00460430, 2, 3219, 5, 19 }, // 0045f32d: MOV byte ptr [EDI + 0xc93],AL
+	{ 0x00460441, 2, 2580, 4, 20 }, // 0045f32d: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x00460452, 2, 2581, 4, 21 }, // 0045f32d: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x00460463, 2, 1942, 3, 22 }, // 0045f32d: MOV byte ptr [EDI + 0x796],AL
+	{ 0x00460474, 2, 1943, 3, 23 }, // 0045f32d: MOV byte ptr [EDI + 0x797],AL
+	{ 0x00460485, 2, 1304, 2, 24 }, // 0045f32d: MOV byte ptr [EDI + 0x518],AL
+	{ 0x00460496, 2, 1305, 2, 25 }, // 0045f32d: MOV byte ptr [EDI + 0x519],AL
+	{ 0x004604a7, 2, 666, 1, 26 }, // 0045f32d: MOV byte ptr [EDI + 0x29a],AL
+	{ 0x004604b8, 2, 667, 1, 27 }, // 0045f32d: MOV byte ptr [EDI + 0x29b],AL
+	{ 0x00460547, 2, 650, 1, 10 }, // 00460501: MOV dword ptr [EDI + 0x28a],EAX
+	{ 0x00460551, 3, 654, 1, 14 }, // 00460501: MOV word ptr [EDI + 0x28e],AX
+	{ 0x0046055b, 2, 1288, 2, 8 }, // 00460501: MOV dword ptr [EDI + 0x508],EAX
+	{ 0x00460564, 2, 1292, 2, 12 }, // 00460501: MOV dword ptr [EDI + 0x50c],EAX
+	{ 0x0046056e, 3, 1296, 2, 16 }, // 00460501: MOV word ptr [EDI + 0x510],AX
+	{ 0x00460578, 2, 1926, 3, 6 }, // 00460501: MOV dword ptr [EDI + 0x786],EAX
+	{ 0x00460581, 2, 1930, 3, 10 }, // 00460501: MOV dword ptr [EDI + 0x78a],EAX
+	{ 0x0046058a, 2, 1934, 3, 14 }, // 00460501: MOV dword ptr [EDI + 0x78e],EAX
+	{ 0x00460594, 3, 1938, 3, 18 }, // 00460501: MOV word ptr [EDI + 0x792],AX
+	{ 0x0046059e, 2, 2564, 4, 4 }, // 00460501: MOV dword ptr [EDI + 0xa04],EAX
+	{ 0x004605a7, 2, 2568, 4, 8 }, // 00460501: MOV dword ptr [EDI + 0xa08],EAX
+	{ 0x004605b0, 2, 2572, 4, 12 }, // 00460501: MOV dword ptr [EDI + 0xa0c],EAX
+	{ 0x004605b9, 2, 2576, 4, 16 }, // 00460501: MOV dword ptr [EDI + 0xa10],EAX
+	{ 0x004605c3, 3, 2580, 4, 20 }, // 00460501: MOV word ptr [EDI + 0xa14],AX
 	{ 0x004605cd, 2, 3202, 5, 2 }, // 00460501: MOV dword ptr [EDI + 0xc82],EAX
+	{ 0x004605d6, 2, 3206, 5, 6 }, // 00460501: MOV dword ptr [EDI + 0xc86],EAX
+	{ 0x004605df, 2, 3210, 5, 10 }, // 00460501: MOV dword ptr [EDI + 0xc8a],EAX
+	{ 0x004605e8, 2, 3214, 5, 14 }, // 00460501: MOV dword ptr [EDI + 0xc8e],EAX
+	{ 0x004605f1, 2, 3218, 5, 18 }, // 00460501: MOV dword ptr [EDI + 0xc92],EAX
+	{ 0x004605fb, 3, 3222, 5, 22 }, // 00460501: MOV word ptr [EDI + 0xc96],AX
 	{ 0x00460605, 2, 3840, 6, 0 }, // 00460501: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x0046060e, 2, 3844, 6, 4 }, // 00460501: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x00460617, 2, 3848, 6, 8 }, // 00460501: MOV dword ptr [EDI + 0xf08],EAX
+	{ 0x00460620, 2, 3852, 6, 12 }, // 00460501: MOV dword ptr [EDI + 0xf0c],EAX
+	{ 0x00460629, 2, 3856, 6, 16 }, // 00460501: MOV dword ptr [EDI + 0xf10],EAX
+	{ 0x00460632, 2, 3860, 6, 20 }, // 00460501: MOV dword ptr [EDI + 0xf14],EAX
+	{ 0x0046063c, 3, 3864, 6, 24 }, // 00460501: MOV word ptr [EDI + 0xf18],AX
 	{ 0x00460654, 2, 4480, 7, 0 }, // 00460501: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x0046065d, 2, 4484, 7, 4 }, // 00460501: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x00460666, 2, 4488, 7, 8 }, // 00460501: MOV dword ptr [EDI + 0x1188],EAX
+	{ 0x0046066f, 2, 4492, 7, 12 }, // 00460501: MOV dword ptr [EDI + 0x118c],EAX
+	{ 0x00460678, 2, 4496, 7, 16 }, // 00460501: MOV dword ptr [EDI + 0x1190],EAX
+	{ 0x00460681, 2, 4500, 7, 20 }, // 00460501: MOV dword ptr [EDI + 0x1194],EAX
+	{ 0x0046068b, 3, 4504, 7, 24 }, // 00460501: MOV word ptr [EDI + 0x1198],AX
 	{ 0x00460695, 2, 5122, 8, 2 }, // 00460501: MOV dword ptr [EDI + 0x1402],EAX
+	{ 0x004606a1, 2, 5126, 8, 6 }, // 00460501: MOV dword ptr [EDI + 0x1406],EAX
+	{ 0x004606ad, 2, 5130, 8, 10 }, // 00460501: MOV dword ptr [EDI + 0x140a],EAX
+	{ 0x004606b9, 2, 5134, 8, 14 }, // 00460501: MOV dword ptr [EDI + 0x140e],EAX
+	{ 0x004606c5, 2, 5138, 8, 18 }, // 00460501: MOV dword ptr [EDI + 0x1412],EAX
+	{ 0x004606d2, 3, 5142, 8, 22 }, // 00460501: MOV word ptr [EDI + 0x1416],AX
+	{ 0x004606df, 2, 5764, 9, 4 }, // 00460501: MOV dword ptr [EDI + 0x1684],EAX
+	{ 0x004606eb, 2, 5768, 9, 8 }, // 00460501: MOV dword ptr [EDI + 0x1688],EAX
+	{ 0x004606f7, 2, 5772, 9, 12 }, // 00460501: MOV dword ptr [EDI + 0x168c],EAX
+	{ 0x00460703, 2, 5776, 9, 16 }, // 00460501: MOV dword ptr [EDI + 0x1690],EAX
+	{ 0x00460710, 3, 5780, 9, 20 }, // 00460501: MOV word ptr [EDI + 0x1694],AX
+	{ 0x0046071d, 2, 6406, 10, 6 }, // 00460501: MOV dword ptr [EDI + 0x1906],EAX
+	{ 0x00460729, 2, 6410, 10, 10 }, // 00460501: MOV dword ptr [EDI + 0x190a],EAX
+	{ 0x00460735, 2, 6414, 10, 14 }, // 00460501: MOV dword ptr [EDI + 0x190e],EAX
+	{ 0x00460742, 3, 6418, 10, 18 }, // 00460501: MOV word ptr [EDI + 0x1912],AX
+	{ 0x0046074f, 2, 7048, 11, 8 }, // 00460501: MOV dword ptr [EDI + 0x1b88],EAX
+	{ 0x0046075b, 2, 7052, 11, 12 }, // 00460501: MOV dword ptr [EDI + 0x1b8c],EAX
+	{ 0x00460768, 3, 7056, 11, 16 }, // 00460501: MOV word ptr [EDI + 0x1b90],AX
+	{ 0x00460775, 2, 7690, 12, 10 }, // 00460501: MOV dword ptr [EDI + 0x1e0a],EAX
+	{ 0x00460782, 3, 7694, 12, 14 }, // 00460501: MOV word ptr [EDI + 0x1e0e],AX
+	{ 0x00460790, 3, 8332, 13, 12 }, // 00460501: MOV word ptr [EDI + 0x208c],AX
 	{ 0x004607dd, 3, 640, 1, 0 }, // 0046079d: MOV word ptr [EDI + 0x280],AX
 	{ 0x004607e7, 2, 1280, 2, 0 }, // 0046079d: MOV dword ptr [EDI + 0x500],EAX
 	{ 0x004607f0, 2, 1920, 3, 0 }, // 0046079d: MOV dword ptr [EDI + 0x780],EAX
+	{ 0x004607fa, 3, 1924, 3, 4 }, // 0046079d: MOV word ptr [EDI + 0x784],AX
 	{ 0x00460804, 2, 2560, 4, 0 }, // 0046079d: MOV dword ptr [EDI + 0xa00],EAX
+	{ 0x0046080d, 2, 2564, 4, 4 }, // 0046079d: MOV dword ptr [EDI + 0xa04],EAX
 	{ 0x00460816, 2, 3200, 5, 0 }, // 0046079d: MOV dword ptr [EDI + 0xc80],EAX
+	{ 0x0046081f, 2, 3204, 5, 4 }, // 0046079d: MOV dword ptr [EDI + 0xc84],EAX
+	{ 0x00460829, 3, 3208, 5, 8 }, // 0046079d: MOV word ptr [EDI + 0xc88],AX
 	{ 0x00460833, 2, 3840, 6, 0 }, // 0046079d: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x0046083c, 2, 3844, 6, 4 }, // 0046079d: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x00460845, 2, 3848, 6, 8 }, // 0046079d: MOV dword ptr [EDI + 0xf08],EAX
 	{ 0x0046084e, 2, 4480, 7, 0 }, // 0046079d: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x00460857, 2, 4484, 7, 4 }, // 0046079d: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x00460860, 2, 4488, 7, 8 }, // 0046079d: MOV dword ptr [EDI + 0x1188],EAX
 	{ 0x0046086c, 2, 5120, 8, 0 }, // 0046079d: MOV dword ptr [EDI + 0x1400],EAX
+	{ 0x00460878, 2, 5124, 8, 4 }, // 0046079d: MOV dword ptr [EDI + 0x1404],EAX
+	{ 0x00460885, 3, 5128, 8, 8 }, // 0046079d: MOV word ptr [EDI + 0x1408],AX
 	{ 0x00460892, 2, 5760, 9, 0 }, // 0046079d: MOV dword ptr [EDI + 0x1680],EAX
+	{ 0x0046089e, 2, 5764, 9, 4 }, // 0046079d: MOV dword ptr [EDI + 0x1684],EAX
 	{ 0x004608aa, 2, 6400, 10, 0 }, // 0046079d: MOV dword ptr [EDI + 0x1900],EAX
+	{ 0x004608b7, 3, 6404, 10, 4 }, // 0046079d: MOV word ptr [EDI + 0x1904],AX
 	{ 0x004608c4, 2, 7040, 11, 0 }, // 0046079d: MOV dword ptr [EDI + 0x1b80],EAX
 	{ 0x004608d1, 3, 7680, 12, 0 }, // 0046079d: MOV word ptr [EDI + 0x1e00],AX
+	{ 0x0046091e, 3, 650, 1, 10 }, // 004608de: MOV word ptr [EDI + 0x28a],AX
+	{ 0x00460928, 2, 1288, 2, 8 }, // 004608de: MOV dword ptr [EDI + 0x508],EAX
+	{ 0x00460931, 2, 1926, 3, 6 }, // 004608de: MOV dword ptr [EDI + 0x786],EAX
+	{ 0x0046093b, 3, 1930, 3, 10 }, // 004608de: MOV word ptr [EDI + 0x78a],AX
+	{ 0x00460945, 2, 2564, 4, 4 }, // 004608de: MOV dword ptr [EDI + 0xa04],EAX
+	{ 0x0046094e, 2, 2568, 4, 8 }, // 004608de: MOV dword ptr [EDI + 0xa08],EAX
 	{ 0x00460957, 2, 3202, 5, 2 }, // 004608de: MOV dword ptr [EDI + 0xc82],EAX
+	{ 0x00460960, 2, 3206, 5, 6 }, // 004608de: MOV dword ptr [EDI + 0xc86],EAX
+	{ 0x0046096a, 3, 3210, 5, 10 }, // 004608de: MOV word ptr [EDI + 0xc8a],AX
 	{ 0x00460974, 2, 3840, 6, 0 }, // 004608de: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x0046097d, 2, 3844, 6, 4 }, // 004608de: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x00460986, 2, 3848, 6, 8 }, // 004608de: MOV dword ptr [EDI + 0xf08],EAX
 	{ 0x0046098f, 2, 4480, 7, 0 }, // 004608de: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x00460998, 2, 4484, 7, 4 }, // 004608de: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x004609a1, 2, 4488, 7, 8 }, // 004608de: MOV dword ptr [EDI + 0x1188],EAX
 	{ 0x004609aa, 2, 5122, 8, 2 }, // 004608de: MOV dword ptr [EDI + 0x1402],EAX
+	{ 0x004609b6, 2, 5126, 8, 6 }, // 004608de: MOV dword ptr [EDI + 0x1406],EAX
+	{ 0x004609c3, 3, 5130, 8, 10 }, // 004608de: MOV word ptr [EDI + 0x140a],AX
+	{ 0x004609d0, 2, 5764, 9, 4 }, // 004608de: MOV dword ptr [EDI + 0x1684],EAX
+	{ 0x004609dc, 2, 5768, 9, 8 }, // 004608de: MOV dword ptr [EDI + 0x1688],EAX
+	{ 0x004609e8, 2, 6406, 10, 6 }, // 004608de: MOV dword ptr [EDI + 0x1906],EAX
+	{ 0x004609f5, 3, 6410, 10, 10 }, // 004608de: MOV word ptr [EDI + 0x190a],AX
+	{ 0x00460a02, 2, 7048, 11, 8 }, // 004608de: MOV dword ptr [EDI + 0x1b88],EAX
+	{ 0x00460a0f, 3, 7690, 12, 10 }, // 004608de: MOV word ptr [EDI + 0x1e0a],AX
 	{ 0x00460a68, 2, 3840, 6, 0 }, // 00460a1c: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x00460a79, 2, 3841, 6, 1 }, // 00460a1c: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x00460a8d, 2, 3200, 5, 0 }, // 00460a1c: MOV byte ptr [EDI + 0xc80],AL
@@ -435,17 +3124,63 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x00460c55, 2, 3200, 5, 0 }, // 00460a1c: MOV byte ptr [EDI + 0xc80],AL
 	{ 0x00460c66, 2, 3201, 5, 1 }, // 00460a1c: MOV byte ptr [EDI + 0xc81],AL
 	{ 0x00460c77, 2, 2562, 4, 2 }, // 00460a1c: MOV byte ptr [EDI + 0xa02],AL
+	{ 0x00460c88, 2, 2563, 4, 3 }, // 00460a1c: MOV byte ptr [EDI + 0xa03],AL
+	{ 0x00460c99, 2, 1924, 3, 4 }, // 00460a1c: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00460caa, 2, 1925, 3, 5 }, // 00460a1c: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00460cbb, 2, 1286, 2, 6 }, // 00460a1c: MOV byte ptr [EDI + 0x506],AL
+	{ 0x00460ccc, 2, 1287, 2, 7 }, // 00460a1c: MOV byte ptr [EDI + 0x507],AL
+	{ 0x00460cdd, 2, 648, 1, 8 }, // 00460a1c: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00460cee, 2, 649, 1, 9 }, // 00460a1c: MOV byte ptr [EDI + 0x289],AL
+	{ 0x00460d3a, 2, 656, 1, 16 }, // 00460a1c: MOV byte ptr [EDI + 0x290],AL
+	{ 0x00460d4b, 2, 657, 1, 17 }, // 00460a1c: MOV byte ptr [EDI + 0x291],AL
+	{ 0x00460d5c, 2, 1298, 2, 18 }, // 00460a1c: MOV byte ptr [EDI + 0x512],AL
+	{ 0x00460d6d, 2, 1299, 2, 19 }, // 00460a1c: MOV byte ptr [EDI + 0x513],AL
+	{ 0x00460d7e, 2, 1940, 3, 20 }, // 00460a1c: MOV byte ptr [EDI + 0x794],AL
+	{ 0x00460d8f, 2, 1941, 3, 21 }, // 00460a1c: MOV byte ptr [EDI + 0x795],AL
+	{ 0x00460da0, 2, 2582, 4, 22 }, // 00460a1c: MOV byte ptr [EDI + 0xa16],AL
+	{ 0x00460db1, 2, 2583, 4, 23 }, // 00460a1c: MOV byte ptr [EDI + 0xa17],AL
+	{ 0x00460dc2, 2, 3224, 5, 24 }, // 00460a1c: MOV byte ptr [EDI + 0xc98],AL
+	{ 0x00460dd3, 2, 3225, 5, 25 }, // 00460a1c: MOV byte ptr [EDI + 0xc99],AL
 	{ 0x00460df1, 2, 2560, 4, 0 }, // 00460a1c: MOV byte ptr [EDI + 0xa00],AL
 	{ 0x00460e02, 2, 2561, 4, 1 }, // 00460a1c: MOV byte ptr [EDI + 0xa01],AL
 	{ 0x00460e13, 2, 1922, 3, 2 }, // 00460a1c: MOV byte ptr [EDI + 0x782],AL
+	{ 0x00460e24, 2, 1923, 3, 3 }, // 00460a1c: MOV byte ptr [EDI + 0x783],AL
+	{ 0x00460e35, 2, 1284, 2, 4 }, // 00460a1c: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00460e46, 2, 1285, 2, 5 }, // 00460a1c: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00460e57, 2, 646, 1, 6 }, // 00460a1c: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00460e68, 2, 647, 1, 7 }, // 00460a1c: MOV byte ptr [EDI + 0x287],AL
+	{ 0x00460eb4, 2, 658, 1, 18 }, // 00460a1c: MOV byte ptr [EDI + 0x292],AL
+	{ 0x00460ec5, 2, 659, 1, 19 }, // 00460a1c: MOV byte ptr [EDI + 0x293],AL
+	{ 0x00460ed6, 2, 1300, 2, 20 }, // 00460a1c: MOV byte ptr [EDI + 0x514],AL
+	{ 0x00460ee7, 2, 1301, 2, 21 }, // 00460a1c: MOV byte ptr [EDI + 0x515],AL
+	{ 0x00460ef8, 2, 1942, 3, 22 }, // 00460a1c: MOV byte ptr [EDI + 0x796],AL
+	{ 0x00460f09, 2, 1943, 3, 23 }, // 00460a1c: MOV byte ptr [EDI + 0x797],AL
+	{ 0x00460f1a, 2, 2584, 4, 24 }, // 00460a1c: MOV byte ptr [EDI + 0xa18],AL
+	{ 0x00460f2b, 2, 2585, 4, 25 }, // 00460a1c: MOV byte ptr [EDI + 0xa19],AL
 	{ 0x00460f49, 2, 1920, 3, 0 }, // 00460a1c: MOV byte ptr [EDI + 0x780],AL
 	{ 0x00460f5a, 2, 1921, 3, 1 }, // 00460a1c: MOV byte ptr [EDI + 0x781],AL
 	{ 0x00460f6b, 2, 1282, 2, 2 }, // 00460a1c: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00460f7c, 2, 1283, 2, 3 }, // 00460a1c: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00460f8d, 2, 644, 1, 4 }, // 00460a1c: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00460f9e, 2, 645, 1, 5 }, // 00460a1c: MOV byte ptr [EDI + 0x285],AL
+	{ 0x00460fea, 2, 660, 1, 20 }, // 00460a1c: MOV byte ptr [EDI + 0x294],AL
+	{ 0x00460ffb, 2, 661, 1, 21 }, // 00460a1c: MOV byte ptr [EDI + 0x295],AL
+	{ 0x0046100c, 2, 1302, 2, 22 }, // 00460a1c: MOV byte ptr [EDI + 0x516],AL
+	{ 0x0046101d, 2, 1303, 2, 23 }, // 00460a1c: MOV byte ptr [EDI + 0x517],AL
+	{ 0x0046102e, 2, 1944, 3, 24 }, // 00460a1c: MOV byte ptr [EDI + 0x798],AL
+	{ 0x0046103f, 2, 1945, 3, 25 }, // 00460a1c: MOV byte ptr [EDI + 0x799],AL
 	{ 0x0046105d, 2, 1280, 2, 0 }, // 00460a1c: MOV byte ptr [EDI + 0x500],AL
 	{ 0x0046106e, 2, 1281, 2, 1 }, // 00460a1c: MOV byte ptr [EDI + 0x501],AL
 	{ 0x0046107f, 2, 642, 1, 2 }, // 00460a1c: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00461090, 2, 643, 1, 3 }, // 00460a1c: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004610dc, 2, 662, 1, 22 }, // 00460a1c: MOV byte ptr [EDI + 0x296],AL
+	{ 0x004610ed, 2, 663, 1, 23 }, // 00460a1c: MOV byte ptr [EDI + 0x297],AL
+	{ 0x004610fe, 2, 1304, 2, 24 }, // 00460a1c: MOV byte ptr [EDI + 0x518],AL
+	{ 0x0046110f, 2, 1305, 2, 25 }, // 00460a1c: MOV byte ptr [EDI + 0x519],AL
 	{ 0x0046112d, 2, 640, 1, 0 }, // 00460a1c: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0046113e, 2, 641, 1, 1 }, // 00460a1c: MOV byte ptr [EDI + 0x281],AL
+	{ 0x0046118a, 2, 664, 1, 24 }, // 00460a1c: MOV byte ptr [EDI + 0x298],AL
+	{ 0x0046119b, 2, 665, 1, 25 }, // 00460a1c: MOV byte ptr [EDI + 0x299],AL
 	{ 0x0046123e, 2, 640, 1, 0 }, // 004611ef: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0046124f, 2, 641, 1, 1 }, // 004611ef: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00461263, 2, 1280, 2, 0 }, // 004611ef: MOV byte ptr [EDI + 0x500],AL
@@ -459,6 +3194,35 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x004612f7, 2, 3840, 6, 0 }, // 004611ef: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x00461308, 2, 3841, 6, 1 }, // 004611ef: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x0046134d, 2, 642, 1, 2 }, // 004611ef: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0046135e, 2, 643, 1, 3 }, // 004611ef: MOV byte ptr [EDI + 0x283],AL
+	{ 0x0046136f, 2, 1284, 2, 4 }, // 004611ef: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00461380, 2, 1285, 2, 5 }, // 004611ef: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00461391, 2, 1926, 3, 6 }, // 004611ef: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004613a2, 2, 1927, 3, 7 }, // 004611ef: MOV byte ptr [EDI + 0x787],AL
+	{ 0x004613b3, 2, 2568, 4, 8 }, // 004611ef: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x004613c4, 2, 2569, 4, 9 }, // 004611ef: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x004613d5, 2, 3210, 5, 10 }, // 004611ef: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x004613e6, 2, 3211, 5, 11 }, // 004611ef: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x00461423, 2, 644, 1, 4 }, // 004611ef: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00461434, 2, 645, 1, 5 }, // 004611ef: MOV byte ptr [EDI + 0x285],AL
+	{ 0x00461445, 2, 1286, 2, 6 }, // 004611ef: MOV byte ptr [EDI + 0x506],AL
+	{ 0x00461456, 2, 1287, 2, 7 }, // 004611ef: MOV byte ptr [EDI + 0x507],AL
+	{ 0x00461467, 2, 1928, 3, 8 }, // 004611ef: MOV byte ptr [EDI + 0x788],AL
+	{ 0x00461478, 2, 1929, 3, 9 }, // 004611ef: MOV byte ptr [EDI + 0x789],AL
+	{ 0x00461489, 2, 2570, 4, 10 }, // 004611ef: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x0046149a, 2, 2571, 4, 11 }, // 004611ef: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x004614d7, 2, 646, 1, 6 }, // 004611ef: MOV byte ptr [EDI + 0x286],AL
+	{ 0x004614e8, 2, 647, 1, 7 }, // 004611ef: MOV byte ptr [EDI + 0x287],AL
+	{ 0x004614f9, 2, 1288, 2, 8 }, // 004611ef: MOV byte ptr [EDI + 0x508],AL
+	{ 0x0046150a, 2, 1289, 2, 9 }, // 004611ef: MOV byte ptr [EDI + 0x509],AL
+	{ 0x0046151b, 2, 1930, 3, 10 }, // 004611ef: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x0046152c, 2, 1931, 3, 11 }, // 004611ef: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x00461569, 2, 648, 1, 8 }, // 004611ef: MOV byte ptr [EDI + 0x288],AL
+	{ 0x0046157a, 2, 649, 1, 9 }, // 004611ef: MOV byte ptr [EDI + 0x289],AL
+	{ 0x0046158b, 2, 1290, 2, 10 }, // 004611ef: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x0046159c, 2, 1291, 2, 11 }, // 004611ef: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x004615d9, 2, 650, 1, 10 }, // 004611ef: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x004615ea, 2, 651, 1, 11 }, // 004611ef: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x0046166f, 2, 3840, 6, 0 }, // 00461623: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x00461680, 2, 3841, 6, 1 }, // 00461623: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x00461694, 2, 3200, 5, 0 }, // 00461623: MOV byte ptr [EDI + 0xc80],AL
@@ -474,15 +3238,31 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x00461763, 2, 3200, 5, 0 }, // 00461623: MOV byte ptr [EDI + 0xc80],AL
 	{ 0x00461774, 2, 3201, 5, 1 }, // 00461623: MOV byte ptr [EDI + 0xc81],AL
 	{ 0x00461785, 2, 2562, 4, 2 }, // 00461623: MOV byte ptr [EDI + 0xa02],AL
+	{ 0x00461796, 2, 2563, 4, 3 }, // 00461623: MOV byte ptr [EDI + 0xa03],AL
+	{ 0x004617a7, 2, 1924, 3, 4 }, // 00461623: MOV byte ptr [EDI + 0x784],AL
+	{ 0x004617b8, 2, 1925, 3, 5 }, // 00461623: MOV byte ptr [EDI + 0x785],AL
+	{ 0x004617c9, 2, 1286, 2, 6 }, // 00461623: MOV byte ptr [EDI + 0x506],AL
+	{ 0x004617da, 2, 1287, 2, 7 }, // 00461623: MOV byte ptr [EDI + 0x507],AL
+	{ 0x004617eb, 2, 648, 1, 8 }, // 00461623: MOV byte ptr [EDI + 0x288],AL
+	{ 0x004617fc, 2, 649, 1, 9 }, // 00461623: MOV byte ptr [EDI + 0x289],AL
 	{ 0x00461839, 2, 2560, 4, 0 }, // 00461623: MOV byte ptr [EDI + 0xa00],AL
 	{ 0x0046184a, 2, 2561, 4, 1 }, // 00461623: MOV byte ptr [EDI + 0xa01],AL
 	{ 0x0046185b, 2, 1922, 3, 2 }, // 00461623: MOV byte ptr [EDI + 0x782],AL
+	{ 0x0046186c, 2, 1923, 3, 3 }, // 00461623: MOV byte ptr [EDI + 0x783],AL
+	{ 0x0046187d, 2, 1284, 2, 4 }, // 00461623: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0046188e, 2, 1285, 2, 5 }, // 00461623: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0046189f, 2, 646, 1, 6 }, // 00461623: MOV byte ptr [EDI + 0x286],AL
+	{ 0x004618b0, 2, 647, 1, 7 }, // 00461623: MOV byte ptr [EDI + 0x287],AL
 	{ 0x004618ed, 2, 1920, 3, 0 }, // 00461623: MOV byte ptr [EDI + 0x780],AL
 	{ 0x004618fe, 2, 1921, 3, 1 }, // 00461623: MOV byte ptr [EDI + 0x781],AL
 	{ 0x0046190f, 2, 1282, 2, 2 }, // 00461623: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00461920, 2, 1283, 2, 3 }, // 00461623: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00461931, 2, 644, 1, 4 }, // 00461623: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00461942, 2, 645, 1, 5 }, // 00461623: MOV byte ptr [EDI + 0x285],AL
 	{ 0x0046197f, 2, 1280, 2, 0 }, // 00461623: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00461990, 2, 1281, 2, 1 }, // 00461623: MOV byte ptr [EDI + 0x501],AL
 	{ 0x004619a1, 2, 642, 1, 2 }, // 00461623: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004619b2, 2, 643, 1, 3 }, // 00461623: MOV byte ptr [EDI + 0x283],AL
 	{ 0x004619ef, 2, 640, 1, 0 }, // 00461623: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00461a00, 2, 641, 1, 1 }, // 00461623: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00461aa0, 2, 3840, 6, 0 }, // 00461a54: MOV byte ptr [EDI + 0xf00],AL
@@ -500,15 +3280,31 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x00461bbf, 2, 3200, 5, 0 }, // 00461a54: MOV byte ptr [EDI + 0xc80],AL
 	{ 0x00461bd0, 2, 3201, 5, 1 }, // 00461a54: MOV byte ptr [EDI + 0xc81],AL
 	{ 0x00461be1, 2, 2562, 4, 2 }, // 00461a54: MOV byte ptr [EDI + 0xa02],AL
+	{ 0x00461bf2, 2, 2563, 4, 3 }, // 00461a54: MOV byte ptr [EDI + 0xa03],AL
+	{ 0x00461c03, 2, 1924, 3, 4 }, // 00461a54: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00461c14, 2, 1925, 3, 5 }, // 00461a54: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00461c25, 2, 1286, 2, 6 }, // 00461a54: MOV byte ptr [EDI + 0x506],AL
+	{ 0x00461c36, 2, 1287, 2, 7 }, // 00461a54: MOV byte ptr [EDI + 0x507],AL
+	{ 0x00461c47, 2, 648, 1, 8 }, // 00461a54: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00461c58, 2, 649, 1, 9 }, // 00461a54: MOV byte ptr [EDI + 0x289],AL
 	{ 0x00461ca2, 2, 2560, 4, 0 }, // 00461a54: MOV byte ptr [EDI + 0xa00],AL
 	{ 0x00461cb3, 2, 2561, 4, 1 }, // 00461a54: MOV byte ptr [EDI + 0xa01],AL
 	{ 0x00461cc4, 2, 1922, 3, 2 }, // 00461a54: MOV byte ptr [EDI + 0x782],AL
+	{ 0x00461cd5, 2, 1923, 3, 3 }, // 00461a54: MOV byte ptr [EDI + 0x783],AL
+	{ 0x00461ce6, 2, 1284, 2, 4 }, // 00461a54: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00461cf7, 2, 1285, 2, 5 }, // 00461a54: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00461d08, 2, 646, 1, 6 }, // 00461a54: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00461d19, 2, 647, 1, 7 }, // 00461a54: MOV byte ptr [EDI + 0x287],AL
 	{ 0x00461d63, 2, 1920, 3, 0 }, // 00461a54: MOV byte ptr [EDI + 0x780],AL
 	{ 0x00461d74, 2, 1921, 3, 1 }, // 00461a54: MOV byte ptr [EDI + 0x781],AL
 	{ 0x00461d85, 2, 1282, 2, 2 }, // 00461a54: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00461d96, 2, 1283, 2, 3 }, // 00461a54: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00461da7, 2, 644, 1, 4 }, // 00461a54: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00461db8, 2, 645, 1, 5 }, // 00461a54: MOV byte ptr [EDI + 0x285],AL
 	{ 0x00461e02, 2, 1280, 2, 0 }, // 00461a54: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00461e13, 2, 1281, 2, 1 }, // 00461a54: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00461e24, 2, 642, 1, 2 }, // 00461a54: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00461e35, 2, 643, 1, 3 }, // 00461a54: MOV byte ptr [EDI + 0x283],AL
 	{ 0x00461e7f, 2, 640, 1, 0 }, // 00461a54: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00461e90, 2, 641, 1, 1 }, // 00461a54: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00461f82, 2, 640, 1, 0 }, // 00461efb: MOV byte ptr [EDI + 0x280],AL
@@ -524,45 +3320,298 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x0046203b, 2, 3840, 6, 0 }, // 00461efb: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x0046204c, 2, 3841, 6, 1 }, // 00461efb: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x0046209e, 2, 642, 1, 2 }, // 00461efb: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004620af, 2, 643, 1, 3 }, // 00461efb: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004620c0, 2, 1284, 2, 4 }, // 00461efb: MOV byte ptr [EDI + 0x504],AL
+	{ 0x004620d1, 2, 1285, 2, 5 }, // 00461efb: MOV byte ptr [EDI + 0x505],AL
+	{ 0x004620e2, 2, 1926, 3, 6 }, // 00461efb: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004620f3, 2, 1927, 3, 7 }, // 00461efb: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00462104, 2, 2568, 4, 8 }, // 00461efb: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00462115, 2, 2569, 4, 9 }, // 00461efb: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x00462126, 2, 3210, 5, 10 }, // 00461efb: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x00462137, 2, 3211, 5, 11 }, // 00461efb: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x00462174, 2, 644, 1, 4 }, // 00461efb: MOV byte ptr [EDI + 0x284],AL
+	{ 0x00462185, 2, 645, 1, 5 }, // 00461efb: MOV byte ptr [EDI + 0x285],AL
+	{ 0x00462196, 2, 1286, 2, 6 }, // 00461efb: MOV byte ptr [EDI + 0x506],AL
+	{ 0x004621a7, 2, 1287, 2, 7 }, // 00461efb: MOV byte ptr [EDI + 0x507],AL
+	{ 0x004621b8, 2, 1928, 3, 8 }, // 00461efb: MOV byte ptr [EDI + 0x788],AL
+	{ 0x004621c9, 2, 1929, 3, 9 }, // 00461efb: MOV byte ptr [EDI + 0x789],AL
+	{ 0x004621da, 2, 2570, 4, 10 }, // 00461efb: MOV byte ptr [EDI + 0xa0a],AL
+	{ 0x004621eb, 2, 2571, 4, 11 }, // 00461efb: MOV byte ptr [EDI + 0xa0b],AL
+	{ 0x00462228, 2, 646, 1, 6 }, // 00461efb: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00462239, 2, 647, 1, 7 }, // 00461efb: MOV byte ptr [EDI + 0x287],AL
+	{ 0x0046224a, 2, 1288, 2, 8 }, // 00461efb: MOV byte ptr [EDI + 0x508],AL
+	{ 0x0046225b, 2, 1289, 2, 9 }, // 00461efb: MOV byte ptr [EDI + 0x509],AL
+	{ 0x0046226c, 2, 1930, 3, 10 }, // 00461efb: MOV byte ptr [EDI + 0x78a],AL
+	{ 0x0046227d, 2, 1931, 3, 11 }, // 00461efb: MOV byte ptr [EDI + 0x78b],AL
+	{ 0x004622ba, 2, 648, 1, 8 }, // 00461efb: MOV byte ptr [EDI + 0x288],AL
+	{ 0x004622cb, 2, 649, 1, 9 }, // 00461efb: MOV byte ptr [EDI + 0x289],AL
+	{ 0x004622dc, 2, 1290, 2, 10 }, // 00461efb: MOV byte ptr [EDI + 0x50a],AL
+	{ 0x004622ed, 2, 1291, 2, 11 }, // 00461efb: MOV byte ptr [EDI + 0x50b],AL
+	{ 0x0046232a, 2, 650, 1, 10 }, // 00461efb: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x0046233b, 2, 651, 1, 11 }, // 00461efb: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x004623e4, 2, 650, 1, 10 }, // 00462374: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x004623f5, 2, 651, 1, 11 }, // 00462374: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00462422, 2, 654, 1, 14 }, // 00462374: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x00462433, 2, 655, 1, 15 }, // 00462374: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x0046245a, 2, 1288, 2, 8 }, // 00462374: MOV byte ptr [EDI + 0x508],AL
+	{ 0x0046246b, 2, 1289, 2, 9 }, // 00462374: MOV byte ptr [EDI + 0x509],AL
+	{ 0x0046247c, 2, 650, 1, 10 }, // 00462374: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x0046248d, 2, 651, 1, 11 }, // 00462374: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x004624ba, 2, 654, 1, 14 }, // 00462374: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x004624cb, 2, 655, 1, 15 }, // 00462374: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x004624dc, 2, 1296, 2, 16 }, // 00462374: MOV byte ptr [EDI + 0x510],AL
+	{ 0x004624ed, 2, 1297, 2, 17 }, // 00462374: MOV byte ptr [EDI + 0x511],AL
+	{ 0x00462514, 2, 1926, 3, 6 }, // 00462374: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00462525, 2, 1927, 3, 7 }, // 00462374: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00462536, 2, 1288, 2, 8 }, // 00462374: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00462547, 2, 1289, 2, 9 }, // 00462374: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00462558, 2, 650, 1, 10 }, // 00462374: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00462569, 2, 651, 1, 11 }, // 00462374: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00462596, 2, 654, 1, 14 }, // 00462374: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x004625a7, 2, 655, 1, 15 }, // 00462374: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x004625b8, 2, 1296, 2, 16 }, // 00462374: MOV byte ptr [EDI + 0x510],AL
+	{ 0x004625c9, 2, 1297, 2, 17 }, // 00462374: MOV byte ptr [EDI + 0x511],AL
+	{ 0x004625da, 2, 1938, 3, 18 }, // 00462374: MOV byte ptr [EDI + 0x792],AL
+	{ 0x004625eb, 2, 1939, 3, 19 }, // 00462374: MOV byte ptr [EDI + 0x793],AL
+	{ 0x00462612, 2, 2564, 4, 4 }, // 00462374: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x00462623, 2, 2565, 4, 5 }, // 00462374: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x00462634, 2, 1926, 3, 6 }, // 00462374: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00462645, 2, 1927, 3, 7 }, // 00462374: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00462656, 2, 1288, 2, 8 }, // 00462374: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00462667, 2, 1289, 2, 9 }, // 00462374: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00462678, 2, 650, 1, 10 }, // 00462374: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00462689, 2, 651, 1, 11 }, // 00462374: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x004626b6, 2, 654, 1, 14 }, // 00462374: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x004626c7, 2, 655, 1, 15 }, // 00462374: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x004626d8, 2, 1296, 2, 16 }, // 00462374: MOV byte ptr [EDI + 0x510],AL
+	{ 0x004626e9, 2, 1297, 2, 17 }, // 00462374: MOV byte ptr [EDI + 0x511],AL
+	{ 0x004626fa, 2, 1938, 3, 18 }, // 00462374: MOV byte ptr [EDI + 0x792],AL
+	{ 0x0046270b, 2, 1939, 3, 19 }, // 00462374: MOV byte ptr [EDI + 0x793],AL
+	{ 0x0046271c, 2, 2580, 4, 20 }, // 00462374: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x0046272d, 2, 2581, 4, 21 }, // 00462374: MOV byte ptr [EDI + 0xa15],AL
 	{ 0x00462754, 2, 3202, 5, 2 }, // 00462374: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x00462765, 2, 3203, 5, 3 }, // 00462374: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x00462776, 2, 2564, 4, 4 }, // 00462374: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x00462787, 2, 2565, 4, 5 }, // 00462374: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x00462798, 2, 1926, 3, 6 }, // 00462374: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004627a9, 2, 1927, 3, 7 }, // 00462374: MOV byte ptr [EDI + 0x787],AL
+	{ 0x004627ba, 2, 1288, 2, 8 }, // 00462374: MOV byte ptr [EDI + 0x508],AL
+	{ 0x004627cb, 2, 1289, 2, 9 }, // 00462374: MOV byte ptr [EDI + 0x509],AL
+	{ 0x004627dc, 2, 650, 1, 10 }, // 00462374: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x004627ed, 2, 651, 1, 11 }, // 00462374: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x0046281a, 2, 654, 1, 14 }, // 00462374: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x0046282b, 2, 655, 1, 15 }, // 00462374: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x0046283c, 2, 1296, 2, 16 }, // 00462374: MOV byte ptr [EDI + 0x510],AL
+	{ 0x0046284d, 2, 1297, 2, 17 }, // 00462374: MOV byte ptr [EDI + 0x511],AL
+	{ 0x0046285e, 2, 1938, 3, 18 }, // 00462374: MOV byte ptr [EDI + 0x792],AL
+	{ 0x0046286f, 2, 1939, 3, 19 }, // 00462374: MOV byte ptr [EDI + 0x793],AL
+	{ 0x00462880, 2, 2580, 4, 20 }, // 00462374: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x00462891, 2, 2581, 4, 21 }, // 00462374: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x004628a2, 2, 3222, 5, 22 }, // 00462374: MOV byte ptr [EDI + 0xc96],AL
+	{ 0x004628b3, 2, 3223, 5, 23 }, // 00462374: MOV byte ptr [EDI + 0xc97],AL
 	{ 0x004628d7, 2, 3840, 6, 0 }, // 00462374: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x004628e8, 2, 3841, 6, 1 }, // 00462374: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x004628f9, 2, 3202, 5, 2 }, // 00462374: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x0046290a, 2, 3203, 5, 3 }, // 00462374: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x0046291b, 2, 2564, 4, 4 }, // 00462374: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x0046292c, 2, 2565, 4, 5 }, // 00462374: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x0046293d, 2, 1926, 3, 6 }, // 00462374: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0046294e, 2, 1927, 3, 7 }, // 00462374: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0046295f, 2, 1288, 2, 8 }, // 00462374: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00462970, 2, 1289, 2, 9 }, // 00462374: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00462981, 2, 650, 1, 10 }, // 00462374: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00462992, 2, 651, 1, 11 }, // 00462374: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x004629bf, 2, 654, 1, 14 }, // 00462374: MOV byte ptr [EDI + 0x28e],AL
+	{ 0x004629d0, 2, 655, 1, 15 }, // 00462374: MOV byte ptr [EDI + 0x28f],AL
+	{ 0x004629e1, 2, 1296, 2, 16 }, // 00462374: MOV byte ptr [EDI + 0x510],AL
+	{ 0x004629f2, 2, 1297, 2, 17 }, // 00462374: MOV byte ptr [EDI + 0x511],AL
+	{ 0x00462a03, 2, 1938, 3, 18 }, // 00462374: MOV byte ptr [EDI + 0x792],AL
+	{ 0x00462a14, 2, 1939, 3, 19 }, // 00462374: MOV byte ptr [EDI + 0x793],AL
+	{ 0x00462a25, 2, 2580, 4, 20 }, // 00462374: MOV byte ptr [EDI + 0xa14],AL
+	{ 0x00462a36, 2, 2581, 4, 21 }, // 00462374: MOV byte ptr [EDI + 0xa15],AL
+	{ 0x00462a47, 2, 3222, 5, 22 }, // 00462374: MOV byte ptr [EDI + 0xc96],AL
+	{ 0x00462a58, 2, 3223, 5, 23 }, // 00462374: MOV byte ptr [EDI + 0xc97],AL
+	{ 0x00462a69, 2, 3864, 6, 24 }, // 00462374: MOV byte ptr [EDI + 0xf18],AL
+	{ 0x00462a7a, 2, 3865, 6, 25 }, // 00462374: MOV byte ptr [EDI + 0xf19],AL
 	{ 0x00462ae8, 2, 640, 1, 0 }, // 00462a97: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00462af9, 2, 641, 1, 1 }, // 00462a97: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00462b20, 2, 640, 1, 0 }, // 00462a97: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00462b31, 2, 641, 1, 1 }, // 00462a97: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00462b42, 2, 1282, 2, 2 }, // 00462a97: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00462b53, 2, 1283, 2, 3 }, // 00462a97: MOV byte ptr [EDI + 0x503],AL
 	{ 0x00462b7a, 2, 640, 1, 0 }, // 00462a97: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00462b8b, 2, 641, 1, 1 }, // 00462a97: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00462b9c, 2, 1282, 2, 2 }, // 00462a97: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00462bad, 2, 1283, 2, 3 }, // 00462a97: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00462bbe, 2, 1924, 3, 4 }, // 00462a97: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00462bcf, 2, 1925, 3, 5 }, // 00462a97: MOV byte ptr [EDI + 0x785],AL
 	{ 0x00462bf6, 2, 640, 1, 0 }, // 00462a97: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00462c07, 2, 641, 1, 1 }, // 00462a97: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00462c18, 2, 1282, 2, 2 }, // 00462a97: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00462c29, 2, 1283, 2, 3 }, // 00462a97: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00462c3a, 2, 1924, 3, 4 }, // 00462a97: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00462c4b, 2, 1925, 3, 5 }, // 00462a97: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00462c5c, 2, 2566, 4, 6 }, // 00462a97: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x00462c6d, 2, 2567, 4, 7 }, // 00462a97: MOV byte ptr [EDI + 0xa07],AL
 	{ 0x00462c94, 2, 640, 1, 0 }, // 00462a97: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00462ca5, 2, 641, 1, 1 }, // 00462a97: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00462cb6, 2, 1282, 2, 2 }, // 00462a97: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00462cc7, 2, 1283, 2, 3 }, // 00462a97: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00462cd8, 2, 1924, 3, 4 }, // 00462a97: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00462ce9, 2, 1925, 3, 5 }, // 00462a97: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00462cfa, 2, 2566, 4, 6 }, // 00462a97: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x00462d0b, 2, 2567, 4, 7 }, // 00462a97: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x00462d1c, 2, 3208, 5, 8 }, // 00462a97: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x00462d2d, 2, 3209, 5, 9 }, // 00462a97: MOV byte ptr [EDI + 0xc89],AL
 	{ 0x00462d54, 2, 640, 1, 0 }, // 00462a97: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00462d65, 2, 641, 1, 1 }, // 00462a97: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00462d76, 2, 1282, 2, 2 }, // 00462a97: MOV byte ptr [EDI + 0x502],AL
+	{ 0x00462d87, 2, 1283, 2, 3 }, // 00462a97: MOV byte ptr [EDI + 0x503],AL
+	{ 0x00462d98, 2, 1924, 3, 4 }, // 00462a97: MOV byte ptr [EDI + 0x784],AL
+	{ 0x00462da9, 2, 1925, 3, 5 }, // 00462a97: MOV byte ptr [EDI + 0x785],AL
+	{ 0x00462dba, 2, 2566, 4, 6 }, // 00462a97: MOV byte ptr [EDI + 0xa06],AL
+	{ 0x00462dcb, 2, 2567, 4, 7 }, // 00462a97: MOV byte ptr [EDI + 0xa07],AL
+	{ 0x00462ddc, 2, 3208, 5, 8 }, // 00462a97: MOV byte ptr [EDI + 0xc88],AL
+	{ 0x00462ded, 2, 3209, 5, 9 }, // 00462a97: MOV byte ptr [EDI + 0xc89],AL
+	{ 0x00462dfe, 2, 3850, 6, 10 }, // 00462a97: MOV byte ptr [EDI + 0xf0a],AL
+	{ 0x00462e0f, 2, 3851, 6, 11 }, // 00462a97: MOV byte ptr [EDI + 0xf0b],AL
+	{ 0x00462e7d, 2, 650, 1, 10 }, // 00462e2c: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00462e8e, 2, 651, 1, 11 }, // 00462e2c: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00462eb5, 2, 1288, 2, 8 }, // 00462e2c: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00462ec6, 2, 1289, 2, 9 }, // 00462e2c: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00462ed7, 2, 650, 1, 10 }, // 00462e2c: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00462ee8, 2, 651, 1, 11 }, // 00462e2c: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00462f0f, 2, 1926, 3, 6 }, // 00462e2c: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00462f20, 2, 1927, 3, 7 }, // 00462e2c: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00462f31, 2, 1288, 2, 8 }, // 00462e2c: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00462f42, 2, 1289, 2, 9 }, // 00462e2c: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00462f53, 2, 650, 1, 10 }, // 00462e2c: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00462f64, 2, 651, 1, 11 }, // 00462e2c: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00462f8b, 2, 2564, 4, 4 }, // 00462e2c: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x00462f9c, 2, 2565, 4, 5 }, // 00462e2c: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x00462fad, 2, 1926, 3, 6 }, // 00462e2c: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00462fbe, 2, 1927, 3, 7 }, // 00462e2c: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00462fcf, 2, 1288, 2, 8 }, // 00462e2c: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00462fe0, 2, 1289, 2, 9 }, // 00462e2c: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00462ff1, 2, 650, 1, 10 }, // 00462e2c: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00463002, 2, 651, 1, 11 }, // 00462e2c: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x00463029, 2, 3202, 5, 2 }, // 00462e2c: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x0046303a, 2, 3203, 5, 3 }, // 00462e2c: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x0046304b, 2, 2564, 4, 4 }, // 00462e2c: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x0046305c, 2, 2565, 4, 5 }, // 00462e2c: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x0046306d, 2, 1926, 3, 6 }, // 00462e2c: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0046307e, 2, 1927, 3, 7 }, // 00462e2c: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0046308f, 2, 1288, 2, 8 }, // 00462e2c: MOV byte ptr [EDI + 0x508],AL
+	{ 0x004630a0, 2, 1289, 2, 9 }, // 00462e2c: MOV byte ptr [EDI + 0x509],AL
+	{ 0x004630b1, 2, 650, 1, 10 }, // 00462e2c: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x004630c2, 2, 651, 1, 11 }, // 00462e2c: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x004630e6, 2, 3840, 6, 0 }, // 00462e2c: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x004630f7, 2, 3841, 6, 1 }, // 00462e2c: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x00463108, 2, 3202, 5, 2 }, // 00462e2c: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x00463119, 2, 3203, 5, 3 }, // 00462e2c: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x0046312a, 2, 2564, 4, 4 }, // 00462e2c: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x0046313b, 2, 2565, 4, 5 }, // 00462e2c: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x0046314c, 2, 1926, 3, 6 }, // 00462e2c: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0046315d, 2, 1927, 3, 7 }, // 00462e2c: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0046316e, 2, 1288, 2, 8 }, // 00462e2c: MOV byte ptr [EDI + 0x508],AL
+	{ 0x0046317f, 2, 1289, 2, 9 }, // 00462e2c: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00463190, 2, 650, 1, 10 }, // 00462e2c: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x004631a1, 2, 651, 1, 11 }, // 00462e2c: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x0046327c, 2, 642, 1, 2 }, // 004631c1: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0046328d, 2, 643, 1, 3 }, // 004631c1: MOV byte ptr [EDI + 0x283],AL
 	{ 0x004632dc, 2, 642, 1, 2 }, // 004631c1: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004632ed, 2, 643, 1, 3 }, // 004631c1: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004632fe, 2, 1284, 2, 4 }, // 004631c1: MOV byte ptr [EDI + 0x504],AL
+	{ 0x0046330f, 2, 1285, 2, 5 }, // 004631c1: MOV byte ptr [EDI + 0x505],AL
 	{ 0x0046335e, 2, 642, 1, 2 }, // 004631c1: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0046336f, 2, 643, 1, 3 }, // 004631c1: MOV byte ptr [EDI + 0x283],AL
+	{ 0x00463380, 2, 1284, 2, 4 }, // 004631c1: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00463391, 2, 1285, 2, 5 }, // 004631c1: MOV byte ptr [EDI + 0x505],AL
+	{ 0x004633a2, 2, 1926, 3, 6 }, // 004631c1: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004633b3, 2, 1927, 3, 7 }, // 004631c1: MOV byte ptr [EDI + 0x787],AL
 	{ 0x00463402, 2, 642, 1, 2 }, // 004631c1: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00463413, 2, 643, 1, 3 }, // 004631c1: MOV byte ptr [EDI + 0x283],AL
+	{ 0x00463424, 2, 1284, 2, 4 }, // 004631c1: MOV byte ptr [EDI + 0x504],AL
+	{ 0x00463435, 2, 1285, 2, 5 }, // 004631c1: MOV byte ptr [EDI + 0x505],AL
+	{ 0x00463446, 2, 1926, 3, 6 }, // 004631c1: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00463457, 2, 1927, 3, 7 }, // 004631c1: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00463468, 2, 2568, 4, 8 }, // 004631c1: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00463479, 2, 2569, 4, 9 }, // 004631c1: MOV byte ptr [EDI + 0xa09],AL
 	{ 0x004634c8, 2, 642, 1, 2 }, // 004631c1: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004634d9, 2, 643, 1, 3 }, // 004631c1: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004634ea, 2, 1284, 2, 4 }, // 004631c1: MOV byte ptr [EDI + 0x504],AL
+	{ 0x004634fb, 2, 1285, 2, 5 }, // 004631c1: MOV byte ptr [EDI + 0x505],AL
+	{ 0x0046350c, 2, 1926, 3, 6 }, // 004631c1: MOV byte ptr [EDI + 0x786],AL
+	{ 0x0046351d, 2, 1927, 3, 7 }, // 004631c1: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0046352e, 2, 2568, 4, 8 }, // 004631c1: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x0046353f, 2, 2569, 4, 9 }, // 004631c1: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x00463550, 2, 3210, 5, 10 }, // 004631c1: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x00463561, 2, 3211, 5, 11 }, // 004631c1: MOV byte ptr [EDI + 0xc8b],AL
 	{ 0x004635b0, 2, 642, 1, 2 }, // 004631c1: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004635c1, 2, 643, 1, 3 }, // 004631c1: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004635d2, 2, 1284, 2, 4 }, // 004631c1: MOV byte ptr [EDI + 0x504],AL
+	{ 0x004635e3, 2, 1285, 2, 5 }, // 004631c1: MOV byte ptr [EDI + 0x505],AL
+	{ 0x004635f4, 2, 1926, 3, 6 }, // 004631c1: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00463605, 2, 1927, 3, 7 }, // 004631c1: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00463616, 2, 2568, 4, 8 }, // 004631c1: MOV byte ptr [EDI + 0xa08],AL
+	{ 0x00463627, 2, 2569, 4, 9 }, // 004631c1: MOV byte ptr [EDI + 0xa09],AL
+	{ 0x00463638, 2, 3210, 5, 10 }, // 004631c1: MOV byte ptr [EDI + 0xc8a],AL
+	{ 0x00463649, 2, 3211, 5, 11 }, // 004631c1: MOV byte ptr [EDI + 0xc8b],AL
+	{ 0x0046365a, 2, 3852, 6, 12 }, // 004631c1: MOV byte ptr [EDI + 0xf0c],AL
+	{ 0x0046366b, 2, 3853, 6, 13 }, // 004631c1: MOV byte ptr [EDI + 0xf0d],AL
+	{ 0x00463708, 2, 650, 1, 10 }, // 00463688: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00463719, 2, 651, 1, 11 }, // 00463688: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00463769, 2, 1288, 2, 8 }, // 00463688: MOV byte ptr [EDI + 0x508],AL
+	{ 0x0046377a, 2, 1289, 2, 9 }, // 00463688: MOV byte ptr [EDI + 0x509],AL
+	{ 0x0046378b, 2, 650, 1, 10 }, // 00463688: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x0046379c, 2, 651, 1, 11 }, // 00463688: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x004637ec, 2, 1926, 3, 6 }, // 00463688: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004637fd, 2, 1927, 3, 7 }, // 00463688: MOV byte ptr [EDI + 0x787],AL
+	{ 0x0046380e, 2, 1288, 2, 8 }, // 00463688: MOV byte ptr [EDI + 0x508],AL
+	{ 0x0046381f, 2, 1289, 2, 9 }, // 00463688: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00463830, 2, 650, 1, 10 }, // 00463688: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00463841, 2, 651, 1, 11 }, // 00463688: MOV byte ptr [EDI + 0x28b],AL
+	{ 0x00463891, 2, 2564, 4, 4 }, // 00463688: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x004638a2, 2, 2565, 4, 5 }, // 00463688: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x004638b3, 2, 1926, 3, 6 }, // 00463688: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004638c4, 2, 1927, 3, 7 }, // 00463688: MOV byte ptr [EDI + 0x787],AL
+	{ 0x004638d5, 2, 1288, 2, 8 }, // 00463688: MOV byte ptr [EDI + 0x508],AL
+	{ 0x004638e6, 2, 1289, 2, 9 }, // 00463688: MOV byte ptr [EDI + 0x509],AL
+	{ 0x004638f7, 2, 650, 1, 10 }, // 00463688: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00463908, 2, 651, 1, 11 }, // 00463688: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x00463958, 2, 3202, 5, 2 }, // 00463688: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x00463969, 2, 3203, 5, 3 }, // 00463688: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x0046397a, 2, 2564, 4, 4 }, // 00463688: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x0046398b, 2, 2565, 4, 5 }, // 00463688: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x0046399c, 2, 1926, 3, 6 }, // 00463688: MOV byte ptr [EDI + 0x786],AL
+	{ 0x004639ad, 2, 1927, 3, 7 }, // 00463688: MOV byte ptr [EDI + 0x787],AL
+	{ 0x004639be, 2, 1288, 2, 8 }, // 00463688: MOV byte ptr [EDI + 0x508],AL
+	{ 0x004639cf, 2, 1289, 2, 9 }, // 00463688: MOV byte ptr [EDI + 0x509],AL
+	{ 0x004639e0, 2, 650, 1, 10 }, // 00463688: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x004639f1, 2, 651, 1, 11 }, // 00463688: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x00463a3e, 2, 3840, 6, 0 }, // 00463688: MOV byte ptr [EDI + 0xf00],AL
 	{ 0x00463a4f, 2, 3841, 6, 1 }, // 00463688: MOV byte ptr [EDI + 0xf01],AL
 	{ 0x00463a60, 2, 3202, 5, 2 }, // 00463688: MOV byte ptr [EDI + 0xc82],AL
+	{ 0x00463a71, 2, 3203, 5, 3 }, // 00463688: MOV byte ptr [EDI + 0xc83],AL
+	{ 0x00463a82, 2, 2564, 4, 4 }, // 00463688: MOV byte ptr [EDI + 0xa04],AL
+	{ 0x00463a93, 2, 2565, 4, 5 }, // 00463688: MOV byte ptr [EDI + 0xa05],AL
+	{ 0x00463aa4, 2, 1926, 3, 6 }, // 00463688: MOV byte ptr [EDI + 0x786],AL
+	{ 0x00463ab5, 2, 1927, 3, 7 }, // 00463688: MOV byte ptr [EDI + 0x787],AL
+	{ 0x00463ac6, 2, 1288, 2, 8 }, // 00463688: MOV byte ptr [EDI + 0x508],AL
+	{ 0x00463ad7, 2, 1289, 2, 9 }, // 00463688: MOV byte ptr [EDI + 0x509],AL
+	{ 0x00463ae8, 2, 650, 1, 10 }, // 00463688: MOV byte ptr [EDI + 0x28a],AL
+	{ 0x00463af9, 2, 651, 1, 11 }, // 00463688: MOV byte ptr [EDI + 0x28b],AL
 	{ 0x00463b88, 2, 642, 1, 2 }, // 00463b42: MOV dword ptr [EDI + 0x282],EAX
+	{ 0x00463b92, 3, 646, 1, 6 }, // 00463b42: MOV word ptr [EDI + 0x286],AX
 	{ 0x00463b9c, 2, 1280, 2, 0 }, // 00463b42: MOV dword ptr [EDI + 0x500],EAX
+	{ 0x00463ba5, 2, 1284, 2, 4 }, // 00463b42: MOV dword ptr [EDI + 0x504],EAX
+	{ 0x00463baf, 3, 1288, 2, 8 }, // 00463b42: MOV word ptr [EDI + 0x508],AX
 	{ 0x00463bc7, 2, 1920, 3, 0 }, // 00463b42: MOV dword ptr [EDI + 0x780],EAX
+	{ 0x00463bd0, 2, 1924, 3, 4 }, // 00463b42: MOV dword ptr [EDI + 0x784],EAX
+	{ 0x00463bda, 3, 1928, 3, 8 }, // 00463b42: MOV word ptr [EDI + 0x788],AX
 	{ 0x00463be4, 2, 2562, 4, 2 }, // 00463b42: MOV dword ptr [EDI + 0xa02],EAX
+	{ 0x00463bee, 3, 2566, 4, 6 }, // 00463b42: MOV word ptr [EDI + 0xa06],AX
+	{ 0x00463bf9, 3, 3204, 5, 4 }, // 00463b42: MOV word ptr [EDI + 0xc84],AX
 	{ 0x00463c38, 3, 640, 1, 0 }, // 00463c06: MOV word ptr [EDI + 0x280],AX
 	{ 0x00463c42, 2, 1280, 2, 0 }, // 00463c06: MOV dword ptr [EDI + 0x500],EAX
 	{ 0x00463c4b, 2, 1920, 3, 0 }, // 00463c06: MOV dword ptr [EDI + 0x780],EAX
@@ -581,11 +3630,14 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x00463da8, 2, 1281, 2, 1 }, // 00463cbe: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00463dcf, 2, 640, 1, 0 }, // 00463cbe: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00463de0, 2, 641, 1, 1 }, // 00463cbe: MOV byte ptr [EDI + 0x281],AL
+	{ 0x00463e2c, 2, 648, 1, 8 }, // 00463cbe: MOV byte ptr [EDI + 0x288],AL
+	{ 0x00463e3d, 2, 649, 1, 9 }, // 00463cbe: MOV byte ptr [EDI + 0x289],AL
 	{ 0x00463ee0, 2, 640, 1, 0 }, // 00463e91: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00463ef1, 2, 641, 1, 1 }, // 00463e91: MOV byte ptr [EDI + 0x281],AL
 	{ 0x00463f05, 2, 1280, 2, 0 }, // 00463e91: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00463f16, 2, 1281, 2, 1 }, // 00463e91: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00463f5b, 2, 642, 1, 2 }, // 00463e91: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00463f6c, 2, 643, 1, 3 }, // 00463e91: MOV byte ptr [EDI + 0x283],AL
 	{ 0x00463ff1, 2, 1280, 2, 0 }, // 00463fa5: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00464002, 2, 1281, 2, 1 }, // 00463fa5: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00464016, 2, 640, 1, 0 }, // 00463fa5: MOV byte ptr [EDI + 0x280],AL
@@ -603,45 +3655,218 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x004642b5, 2, 1280, 2, 0 }, // 00464209: MOV byte ptr [EDI + 0x500],AL
 	{ 0x004642c6, 2, 1281, 2, 1 }, // 00464209: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00464318, 2, 642, 1, 2 }, // 00464209: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00464329, 2, 643, 1, 3 }, // 00464209: MOV byte ptr [EDI + 0x283],AL
 	{ 0x004643d2, 2, 642, 1, 2 }, // 00464362: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004643e3, 2, 643, 1, 3 }, // 00464362: MOV byte ptr [EDI + 0x283],AL
+	{ 0x00464410, 2, 646, 1, 6 }, // 00464362: MOV byte ptr [EDI + 0x286],AL
+	{ 0x00464421, 2, 647, 1, 7 }, // 00464362: MOV byte ptr [EDI + 0x287],AL
 	{ 0x00464445, 2, 1280, 2, 0 }, // 00464362: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00464456, 2, 1281, 2, 1 }, // 00464362: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00464467, 2, 642, 1, 2 }, // 00464362: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00464478, 2, 643, 1, 3 }, // 00464362: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004644a5, 2, 646, 1, 6 }, // 00464362: MOV byte ptr [EDI + 0x286],AL
+	{ 0x004644b6, 2, 647, 1, 7 }, // 00464362: MOV byte ptr [EDI + 0x287],AL
+	{ 0x004644c7, 2, 1288, 2, 8 }, // 00464362: MOV byte ptr [EDI + 0x508],AL
+	{ 0x004644d8, 2, 1289, 2, 9 }, // 00464362: MOV byte ptr [EDI + 0x509],AL
 	{ 0x00464546, 2, 640, 1, 0 }, // 004644f5: MOV byte ptr [EDI + 0x280],AL
 	{ 0x00464557, 2, 641, 1, 1 }, // 004644f5: MOV byte ptr [EDI + 0x281],AL
 	{ 0x0046457e, 2, 640, 1, 0 }, // 004644f5: MOV byte ptr [EDI + 0x280],AL
 	{ 0x0046458f, 2, 641, 1, 1 }, // 004644f5: MOV byte ptr [EDI + 0x281],AL
 	{ 0x004645a0, 2, 1282, 2, 2 }, // 004644f5: MOV byte ptr [EDI + 0x502],AL
+	{ 0x004645b1, 2, 1283, 2, 3 }, // 004644f5: MOV byte ptr [EDI + 0x503],AL
 	{ 0x0046461f, 2, 642, 1, 2 }, // 004645ce: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00464630, 2, 643, 1, 3 }, // 004645ce: MOV byte ptr [EDI + 0x283],AL
 	{ 0x00464654, 2, 1280, 2, 0 }, // 004645ce: MOV byte ptr [EDI + 0x500],AL
 	{ 0x00464665, 2, 1281, 2, 1 }, // 004645ce: MOV byte ptr [EDI + 0x501],AL
 	{ 0x00464676, 2, 642, 1, 2 }, // 004645ce: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00464687, 2, 643, 1, 3 }, // 004645ce: MOV byte ptr [EDI + 0x283],AL
 	{ 0x00464762, 2, 642, 1, 2 }, // 004646a7: MOV byte ptr [EDI + 0x282],AL
+	{ 0x00464773, 2, 643, 1, 3 }, // 004646a7: MOV byte ptr [EDI + 0x283],AL
 	{ 0x004647c2, 2, 642, 1, 2 }, // 004646a7: MOV byte ptr [EDI + 0x282],AL
+	{ 0x004647d3, 2, 643, 1, 3 }, // 004646a7: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004647e4, 2, 1284, 2, 4 }, // 004646a7: MOV byte ptr [EDI + 0x504],AL
+	{ 0x004647f5, 2, 1285, 2, 5 }, // 004646a7: MOV byte ptr [EDI + 0x505],AL
 	{ 0x0046488c, 2, 642, 1, 2 }, // 00464812: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0046489d, 2, 643, 1, 3 }, // 00464812: MOV byte ptr [EDI + 0x283],AL
 	{ 0x004648ea, 2, 1280, 2, 0 }, // 00464812: MOV byte ptr [EDI + 0x500],AL
 	{ 0x004648fb, 2, 1281, 2, 1 }, // 00464812: MOV byte ptr [EDI + 0x501],AL
 	{ 0x0046490c, 2, 642, 1, 2 }, // 00464812: MOV byte ptr [EDI + 0x282],AL
+	{ 0x0046491d, 2, 643, 1, 3 }, // 00464812: MOV byte ptr [EDI + 0x283],AL
+	{ 0x004649a5, 3, 666, 1, 26 }, // 00464966: MOV word ptr [EDI + 0x29a],CX
+	{ 0x004649ac, 3, 670, 1, 30 }, // 00464966: MOV word ptr [EDI + 0x29e],CX
+	{ 0x004649b3, 3, 1304, 2, 24 }, // 00464966: MOV word ptr [EDI + 0x518],CX
+	{ 0x004649ba, 3, 1312, 2, 32 }, // 00464966: MOV word ptr [EDI + 0x520],CX
+	{ 0x004649c1, 3, 1942, 3, 22 }, // 00464966: MOV word ptr [EDI + 0x796],CX
+	{ 0x004649c8, 3, 1954, 3, 34 }, // 00464966: MOV word ptr [EDI + 0x7a2],CX
+	{ 0x004649cf, 3, 2580, 4, 20 }, // 00464966: MOV word ptr [EDI + 0xa14],CX
+	{ 0x004649d6, 3, 2596, 4, 36 }, // 00464966: MOV word ptr [EDI + 0xa24],CX
+	{ 0x004649dd, 3, 3218, 5, 18 }, // 00464966: MOV word ptr [EDI + 0xc92],CX
+	{ 0x004649e4, 3, 3238, 5, 38 }, // 00464966: MOV word ptr [EDI + 0xca6],CX
+	{ 0x004649eb, 3, 3856, 6, 16 }, // 00464966: MOV word ptr [EDI + 0xf10],CX
+	{ 0x004649f2, 3, 3880, 6, 40 }, // 00464966: MOV word ptr [EDI + 0xf28],CX
+	{ 0x004649f9, 3, 4494, 7, 14 }, // 00464966: MOV word ptr [EDI + 0x118e],CX
+	{ 0x00464a00, 3, 4522, 7, 42 }, // 00464966: MOV word ptr [EDI + 0x11aa],CX
+	{ 0x00464a07, 3, 5132, 8, 12 }, // 00464966: MOV word ptr [EDI + 0x140c],CX
+	{ 0x00464a0e, 3, 5164, 8, 44 }, // 00464966: MOV word ptr [EDI + 0x142c],CX
+	{ 0x00464a15, 3, 5770, 9, 10 }, // 00464966: MOV word ptr [EDI + 0x168a],CX
+	{ 0x00464a1c, 3, 5806, 9, 46 }, // 00464966: MOV word ptr [EDI + 0x16ae],CX
+	{ 0x00464a23, 3, 6408, 10, 8 }, // 00464966: MOV word ptr [EDI + 0x1908],CX
+	{ 0x00464a2a, 3, 6448, 10, 48 }, // 00464966: MOV word ptr [EDI + 0x1930],CX
+	{ 0x00464a31, 3, 7046, 11, 6 }, // 00464966: MOV word ptr [EDI + 0x1b86],CX
+	{ 0x00464a38, 3, 7090, 11, 50 }, // 00464966: MOV word ptr [EDI + 0x1bb2],CX
+	{ 0x00464a3f, 3, 7684, 12, 4 }, // 00464966: MOV word ptr [EDI + 0x1e04],CX
+	{ 0x00464a46, 3, 7732, 12, 52 }, // 00464966: MOV word ptr [EDI + 0x1e34],CX
 	{ 0x00464a4d, 3, 8322, 13, 2 }, // 00464966: MOV word ptr [EDI + 0x2082],CX
+	{ 0x00464a54, 3, 8374, 13, 54 }, // 00464966: MOV word ptr [EDI + 0x20b6],CX
 	{ 0x00464a5b, 3, 8960, 14, 0 }, // 00464966: MOV word ptr [EDI + 0x2300],CX
+	{ 0x00464a62, 3, 9016, 14, 56 }, // 00464966: MOV word ptr [EDI + 0x2338],CX
 	{ 0x00464a78, 3, 9600, 15, 0 }, // 00464966: MOV word ptr [EDI + 0x2580],CX
+	{ 0x00464a7f, 3, 9656, 15, 56 }, // 00464966: MOV word ptr [EDI + 0x25b8],CX
 	{ 0x00464a86, 3, 10242, 16, 2 }, // 00464966: MOV word ptr [EDI + 0x2802],CX
+	{ 0x00464a8d, 3, 10294, 16, 54 }, // 00464966: MOV word ptr [EDI + 0x2836],CX
+	{ 0x00464a94, 3, 10884, 17, 4 }, // 00464966: MOV word ptr [EDI + 0x2a84],CX
+	{ 0x00464a9b, 3, 10932, 17, 52 }, // 00464966: MOV word ptr [EDI + 0x2ab4],CX
+	{ 0x00464aa2, 3, 11526, 18, 6 }, // 00464966: MOV word ptr [EDI + 0x2d06],CX
+	{ 0x00464aa9, 3, 11570, 18, 50 }, // 00464966: MOV word ptr [EDI + 0x2d32],CX
+	{ 0x00464ab0, 3, 12168, 19, 8 }, // 00464966: MOV word ptr [EDI + 0x2f88],CX
+	{ 0x00464ab7, 3, 12208, 19, 48 }, // 00464966: MOV word ptr [EDI + 0x2fb0],CX
+	{ 0x00464abe, 3, 12810, 20, 10 }, // 00464966: MOV word ptr [EDI + 0x320a],CX
+	{ 0x00464ac5, 3, 12846, 20, 46 }, // 00464966: MOV word ptr [EDI + 0x322e],CX
+	{ 0x00464acc, 3, 13452, 21, 12 }, // 00464966: MOV word ptr [EDI + 0x348c],CX
+	{ 0x00464ad3, 3, 13484, 21, 44 }, // 00464966: MOV word ptr [EDI + 0x34ac],CX
+	{ 0x00464ada, 3, 14094, 22, 14 }, // 00464966: MOV word ptr [EDI + 0x370e],CX
+	{ 0x00464ae1, 3, 14122, 22, 42 }, // 00464966: MOV word ptr [EDI + 0x372a],CX
+	{ 0x00464ae8, 3, 14736, 23, 16 }, // 00464966: MOV word ptr [EDI + 0x3990],CX
+	{ 0x00464aef, 3, 14760, 23, 40 }, // 00464966: MOV word ptr [EDI + 0x39a8],CX
+	{ 0x00464af6, 3, 15378, 24, 18 }, // 00464966: MOV word ptr [EDI + 0x3c12],CX
+	{ 0x00464afd, 3, 15398, 24, 38 }, // 00464966: MOV word ptr [EDI + 0x3c26],CX
+	{ 0x00464b04, 3, 16020, 25, 20 }, // 00464966: MOV word ptr [EDI + 0x3e94],CX
+	{ 0x00464b0b, 3, 16036, 25, 36 }, // 00464966: MOV word ptr [EDI + 0x3ea4],CX
+	{ 0x00464b12, 3, 16662, 26, 22 }, // 00464966: MOV word ptr [EDI + 0x4116],CX
+	{ 0x00464b19, 3, 16674, 26, 34 }, // 00464966: MOV word ptr [EDI + 0x4122],CX
+	{ 0x00464b20, 3, 17304, 27, 24 }, // 00464966: MOV word ptr [EDI + 0x4398],CX
+	{ 0x00464b27, 3, 17312, 27, 32 }, // 00464966: MOV word ptr [EDI + 0x43a0],CX
+	{ 0x00464b2e, 3, 17946, 28, 26 }, // 00464966: MOV word ptr [EDI + 0x461a],CX
+	{ 0x00464b35, 3, 17950, 28, 30 }, // 00464966: MOV word ptr [EDI + 0x461e],CX
+	{ 0x00464b3c, 3, 18588, 29, 28 }, // 00464966: MOV word ptr [EDI + 0x489c],CX
+	{ 0x00464b7f, 3, 670, 1, 30 }, // 00464b49: MOV word ptr [EDI + 0x29e],CX
+	{ 0x00464b86, 3, 1312, 2, 32 }, // 00464b49: MOV word ptr [EDI + 0x520],CX
+	{ 0x00464b8d, 3, 1954, 3, 34 }, // 00464b49: MOV word ptr [EDI + 0x7a2],CX
+	{ 0x00464b94, 3, 2596, 4, 36 }, // 00464b49: MOV word ptr [EDI + 0xa24],CX
+	{ 0x00464b9b, 3, 3238, 5, 38 }, // 00464b49: MOV word ptr [EDI + 0xca6],CX
+	{ 0x00464ba2, 3, 3880, 6, 40 }, // 00464b49: MOV word ptr [EDI + 0xf28],CX
+	{ 0x00464ba9, 3, 4522, 7, 42 }, // 00464b49: MOV word ptr [EDI + 0x11aa],CX
+	{ 0x00464bb0, 3, 5164, 8, 44 }, // 00464b49: MOV word ptr [EDI + 0x142c],CX
+	{ 0x00464bb7, 3, 5806, 9, 46 }, // 00464b49: MOV word ptr [EDI + 0x16ae],CX
+	{ 0x00464bbe, 3, 6448, 10, 48 }, // 00464b49: MOV word ptr [EDI + 0x1930],CX
+	{ 0x00464bc5, 3, 7090, 11, 50 }, // 00464b49: MOV word ptr [EDI + 0x1bb2],CX
+	{ 0x00464bcc, 3, 7732, 12, 52 }, // 00464b49: MOV word ptr [EDI + 0x1e34],CX
+	{ 0x00464bd3, 3, 8374, 13, 54 }, // 00464b49: MOV word ptr [EDI + 0x20b6],CX
+	{ 0x00464bda, 3, 9016, 14, 56 }, // 00464b49: MOV word ptr [EDI + 0x2338],CX
+	{ 0x00464be1, 3, 9656, 15, 56 }, // 00464b49: MOV word ptr [EDI + 0x25b8],CX
+	{ 0x00464be8, 3, 10294, 16, 54 }, // 00464b49: MOV word ptr [EDI + 0x2836],CX
+	{ 0x00464bef, 3, 10932, 17, 52 }, // 00464b49: MOV word ptr [EDI + 0x2ab4],CX
+	{ 0x00464bf6, 3, 11570, 18, 50 }, // 00464b49: MOV word ptr [EDI + 0x2d32],CX
+	{ 0x00464bfd, 3, 12208, 19, 48 }, // 00464b49: MOV word ptr [EDI + 0x2fb0],CX
+	{ 0x00464c04, 3, 12846, 20, 46 }, // 00464b49: MOV word ptr [EDI + 0x322e],CX
+	{ 0x00464c0b, 3, 13484, 21, 44 }, // 00464b49: MOV word ptr [EDI + 0x34ac],CX
+	{ 0x00464c12, 3, 14122, 22, 42 }, // 00464b49: MOV word ptr [EDI + 0x372a],CX
+	{ 0x00464c19, 3, 14760, 23, 40 }, // 00464b49: MOV word ptr [EDI + 0x39a8],CX
+	{ 0x00464c20, 3, 15398, 24, 38 }, // 00464b49: MOV word ptr [EDI + 0x3c26],CX
+	{ 0x00464c27, 3, 16036, 25, 36 }, // 00464b49: MOV word ptr [EDI + 0x3ea4],CX
+	{ 0x00464c2e, 3, 16674, 26, 34 }, // 00464b49: MOV word ptr [EDI + 0x4122],CX
+	{ 0x00464c35, 3, 17312, 27, 32 }, // 00464b49: MOV word ptr [EDI + 0x43a0],CX
+	{ 0x00464c3c, 3, 17950, 28, 30 }, // 00464b49: MOV word ptr [EDI + 0x461e],CX
+	{ 0x00464c7f, 3, 666, 1, 26 }, // 00464c49: MOV word ptr [EDI + 0x29a],CX
+	{ 0x00464c86, 3, 1304, 2, 24 }, // 00464c49: MOV word ptr [EDI + 0x518],CX
+	{ 0x00464c8d, 3, 1942, 3, 22 }, // 00464c49: MOV word ptr [EDI + 0x796],CX
+	{ 0x00464c94, 3, 2580, 4, 20 }, // 00464c49: MOV word ptr [EDI + 0xa14],CX
+	{ 0x00464c9b, 3, 3218, 5, 18 }, // 00464c49: MOV word ptr [EDI + 0xc92],CX
+	{ 0x00464ca2, 3, 3856, 6, 16 }, // 00464c49: MOV word ptr [EDI + 0xf10],CX
+	{ 0x00464ca9, 3, 4494, 7, 14 }, // 00464c49: MOV word ptr [EDI + 0x118e],CX
+	{ 0x00464cb0, 3, 5132, 8, 12 }, // 00464c49: MOV word ptr [EDI + 0x140c],CX
+	{ 0x00464cb7, 3, 5770, 9, 10 }, // 00464c49: MOV word ptr [EDI + 0x168a],CX
+	{ 0x00464cbe, 3, 6408, 10, 8 }, // 00464c49: MOV word ptr [EDI + 0x1908],CX
+	{ 0x00464cc5, 3, 7046, 11, 6 }, // 00464c49: MOV word ptr [EDI + 0x1b86],CX
+	{ 0x00464ccc, 3, 7684, 12, 4 }, // 00464c49: MOV word ptr [EDI + 0x1e04],CX
 	{ 0x00464cd3, 3, 8322, 13, 2 }, // 00464c49: MOV word ptr [EDI + 0x2082],CX
 	{ 0x00464cda, 3, 8960, 14, 0 }, // 00464c49: MOV word ptr [EDI + 0x2300],CX
 	{ 0x00464ce1, 3, 9600, 15, 0 }, // 00464c49: MOV word ptr [EDI + 0x2580],CX
 	{ 0x00464ce8, 3, 10242, 16, 2 }, // 00464c49: MOV word ptr [EDI + 0x2802],CX
+	{ 0x00464cef, 3, 10884, 17, 4 }, // 00464c49: MOV word ptr [EDI + 0x2a84],CX
+	{ 0x00464cf6, 3, 11526, 18, 6 }, // 00464c49: MOV word ptr [EDI + 0x2d06],CX
+	{ 0x00464cfd, 3, 12168, 19, 8 }, // 00464c49: MOV word ptr [EDI + 0x2f88],CX
+	{ 0x00464d04, 3, 12810, 20, 10 }, // 00464c49: MOV word ptr [EDI + 0x320a],CX
+	{ 0x00464d0b, 3, 13452, 21, 12 }, // 00464c49: MOV word ptr [EDI + 0x348c],CX
+	{ 0x00464d12, 3, 14094, 22, 14 }, // 00464c49: MOV word ptr [EDI + 0x370e],CX
+	{ 0x00464d19, 3, 14736, 23, 16 }, // 00464c49: MOV word ptr [EDI + 0x3990],CX
+	{ 0x00464d20, 3, 15378, 24, 18 }, // 00464c49: MOV word ptr [EDI + 0x3c12],CX
+	{ 0x00464d27, 3, 16020, 25, 20 }, // 00464c49: MOV word ptr [EDI + 0x3e94],CX
+	{ 0x00464d2e, 3, 16662, 26, 22 }, // 00464c49: MOV word ptr [EDI + 0x4116],CX
+	{ 0x00464d35, 3, 17304, 27, 24 }, // 00464c49: MOV word ptr [EDI + 0x4398],CX
+	{ 0x00464d3c, 3, 17946, 28, 26 }, // 00464c49: MOV word ptr [EDI + 0x461a],CX
+	{ 0x00464d88, 3, 650, 1, 10 }, // 00464d49: MOV word ptr [EDI + 0x28a],CX
+	{ 0x00464d8f, 3, 654, 1, 14 }, // 00464d49: MOV word ptr [EDI + 0x28e],CX
+	{ 0x00464d96, 3, 1288, 2, 8 }, // 00464d49: MOV word ptr [EDI + 0x508],CX
+	{ 0x00464d9d, 3, 1296, 2, 16 }, // 00464d49: MOV word ptr [EDI + 0x510],CX
+	{ 0x00464da4, 3, 1926, 3, 6 }, // 00464d49: MOV word ptr [EDI + 0x786],CX
+	{ 0x00464dab, 3, 1938, 3, 18 }, // 00464d49: MOV word ptr [EDI + 0x792],CX
+	{ 0x00464db2, 3, 2564, 4, 4 }, // 00464d49: MOV word ptr [EDI + 0xa04],CX
+	{ 0x00464db9, 3, 2580, 4, 20 }, // 00464d49: MOV word ptr [EDI + 0xa14],CX
 	{ 0x00464dc0, 3, 3202, 5, 2 }, // 00464d49: MOV word ptr [EDI + 0xc82],CX
+	{ 0x00464dc7, 3, 3222, 5, 22 }, // 00464d49: MOV word ptr [EDI + 0xc96],CX
 	{ 0x00464dce, 3, 3840, 6, 0 }, // 00464d49: MOV word ptr [EDI + 0xf00],CX
+	{ 0x00464dd5, 3, 3864, 6, 24 }, // 00464d49: MOV word ptr [EDI + 0xf18],CX
 	{ 0x00464deb, 3, 4480, 7, 0 }, // 00464d49: MOV word ptr [EDI + 0x1180],CX
+	{ 0x00464df2, 3, 4504, 7, 24 }, // 00464d49: MOV word ptr [EDI + 0x1198],CX
 	{ 0x00464df9, 3, 5122, 8, 2 }, // 00464d49: MOV word ptr [EDI + 0x1402],CX
+	{ 0x00464e00, 3, 5142, 8, 22 }, // 00464d49: MOV word ptr [EDI + 0x1416],CX
+	{ 0x00464e07, 3, 5764, 9, 4 }, // 00464d49: MOV word ptr [EDI + 0x1684],CX
+	{ 0x00464e0e, 3, 5780, 9, 20 }, // 00464d49: MOV word ptr [EDI + 0x1694],CX
+	{ 0x00464e15, 3, 6406, 10, 6 }, // 00464d49: MOV word ptr [EDI + 0x1906],CX
+	{ 0x00464e1c, 3, 6418, 10, 18 }, // 00464d49: MOV word ptr [EDI + 0x1912],CX
+	{ 0x00464e23, 3, 7048, 11, 8 }, // 00464d49: MOV word ptr [EDI + 0x1b88],CX
+	{ 0x00464e2a, 3, 7056, 11, 16 }, // 00464d49: MOV word ptr [EDI + 0x1b90],CX
+	{ 0x00464e31, 3, 7690, 12, 10 }, // 00464d49: MOV word ptr [EDI + 0x1e0a],CX
+	{ 0x00464e38, 3, 7694, 12, 14 }, // 00464d49: MOV word ptr [EDI + 0x1e0e],CX
+	{ 0x00464e3f, 3, 8332, 13, 12 }, // 00464d49: MOV word ptr [EDI + 0x208c],CX
+	{ 0x00464e82, 3, 654, 1, 14 }, // 00464e4c: MOV word ptr [EDI + 0x28e],CX
+	{ 0x00464e89, 3, 1296, 2, 16 }, // 00464e4c: MOV word ptr [EDI + 0x510],CX
+	{ 0x00464e90, 3, 1938, 3, 18 }, // 00464e4c: MOV word ptr [EDI + 0x792],CX
+	{ 0x00464e97, 3, 2580, 4, 20 }, // 00464e4c: MOV word ptr [EDI + 0xa14],CX
+	{ 0x00464e9e, 3, 3222, 5, 22 }, // 00464e4c: MOV word ptr [EDI + 0xc96],CX
+	{ 0x00464ea5, 3, 3864, 6, 24 }, // 00464e4c: MOV word ptr [EDI + 0xf18],CX
+	{ 0x00464eac, 3, 4504, 7, 24 }, // 00464e4c: MOV word ptr [EDI + 0x1198],CX
+	{ 0x00464eb3, 3, 5142, 8, 22 }, // 00464e4c: MOV word ptr [EDI + 0x1416],CX
+	{ 0x00464eba, 3, 5780, 9, 20 }, // 00464e4c: MOV word ptr [EDI + 0x1694],CX
+	{ 0x00464ec1, 3, 6418, 10, 18 }, // 00464e4c: MOV word ptr [EDI + 0x1912],CX
+	{ 0x00464ec8, 3, 7056, 11, 16 }, // 00464e4c: MOV word ptr [EDI + 0x1b90],CX
+	{ 0x00464ecf, 3, 7694, 12, 14 }, // 00464e4c: MOV word ptr [EDI + 0x1e0e],CX
+	{ 0x00464f12, 3, 650, 1, 10 }, // 00464edc: MOV word ptr [EDI + 0x28a],CX
+	{ 0x00464f19, 3, 1288, 2, 8 }, // 00464edc: MOV word ptr [EDI + 0x508],CX
+	{ 0x00464f20, 3, 1926, 3, 6 }, // 00464edc: MOV word ptr [EDI + 0x786],CX
+	{ 0x00464f27, 3, 2564, 4, 4 }, // 00464edc: MOV word ptr [EDI + 0xa04],CX
 	{ 0x00464f2e, 3, 3202, 5, 2 }, // 00464edc: MOV word ptr [EDI + 0xc82],CX
 	{ 0x00464f35, 3, 3840, 6, 0 }, // 00464edc: MOV word ptr [EDI + 0xf00],CX
 	{ 0x00464f3c, 3, 4480, 7, 0 }, // 00464edc: MOV word ptr [EDI + 0x1180],CX
 	{ 0x00464f43, 3, 5122, 8, 2 }, // 00464edc: MOV word ptr [EDI + 0x1402],CX
+	{ 0x00464f4a, 3, 5764, 9, 4 }, // 00464edc: MOV word ptr [EDI + 0x1684],CX
+	{ 0x00464f51, 3, 6406, 10, 6 }, // 00464edc: MOV word ptr [EDI + 0x1906],CX
+	{ 0x00464f58, 3, 7048, 11, 8 }, // 00464edc: MOV word ptr [EDI + 0x1b88],CX
+	{ 0x00464f5f, 3, 7690, 12, 10 }, // 00464edc: MOV word ptr [EDI + 0x1e0a],CX
 	{ 0x00464fab, 3, 642, 1, 2 }, // 00464f6c: MOV word ptr [EDI + 0x282],CX
+	{ 0x00464fb2, 3, 646, 1, 6 }, // 00464f6c: MOV word ptr [EDI + 0x286],CX
 	{ 0x00464fb9, 3, 1280, 2, 0 }, // 00464f6c: MOV word ptr [EDI + 0x500],CX
+	{ 0x00464fc0, 3, 1288, 2, 8 }, // 00464f6c: MOV word ptr [EDI + 0x508],CX
 	{ 0x00464fd6, 3, 1920, 3, 0 }, // 00464f6c: MOV word ptr [EDI + 0x780],CX
+	{ 0x00464fdd, 3, 1928, 3, 8 }, // 00464f6c: MOV word ptr [EDI + 0x788],CX
 	{ 0x00464fe4, 3, 2562, 4, 2 }, // 00464f6c: MOV word ptr [EDI + 0xa02],CX
+	{ 0x00464feb, 3, 2566, 4, 6 }, // 00464f6c: MOV word ptr [EDI + 0xa06],CX
+	{ 0x00464ff2, 3, 3204, 5, 4 }, // 00464f6c: MOV word ptr [EDI + 0xc84],CX
+	{ 0x00465035, 3, 646, 1, 6 }, // 00464fff: MOV word ptr [EDI + 0x286],CX
+	{ 0x0046503c, 3, 1288, 2, 8 }, // 00464fff: MOV word ptr [EDI + 0x508],CX
+	{ 0x00465043, 3, 1928, 3, 8 }, // 00464fff: MOV word ptr [EDI + 0x788],CX
+	{ 0x0046504a, 3, 2566, 4, 6 }, // 00464fff: MOV word ptr [EDI + 0xa06],CX
 	{ 0x0046508d, 3, 642, 1, 2 }, // 00465057: MOV word ptr [EDI + 0x282],CX
 	{ 0x00465094, 3, 1280, 2, 0 }, // 00465057: MOV word ptr [EDI + 0x500],CX
 	{ 0x0046509b, 3, 1920, 3, 0 }, // 00465057: MOV word ptr [EDI + 0x780],CX
@@ -655,51 +3880,449 @@ static const struct { DWORD addr; BYTE off; LONG value; signed char rows, col; }
 	{ 0x004b4046, 2, 639, 1, -1 }, // 004b3fe0: ADD EDI,0x27f
 	{ 0x004b49eb, 3, 640, 1, 0 }, // 004b49b7: MOV word ptr [EDI + 0x280],AX
 	{ 0x004b4a3a, 2, 640, 1, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x280],EAX
+	{ 0x004b4a43, 2, 644, 1, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x284],EAX
+	{ 0x004b4a4c, 2, 648, 1, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x288],EAX
+	{ 0x004b4a55, 2, 652, 1, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x28c],EAX
 	{ 0x004b4a5e, 2, 1280, 2, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x500],EAX
+	{ 0x004b4a67, 2, 1284, 2, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x504],EAX
+	{ 0x004b4a70, 2, 1288, 2, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x508],EAX
+	{ 0x004b4a79, 2, 1292, 2, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x50c],EAX
 	{ 0x004b4a82, 2, 1920, 3, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x780],EAX
+	{ 0x004b4a8b, 2, 1924, 3, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x784],EAX
+	{ 0x004b4a94, 2, 1928, 3, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x788],EAX
+	{ 0x004b4a9d, 2, 1932, 3, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x78c],EAX
 	{ 0x004b4aa6, 2, 2560, 4, 0 }, // 004b49f7: MOV dword ptr [EDI + 0xa00],EAX
+	{ 0x004b4aaf, 2, 2564, 4, 4 }, // 004b49f7: MOV dword ptr [EDI + 0xa04],EAX
+	{ 0x004b4ab8, 2, 2568, 4, 8 }, // 004b49f7: MOV dword ptr [EDI + 0xa08],EAX
+	{ 0x004b4ac1, 2, 2572, 4, 12 }, // 004b49f7: MOV dword ptr [EDI + 0xa0c],EAX
 	{ 0x004b4aca, 2, 3200, 5, 0 }, // 004b49f7: MOV dword ptr [EDI + 0xc80],EAX
+	{ 0x004b4ad3, 2, 3204, 5, 4 }, // 004b49f7: MOV dword ptr [EDI + 0xc84],EAX
+	{ 0x004b4adc, 2, 3208, 5, 8 }, // 004b49f7: MOV dword ptr [EDI + 0xc88],EAX
+	{ 0x004b4ae5, 2, 3212, 5, 12 }, // 004b49f7: MOV dword ptr [EDI + 0xc8c],EAX
 	{ 0x004b4aee, 2, 3840, 6, 0 }, // 004b49f7: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x004b4af7, 2, 3844, 6, 4 }, // 004b49f7: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x004b4b00, 2, 3848, 6, 8 }, // 004b49f7: MOV dword ptr [EDI + 0xf08],EAX
+	{ 0x004b4b09, 2, 3852, 6, 12 }, // 004b49f7: MOV dword ptr [EDI + 0xf0c],EAX
 	{ 0x004b4b12, 2, 4480, 7, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x004b4b1b, 2, 4484, 7, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x004b4b24, 2, 4488, 7, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x1188],EAX
+	{ 0x004b4b2d, 2, 4492, 7, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x118c],EAX
 	{ 0x004b4b39, 2, 5120, 8, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x1400],EAX
+	{ 0x004b4b45, 2, 5124, 8, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x1404],EAX
+	{ 0x004b4b51, 2, 5128, 8, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x1408],EAX
+	{ 0x004b4b5d, 2, 5132, 8, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x140c],EAX
 	{ 0x004b4b69, 2, 5760, 9, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x1680],EAX
+	{ 0x004b4b75, 2, 5764, 9, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x1684],EAX
+	{ 0x004b4b81, 2, 5768, 9, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x1688],EAX
+	{ 0x004b4b8d, 2, 5772, 9, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x168c],EAX
 	{ 0x004b4b99, 2, 6400, 10, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x1900],EAX
+	{ 0x004b4ba5, 2, 6404, 10, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x1904],EAX
+	{ 0x004b4bb1, 2, 6408, 10, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x1908],EAX
+	{ 0x004b4bbd, 2, 6412, 10, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x190c],EAX
 	{ 0x004b4bc9, 2, 7040, 11, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x1b80],EAX
+	{ 0x004b4bd5, 2, 7044, 11, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x1b84],EAX
+	{ 0x004b4be1, 2, 7048, 11, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x1b88],EAX
+	{ 0x004b4bed, 2, 7052, 11, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x1b8c],EAX
 	{ 0x004b4bf9, 2, 7680, 12, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x1e00],EAX
+	{ 0x004b4c05, 2, 7684, 12, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x1e04],EAX
+	{ 0x004b4c11, 2, 7688, 12, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x1e08],EAX
+	{ 0x004b4c1d, 2, 7692, 12, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x1e0c],EAX
 	{ 0x004b4c29, 2, 8320, 13, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x2080],EAX
+	{ 0x004b4c35, 2, 8324, 13, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x2084],EAX
+	{ 0x004b4c41, 2, 8328, 13, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x2088],EAX
+	{ 0x004b4c4d, 2, 8332, 13, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x208c],EAX
 	{ 0x004b4c59, 2, 8960, 14, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x2300],EAX
+	{ 0x004b4c65, 2, 8964, 14, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x2304],EAX
+	{ 0x004b4c71, 2, 8968, 14, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x2308],EAX
+	{ 0x004b4c7d, 2, 8972, 14, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x230c],EAX
 	{ 0x004b4c89, 2, 9600, 15, 0 }, // 004b49f7: MOV dword ptr [EDI + 0x2580],EAX
+	{ 0x004b4c95, 2, 9604, 15, 4 }, // 004b49f7: MOV dword ptr [EDI + 0x2584],EAX
+	{ 0x004b4ca1, 2, 9608, 15, 8 }, // 004b49f7: MOV dword ptr [EDI + 0x2588],EAX
+	{ 0x004b4cad, 2, 9612, 15, 12 }, // 004b49f7: MOV dword ptr [EDI + 0x258c],EAX
 	{ 0x004b4d07, 2, 640, 1, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x280],EAX
+	{ 0x004b4d10, 2, 644, 1, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x284],EAX
+	{ 0x004b4d19, 2, 648, 1, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x288],EAX
+	{ 0x004b4d22, 2, 652, 1, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x28c],EAX
+	{ 0x004b4d2b, 2, 656, 1, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x290],EAX
+	{ 0x004b4d34, 2, 660, 1, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x294],EAX
 	{ 0x004b4d3d, 2, 1280, 2, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x500],EAX
+	{ 0x004b4d46, 2, 1284, 2, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x504],EAX
+	{ 0x004b4d4f, 2, 1288, 2, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x508],EAX
+	{ 0x004b4d58, 2, 1292, 2, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x50c],EAX
+	{ 0x004b4d61, 2, 1296, 2, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x510],EAX
+	{ 0x004b4d6a, 2, 1300, 2, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x514],EAX
 	{ 0x004b4d73, 2, 1920, 3, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x780],EAX
+	{ 0x004b4d7c, 2, 1924, 3, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x784],EAX
+	{ 0x004b4d85, 2, 1928, 3, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x788],EAX
+	{ 0x004b4d8e, 2, 1932, 3, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x78c],EAX
+	{ 0x004b4d97, 2, 1936, 3, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x790],EAX
+	{ 0x004b4da0, 2, 1940, 3, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x794],EAX
 	{ 0x004b4da9, 2, 2560, 4, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0xa00],EAX
+	{ 0x004b4db2, 2, 2564, 4, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0xa04],EAX
+	{ 0x004b4dbb, 2, 2568, 4, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0xa08],EAX
+	{ 0x004b4dc4, 2, 2572, 4, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0xa0c],EAX
+	{ 0x004b4dcd, 2, 2576, 4, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0xa10],EAX
+	{ 0x004b4dd6, 2, 2580, 4, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0xa14],EAX
 	{ 0x004b4ddf, 2, 3200, 5, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0xc80],EAX
+	{ 0x004b4de8, 2, 3204, 5, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0xc84],EAX
+	{ 0x004b4df4, 2, 3208, 5, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0xc88],EAX
+	{ 0x004b4e00, 2, 3212, 5, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0xc8c],EAX
+	{ 0x004b4e0c, 2, 3216, 5, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0xc90],EAX
+	{ 0x004b4e18, 2, 3220, 5, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0xc94],EAX
 	{ 0x004b4e24, 2, 3840, 6, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x004b4e30, 2, 3844, 6, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x004b4e3c, 2, 3848, 6, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0xf08],EAX
+	{ 0x004b4e48, 2, 3852, 6, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0xf0c],EAX
+	{ 0x004b4e54, 2, 3856, 6, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0xf10],EAX
+	{ 0x004b4e60, 2, 3860, 6, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0xf14],EAX
 	{ 0x004b4e6c, 2, 4480, 7, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x004b4e78, 2, 4484, 7, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x004b4e84, 2, 4488, 7, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x1188],EAX
+	{ 0x004b4e90, 2, 4492, 7, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x118c],EAX
+	{ 0x004b4e9c, 2, 4496, 7, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x1190],EAX
+	{ 0x004b4ea8, 2, 4500, 7, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x1194],EAX
 	{ 0x004b4eb4, 2, 5120, 8, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x1400],EAX
+	{ 0x004b4ec0, 2, 5124, 8, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x1404],EAX
+	{ 0x004b4ecc, 2, 5128, 8, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x1408],EAX
+	{ 0x004b4ed8, 2, 5132, 8, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x140c],EAX
+	{ 0x004b4ee4, 2, 5136, 8, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x1410],EAX
+	{ 0x004b4ef0, 2, 5140, 8, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x1414],EAX
 	{ 0x004b4efc, 2, 5760, 9, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x1680],EAX
+	{ 0x004b4f08, 2, 5764, 9, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x1684],EAX
+	{ 0x004b4f14, 2, 5768, 9, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x1688],EAX
+	{ 0x004b4f20, 2, 5772, 9, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x168c],EAX
+	{ 0x004b4f2c, 2, 5776, 9, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x1690],EAX
+	{ 0x004b4f38, 2, 5780, 9, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x1694],EAX
 	{ 0x004b4f44, 2, 6400, 10, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x1900],EAX
+	{ 0x004b4f50, 2, 6404, 10, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x1904],EAX
+	{ 0x004b4f5c, 2, 6408, 10, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x1908],EAX
+	{ 0x004b4f68, 2, 6412, 10, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x190c],EAX
+	{ 0x004b4f74, 2, 6416, 10, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x1910],EAX
+	{ 0x004b4f80, 2, 6420, 10, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x1914],EAX
 	{ 0x004b4f8c, 2, 7040, 11, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x1b80],EAX
+	{ 0x004b4f98, 2, 7044, 11, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x1b84],EAX
+	{ 0x004b4fa4, 2, 7048, 11, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x1b88],EAX
+	{ 0x004b4fb0, 2, 7052, 11, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x1b8c],EAX
+	{ 0x004b4fbc, 2, 7056, 11, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x1b90],EAX
+	{ 0x004b4fc8, 2, 7060, 11, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x1b94],EAX
 	{ 0x004b4fd4, 2, 7680, 12, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x1e00],EAX
+	{ 0x004b4fe0, 2, 7684, 12, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x1e04],EAX
+	{ 0x004b4fec, 2, 7688, 12, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x1e08],EAX
+	{ 0x004b4ff8, 2, 7692, 12, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x1e0c],EAX
+	{ 0x004b5004, 2, 7696, 12, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x1e10],EAX
+	{ 0x004b5010, 2, 7700, 12, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x1e14],EAX
 	{ 0x004b501c, 2, 8320, 13, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2080],EAX
+	{ 0x004b5028, 2, 8324, 13, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2084],EAX
+	{ 0x004b5034, 2, 8328, 13, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2088],EAX
+	{ 0x004b5040, 2, 8332, 13, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x208c],EAX
+	{ 0x004b504c, 2, 8336, 13, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2090],EAX
+	{ 0x004b5058, 2, 8340, 13, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2094],EAX
 	{ 0x004b5064, 2, 8960, 14, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2300],EAX
+	{ 0x004b5070, 2, 8964, 14, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2304],EAX
+	{ 0x004b507c, 2, 8968, 14, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2308],EAX
+	{ 0x004b5088, 2, 8972, 14, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x230c],EAX
+	{ 0x004b5094, 2, 8976, 14, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2310],EAX
+	{ 0x004b50a0, 2, 8980, 14, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2314],EAX
 	{ 0x004b50ac, 2, 9600, 15, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2580],EAX
+	{ 0x004b50b8, 2, 9604, 15, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2584],EAX
+	{ 0x004b50c4, 2, 9608, 15, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2588],EAX
+	{ 0x004b50d0, 2, 9612, 15, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x258c],EAX
+	{ 0x004b50dc, 2, 9616, 15, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2590],EAX
+	{ 0x004b50e8, 2, 9620, 15, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2594],EAX
 	{ 0x004b50f4, 2, 10240, 16, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2800],EAX
+	{ 0x004b5100, 2, 10244, 16, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2804],EAX
+	{ 0x004b510c, 2, 10248, 16, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2808],EAX
+	{ 0x004b5118, 2, 10252, 16, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x280c],EAX
+	{ 0x004b5124, 2, 10256, 16, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2810],EAX
+	{ 0x004b5130, 2, 10260, 16, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2814],EAX
+	{ 0x004b513c, 2, 10880, 17, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2a80],EAX
+	{ 0x004b5148, 2, 10884, 17, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2a84],EAX
+	{ 0x004b5154, 2, 10888, 17, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2a88],EAX
+	{ 0x004b5160, 2, 10892, 17, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x2a8c],EAX
+	{ 0x004b516c, 2, 10896, 17, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2a90],EAX
+	{ 0x004b5178, 2, 10900, 17, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2a94],EAX
+	{ 0x004b5184, 2, 11520, 18, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2d00],EAX
+	{ 0x004b5190, 2, 11524, 18, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2d04],EAX
+	{ 0x004b519c, 2, 11528, 18, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2d08],EAX
+	{ 0x004b51a8, 2, 11532, 18, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x2d0c],EAX
+	{ 0x004b51b4, 2, 11536, 18, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2d10],EAX
+	{ 0x004b51c0, 2, 11540, 18, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2d14],EAX
+	{ 0x004b51cc, 2, 12160, 19, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x2f80],EAX
+	{ 0x004b51d8, 2, 12164, 19, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x2f84],EAX
+	{ 0x004b51e4, 2, 12168, 19, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x2f88],EAX
+	{ 0x004b51f0, 2, 12172, 19, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x2f8c],EAX
+	{ 0x004b51fc, 2, 12176, 19, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x2f90],EAX
+	{ 0x004b5208, 2, 12180, 19, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x2f94],EAX
+	{ 0x004b5214, 2, 12800, 20, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x3200],EAX
+	{ 0x004b5220, 2, 12804, 20, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x3204],EAX
+	{ 0x004b522c, 2, 12808, 20, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x3208],EAX
+	{ 0x004b5238, 2, 12812, 20, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x320c],EAX
+	{ 0x004b5244, 2, 12816, 20, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x3210],EAX
+	{ 0x004b5250, 2, 12820, 20, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x3214],EAX
+	{ 0x004b525c, 2, 13440, 21, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x3480],EAX
+	{ 0x004b5268, 2, 13444, 21, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x3484],EAX
+	{ 0x004b5274, 2, 13448, 21, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x3488],EAX
+	{ 0x004b5280, 2, 13452, 21, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x348c],EAX
+	{ 0x004b528c, 2, 13456, 21, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x3490],EAX
+	{ 0x004b5298, 2, 13460, 21, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x3494],EAX
+	{ 0x004b52a4, 2, 14080, 22, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x3700],EAX
+	{ 0x004b52b0, 2, 14084, 22, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x3704],EAX
+	{ 0x004b52bc, 2, 14088, 22, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x3708],EAX
+	{ 0x004b52c8, 2, 14092, 22, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x370c],EAX
+	{ 0x004b52d4, 2, 14096, 22, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x3710],EAX
+	{ 0x004b52e0, 2, 14100, 22, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x3714],EAX
+	{ 0x004b52ec, 2, 14720, 23, 0 }, // 004b4cb8: MOV dword ptr [EDI + 0x3980],EAX
+	{ 0x004b52f8, 2, 14724, 23, 4 }, // 004b4cb8: MOV dword ptr [EDI + 0x3984],EAX
+	{ 0x004b5304, 2, 14728, 23, 8 }, // 004b4cb8: MOV dword ptr [EDI + 0x3988],EAX
+	{ 0x004b5310, 2, 14732, 23, 12 }, // 004b4cb8: MOV dword ptr [EDI + 0x398c],EAX
+	{ 0x004b531c, 2, 14736, 23, 16 }, // 004b4cb8: MOV dword ptr [EDI + 0x3990],EAX
+	{ 0x004b5328, 2, 14740, 23, 20 }, // 004b4cb8: MOV dword ptr [EDI + 0x3994],EAX
 	{ 0x004b538e, 2, 640, 1, 0 }, // 004b5333: MOV dword ptr [EDI + 0x280],EAX
+	{ 0x004b5397, 2, 644, 1, 4 }, // 004b5333: MOV dword ptr [EDI + 0x284],EAX
+	{ 0x004b53a0, 2, 648, 1, 8 }, // 004b5333: MOV dword ptr [EDI + 0x288],EAX
+	{ 0x004b53a9, 2, 652, 1, 12 }, // 004b5333: MOV dword ptr [EDI + 0x28c],EAX
+	{ 0x004b53b2, 2, 656, 1, 16 }, // 004b5333: MOV dword ptr [EDI + 0x290],EAX
+	{ 0x004b53bb, 2, 660, 1, 20 }, // 004b5333: MOV dword ptr [EDI + 0x294],EAX
+	{ 0x004b53c4, 2, 664, 1, 24 }, // 004b5333: MOV dword ptr [EDI + 0x298],EAX
+	{ 0x004b53cd, 2, 668, 1, 28 }, // 004b5333: MOV dword ptr [EDI + 0x29c],EAX
 	{ 0x004b53d6, 2, 1280, 2, 0 }, // 004b5333: MOV dword ptr [EDI + 0x500],EAX
+	{ 0x004b53df, 2, 1284, 2, 4 }, // 004b5333: MOV dword ptr [EDI + 0x504],EAX
+	{ 0x004b53e8, 2, 1288, 2, 8 }, // 004b5333: MOV dword ptr [EDI + 0x508],EAX
+	{ 0x004b53f1, 2, 1292, 2, 12 }, // 004b5333: MOV dword ptr [EDI + 0x50c],EAX
+	{ 0x004b53fa, 2, 1296, 2, 16 }, // 004b5333: MOV dword ptr [EDI + 0x510],EAX
+	{ 0x004b5403, 2, 1300, 2, 20 }, // 004b5333: MOV dword ptr [EDI + 0x514],EAX
+	{ 0x004b540c, 2, 1304, 2, 24 }, // 004b5333: MOV dword ptr [EDI + 0x518],EAX
+	{ 0x004b5415, 2, 1308, 2, 28 }, // 004b5333: MOV dword ptr [EDI + 0x51c],EAX
 	{ 0x004b541e, 2, 1920, 3, 0 }, // 004b5333: MOV dword ptr [EDI + 0x780],EAX
+	{ 0x004b5427, 2, 1924, 3, 4 }, // 004b5333: MOV dword ptr [EDI + 0x784],EAX
+	{ 0x004b5430, 2, 1928, 3, 8 }, // 004b5333: MOV dword ptr [EDI + 0x788],EAX
+	{ 0x004b5439, 2, 1932, 3, 12 }, // 004b5333: MOV dword ptr [EDI + 0x78c],EAX
+	{ 0x004b5442, 2, 1936, 3, 16 }, // 004b5333: MOV dword ptr [EDI + 0x790],EAX
+	{ 0x004b544b, 2, 1940, 3, 20 }, // 004b5333: MOV dword ptr [EDI + 0x794],EAX
+	{ 0x004b5454, 2, 1944, 3, 24 }, // 004b5333: MOV dword ptr [EDI + 0x798],EAX
+	{ 0x004b545d, 2, 1948, 3, 28 }, // 004b5333: MOV dword ptr [EDI + 0x79c],EAX
 	{ 0x004b5469, 2, 2560, 4, 0 }, // 004b5333: MOV dword ptr [EDI + 0xa00],EAX
+	{ 0x004b5475, 2, 2564, 4, 4 }, // 004b5333: MOV dword ptr [EDI + 0xa04],EAX
+	{ 0x004b5481, 2, 2568, 4, 8 }, // 004b5333: MOV dword ptr [EDI + 0xa08],EAX
+	{ 0x004b548d, 2, 2572, 4, 12 }, // 004b5333: MOV dword ptr [EDI + 0xa0c],EAX
+	{ 0x004b5499, 2, 2576, 4, 16 }, // 004b5333: MOV dword ptr [EDI + 0xa10],EAX
+	{ 0x004b54a5, 2, 2580, 4, 20 }, // 004b5333: MOV dword ptr [EDI + 0xa14],EAX
+	{ 0x004b54b1, 2, 2584, 4, 24 }, // 004b5333: MOV dword ptr [EDI + 0xa18],EAX
+	{ 0x004b54bd, 2, 2588, 4, 28 }, // 004b5333: MOV dword ptr [EDI + 0xa1c],EAX
 	{ 0x004b54c9, 2, 3200, 5, 0 }, // 004b5333: MOV dword ptr [EDI + 0xc80],EAX
+	{ 0x004b54d5, 2, 3204, 5, 4 }, // 004b5333: MOV dword ptr [EDI + 0xc84],EAX
+	{ 0x004b54e1, 2, 3208, 5, 8 }, // 004b5333: MOV dword ptr [EDI + 0xc88],EAX
+	{ 0x004b54ed, 2, 3212, 5, 12 }, // 004b5333: MOV dword ptr [EDI + 0xc8c],EAX
+	{ 0x004b54f9, 2, 3216, 5, 16 }, // 004b5333: MOV dword ptr [EDI + 0xc90],EAX
+	{ 0x004b5505, 2, 3220, 5, 20 }, // 004b5333: MOV dword ptr [EDI + 0xc94],EAX
+	{ 0x004b5511, 2, 3224, 5, 24 }, // 004b5333: MOV dword ptr [EDI + 0xc98],EAX
+	{ 0x004b551d, 2, 3228, 5, 28 }, // 004b5333: MOV dword ptr [EDI + 0xc9c],EAX
 	{ 0x004b5529, 2, 3840, 6, 0 }, // 004b5333: MOV dword ptr [EDI + 0xf00],EAX
+	{ 0x004b5535, 2, 3844, 6, 4 }, // 004b5333: MOV dword ptr [EDI + 0xf04],EAX
+	{ 0x004b5541, 2, 3848, 6, 8 }, // 004b5333: MOV dword ptr [EDI + 0xf08],EAX
+	{ 0x004b554d, 2, 3852, 6, 12 }, // 004b5333: MOV dword ptr [EDI + 0xf0c],EAX
+	{ 0x004b5559, 2, 3856, 6, 16 }, // 004b5333: MOV dword ptr [EDI + 0xf10],EAX
+	{ 0x004b5565, 2, 3860, 6, 20 }, // 004b5333: MOV dword ptr [EDI + 0xf14],EAX
+	{ 0x004b5571, 2, 3864, 6, 24 }, // 004b5333: MOV dword ptr [EDI + 0xf18],EAX
+	{ 0x004b557d, 2, 3868, 6, 28 }, // 004b5333: MOV dword ptr [EDI + 0xf1c],EAX
 	{ 0x004b5589, 2, 4480, 7, 0 }, // 004b5333: MOV dword ptr [EDI + 0x1180],EAX
+	{ 0x004b5595, 2, 4484, 7, 4 }, // 004b5333: MOV dword ptr [EDI + 0x1184],EAX
+	{ 0x004b55a1, 2, 4488, 7, 8 }, // 004b5333: MOV dword ptr [EDI + 0x1188],EAX
+	{ 0x004b55ad, 2, 4492, 7, 12 }, // 004b5333: MOV dword ptr [EDI + 0x118c],EAX
+	{ 0x004b55b9, 2, 4496, 7, 16 }, // 004b5333: MOV dword ptr [EDI + 0x1190],EAX
+	{ 0x004b55c5, 2, 4500, 7, 20 }, // 004b5333: MOV dword ptr [EDI + 0x1194],EAX
+	{ 0x004b55d1, 2, 4504, 7, 24 }, // 004b5333: MOV dword ptr [EDI + 0x1198],EAX
+	{ 0x004b55dd, 2, 4508, 7, 28 }, // 004b5333: MOV dword ptr [EDI + 0x119c],EAX
 	{ 0x004b55e9, 2, 5120, 8, 0 }, // 004b5333: MOV dword ptr [EDI + 0x1400],EAX
+	{ 0x004b55f5, 2, 5124, 8, 4 }, // 004b5333: MOV dword ptr [EDI + 0x1404],EAX
+	{ 0x004b5601, 2, 5128, 8, 8 }, // 004b5333: MOV dword ptr [EDI + 0x1408],EAX
+	{ 0x004b560d, 2, 5132, 8, 12 }, // 004b5333: MOV dword ptr [EDI + 0x140c],EAX
+	{ 0x004b5619, 2, 5136, 8, 16 }, // 004b5333: MOV dword ptr [EDI + 0x1410],EAX
+	{ 0x004b5625, 2, 5140, 8, 20 }, // 004b5333: MOV dword ptr [EDI + 0x1414],EAX
+	{ 0x004b5631, 2, 5144, 8, 24 }, // 004b5333: MOV dword ptr [EDI + 0x1418],EAX
+	{ 0x004b563d, 2, 5148, 8, 28 }, // 004b5333: MOV dword ptr [EDI + 0x141c],EAX
 	{ 0x004b5649, 2, 5760, 9, 0 }, // 004b5333: MOV dword ptr [EDI + 0x1680],EAX
+	{ 0x004b5655, 2, 5764, 9, 4 }, // 004b5333: MOV dword ptr [EDI + 0x1684],EAX
+	{ 0x004b5661, 2, 5768, 9, 8 }, // 004b5333: MOV dword ptr [EDI + 0x1688],EAX
+	{ 0x004b566d, 2, 5772, 9, 12 }, // 004b5333: MOV dword ptr [EDI + 0x168c],EAX
+	{ 0x004b5679, 2, 5776, 9, 16 }, // 004b5333: MOV dword ptr [EDI + 0x1690],EAX
+	{ 0x004b5685, 2, 5780, 9, 20 }, // 004b5333: MOV dword ptr [EDI + 0x1694],EAX
+	{ 0x004b5691, 2, 5784, 9, 24 }, // 004b5333: MOV dword ptr [EDI + 0x1698],EAX
+	{ 0x004b569d, 2, 5788, 9, 28 }, // 004b5333: MOV dword ptr [EDI + 0x169c],EAX
 	{ 0x004b56a9, 2, 6400, 10, 0 }, // 004b5333: MOV dword ptr [EDI + 0x1900],EAX
+	{ 0x004b56b5, 2, 6404, 10, 4 }, // 004b5333: MOV dword ptr [EDI + 0x1904],EAX
+	{ 0x004b56c1, 2, 6408, 10, 8 }, // 004b5333: MOV dword ptr [EDI + 0x1908],EAX
+	{ 0x004b56cd, 2, 6412, 10, 12 }, // 004b5333: MOV dword ptr [EDI + 0x190c],EAX
+	{ 0x004b56d9, 2, 6416, 10, 16 }, // 004b5333: MOV dword ptr [EDI + 0x1910],EAX
+	{ 0x004b56e5, 2, 6420, 10, 20 }, // 004b5333: MOV dword ptr [EDI + 0x1914],EAX
+	{ 0x004b56f1, 2, 6424, 10, 24 }, // 004b5333: MOV dword ptr [EDI + 0x1918],EAX
+	{ 0x004b56fd, 2, 6428, 10, 28 }, // 004b5333: MOV dword ptr [EDI + 0x191c],EAX
 	{ 0x004b5709, 2, 7040, 11, 0 }, // 004b5333: MOV dword ptr [EDI + 0x1b80],EAX
+	{ 0x004b5715, 2, 7044, 11, 4 }, // 004b5333: MOV dword ptr [EDI + 0x1b84],EAX
+	{ 0x004b5721, 2, 7048, 11, 8 }, // 004b5333: MOV dword ptr [EDI + 0x1b88],EAX
+	{ 0x004b572d, 2, 7052, 11, 12 }, // 004b5333: MOV dword ptr [EDI + 0x1b8c],EAX
+	{ 0x004b5739, 2, 7056, 11, 16 }, // 004b5333: MOV dword ptr [EDI + 0x1b90],EAX
+	{ 0x004b5745, 2, 7060, 11, 20 }, // 004b5333: MOV dword ptr [EDI + 0x1b94],EAX
+	{ 0x004b5751, 2, 7064, 11, 24 }, // 004b5333: MOV dword ptr [EDI + 0x1b98],EAX
+	{ 0x004b575d, 2, 7068, 11, 28 }, // 004b5333: MOV dword ptr [EDI + 0x1b9c],EAX
 	{ 0x004b5769, 2, 7680, 12, 0 }, // 004b5333: MOV dword ptr [EDI + 0x1e00],EAX
+	{ 0x004b5775, 2, 7684, 12, 4 }, // 004b5333: MOV dword ptr [EDI + 0x1e04],EAX
+	{ 0x004b5781, 2, 7688, 12, 8 }, // 004b5333: MOV dword ptr [EDI + 0x1e08],EAX
+	{ 0x004b578d, 2, 7692, 12, 12 }, // 004b5333: MOV dword ptr [EDI + 0x1e0c],EAX
+	{ 0x004b5799, 2, 7696, 12, 16 }, // 004b5333: MOV dword ptr [EDI + 0x1e10],EAX
+	{ 0x004b57a5, 2, 7700, 12, 20 }, // 004b5333: MOV dword ptr [EDI + 0x1e14],EAX
+	{ 0x004b57b1, 2, 7704, 12, 24 }, // 004b5333: MOV dword ptr [EDI + 0x1e18],EAX
+	{ 0x004b57bd, 2, 7708, 12, 28 }, // 004b5333: MOV dword ptr [EDI + 0x1e1c],EAX
 	{ 0x004b57c9, 2, 8320, 13, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2080],EAX
+	{ 0x004b57d5, 2, 8324, 13, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2084],EAX
+	{ 0x004b57e1, 2, 8328, 13, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2088],EAX
+	{ 0x004b57ed, 2, 8332, 13, 12 }, // 004b5333: MOV dword ptr [EDI + 0x208c],EAX
+	{ 0x004b57f9, 2, 8336, 13, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2090],EAX
+	{ 0x004b5805, 2, 8340, 13, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2094],EAX
+	{ 0x004b5811, 2, 8344, 13, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2098],EAX
+	{ 0x004b581d, 2, 8348, 13, 28 }, // 004b5333: MOV dword ptr [EDI + 0x209c],EAX
 	{ 0x004b5829, 2, 8960, 14, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2300],EAX
+	{ 0x004b5835, 2, 8964, 14, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2304],EAX
+	{ 0x004b5841, 2, 8968, 14, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2308],EAX
+	{ 0x004b584d, 2, 8972, 14, 12 }, // 004b5333: MOV dword ptr [EDI + 0x230c],EAX
+	{ 0x004b5859, 2, 8976, 14, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2310],EAX
+	{ 0x004b5865, 2, 8980, 14, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2314],EAX
+	{ 0x004b5871, 2, 8984, 14, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2318],EAX
+	{ 0x004b587d, 2, 8988, 14, 28 }, // 004b5333: MOV dword ptr [EDI + 0x231c],EAX
 	{ 0x004b5889, 2, 9600, 15, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2580],EAX
+	{ 0x004b5895, 2, 9604, 15, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2584],EAX
+	{ 0x004b58a1, 2, 9608, 15, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2588],EAX
+	{ 0x004b58ad, 2, 9612, 15, 12 }, // 004b5333: MOV dword ptr [EDI + 0x258c],EAX
+	{ 0x004b58b9, 2, 9616, 15, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2590],EAX
+	{ 0x004b58c5, 2, 9620, 15, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2594],EAX
+	{ 0x004b58d1, 2, 9624, 15, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2598],EAX
+	{ 0x004b58dd, 2, 9628, 15, 28 }, // 004b5333: MOV dword ptr [EDI + 0x259c],EAX
 	{ 0x004b58e9, 2, 10240, 16, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2800],EAX
-	{ 0x004b5a63, 2, 640, 1, 0 }, // 004b5333: MOV EAX,dword ptr [ESI + 0x280]
+	{ 0x004b58f5, 2, 10244, 16, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2804],EAX
+	{ 0x004b5901, 2, 10248, 16, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2808],EAX
+	{ 0x004b590d, 2, 10252, 16, 12 }, // 004b5333: MOV dword ptr [EDI + 0x280c],EAX
+	{ 0x004b5919, 2, 10256, 16, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2810],EAX
+	{ 0x004b5925, 2, 10260, 16, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2814],EAX
+	{ 0x004b5931, 2, 10264, 16, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2818],EAX
+	{ 0x004b593d, 2, 10268, 16, 28 }, // 004b5333: MOV dword ptr [EDI + 0x281c],EAX
+	{ 0x004b5949, 2, 10880, 17, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2a80],EAX
+	{ 0x004b5955, 2, 10884, 17, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2a84],EAX
+	{ 0x004b5961, 2, 10888, 17, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2a88],EAX
+	{ 0x004b596d, 2, 10892, 17, 12 }, // 004b5333: MOV dword ptr [EDI + 0x2a8c],EAX
+	{ 0x004b5979, 2, 10896, 17, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2a90],EAX
+	{ 0x004b5985, 2, 10900, 17, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2a94],EAX
+	{ 0x004b5991, 2, 10904, 17, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2a98],EAX
+	{ 0x004b599d, 2, 10908, 17, 28 }, // 004b5333: MOV dword ptr [EDI + 0x2a9c],EAX
+	{ 0x004b59a9, 2, 11520, 18, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2d00],EAX
+	{ 0x004b59b5, 2, 11524, 18, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2d04],EAX
+	{ 0x004b59c1, 2, 11528, 18, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2d08],EAX
+	{ 0x004b59cd, 2, 11532, 18, 12 }, // 004b5333: MOV dword ptr [EDI + 0x2d0c],EAX
+	{ 0x004b59d9, 2, 11536, 18, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2d10],EAX
+	{ 0x004b59e5, 2, 11540, 18, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2d14],EAX
+	{ 0x004b59f1, 2, 11544, 18, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2d18],EAX
+	{ 0x004b59fd, 2, 11548, 18, 28 }, // 004b5333: MOV dword ptr [EDI + 0x2d1c],EAX
+	{ 0x004b5a09, 2, 12160, 19, 0 }, // 004b5333: MOV dword ptr [EDI + 0x2f80],EAX
+	{ 0x004b5a15, 2, 12164, 19, 4 }, // 004b5333: MOV dword ptr [EDI + 0x2f84],EAX
+	{ 0x004b5a21, 2, 12168, 19, 8 }, // 004b5333: MOV dword ptr [EDI + 0x2f88],EAX
+	{ 0x004b5a2d, 2, 12172, 19, 12 }, // 004b5333: MOV dword ptr [EDI + 0x2f8c],EAX
+	{ 0x004b5a39, 2, 12176, 19, 16 }, // 004b5333: MOV dword ptr [EDI + 0x2f90],EAX
+	{ 0x004b5a45, 2, 12180, 19, 20 }, // 004b5333: MOV dword ptr [EDI + 0x2f94],EAX
+	{ 0x004b5a51, 2, 12184, 19, 24 }, // 004b5333: MOV dword ptr [EDI + 0x2f98],EAX
+	{ 0x004b5a5d, 2, 12188, 19, 28 }, // 004b5333: MOV dword ptr [EDI + 0x2f9c],EAX
+	{ 0x004b5a69, 2, 12800, 20, 0 }, // 004b5333: MOV dword ptr [EDI + 0x3200],EAX
+	{ 0x004b5a75, 2, 12804, 20, 4 }, // 004b5333: MOV dword ptr [EDI + 0x3204],EAX
+	{ 0x004b5a81, 2, 12808, 20, 8 }, // 004b5333: MOV dword ptr [EDI + 0x3208],EAX
+	{ 0x004b5a8d, 2, 12812, 20, 12 }, // 004b5333: MOV dword ptr [EDI + 0x320c],EAX
+	{ 0x004b5a99, 2, 12816, 20, 16 }, // 004b5333: MOV dword ptr [EDI + 0x3210],EAX
+	{ 0x004b5aa5, 2, 12820, 20, 20 }, // 004b5333: MOV dword ptr [EDI + 0x3214],EAX
+	{ 0x004b5ab1, 2, 12824, 20, 24 }, // 004b5333: MOV dword ptr [EDI + 0x3218],EAX
+	{ 0x004b5abd, 2, 12828, 20, 28 }, // 004b5333: MOV dword ptr [EDI + 0x321c],EAX
+	{ 0x004b5ac9, 2, 13440, 21, 0 }, // 004b5333: MOV dword ptr [EDI + 0x3480],EAX
+	{ 0x004b5ad5, 2, 13444, 21, 4 }, // 004b5333: MOV dword ptr [EDI + 0x3484],EAX
+	{ 0x004b5ae1, 2, 13448, 21, 8 }, // 004b5333: MOV dword ptr [EDI + 0x3488],EAX
+	{ 0x004b5aed, 2, 13452, 21, 12 }, // 004b5333: MOV dword ptr [EDI + 0x348c],EAX
+	{ 0x004b5af9, 2, 13456, 21, 16 }, // 004b5333: MOV dword ptr [EDI + 0x3490],EAX
+	{ 0x004b5b05, 2, 13460, 21, 20 }, // 004b5333: MOV dword ptr [EDI + 0x3494],EAX
+	{ 0x004b5b11, 2, 13464, 21, 24 }, // 004b5333: MOV dword ptr [EDI + 0x3498],EAX
+	{ 0x004b5b1d, 2, 13468, 21, 28 }, // 004b5333: MOV dword ptr [EDI + 0x349c],EAX
+	{ 0x004b5b29, 2, 14080, 22, 0 }, // 004b5333: MOV dword ptr [EDI + 0x3700],EAX
+	{ 0x004b5b35, 2, 14084, 22, 4 }, // 004b5333: MOV dword ptr [EDI + 0x3704],EAX
+	{ 0x004b5b41, 2, 14088, 22, 8 }, // 004b5333: MOV dword ptr [EDI + 0x3708],EAX
+	{ 0x004b5b4d, 2, 14092, 22, 12 }, // 004b5333: MOV dword ptr [EDI + 0x370c],EAX
+	{ 0x004b5b59, 2, 14096, 22, 16 }, // 004b5333: MOV dword ptr [EDI + 0x3710],EAX
+	{ 0x004b5b65, 2, 14100, 22, 20 }, // 004b5333: MOV dword ptr [EDI + 0x3714],EAX
+	{ 0x004b5b71, 2, 14104, 22, 24 }, // 004b5333: MOV dword ptr [EDI + 0x3718],EAX
+	{ 0x004b5b7d, 2, 14108, 22, 28 }, // 004b5333: MOV dword ptr [EDI + 0x371c],EAX
+	{ 0x004b5b89, 2, 14720, 23, 0 }, // 004b5333: MOV dword ptr [EDI + 0x3980],EAX
+	{ 0x004b5b95, 2, 14724, 23, 4 }, // 004b5333: MOV dword ptr [EDI + 0x3984],EAX
+	{ 0x004b5ba1, 2, 14728, 23, 8 }, // 004b5333: MOV dword ptr [EDI + 0x3988],EAX
+	{ 0x004b5bad, 2, 14732, 23, 12 }, // 004b5333: MOV dword ptr [EDI + 0x398c],EAX
+	{ 0x004b5bb9, 2, 14736, 23, 16 }, // 004b5333: MOV dword ptr [EDI + 0x3990],EAX
+	{ 0x004b5bc5, 2, 14740, 23, 20 }, // 004b5333: MOV dword ptr [EDI + 0x3994],EAX
+	{ 0x004b5bd1, 2, 14744, 23, 24 }, // 004b5333: MOV dword ptr [EDI + 0x3998],EAX
+	{ 0x004b5bdd, 2, 14748, 23, 28 }, // 004b5333: MOV dword ptr [EDI + 0x399c],EAX
+	{ 0x004b5be9, 2, 15360, 24, 0 }, // 004b5333: MOV dword ptr [EDI + 0x3c00],EAX
+	{ 0x004b5bf5, 2, 15364, 24, 4 }, // 004b5333: MOV dword ptr [EDI + 0x3c04],EAX
+	{ 0x004b5c01, 2, 15368, 24, 8 }, // 004b5333: MOV dword ptr [EDI + 0x3c08],EAX
+	{ 0x004b5c0d, 2, 15372, 24, 12 }, // 004b5333: MOV dword ptr [EDI + 0x3c0c],EAX
+	{ 0x004b5c19, 2, 15376, 24, 16 }, // 004b5333: MOV dword ptr [EDI + 0x3c10],EAX
+	{ 0x004b5c25, 2, 15380, 24, 20 }, // 004b5333: MOV dword ptr [EDI + 0x3c14],EAX
+	{ 0x004b5c31, 2, 15384, 24, 24 }, // 004b5333: MOV dword ptr [EDI + 0x3c18],EAX
+	{ 0x004b5c3d, 2, 15388, 24, 28 }, // 004b5333: MOV dword ptr [EDI + 0x3c1c],EAX
+	{ 0x004b5c49, 2, 16000, 25, 0 }, // 004b5333: MOV dword ptr [EDI + 0x3e80],EAX
+	{ 0x004b5c55, 2, 16004, 25, 4 }, // 004b5333: MOV dword ptr [EDI + 0x3e84],EAX
+	{ 0x004b5c61, 2, 16008, 25, 8 }, // 004b5333: MOV dword ptr [EDI + 0x3e88],EAX
+	{ 0x004b5c6d, 2, 16012, 25, 12 }, // 004b5333: MOV dword ptr [EDI + 0x3e8c],EAX
+	{ 0x004b5c79, 2, 16016, 25, 16 }, // 004b5333: MOV dword ptr [EDI + 0x3e90],EAX
+	{ 0x004b5c85, 2, 16020, 25, 20 }, // 004b5333: MOV dword ptr [EDI + 0x3e94],EAX
+	{ 0x004b5c91, 2, 16024, 25, 24 }, // 004b5333: MOV dword ptr [EDI + 0x3e98],EAX
+	{ 0x004b5c9d, 2, 16028, 25, 28 }, // 004b5333: MOV dword ptr [EDI + 0x3e9c],EAX
+	{ 0x004b5ca9, 2, 16640, 26, 0 }, // 004b5333: MOV dword ptr [EDI + 0x4100],EAX
+	{ 0x004b5cb5, 2, 16644, 26, 4 }, // 004b5333: MOV dword ptr [EDI + 0x4104],EAX
+	{ 0x004b5cc1, 2, 16648, 26, 8 }, // 004b5333: MOV dword ptr [EDI + 0x4108],EAX
+	{ 0x004b5ccd, 2, 16652, 26, 12 }, // 004b5333: MOV dword ptr [EDI + 0x410c],EAX
+	{ 0x004b5cd9, 2, 16656, 26, 16 }, // 004b5333: MOV dword ptr [EDI + 0x4110],EAX
+	{ 0x004b5ce5, 2, 16660, 26, 20 }, // 004b5333: MOV dword ptr [EDI + 0x4114],EAX
+	{ 0x004b5cf1, 2, 16664, 26, 24 }, // 004b5333: MOV dword ptr [EDI + 0x4118],EAX
+	{ 0x004b5cfd, 2, 16668, 26, 28 }, // 004b5333: MOV dword ptr [EDI + 0x411c],EAX
+	{ 0x004b5d09, 2, 17280, 27, 0 }, // 004b5333: MOV dword ptr [EDI + 0x4380],EAX
+	{ 0x004b5d15, 2, 17284, 27, 4 }, // 004b5333: MOV dword ptr [EDI + 0x4384],EAX
+	{ 0x004b5d21, 2, 17288, 27, 8 }, // 004b5333: MOV dword ptr [EDI + 0x4388],EAX
+	{ 0x004b5d2d, 2, 17292, 27, 12 }, // 004b5333: MOV dword ptr [EDI + 0x438c],EAX
+	{ 0x004b5d39, 2, 17296, 27, 16 }, // 004b5333: MOV dword ptr [EDI + 0x4390],EAX
+	{ 0x004b5d45, 2, 17300, 27, 20 }, // 004b5333: MOV dword ptr [EDI + 0x4394],EAX
+	{ 0x004b5d51, 2, 17304, 27, 24 }, // 004b5333: MOV dword ptr [EDI + 0x4398],EAX
+	{ 0x004b5d5d, 2, 17308, 27, 28 }, // 004b5333: MOV dword ptr [EDI + 0x439c],EAX
+	{ 0x004b5d69, 2, 17920, 28, 0 }, // 004b5333: MOV dword ptr [EDI + 0x4600],EAX
+	{ 0x004b5d75, 2, 17924, 28, 4 }, // 004b5333: MOV dword ptr [EDI + 0x4604],EAX
+	{ 0x004b5d81, 2, 17928, 28, 8 }, // 004b5333: MOV dword ptr [EDI + 0x4608],EAX
+	{ 0x004b5d8d, 2, 17932, 28, 12 }, // 004b5333: MOV dword ptr [EDI + 0x460c],EAX
+	{ 0x004b5d99, 2, 17936, 28, 16 }, // 004b5333: MOV dword ptr [EDI + 0x4610],EAX
+	{ 0x004b5da5, 2, 17940, 28, 20 }, // 004b5333: MOV dword ptr [EDI + 0x4614],EAX
+	{ 0x004b5db1, 2, 17944, 28, 24 }, // 004b5333: MOV dword ptr [EDI + 0x4618],EAX
+	{ 0x004b5dbd, 2, 17948, 28, 28 }, // 004b5333: MOV dword ptr [EDI + 0x461c],EAX
+	{ 0x004b5dc9, 2, 18560, 29, 0 }, // 004b5333: MOV dword ptr [EDI + 0x4880],EAX
+	{ 0x004b5dd5, 2, 18564, 29, 4 }, // 004b5333: MOV dword ptr [EDI + 0x4884],EAX
+	{ 0x004b5de1, 2, 18568, 29, 8 }, // 004b5333: MOV dword ptr [EDI + 0x4888],EAX
+	{ 0x004b5ded, 2, 18572, 29, 12 }, // 004b5333: MOV dword ptr [EDI + 0x488c],EAX
+	{ 0x004b5df9, 2, 18576, 29, 16 }, // 004b5333: MOV dword ptr [EDI + 0x4890],EAX
+	{ 0x004b5e05, 2, 18580, 29, 20 }, // 004b5333: MOV dword ptr [EDI + 0x4894],EAX
+	{ 0x004b5e11, 2, 18584, 29, 24 }, // 004b5333: MOV dword ptr [EDI + 0x4898],EAX
+	{ 0x004b5e1d, 2, 18588, 29, 28 }, // 004b5333: MOV dword ptr [EDI + 0x489c],EAX
+	{ 0x004b5e29, 2, 19200, 30, 0 }, // 004b5333: MOV dword ptr [EDI + 0x4b00],EAX
+	{ 0x004b5e35, 2, 19204, 30, 4 }, // 004b5333: MOV dword ptr [EDI + 0x4b04],EAX
+	{ 0x004b5e41, 2, 19208, 30, 8 }, // 004b5333: MOV dword ptr [EDI + 0x4b08],EAX
+	{ 0x004b5e4d, 2, 19212, 30, 12 }, // 004b5333: MOV dword ptr [EDI + 0x4b0c],EAX
+	{ 0x004b5e59, 2, 19216, 30, 16 }, // 004b5333: MOV dword ptr [EDI + 0x4b10],EAX
+	{ 0x004b5e65, 2, 19220, 30, 20 }, // 004b5333: MOV dword ptr [EDI + 0x4b14],EAX
+	{ 0x004b5e71, 2, 19224, 30, 24 }, // 004b5333: MOV dword ptr [EDI + 0x4b18],EAX
+	{ 0x004b5e7d, 2, 19228, 30, 28 }, // 004b5333: MOV dword ptr [EDI + 0x4b1c],EAX
+	{ 0x004b5e89, 2, 19840, 31, 0 }, // 004b5333: MOV dword ptr [EDI + 0x4d80],EAX
+	{ 0x004b5e95, 2, 19844, 31, 4 }, // 004b5333: MOV dword ptr [EDI + 0x4d84],EAX
+	{ 0x004b5ea1, 2, 19848, 31, 8 }, // 004b5333: MOV dword ptr [EDI + 0x4d88],EAX
+	{ 0x004b5ead, 2, 19852, 31, 12 }, // 004b5333: MOV dword ptr [EDI + 0x4d8c],EAX
+	{ 0x004b5eb9, 2, 19856, 31, 16 }, // 004b5333: MOV dword ptr [EDI + 0x4d90],EAX
+	{ 0x004b5ec5, 2, 19860, 31, 20 }, // 004b5333: MOV dword ptr [EDI + 0x4d94],EAX
+	{ 0x004b5ed1, 2, 19864, 31, 24 }, // 004b5333: MOV dword ptr [EDI + 0x4d98],EAX
+	{ 0x004b5edd, 2, 19868, 31, 28 }, // 004b5333: MOV dword ptr [EDI + 0x4d9c],EAX
 };

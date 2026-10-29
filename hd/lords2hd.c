@@ -1210,6 +1210,57 @@ static int __cdecl h_decode_lbm(void *data, BYTE *dst, BYTE *pal, int size)
 	return r;
 }
 
+// The full-screen picture loader (0x00408fcb: void load_screen(name, rows), cdecl) reads a raw
+// 640-wide picture file straight into the frame, pitch * rows bytes from offset 24. The 17 screens
+// with a painted background (main menu, castle, armoury...) all come through here.
+#define LOAD_SCREEN ((BYTE *)0x00408fcb)
+static const BYTE kLoadScreenPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
+typedef void (__cdecl *load_screen_t)(const char *, int);
+static load_screen_t o_load_screen;
+static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset);
+
+static void __cdecl h_load_screen(const char *name, int rows)
+{
+	if (!g_back || g_back->pitch == GAME_W || rows <= 0 || rows > GAME_H) {
+		o_load_screen(name, rows);
+		return;
+	}
+	static BYTE tmp[GAME_W * GAME_H];
+	if (h_load_file(name, tmp, GAME_W * rows, 0x18) <= 0) {
+		o_load_screen(name, rows); // the game reports the missing file its own way
+		return;
+	}
+	for (int y = 0; y < rows; y++) memcpy(g_back->bits + y * g_back->pitch, tmp + y * GAME_W, GAME_W);
+}
+
+// Saving and restoring the frame under a window (FUN_004b3ec0 buffer -> frame, FUN_004b3f0a
+// frame -> buffer; cdecl (buffer, row skip)): every caller passes the skip as 640 - block width
+// (0xa0, 0xf0, 400, 0x1c0, 0x1e0, 0x200), so the wider frame's extra columns are added here.
+static const BYTE kBlockPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
+typedef void (__cdecl *block_copy_t)(void *, int);
+static block_copy_t o_block_to_frame, o_block_from_frame;
+static void __cdecl h_block_to_frame(void *buffer, int skip) { o_block_to_frame(buffer, skip + g_frameW - GAME_W); }
+static void __cdecl h_block_from_frame(void *buffer, int skip) { o_block_from_frame(buffer, skip + g_frameW - GAME_W); }
+
+static BOOL hook_code(BYTE *site, const BYTE *prologue, int len, void *hook, void *orig)
+{
+	if (memcmp(site, prologue, len) != 0) {
+		logf_("not hooked: unexpected code at %p", (void *)site);
+		return FALSE;
+	}
+	void *t = make_trampoline(site, len);
+	if (!t || !redirect(site, len, hook)) return FALSE;
+	*(void **)orig = t;
+	return TRUE;
+}
+
+// "y * 640" compiled as LEA r,[r+r*4] ; SHL r,7 (tools\find_mul640.ps1), in the rectangle
+// darkener FUN_004b13ed. Both 6 bytes become IMUL r,r,width (69 /r imm32), also 6 bytes.
+static const struct { DWORD addr; BYTE lea[3], shl[3], imul[2]; } kMulSites[] = {
+	{ 0x004b14bb, { 0x8D, 0x04, 0x80 }, { 0xC1, 0xE0, 0x07 }, { 0x69, 0xC0 } }, // EAX
+	{ 0x004b14de, { 0x8D, 0x0C, 0x89 }, { 0xC1, 0xE1, 0x07 }, { 0x69, 0xC9 } }, // ECX
+};
+
 static void install_wide(void)
 {
 	if (!g_wantWide) return;
@@ -1238,9 +1289,26 @@ static void install_wide(void)
 			return;
 		}
 	}
+	for (int i = 0; i < (int)(sizeof kMulSites / sizeof kMulSites[0]); i++) {
+		BYTE *p = (BYTE *)kMulSites[i].addr;
+		if (memcmp(p, kMulSites[i].lea, 3) || memcmp(p + 3, kMulSites[i].shl, 3)) {
+			logf_("wide mode off: y*640 at %08lx is not the expected LEA/SHL", (unsigned long)kMulSites[i].addr);
+			return;
+		}
+	}
 	for (int i = 0; i < n; i++)
 		patch_dword(kPitchSites[i].addr + kPitchSites[i].off, kPitchSites[i].value,
 			kPitchSites[i].rows * w + kPitchSites[i].col);
+	for (int i = 0; i < (int)(sizeof kMulSites / sizeof kMulSites[0]); i++) {
+		BYTE *p = (BYTE *)kMulSites[i].addr;
+		DWORD old;
+		VirtualProtect(p, 6, PAGE_EXECUTE_READWRITE, &old);
+		p[0] = kMulSites[i].imul[0];
+		p[1] = kMulSites[i].imul[1];
+		*(LONG *)(p + 2) = w;
+		VirtualProtect(p, 6, old, &old);
+		FlushInstructionCache(GetCurrentProcess(), p, 6);
+	}
 	for (int i = 0; i < (int)(sizeof kFrameSites / sizeof kFrameSites[0]); i++)
 		patch_dword(kFrameSites[i].addr, kFrameSites[i].value, kFrameSites[i].kind ? w * GAME_H : w);
 	g_frameW = w;
@@ -1248,6 +1316,12 @@ static void install_wide(void)
 		o_decode_lbm = make_trampoline(DECODE_LBM, sizeof kDecodePrologue);
 		if (o_decode_lbm) redirect(DECODE_LBM, sizeof kDecodePrologue, h_decode_lbm);
 	}
+	if (memcmp(LOAD_SCREEN, kLoadScreenPrologue, sizeof kLoadScreenPrologue) == 0) {
+		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
+		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
+	}
+	hook_code((BYTE *)0x004b3ec0, kBlockPrologue, sizeof kBlockPrologue, h_block_to_frame, &o_block_to_frame);
+	hook_code((BYTE *)0x004b3f0a, kBlockPrologue, sizeof kBlockPrologue, h_block_from_frame, &o_block_from_frame);
 	logf_("wide mode: frame %dx%d for a %dx%d monitor; %d pitch sites rewritten", w, GAME_H, mw, mh, n);
 }
 

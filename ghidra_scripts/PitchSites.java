@@ -1,6 +1,6 @@
 // Lists every instruction operand that bakes the 640-byte frame pitch in: a register-relative
 // displacement, or an immediate added to/subtracted from/loaded into a register, equal to
-// rows * 640 + column with rows 1..16 and column -2..2 (the blitters address "the pixel below"
+// rows * 640 + column with rows 1..48 and column -63..63 (the blitters address "the pixel below"
 // as [EDI+0x280], fifteen rows down as [EDI+0x2580], and so on).
 // Output, one per line: address, offset of the 32-bit field in the instruction, value, rows,
 // column, function, instruction text.
@@ -20,6 +20,7 @@ import ghidra.program.model.scalar.Scalar;
 public class PitchSites extends GhidraScript {
 
 	private static final int PITCH = 640;
+	private static final int MAX_COL = Integer.getInteger("pitchsites.maxcol", 63); // column reach of a blitter's unrolled writes
 
 	@Override
 	protected void run() throws Exception {
@@ -44,9 +45,9 @@ public class PitchSites extends GhidraScript {
 						}
 						long v = ((Scalar) o).getSignedValue();
 						long a = Math.abs(v);
-						long rows = (a + 2) / PITCH;
+						long rows = (a + PITCH / 2) / PITCH; // nearest whole row; col is the rest, either sign
 						long col = a - rows * PITCH;
-						if (rows < 1 || rows > 16 || col < -2 || col > 2) {
+						if (rows < 1 || rows > 48 || Math.abs(col) > MAX_COL) {
 							continue;
 						}
 						if (immediate && mnem.equals("MOV") && !ins.getDefaultOperandRepresentation(0).matches("E[A-Z]{2}")) {

@@ -1,10 +1,12 @@
 // Lists every instruction whose disassembly text matches a regular expression, with its bytes
 // and containing function. Used to enumerate patch sites.
 // Usage (headless): -postScript FindInstructions.java <out file> <regex> [startAddr endAddr]
-//@category Imperialism2
+// <regex> may be @<file> to read it from a file (cmd.exe mangles | and > in arguments).
+//@category Lords2
 
 import java.io.File;
 import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.util.regex.Pattern;
 
 import ghidra.app.script.GhidraScript;
@@ -18,7 +20,10 @@ public class FindInstructions extends GhidraScript {
 	@Override
 	protected void run() throws Exception {
 		String[] args = getScriptArgs();
-		Pattern pattern = Pattern.compile(args[1]);
+		String regex = args[1].startsWith("@")
+			? new String(Files.readAllBytes(new File(args[1].substring(1)).toPath()), "UTF-8").trim()
+			: args[1];
+		Pattern pattern = Pattern.compile(regex);
 		InstructionIterator it = args.length >= 4
 			? currentProgram.getListing().getInstructions(
 				new AddressSet(toAddr(Long.parseLong(args[2], 16)), toAddr(Long.parseLong(args[3], 16))), true)
@@ -42,6 +47,6 @@ public class FindInstructions extends GhidraScript {
 				found++;
 			}
 		}
-		println("FindInstructions: " + found + " matches for " + args[1]);
+		println("FindInstructions: " + found + " matches for " + regex);
 	}
 }

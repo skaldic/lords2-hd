@@ -68,6 +68,27 @@ bytes each frame has. 21,340 of 21,344 frames decode; the 4 left are `*grid*` pi
 - **Starting a new game overwrites `lastturn.sav` and `lords2.inf`.** Back them up before any
   test run and restore after.
 
+## Wide frame (phase 3, step 1 — working, Wide=0 by default until screens are widened)
+
+The frame width is `DAT_004eb274` (set once at 0x4b2371), but 640 is also baked into code:
+
+- 4,323 `[EDI + rows*640 + col]` operands in the blitters (rows 1..31, col -63..63): EDI is the
+  frame. `[ESI + ...]` is the *source* picture — never rewrite it. Table: `PitchSites.java` →
+  `tools/make_pitch_header.ps1` → `hd/pitch_sites.h`.
+- Row skips `0x280 - w` in the 9 sprite blitters (`MOV EAX,0x280`), `ADD EDI,0x27f` in 004b3fe0.
+- `y*640` as `LEA r,[r+r*4]; SHL r,7` (`tools/find_mul640.ps1`): only the rectangle darkener
+  004b13ed (2 sites) is the frame; 00479e90 is the battle grid, 004c6340 is gmtime.
+- Callers pass `640 - width` as the row skip to 004b3ec0/004b3f0a (save/restore under windows).
+- Flat 640x480 writes: the raw screen loader 00408fcb (17 painted screens) and the LBM decoder
+  004b061a — both wrapped to lay rows out at the frame width.
+- Smacker destination pitch (two `PUSH 0x280`), the three 307,200-byte whole-frame loops.
+- The game scales mouse x by frame width / SM_CXSCREEN, so SM_CXSCREEN reports the frame width.
+- Not the frame, left alone: battle grid rows of 640 cells (0047c4ba, 0047dfe0, 00490616,
+  00491b1f, 00479e90), screen-x maths (0042e50d, 0042e5c0, 00485675, 004b29be), text centred on
+  640 (0041a166, 00421d09), the 640 clip of full-screen pictures (gen_frame/mos_frame).
+- Dead code (no callers): 004b5ee8, 004b6034, 004b6075, 004b6112, 004b4085, 004b40b2, 004b40f9.
+- Not handled yet: 00408f1a (debug screenshot writer), 0040902b (demo1.pl8 loader).
+
 ## Open questions
 
 - Battle troop sprites (`a2*`, `a3*`) are not plain palette indices: no palette (including the

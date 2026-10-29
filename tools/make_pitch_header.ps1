@@ -1,7 +1,10 @@
 # Turns pitch_sites.txt (ghidra_scripts\PitchSites.java) into hd\pitch_sites.h: the instruction
 # operands that bake the 640-byte frame pitch in, which wide mode rewrites for the wider frame.
-# Kept: register-relative displacements in the blitters (pixel rows below the pointer), the
-# sprite blitters' "MOV EAX,0x280" (row skip = 640 - sprite width) and FUN_004b3fe0's row step.
+# Kept: [EDI + disp] operands - EDI is the frame pointer in every blitter, the displacement the
+# row and column of an unrolled write - the sprite blitters' "MOV EAX,0x280" (row skip = 640 -
+# sprite width) and FUN_004b3fe0's row step. Not [ESI + disp]: ESI is the source picture there,
+# with its own width ([ESI+0x242] is 578 bytes into a sprite). Not indexed operands
+# ([EAX+ECX*2+0x4e6] in 0040b6e3.. is a structure field).
 # Left out, because 640 means something else there: the battle grid's row of 640 cells
 # (0047c4ba, 0047dfe0, 00490616, 00491b1f), screen positions (0042e50d, 0042e5c0, 00485675,
 # 00485861, 004b29be) and a stack variable (004c68f0).
@@ -14,7 +17,7 @@ $spriteBlitters = '0040a01d', '0040a127', '0040a21a', '0040a3d0', '0040a567', '0
 $rows = Import-Csv $In -Delimiter "`t" -Header addr, off, val, rows, col, fn, ins
 $keep = $rows | Where-Object {
     $_.fn -notin $notPitch -and (
-        ($_.ins -match '\[E(DI|SI|AX|BX|CX|DX) \+ ') -or
+        ($_.ins -match '\[EDI \+ 0x[0-9a-f]+\]') -or
         ($_.fn -in $spriteBlitters -and $_.ins -match '^MOV EAX,0x280$') -or
         ($_.fn -eq '004b3fe0' -and $_.ins -match '^ADD EDI,0x27f$'))
 }
