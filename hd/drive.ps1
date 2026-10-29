@@ -1,0 +1,121 @@
+# Launches the game and plays back a list of steps, for testing without a person at the mouse.
+#   wait:<seconds>      pause
+#   click:<x>,<y>       left-click at a point given in 640x480 game coordinates
+#   rclick:<x>,<y>      right-click there
+#   move:<x>,<y>        move the mouse there without clicking
+#   key:<sendkeys>      press a key, e.g. key:{ESC}
+#   shot:<name>         save a half-size screenshot as shots\<name>.png
+#   crop:<name>         save a full-resolution crop of the centre of the screen
+# Example: .\drive.ps1 wait:9 key:{ESC} wait:3 shot:menu
+param(
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Steps,
+    [switch]$KeepRunning,
+    [switch]$Attach     # play the steps on the game that is already running instead of starting it
+)
+$GameW = 640; $GameH = 480
+
+Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+Add-Type -Namespace Native -Name Drive -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+[StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public int x; public int y; }
+[StructLayout(LayoutKind.Sequential)] public struct ICONINFO { public bool fIcon; public int xHotspot; public int yHotspot; public IntPtr hbmMask; public IntPtr hbmColor; }
+[DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO ci);
+[DllImport("user32.dll")] public static extern bool GetIconInfo(IntPtr icon, out ICONINFO ii);
+[DllImport("user32.dll")] public static extern bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon, int w, int h, int step, IntPtr brush, int flags);
+[DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr o);
+'@
+
+# Screen captures leave the cursor out; draw it in, at the size Windows shows it.
+function Add-Cursor($graphics) {
+    $ci = New-Object Native.Drive+CURSORINFO
+    $ci.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($ci)
+    if (-not [Native.Drive]::GetCursorInfo([ref]$ci) -or $ci.flags -ne 1) { return }
+    $ii = New-Object Native.Drive+ICONINFO
+    if (-not [Native.Drive]::GetIconInfo($ci.hCursor, [ref]$ii)) { return }
+    $dc = $graphics.GetHdc()
+    [void][Native.Drive]::DrawIconEx($dc, $ci.x - $ii.xHotspot, $ci.y - $ii.yHotspot, $ci.hCursor, 0, 0, 0, [IntPtr]::Zero, 3)
+    $graphics.ReleaseHdc($dc)
+    if ($ii.hbmMask -ne [IntPtr]::Zero) { [void][Native.Drive]::DeleteObject($ii.hbmMask) }
+    if ($ii.hbmColor -ne [IntPtr]::Zero) { [void][Native.Drive]::DeleteObject($ii.hbmColor) }
+}
+
+# Clicks and keys are real input: they go to whatever window is in front. They are sent only
+# while the game is in front, so another program is never clicked.
+function Test-GameInFront {
+    $pid2 = [uint32]0
+    [void][Native.Drive]::GetWindowThreadProcessId([Native.Drive]::GetForegroundWindow(), [ref]$pid2)
+    return $pid2 -eq $proc.Id
+}
+[void][Native.Drive]::SetProcessDPIAware()
+
+$outDir = "$PSScriptRoot\shots"
+New-Item -ItemType Directory -Force $outDir | Out-Null
+$game = Resolve-Path "$PSScriptRoot\..\.."
+$proc = if ($Attach) { Get-Process "Lords2" | Select-Object -First 1 }
+        else { Start-Process -FilePath "$game\Lords2.exe" -WorkingDirectory $game -PassThru }
+
+function Update-View {
+    # The picture is the largest 4:3 rectangle centred on the primary screen. The screen size can
+    # change while the game runs (the stock game switches display modes).
+    $script:b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $script:scale = [Math]::Min($b.Width / [double]$GameW, $b.Height / [double]$GameH)
+    $script:ox = ($b.Width - $GameW * $scale) / 2
+    $script:oy = ($b.Height - $GameH * $scale) / 2
+}
+Update-View
+
+function Move-To([int]$gx, [int]$gy) {
+    Update-View
+    $sx = [int]($ox + ($gx + 0.5) * $scale); $sy = [int]($oy + ($gy + 0.5) * $scale)
+    # Arrive in a few steps so the game sees ordinary mouse movement.
+    for ($i = 8; $i -ge 0; $i--) { [void][Native.Drive]::SetCursorPos($sx - $i * 5, $sy - $i * 3); Start-Sleep -Milliseconds 25 }
+}
+
+function Click([int]$down, [int]$up) {
+    Start-Sleep -Milliseconds 150
+    [Native.Drive]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+    [Native.Drive]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+foreach ($step in $Steps) {
+    if ($proc.HasExited) { "game exited (code $($proc.ExitCode)) before '$step'"; break }
+    $verb, $arg = $step -split ':', 2
+    if ($verb -in 'click', 'rclick', 'key', 'move' -and -not (Test-GameInFront)) { "the game is not in front: stopped before '$step'"; break }
+    switch ($verb) {
+        'wait'   { Start-Sleep -Milliseconds ([int]([double]$arg * 1000)) }
+        'move'   { $x, $y = $arg -split '[, ]+'; Move-To $x $y }
+        'click'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 2 4 }
+        'rclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 8 16 }
+        'key'    { [Windows.Forms.SendKeys]::SendWait($arg) }
+        'shot'   {
+            Update-View
+            $full = New-Object Drawing.Bitmap($b.Width, $b.Height)
+            $g = [Drawing.Graphics]::FromImage($full)
+            $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size)
+            Add-Cursor $g
+            $half = New-Object Drawing.Bitmap($full, [int]($b.Width / 2), [int]($b.Height / 2))
+            $half.Save("$outDir\$arg.png", [Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $full.Dispose(); $half.Dispose()
+            "saved $arg.png ($($b.Width)x$($b.Height))"
+        }
+        'crop'   {
+            $bmp = New-Object Drawing.Bitmap(1000, 700)
+            $g = [Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen(($b.Width / 2 - 500), ($b.Height / 2 - 350), 0, 0, $bmp.Size)
+            $bmp.Save("$outDir\$arg.png", [Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+            "saved $arg.png"
+        }
+        default { "unknown step '$step'" }
+    }
+}
+
+if (-not $KeepRunning -and -not $proc.HasExited) {
+    [void]$proc.CloseMainWindow()
+    if (-not $proc.WaitForExit(3000)) { Stop-Process -Id $proc.Id -Force }
+}

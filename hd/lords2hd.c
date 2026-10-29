@@ -58,7 +58,8 @@ static BOOL g_emulate;          // our DirectDraw is in use (known exe build and
 static int g_scale = SCALE_SMOOTH;
 static BOOL g_fullscreen = TRUE, g_integerScale;
 static int g_windowScale = 2;
-static BOOL g_logLoads, g_dumpPalettes;
+static int g_cursorScale = 100; // percent of the cursor's original size relative to the screen
+static BOOL g_logLoads, g_dumpPalettes, g_timing;
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -84,11 +85,14 @@ static void read_settings(void)
 	g_windowScale = GetPrivateProfileIntA("Display", "WindowScale", 2, g_iniPath);
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
+	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 100, g_iniPath);
+	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
 	g_dumpPalettes = GetPrivateProfileIntA("Debug", "DumpPalettes", 0, g_iniPath) != 0;
-	logf_("settings: Enabled=%d Scale=%s Fullscreen=%d WindowScale=%d IntegerScale=%d LogLoads=%d DumpPalettes=%d",
+	g_timing = GetPrivateProfileIntA("Debug", "Timing", 0, g_iniPath) != 0;
+	logf_("settings: Enabled=%d Scale=%s Fullscreen=%d WindowScale=%d IntegerScale=%d CursorScale=%d LogLoads=%d DumpPalettes=%d Timing=%d",
 		g_emulate, g_scale == SCALE_NONE ? "none" : g_scale == SCALE_SHARP ? "sharp" : "smooth",
-		g_fullscreen, g_windowScale, g_integerScale, g_logLoads, g_dumpPalettes);
+		g_fullscreen, g_windowScale, g_integerScale, g_cursorScale, g_logLoads, g_dumpPalettes, g_timing);
 }
 
 // Crashes: the first thing to ask a player for is lords2hd.log, straight after the crash.
@@ -266,12 +270,18 @@ static void double_frame(void)
 	}
 }
 
-static void present(void)
+static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
+static BYTE g_shown8[GAME_W * GAME_H];
+
+// Returns FALSE when nothing changed since the last present: the game copies its whole frame to
+// the screen on every pass of its loop, paused or not.
+static BOOL present(void)
 {
-	if (!g_hwnd || !g_primary) return;
+	if (!g_hwnd || !g_primary) return FALSE;
 	static PALETTEENTRY lastPal[256];
 	static DWORD palChanged;
 	static BOOL palDumped = TRUE;
+	static RECT lastView;
 
 	EnterCriticalSection(&g_lock);
 	memcpy(g_frame8, g_primary->bits, sizeof g_frame8);
@@ -280,7 +290,8 @@ static void present(void)
 	else memset(pal, 0, sizeof pal);
 	LeaveCriticalSection(&g_lock);
 
-	if (memcmp(pal, lastPal, sizeof pal) != 0) {
+	BOOL palSame = memcmp(pal, lastPal, sizeof pal) == 0;
+	if (!palSame) {
 		memcpy(lastPal, pal, sizeof pal);
 		palChanged = GetTickCount();
 		palDumped = FALSE;
@@ -292,9 +303,13 @@ static void present(void)
 
 	RECT v, c;
 	view_rect(&v);
+	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
+	if (!forced && palSame && memcmp(g_frame8, g_shown8, sizeof g_frame8) == 0) return FALSE;
+	memcpy(g_shown8, g_frame8, sizeof g_shown8);
+	lastView = v;
 	GetClientRect(g_hwnd, &c);
 	HDC dc = GetDC(g_hwnd);
-	if (!dc) return;
+	if (!dc) return FALSE;
 	// Black around the picture.
 	PatBlt(dc, 0, 0, c.right, v.top, BLACKNESS);
 	PatBlt(dc, 0, v.bottom, c.right, c.bottom - v.bottom, BLACKNESS);
@@ -330,20 +345,46 @@ static void present(void)
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
 	ReleaseDC(g_hwnd, dc);
+	return TRUE;
 }
 
-// Presents whenever the frame changed, at most once per few milliseconds: the game copies its
+// Presents whenever the frame changed, at most once per display refresh: the game copies its
 // frame in pieces (one start-up effect uses 1200 16x16 blocks), and each copy only marks it dirty.
 static DWORD WINAPI presenter(void *unused)
 {
+	HRESULT (WINAPI *dwm_flush)(void) = NULL;
+	HMODULE dwm = LoadLibraryA("dwmapi.dll");
+	if (dwm) dwm_flush = (void *)GetProcAddress(dwm, "DwmFlush");
+	LARGE_INTEGER freq, t0, t1, since;
+	QueryPerformanceFrequency(&freq);
+	QueryPerformanceCounter(&since);
+	double busy = 0, worst = 0;
+	int presents = 0, skipped = 0;
+
 	for (;;) {
 		WaitForSingleObject(g_dirtyEvent, 50);
-		if (InterlockedExchange(&g_dirty, 0)) {
-			present();
-			Sleep(4);
+		BOOL dirty = InterlockedExchange(&g_dirty, 0) != 0;
+		if (!dirty && !g_dumpPalettes) continue; // DumpPalettes: lets a palette that stays put be logged
+		QueryPerformanceCounter(&t0);
+		BOOL shown = present();
+		QueryPerformanceCounter(&t1);
+		if (shown) {
+			double ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
+			busy += ms;
+			if (ms > worst) worst = ms;
+			presents++;
+			// Wait for the compositor's next frame, so the picture changes at most once per refresh.
+			if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
 		}
-		else if (g_dumpPalettes) {
-			present(); // lets a palette that stays put be logged
+		else if (dirty) {
+			skipped++;
+		}
+		if (g_timing && (t1.QuadPart - since.QuadPart) > 5 * freq.QuadPart) {
+			logf_("timing: %d presents in 5 s, %.1f ms average, %.1f ms worst; %d unchanged frames skipped",
+				presents, presents ? busy / presents : 0.0, worst, skipped);
+			since = t1;
+			busy = worst = 0;
+			presents = skipped = 0;
 		}
 	}
 	return 0;
@@ -862,7 +903,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		client_to_game(&x, &y);
 		lp = MAKELPARAM(x, y);
 	}
-	else if (msg == WM_PAINT || msg == WM_SIZE) {
+	else if (msg == WM_PAINT || msg == WM_SIZE || msg == WM_ACTIVATEAPP) {
+		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
 	}
 	return CallWindowProcA(g_gameProc, hwnd, msg, wp, lp);
@@ -909,9 +951,32 @@ static BOOL WINAPI h_ClientToScreen(HWND hwnd, POINT *p)
 	return o_ClientToScreen(hwnd, p);
 }
 
+// After its mode switch the stock game saw a 640x480 screen: in fullscreen it takes the screen
+// size as its window rectangle, which scales mouse positions and places every frame copy.
+// The game checks the desktop's colour depth and warns "Non 256 colour display" when it is not
+// 8 bits. Our DirectDraw is 8-bit whatever the desktop is, so it sees the display it wants. (The
+// check cannot flip it to its windowed mode: the game starts in fullscreen mode and only ever
+// switches the other way.)
+static int (WINAPI *o_GetDeviceCaps)(HDC, int);
+static int WINAPI h_GetDeviceCaps(HDC dc, int i)
+{
+	if (i == BITSPIXEL) return 8;
+	if (i == PLANES) return 1;
+	if (i == NUMCOLORS) return 20;
+	return o_GetDeviceCaps(dc, i);
+}
+
+static int (WINAPI *o_GetSystemMetrics)(int);
+static int WINAPI h_GetSystemMetrics(int i)
+{
+	if (i == SM_CXSCREEN) return GAME_W;
+	if (i == SM_CYSCREEN) return GAME_H;
+	return o_GetSystemMetrics(i);
+}
+
 // Cursors: the game's are 32x32 one-bit; scaled by the system they turn blocky and their
 // inverting pixels vanish, so each is rebuilt once as an alpha cursor enlarged by whole pixels.
-static struct { HCURSOR from, to; int k; } g_cursors[64];
+static struct { HCURSOR from, to; int viewH; } g_cursors[64];
 static int g_cursorCount;
 
 static HCURSOR rebuild_cursor(HCURSOR src, int k)
@@ -984,18 +1049,30 @@ static HCURSOR WINAPI h_SetCursor(HCURSOR cur)
 	if (!cur) return o_SetCursor(cur);
 	RECT v;
 	view_rect(&v);
-	int k = max(1, ((v.bottom - v.top) + GAME_H / 2) / GAME_H);
+	int viewH = v.bottom - v.top;
 	for (int i = 0; i < g_cursorCount; i++) {
-		if (g_cursors[i].from == cur && g_cursors[i].k == k) return o_SetCursor(g_cursors[i].to);
+		if (g_cursors[i].from == cur && g_cursors[i].viewH == viewH) return o_SetCursor(g_cursors[i].to);
 		if (g_cursors[i].to == cur) return o_SetCursor(cur); // one of ours, handed back to us
 	}
+	// The game's cursors were 32 pixels on a 480-line screen; Windows may already hand them over
+	// enlarged for the desktop's DPI, so the factor is worked out from the size it gives us.
+	ICONINFO ii;
+	BITMAP bm;
+	int srcW = 32;
+	if (GetIconInfo(cur, &ii)) {
+		if (GetObjectA(ii.hbmColor ? ii.hbmColor : ii.hbmMask, sizeof bm, &bm)) srcW = bm.bmWidth;
+		if (ii.hbmColor) DeleteObject(ii.hbmColor);
+		if (ii.hbmMask) DeleteObject(ii.hbmMask);
+	}
+	int target = 32 * viewH / GAME_H * g_cursorScale / 100;
+	int k = max(1, (target + srcW / 2) / max(1, srcW));
 	// A rebuilt cursor is never destroyed (the game may hand it back at any time), so only as
 	// many are made as can be remembered.
 	if (g_cursorCount >= (int)(sizeof g_cursors / sizeof g_cursors[0])) return o_SetCursor(cur);
 	HCURSOR made = rebuild_cursor(cur, k);
 	g_cursors[g_cursorCount].from = cur;
 	g_cursors[g_cursorCount].to = made;
-	g_cursors[g_cursorCount].k = k;
+	g_cursors[g_cursorCount].viewH = viewH;
 	g_cursorCount++;
 	return o_SetCursor(made);
 }
@@ -1084,6 +1161,8 @@ static void install(void)
 	hook_import("USER32.dll", "GetClientRect", h_GetClientRect, &o_GetClientRect);
 	hook_import("USER32.dll", "ClientToScreen", h_ClientToScreen, &o_ClientToScreen);
 	hook_import("USER32.dll", "SetCursor", h_SetCursor, &o_SetCursor);
+	hook_import("USER32.dll", "GetSystemMetrics", h_GetSystemMetrics, &o_GetSystemMetrics);
+	hook_import("GDI32.dll", "GetDeviceCaps", h_GetDeviceCaps, &o_GetDeviceCaps);
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");
 }

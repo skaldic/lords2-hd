@@ -50,9 +50,28 @@ commands (`00 n` skip, `n` literal), or isometric diamonds (58x30 / 10x6), chose
 bytes each frame has. 21,340 of 21,344 frames decode; the 4 left are `*grid*` pictures
 (probably hit-test maps).
 
+## Proxy DLL (hd/lords2hd.c) — what testing showed
+
+- The game only ever takes its fullscreen path on a modern desktop (`DAT_0053f228` starts at 1;
+  it is the windowed flag's opposite). Its window is `WinLords2Class`, WS_POPUP, sized from
+  `GetSystemMetrics(SM_CXSCREEN/CYSCREEN)`.
+- In fullscreen its window rectangle `DAT_004ea180` is set from SM_CXSCREEN/CYSCREEN on
+  WM_MOVE/WM_SIZE and scales mouse positions and places frame copies: the DLL reports 640x480.
+- `GetDeviceCaps(BITSPIXEL)` != 8 shows a "Non 256 colour display" warning at game start: the DLL
+  reports 8.
+- Esc on the main menu quits the game (WM_KEYDOWN VK_ESCAPE sets `DAT_005aeb68`).
+- The main loop spins at 100% of one core (stock behaviour). The game re-copies its frame ~20
+  times a second while idle; the presenter skips unchanged frames (~3 ms per real present at
+  5120x2880).
+- Cursors: class cursor is NULL; the game picks one of 8 resource cursors (`FUN_004b1d??`,
+  `SetCursor`). Windows hands them over at 64x64 on a 200% desktop.
+- **Starting a new game overwrites `lastturn.sav` and `lords2.inf`.** Back them up before any
+  test run and restore after.
+
 ## Open questions
 
-- Palette of battle troop sprites and of `title.pl8` / `troop1.pl8`: none of the 27 `.256`
-  files fits. `title.pl8` is never loaded by name (the title is `imptitle.smk`). Plan: log
-  the live palette from the proxy DLL when each picture loads.
+- Battle troop sprites (`a2*`, `a3*`) are not plain palette indices: no palette (including the
+  battle palette logged in game, pal_005) makes them smooth, yet they draw correctly in game. The
+  sprite blitter must map them through a table (team colours?). Needed for HD art (phase 4).
+- `title.pl8` is never loaded by name (the title is `imptitle.smk`).
 - Format of the `*grid*` pictures.

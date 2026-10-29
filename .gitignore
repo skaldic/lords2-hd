@@ -19,3 +19,5 @@
 /ghidra_out.txt
 /ghidra_err.txt
 /ghidra_stdin.txt
+/save_backup/
+/hd/shots/
