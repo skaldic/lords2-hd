@@ -1333,7 +1333,59 @@ static redraw_map_t o_redraw_map;
 // the end of the row above, so the limit never goes past them.
 typedef void (__cdecl *clip_x_t)(int, int);
 static clip_x_t o_clip_x;
-static void __cdecl h_clip_x(int left, int right) { o_clip_x(max(left, -g_off), right); }
+static BOOL g_drawingLeft; // a widened bar is being drawn: the screen's left edge is in the spare columns
+static void __cdecl h_clip_x(int left, int right)
+{
+	if (g_drawingLeft && left == 0) left = -(g_off - GUARD);
+	o_clip_x(max(left, -g_off), right);
+}
+
+// The county screen's two strips that end at the game's left edge are drawn longer to the left
+// when the map is wide: the top bar, mos_24blank(0, 0, 25, 1) in FUN_00419c78 - 24-pixel tiles -
+// and the kingdom overview's caption, FUN_00409397(0, 412, 30, 4) in FUN_0040f5fd - a framed
+// panel of 16-pixel tiles. The game writes their text over them as before.
+typedef void (__cdecl *strip_t)(int, int, int, int);
+static strip_t o_bar_tiles, o_framed_panel;
+static strip_t o_bar_outline;
+static BOOL county_map_on(void);
+
+static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)
+{
+	if (g_off && x == 0 && y == 0 && nx == 25 && ny == 1 && county_map_on()) {
+		int n = (g_off - GUARD + 23) / 24;
+		o_bar_tiles(-24 * n, y, nx + n, ny);
+		return;
+	}
+	o_bar_tiles(x, y, nx, ny);
+}
+
+// The top bar's outline, FUN_00403fdd(0, 0, 640, 24): light top line (0x1f), dark bottom and
+// left lines (0x10). It cannot start left of 0, so on a wide map the outline is redone here over
+// the whole bar and the left line at the old edge goes.
+static void __cdecl h_bar_outline(int x, int y, int w, int h)
+{
+	o_bar_outline(x, y, w, h);
+	if (!g_off || !g_back || x != 0 || y != 0 || w != GAME_W || h != 24 || !county_map_on()) return;
+	int n = (g_off - GUARD + 23) / 24, left = -24 * n;
+	BYTE *frame = g_back->bits + g_back->org;
+	int pitch = g_back->pitch;
+	for (int r = 1; r < h - 1; r++) frame[r * pitch] = frame[r * pitch + 1];
+	memset(frame + left, 0x1f, -left);
+	memset(frame + (h - 1) * pitch + left, 0x10, -left);
+	for (int r = 0; r < h; r++) frame[r * pitch + left] = 0x10;
+}
+
+static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
+{
+	if (g_off && x == 0 && y == 412 && nx == 30 && ny == 4 && county_map_on()) {
+		int n = (g_off - GUARD) / 16;
+		g_drawingLeft = TRUE;
+		o_framed_panel(-16 * n, y, nx + n, ny);
+		g_drawingLeft = FALSE;
+		return;
+	}
+	o_framed_panel(x, y, nx, ny);
+}
 
 static BOOL county_map_on(void) { return GAME_MODE == 3 && (SCREEN_ID == 0 || SCREEN_ID == 39); }
 
@@ -1349,9 +1401,12 @@ static void __cdecl h_redraw_map(void)
 	// the map's left edge: scrolled fully left, the map's first column is at the screen's edge.
 	if (MAP_FIRST_COL < k) MAP_FIRST_COL = k;
 	int firstCol = MAP_FIRST_COL;
-	// Whatever is left of the map is black, not the last screen's pixels.
+	// Whatever is left of the map is black, not the last screen's pixels - between the top bar and
+	// the map's bottom edge (DAT_00553254: 408 in the kingdom overview, where the caption panel is
+	// below), since the game does not always draw those two again after the map.
 	BYTE *frame = g_back->bits + g_back->org;
-	for (int y = 0; y < GAME_H; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
+	int bottom = max(24, min(GAME_H, *(int *)0x00553254));
+	for (int y = 24; y < bottom; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
 	MAP_COLUMNS = cols + k;
 	MAP_FIRST_X = firstX - k * MAP_STEP;
 	MAP_FIRST_COL = firstCol - k;
@@ -1431,6 +1486,9 @@ static void install_wide(void)
 	}
 	hook_code((BYTE *)0x004050c0, kRedrawPrologue, sizeof kRedrawPrologue, h_redraw_map, &o_redraw_map);
 	hook_code((BYTE *)0x0040464c, kBlockPrologue, sizeof kBlockPrologue, h_clip_x, &o_clip_x);
+	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
+	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
+	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	hook_code((BYTE *)0x004b3ec0, kBlockPrologue, sizeof kBlockPrologue, h_block_to_frame, &o_block_to_frame);
 	hook_code((BYTE *)0x004b3f0a, kBlockPrologue, sizeof kBlockPrologue, h_block_from_frame, &o_block_from_frame);
 	logf_("wide mode: frame %dx%d (%d shown) for a %dx%d monitor; %d pitch sites rewritten", w, GAME_H, w - GUARD, mw, mh, n);
