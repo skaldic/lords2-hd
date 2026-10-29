@@ -20,7 +20,10 @@
 
 #define GAME_W 640  // the width every screen was designed for
 #define GAME_H 480
-#define MAX_W 1152  // widest frame wide mode makes (32:9)
+#define MAX_W 1216  // widest frame wide mode makes (32:9, plus the guard columns)
+// Wide mode keeps this many columns at the frame's left edge out of sight: the county map draws
+// whole tiles (up to 60 pixels) past the visible edge, which would otherwise land on the row above.
+#define GUARD 64
 
 // The frame's width: GAME_W, or in wide mode as wide as the monitor's shape at 480 lines. The
 // part of it shown is g_showW wide from g_showX: screens that have not been widened are drawn in
@@ -309,10 +312,12 @@ static BOOL present(void)
 		lastScreen = screen;
 		lastMode = mode;
 	}
+	// The county map (mode 3; screen 0, or 39 with a message scroll on it) uses the whole frame.
+	InterlockedExchange(&g_wideScreen, g_off && mode == 3 && (screen == 0 || screen == 39));
 
 	EnterCriticalSection(&g_lock);
-	g_showX = g_wideScreen ? 0 : g_off;
-	g_showW = g_wideScreen ? g_frameW : GAME_W;
+	g_showX = g_wideScreen ? GUARD : g_off;
+	g_showW = g_wideScreen ? g_frameW - GUARD : GAME_W;
 	int sx = g_showX, sw = g_showW;
 	if (sx + sw > g_primary->w) sx = 0, sw = min(sw, g_primary->w);
 	for (int y = 0; y < GAME_H; y++) memcpy(g_frame8 + y * sw, g_primary->bits + y * g_primary->pitch + sx, sw);
@@ -974,13 +979,28 @@ static BOOL (WINAPI *o_GetClientRect)(HWND, RECT *);
 static BOOL (WINAPI *o_ClientToScreen)(HWND, POINT *);
 static HCURSOR (WINAPI *o_SetCursor)(HCURSOR);
 
+// The game reads the cursor for one thing besides the pointer while it scrolls: the map scrolls
+// when the cursor is at x <= 0 or x >= screen width - 1 (FUN_00432221, the width DAT_004e65a0
+// from GetSystemMetrics). In wide mode game x is negative over the spare columns and the width is
+// the frame's, so the edges are reported as those two values only when the cursor really is at
+// the edge of the picture, and everything in between stays clear of them.
+#define SCROLL_EDGE_W (*(int *)0x004e65a0)
+
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
 	if (!o_GetCursorPos(p)) return FALSE;
 	if (g_hwnd) {
 		ScreenToClient(g_hwnd, p);
-		int x = p->x, y = p->y;
+		RECT v;
+		view_rect(&v);
+		int cx = p->x, x = p->x, y = p->y;
 		client_to_game(&x, &y);
+		if (g_off) {
+			int right = max(2, SCROLL_EDGE_W - 1);
+			if (cx <= v.left) x = 0;
+			else if (cx >= v.right - 1) x = right;
+			else x = max(1, min(right - 1, x));
+		}
 		p->x = x;
 		p->y = y;
 	}
@@ -1290,6 +1310,57 @@ static BOOL hook_code(BYTE *site, const BYTE *prologue, int len, void *hook, voi
 	return TRUE;
 }
 
+// ---------------------------------------------------------------------------------------------
+// The wider county map. FUN_004050c0 redraws the whole map (terrain FUN_0040526e, then the layers
+// FUN_00405602 and FUN_00405487), as DAT_0053e8ac columns from map column DAT_005651b4, the first
+// at screen x DAT_0052afdc, DAT_00568220 pixels apart. For the length of a redraw it starts k
+// columns earlier, k * step further left, with k more columns: every tile and unit stays where it
+// was and the extra columns land in the frame's spare columns, left of the game's x = 0.
+
+#define MAP_COLUMNS   (*(int *)0x0053e8ac)
+#define MAP_FIRST_X   (*(int *)0x0052afdc)
+#define MAP_FIRST_COL (*(int *)0x005651b4)
+#define MAP_STEP      (*(int *)0x00568220)
+#define SCREEN_ID     (*(BYTE *)0x004eac50)
+#define GAME_MODE     (*(int *)0x0052af94)
+
+static const BYTE kRedrawPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
+typedef void (__cdecl *redraw_map_t)(void);
+static redraw_map_t o_redraw_map;
+
+// The blitters clip to the x range FUN_0040464c(left, right) is given; the map passes its first
+// tile's x as the left limit. Further left than the frame's spare columns a write would land on
+// the end of the row above, so the limit never goes past them.
+typedef void (__cdecl *clip_x_t)(int, int);
+static clip_x_t o_clip_x;
+static void __cdecl h_clip_x(int left, int right) { o_clip_x(max(left, -g_off), right); }
+
+static BOOL county_map_on(void) { return GAME_MODE == 3 && (SCREEN_ID == 0 || SCREEN_ID == 39); }
+
+static void __cdecl h_redraw_map(void)
+{
+	if (!g_off || !g_back || !county_map_on() || MAP_STEP <= 0) {
+		o_redraw_map();
+		return;
+	}
+	int cols = MAP_COLUMNS, firstX = MAP_FIRST_X;
+	int k = (g_off - GUARD + firstX + MAP_STEP - 1) / MAP_STEP; // columns to cover the visible spare pixels
+	// The view now reaches k columns further left, so the game's scroll stops k columns short of
+	// the map's left edge: scrolled fully left, the map's first column is at the screen's edge.
+	if (MAP_FIRST_COL < k) MAP_FIRST_COL = k;
+	int firstCol = MAP_FIRST_COL;
+	// Whatever is left of the map is black, not the last screen's pixels.
+	BYTE *frame = g_back->bits + g_back->org;
+	for (int y = 0; y < GAME_H; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
+	MAP_COLUMNS = cols + k;
+	MAP_FIRST_X = firstX - k * MAP_STEP;
+	MAP_FIRST_COL = firstCol - k;
+	o_redraw_map();
+	MAP_COLUMNS = cols;
+	MAP_FIRST_X = firstX;
+	MAP_FIRST_COL = firstCol;
+}
+
 // "y * 640" compiled as LEA r,[r+r*4] ; SHL r,7 (tools\find_mul640.ps1), in the rectangle
 // darkener FUN_004b13ed. Both 6 bytes become IMUL r,r,width (69 /r imm32), also 6 bytes.
 static const struct { DWORD addr; BYTE lea[3], shl[3], imul[2]; } kMulSites[] = {
@@ -1305,11 +1376,12 @@ static void install_wide(void)
 	if (!GetMonitorInfoA(mon, &mi)) return;
 	int mw = mi.rcMonitor.right - mi.rcMonitor.left, mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
 	int w = (GAME_H * mw / max(1, mh)) & ~15; // whole 16-pixel blocks: one start-up effect copies 16x16 tiles
-	w = max(GAME_W, min(MAX_W, w));
+	w = max(GAME_W, min(MAX_W - GUARD, w));
 	if (w == GAME_W) {
 		logf_("wide mode: the monitor (%dx%d) is not wider than 4:3", mw, mh);
 		return;
 	}
+	w += GUARD;
 	int n = sizeof kPitchSites / sizeof kPitchSites[0];
 	for (int i = 0; i < n; i++) {
 		if (*(LONG *)(kPitchSites[i].addr + kPitchSites[i].off) != kPitchSites[i].value) {
@@ -1357,9 +1429,11 @@ static void install_wide(void)
 		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
 		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
 	}
+	hook_code((BYTE *)0x004050c0, kRedrawPrologue, sizeof kRedrawPrologue, h_redraw_map, &o_redraw_map);
+	hook_code((BYTE *)0x0040464c, kBlockPrologue, sizeof kBlockPrologue, h_clip_x, &o_clip_x);
 	hook_code((BYTE *)0x004b3ec0, kBlockPrologue, sizeof kBlockPrologue, h_block_to_frame, &o_block_to_frame);
 	hook_code((BYTE *)0x004b3f0a, kBlockPrologue, sizeof kBlockPrologue, h_block_from_frame, &o_block_from_frame);
-	logf_("wide mode: frame %dx%d for a %dx%d monitor; %d pitch sites rewritten", w, GAME_H, mw, mh, n);
+	logf_("wide mode: frame %dx%d (%d shown) for a %dx%d monitor; %d pitch sites rewritten", w, GAME_H, w - GUARD, mw, mh, n);
 }
 
 // The one build this was made for: the GOG release, 1997-06-05.

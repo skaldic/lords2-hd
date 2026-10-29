@@ -3,6 +3,8 @@
 #   click:<x>,<y>       left-click at a point given in 640x480 game coordinates
 #   rclick:<x>,<y>      right-click there
 #   move:<x>,<y>        move the mouse there without clicking
+#   wclick / wrclick / wmove:<x>,<y>   the same on a widened screen (county map in Wide=1): x is
+#                       the game's, -208..639 on a 16:9 monitor (the spare columns are negative)
 #   key:<sendkeys>      press a key, e.g. key:{ESC}
 #   shot:<name>         save a half-size screenshot as shots\<name>.png
 #   crop:<name>         save a full-resolution crop of the centre of the screen
@@ -68,9 +70,17 @@ function Update-View {
 }
 Update-View
 
-function Move-To([int]$gx, [int]$gy) {
+function Move-To([int]$gx, [int]$gy, [switch]$Wide) {
     Update-View
-    $sx = [int]($ox + ($gx + 0.5) * $scale); $sy = [int]($oy + ($gy + 0.5) * $scale)
+    if ($Wide) {
+        # Wide mode shows the frame's spare columns too: as many as fit the monitor at 480 lines,
+        # rounded down to 16 (lords2hd.c install_wide).
+        $shown = [Math]::Max(640, [Math]::Floor(480 * $b.Width / $b.Height / 16) * 16)
+        $s = $b.Height / 480.0
+        $sx = [int](($b.Width - $shown * $s) / 2 + ($gx + $shown - 640 + 0.5) * $s); $sy = [int](($gy + 0.5) * $s)
+    } else {
+        $sx = [int]($ox + ($gx + 0.5) * $scale); $sy = [int]($oy + ($gy + 0.5) * $scale)
+    }
     # Arrive in a few steps so the game sees ordinary mouse movement.
     for ($i = 8; $i -ge 0; $i--) { [void][Native.Drive]::SetCursorPos($sx - $i * 5, $sy - $i * 3); Start-Sleep -Milliseconds 25 }
 }
@@ -85,12 +95,15 @@ function Click([int]$down, [int]$up) {
 foreach ($step in $Steps) {
     if ($proc.HasExited) { "game exited (code $($proc.ExitCode)) before '$step'"; break }
     $verb, $arg = $step -split ':', 2
-    if ($verb -in 'click', 'rclick', 'key', 'move' -and -not (Test-GameInFront)) { "the game is not in front: stopped before '$step'"; break }
+    if ($verb -in 'click', 'rclick', 'key', 'move', 'wclick', 'wrclick', 'wmove' -and -not (Test-GameInFront)) { "the game is not in front: stopped before '$step'"; break }
     switch ($verb) {
         'wait'   { Start-Sleep -Milliseconds ([int]([double]$arg * 1000)) }
         'move'   { $x, $y = $arg -split '[, ]+'; Move-To $x $y }
         'click'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 2 4 }
         'rclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 8 16 }
+        'wmove'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Wide }
+        'wclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Wide; Click 2 4 }
+        'wrclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Wide; Click 8 16 }
         'key'    { [Windows.Forms.SendKeys]::SendWait($arg) }
         'shot'   {
             Update-View
