@@ -21,3 +21,5 @@
 /ghidra_stdin.txt
 /save_backup/
 /hd/shots/
+/*.txt
+/save_backup_*/

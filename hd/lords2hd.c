@@ -18,8 +18,15 @@
 #include <stdarg.h>
 #include <string.h>
 
-#define GAME_W 640
+#define GAME_W 640  // the width every screen was designed for
 #define GAME_H 480
+#define MAX_W 1152  // widest frame wide mode makes (32:9)
+
+// The frame's width: GAME_W, or in wide mode as wide as the monitor's shape at 480 lines. The
+// part of it shown is g_showW wide from g_showX: screens that have not been widened are drawn in
+// the first 640 columns and shown alone, centred.
+static int g_frameW = GAME_W;
+static int g_showX = 0, g_showW = GAME_W;
 
 // ---------------------------------------------------------------------------------------------
 // Forwarding to the real ddraw.dll
@@ -60,6 +67,7 @@ static BOOL g_fullscreen = TRUE, g_integerScale;
 static int g_windowScale = 2;
 static int g_cursorScale = 100; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
+static BOOL g_wantWide;
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -85,14 +93,15 @@ static void read_settings(void)
 	g_windowScale = GetPrivateProfileIntA("Display", "WindowScale", 2, g_iniPath);
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
+	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 100, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
 	g_dumpPalettes = GetPrivateProfileIntA("Debug", "DumpPalettes", 0, g_iniPath) != 0;
 	g_timing = GetPrivateProfileIntA("Debug", "Timing", 0, g_iniPath) != 0;
-	logf_("settings: Enabled=%d Scale=%s Fullscreen=%d WindowScale=%d IntegerScale=%d CursorScale=%d LogLoads=%d DumpPalettes=%d Timing=%d",
+	logf_("settings: Enabled=%d Scale=%s Fullscreen=%d WindowScale=%d IntegerScale=%d Wide=%d CursorScale=%d LogLoads=%d DumpPalettes=%d Timing=%d",
 		g_emulate, g_scale == SCALE_NONE ? "none" : g_scale == SCALE_SHARP ? "sharp" : "smooth",
-		g_fullscreen, g_windowScale, g_integerScale, g_cursorScale, g_logLoads, g_dumpPalettes, g_timing);
+		g_fullscreen, g_windowScale, g_integerScale, g_wantWide, g_cursorScale, g_logLoads, g_dumpPalettes, g_timing);
 }
 
 // Crashes: the first thing to ask a player for is lords2hd.log, straight after the crash.
@@ -145,6 +154,7 @@ struct Surface {
 };
 
 static Surface *g_primary;
+static Surface *g_back; // the system-memory surface the game draws into
 
 static void mark_dirty(void)
 {
@@ -159,13 +169,13 @@ static void view_rect(RECT *out)
 	if (g_hwnd) GetClientRect(g_hwnd, &c);
 	int cw = c.right, ch = c.bottom, w, h;
 	if (g_scale == SCALE_NONE) {
-		w = GAME_W;
+		w = g_showW;
 		h = GAME_H;
 	}
 	else {
-		double s = min((double)cw / GAME_W, (double)ch / GAME_H);
+		double s = min((double)cw / g_showW, (double)ch / GAME_H);
 		if (g_integerScale && s >= 1.0) s = (double)(int)s;
-		w = (int)(GAME_W * s + 0.5);
+		w = (int)(g_showW * s + 0.5);
 		h = (int)(GAME_H * s + 0.5);
 	}
 	out->left = (cw - w) / 2;
@@ -236,10 +246,11 @@ static void dump_palette_if_new(const PALETTEENTRY *e)
 // ---------------------------------------------------------------------------------------------
 // Presenter
 
-static BYTE g_frame8[GAME_W * GAME_H];
+// The part of the frame being shown (g_showW x GAME_H, rows packed), and its colour versions.
+static BYTE g_frame8[MAX_W * GAME_H];
 static DWORD g_lut[256];
-static DWORD g_frame32[GAME_W * GAME_H];
-static DWORD g_frame2x[GAME_W * 2 * GAME_H * 2];
+static DWORD g_frame32[MAX_W * GAME_H];
+static DWORD g_frame2x[MAX_W * 2 * GAME_H * 2];
 
 // 0x00RRGGBB pixels: (9a + 3b + 3c + d) / 16 per channel, red and blue in one pass.
 static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
@@ -251,16 +262,16 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 
 // Doubles the frame with bilinear interpolation: each output pixel sits a quarter of a source
 // pixel from its nearest source pixel, so it is 9:3:3:1 of the four closest.
-static void double_frame(void)
+static void double_frame(int w)
 {
 	for (int y = 0; y < GAME_H; y++) {
-		const DWORD *row = g_frame32 + y * GAME_W;
-		const DWORD *up = g_frame32 + (y > 0 ? y - 1 : y) * GAME_W;
-		const DWORD *dn = g_frame32 + (y < GAME_H - 1 ? y + 1 : y) * GAME_W;
-		DWORD *o0 = g_frame2x + (2 * y) * (2 * GAME_W);
-		DWORD *o1 = o0 + 2 * GAME_W;
-		for (int x = 0; x < GAME_W; x++) {
-			int l = x > 0 ? x - 1 : x, r = x < GAME_W - 1 ? x + 1 : x;
+		const DWORD *row = g_frame32 + y * w;
+		const DWORD *up = g_frame32 + (y > 0 ? y - 1 : y) * w;
+		const DWORD *dn = g_frame32 + (y < GAME_H - 1 ? y + 1 : y) * w;
+		DWORD *o0 = g_frame2x + (2 * y) * (2 * w);
+		DWORD *o1 = o0 + 2 * w;
+		for (int x = 0; x < w; x++) {
+			int l = x > 0 ? x - 1 : x, r = x < w - 1 ? x + 1 : x;
 			DWORD p = row[x];
 			o0[2 * x] = mix4(p, row[l], up[x], up[l]);
 			o0[2 * x + 1] = mix4(p, row[r], up[x], up[r]);
@@ -271,7 +282,7 @@ static void double_frame(void)
 }
 
 static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
-static BYTE g_shown8[GAME_W * GAME_H];
+static BYTE g_shown8[MAX_W * GAME_H];
 
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
 // the screen on every pass of its loop, paused or not.
@@ -284,7 +295,9 @@ static BOOL present(void)
 	static RECT lastView;
 
 	EnterCriticalSection(&g_lock);
-	memcpy(g_frame8, g_primary->bits, sizeof g_frame8);
+	int sx = g_showX, sw = g_showW;
+	if (sx + sw > g_primary->w) sx = 0, sw = min(sw, g_primary->w);
+	for (int y = 0; y < GAME_H; y++) memcpy(g_frame8 + y * sw, g_primary->bits + y * g_primary->pitch + sx, sw);
 	PALETTEENTRY pal[256];
 	if (g_primary->pal) memcpy(pal, g_primary->pal->e, sizeof pal);
 	else memset(pal, 0, sizeof pal);
@@ -304,8 +317,8 @@ static BOOL present(void)
 	RECT v, c;
 	view_rect(&v);
 	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
-	if (!forced && palSame && memcmp(g_frame8, g_shown8, sizeof g_frame8) == 0) return FALSE;
-	memcpy(g_shown8, g_frame8, sizeof g_shown8);
+	if (!forced && palSame && memcmp(g_frame8, g_shown8, sw * GAME_H) == 0) return FALSE;
+	memcpy(g_shown8, g_frame8, sw * GAME_H);
 	lastView = v;
 	GetClientRect(g_hwnd, &c);
 	HDC dc = GetDC(g_hwnd);
@@ -323,12 +336,12 @@ static BOOL present(void)
 	int vw = v.right - v.left, vh = v.bottom - v.top;
 	if (g_scale == SCALE_SMOOTH) {
 		for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
-		for (int i = 0; i < GAME_W * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
-		double_frame();
-		bi.h.biWidth = GAME_W * 2;
+		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
+		double_frame(sw);
+		bi.h.biWidth = sw * 2;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
-		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, GAME_W * 2, GAME_H * 2, g_frame2x,
+		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, sw * 2, GAME_H * 2, g_frame2x,
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
 	else {
@@ -337,11 +350,11 @@ static BOOL present(void)
 			bi.colours[i].rgbGreen = pal[i].peGreen;
 			bi.colours[i].rgbBlue = pal[i].peBlue;
 		}
-		bi.h.biWidth = GAME_W;
+		bi.h.biWidth = sw; // a multiple of 4, so DIB rows need no padding
 		bi.h.biHeight = -GAME_H;
 		bi.h.biBitCount = 8;
 		bi.h.biClrUsed = 256;
-		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, GAME_W, GAME_H, g_frame8,
+		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, sw, GAME_H, g_frame8,
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
 	ReleaseDC(g_hwnd, dc);
@@ -760,7 +773,7 @@ static HRESULT WINAPI dd_create_surface(void *this_, DDSURFACEDESC *d, void **ou
 	s->refs = 1;
 	s->caps = (d->dwFlags & DDSD_CAPS) ? d->ddsCaps.dwCaps : DDSCAPS_OFFSCREENPLAIN;
 	s->primary = (s->caps & DDSCAPS_PRIMARYSURFACE) != 0;
-	s->w = s->primary || !(d->dwFlags & DDSD_WIDTH) ? GAME_W : (int)d->dwWidth;
+	s->w = s->primary || !(d->dwFlags & DDSD_WIDTH) ? g_frameW : (int)d->dwWidth;
 	s->h = s->primary || !(d->dwFlags & DDSD_HEIGHT) ? GAME_H : (int)d->dwHeight;
 	s->pitch = (s->w + 3) & ~3;
 	s->bits = calloc(1, s->pitch * s->h);
@@ -772,6 +785,9 @@ static HRESULT WINAPI dd_create_surface(void *this_, DDSURFACEDESC *d, void **ou
 		g_primary = s;
 		LeaveCriticalSection(&g_lock);
 		start_presenter();
+	}
+	else if (s->w == g_frameW && s->h == GAME_H && (s->caps & DDSCAPS_SYSTEMMEMORY)) {
+		g_back = s;
 	}
 	*out = s;
 	return DD_OK;
@@ -891,8 +907,8 @@ static void client_to_game(int *x, int *y)
 	RECT v;
 	view_rect(&v);
 	int vw = max(1, v.right - v.left), vh = max(1, v.bottom - v.top);
-	int gx = MulDiv(*x - v.left, GAME_W, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
-	*x = max(0, min(GAME_W - 1, gx));
+	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
+	*x = g_showX + max(0, min(g_showW - 1, gx));
 	*y = max(0, min(GAME_H - 1, gy));
 }
 
@@ -939,7 +955,7 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 static BOOL WINAPI h_GetClientRect(HWND hwnd, RECT *r)
 {
 	if (hwnd && hwnd == g_hwnd && r) {
-		SetRect(r, 0, 0, GAME_W, GAME_H);
+		SetRect(r, 0, 0, g_frameW, GAME_H);
 		return TRUE;
 	}
 	return o_GetClientRect(hwnd, r);
@@ -969,7 +985,7 @@ static int WINAPI h_GetDeviceCaps(HDC dc, int i)
 static int (WINAPI *o_GetSystemMetrics)(int);
 static int WINAPI h_GetSystemMetrics(int i)
 {
-	if (i == SM_CXSCREEN) return GAME_W;
+	if (i == SM_CXSCREEN) return g_frameW; // the game scales the mouse by frame width / screen width
 	if (i == SM_CYSCREEN) return GAME_H;
 	return o_GetSystemMetrics(i);
 }
@@ -1146,6 +1162,95 @@ static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, lo
 	return n;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Wide mode: a frame as wide as the monitor's shape. The frame's pitch is in one variable the
+// game sets at start-up, but its blitters also bake it into 700 instructions ("the pixel below"
+// is [EDI+0x280]); every one is checked against the original bytes before any is changed, so a
+// build that differs anywhere stays at 640.
+
+#include "pitch_sites.h"
+
+static BOOL patch_dword(DWORD addr, LONG from, LONG to)
+{
+	LONG *p = (LONG *)addr;
+	if (*p != from) return FALSE;
+	DWORD old;
+	if (!VirtualProtect(p, 4, PAGE_EXECUTE_READWRITE, &old)) return FALSE;
+	*p = to;
+	VirtualProtect(p, 4, old, &old);
+	return TRUE;
+}
+
+// Other places where the frame's size is written out: { address of the 32-bit field, value,
+// what it becomes (0 = width, 1 = width * height) }.
+static const struct { DWORD addr; LONG value; int kind; const char *what; } kFrameSites[] = {
+	{ 0x004b2371 + 6, 640, 0, "frame pitch at start-up (DAT_004eb274)" },
+	{ 0x0042db8c + 1, 640, 0, "Smacker destination pitch" },
+	{ 0x0042de58 + 1, 640, 0, "Smacker destination pitch" },
+	{ 0x004b13b0 + 3, 640 * 480, 1, "whole-frame darkening loop" },
+	{ 0x004b1813 + 3, 640 * 480, 1, "whole-frame colour remap loop" },
+	{ 0x004b187f + 1, 640 * 480, 1, "whole-frame clear" },
+};
+
+// The LBM picture decoder (0x004b061a: int decode(file data, frame, palette out, size), cdecl)
+// writes a 640x480 picture into the frame as one run of bytes. In a wider frame that run has to
+// be laid out row by row, so the picture is decoded into a 640-wide buffer first.
+#define DECODE_LBM ((BYTE *)0x004b061a)
+static const BYTE kDecodePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x30 }; // push ebp; mov ebp,esp; sub esp,30h
+typedef int (__cdecl *decode_lbm_t)(void *, BYTE *, BYTE *, int);
+static decode_lbm_t o_decode_lbm;
+
+static int __cdecl h_decode_lbm(void *data, BYTE *dst, BYTE *pal, int size)
+{
+	if (!g_back || dst != g_back->bits || g_back->pitch == GAME_W) return o_decode_lbm(data, dst, pal, size);
+	static BYTE tmp[GAME_W * GAME_H];
+	memset(tmp, 0, sizeof tmp);
+	int r = o_decode_lbm(data, tmp, pal, size);
+	for (int y = 0; y < GAME_H; y++) memcpy(dst + y * g_back->pitch, tmp + y * GAME_W, GAME_W);
+	return r;
+}
+
+static void install_wide(void)
+{
+	if (!g_wantWide) return;
+	HMONITOR mon = MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+	MONITORINFO mi = { sizeof mi };
+	if (!GetMonitorInfoA(mon, &mi)) return;
+	int mw = mi.rcMonitor.right - mi.rcMonitor.left, mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
+	int w = (GAME_H * mw / max(1, mh)) & ~15; // whole 16-pixel blocks: one start-up effect copies 16x16 tiles
+	w = max(GAME_W, min(MAX_W, w));
+	if (w == GAME_W) {
+		logf_("wide mode: the monitor (%dx%d) is not wider than 4:3", mw, mh);
+		return;
+	}
+	int n = sizeof kPitchSites / sizeof kPitchSites[0];
+	for (int i = 0; i < n; i++) {
+		if (*(LONG *)(kPitchSites[i].addr + kPitchSites[i].off) != kPitchSites[i].value) {
+			logf_("wide mode off: pitch site %08lx holds %ld, expected %ld",
+				(unsigned long)kPitchSites[i].addr, *(LONG *)(kPitchSites[i].addr + kPitchSites[i].off), kPitchSites[i].value);
+			return;
+		}
+	}
+	for (int i = 0; i < (int)(sizeof kFrameSites / sizeof kFrameSites[0]); i++) {
+		if (*(LONG *)kFrameSites[i].addr != kFrameSites[i].value) {
+			logf_("wide mode off: %s at %08lx holds %ld, expected %ld", kFrameSites[i].what,
+				(unsigned long)kFrameSites[i].addr, *(LONG *)kFrameSites[i].addr, kFrameSites[i].value);
+			return;
+		}
+	}
+	for (int i = 0; i < n; i++)
+		patch_dword(kPitchSites[i].addr + kPitchSites[i].off, kPitchSites[i].value,
+			kPitchSites[i].rows * w + kPitchSites[i].col);
+	for (int i = 0; i < (int)(sizeof kFrameSites / sizeof kFrameSites[0]); i++)
+		patch_dword(kFrameSites[i].addr, kFrameSites[i].value, kFrameSites[i].kind ? w * GAME_H : w);
+	g_frameW = w;
+	if (memcmp(DECODE_LBM, kDecodePrologue, sizeof kDecodePrologue) == 0) {
+		o_decode_lbm = make_trampoline(DECODE_LBM, sizeof kDecodePrologue);
+		if (o_decode_lbm) redirect(DECODE_LBM, sizeof kDecodePrologue, h_decode_lbm);
+	}
+	logf_("wide mode: frame %dx%d for a %dx%d monitor; %d pitch sites rewritten", w, GAME_H, mw, mh, n);
+}
+
 // The one build this was made for: the GOG release, 1997-06-05.
 static BOOL known_build(void)
 {
@@ -1163,6 +1268,7 @@ static void install(void)
 	hook_import("USER32.dll", "SetCursor", h_SetCursor, &o_SetCursor);
 	hook_import("USER32.dll", "GetSystemMetrics", h_GetSystemMetrics, &o_GetSystemMetrics);
 	hook_import("GDI32.dll", "GetDeviceCaps", h_GetDeviceCaps, &o_GetDeviceCaps);
+	install_wide();
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");
 }
