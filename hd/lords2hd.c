@@ -151,7 +151,14 @@ struct Surface {
 	BOOL primary;
 	Palette *pal;
 	DWORD caps;
+	int org; // where the game's x = 0 is in the surface: the frame's spare columns are on the left
 };
+
+// Wide mode puts the game's 640 columns at the right of the frame (x = 0 is g_off pixels in), so
+// the county and battle maps can grow into the columns on the left while their side panels stay
+// at the right edge. g_off is 0 at 640.
+static int g_off;
+static volatile LONG g_wideScreen; // the screen on now uses the whole frame (the county map)
 
 static Surface *g_primary;
 static Surface *g_back; // the system-memory surface the game draws into
@@ -294,7 +301,18 @@ static BOOL present(void)
 	static BOOL palDumped = TRUE;
 	static RECT lastView;
 
+	// The screen ids, logged when they change, to tell the county map from everything else.
+	static int lastScreen = -1, lastMode = -1;
+	int screen = *(BYTE *)0x004eac50, mode = *(int *)0x0052af94;
+	if (screen != lastScreen || mode != lastMode) {
+		logf_("screen %d, mode %d", screen, mode);
+		lastScreen = screen;
+		lastMode = mode;
+	}
+
 	EnterCriticalSection(&g_lock);
+	g_showX = g_wideScreen ? 0 : g_off;
+	g_showW = g_wideScreen ? g_frameW : GAME_W;
 	int sx = g_showX, sw = g_showW;
 	if (sx + sw > g_primary->w) sx = 0, sw = min(sw, g_primary->w);
 	for (int y = 0; y < GAME_H; y++) memcpy(g_frame8 + y * sw, g_primary->bits + y * g_primary->pitch + sx, sw);
@@ -551,7 +569,8 @@ static void fill_desc(Surface *s, DDSURFACEDESC *d, BYTE *bits)
 	d->ddsCaps.dwCaps = s->caps;
 }
 
-// Clips a copy of w x h pixels from (sx, sy) to (dx, dy) against both surfaces.
+// Clips a copy of w x h pixels from (sx, sy) to (dx, dy) against both surfaces (surface pixels,
+// not game coordinates).
 static BOOL clip_copy(Surface *dst, Surface *src, int *dx, int *dy, int *sx, int *sy, int *w, int *h)
 {
 	if (*dx < 0) { *sx -= *dx; *w += *dx; *dx = 0; }
@@ -565,8 +584,18 @@ static BOOL clip_copy(Surface *dst, Surface *src, int *dx, int *dy, int *sx, int
 	return *w > 0 && *h > 0;
 }
 
+// Coordinates are the game's. On a wide screen a copy from the frame that starts at the game's
+// left edge also takes the spare columns to its left, where the wider map was drawn: the game
+// only knows about its own 640.
 static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy, int w, int h)
 {
+	dx += dst->org;
+	sx += src->org;
+	if (g_wideScreen && dst->org && src->org && sx == src->org && dx == dst->org) {
+		dx -= dst->org;
+		sx -= src->org;
+		w += src->org;
+	}
 	if (!clip_copy(dst, src, &dx, &dy, &sx, &sy, &w, &h)) return;
 	for (int y = 0; y < h; y++)
 		memmove(dst->bits + (dy + y) * dst->pitch + dx, src->bits + (sy + y) * src->pitch + sx, w);
@@ -576,15 +605,16 @@ static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWOR
 {
 	SELF(Surface);
 	Surface *src = src_;
-	RECT d = dr ? *dr : (RECT){ 0, 0, self->w, self->h };
+	RECT d = dr ? *dr : (RECT){ -self->org, 0, self->w - self->org, self->h }; // no rectangle: the whole surface
 	if (self->primary) EnterCriticalSection(&g_lock);
 	if (flags & DDBLT_COLORFILL) {
 		BYTE colour = fx ? (BYTE)fx->dwFillColor : 0;
+		OffsetRect(&d, self->org, 0);
 		int x0 = max(0, d.left), x1 = min(self->w, d.right), y0 = max(0, d.top), y1 = min(self->h, d.bottom);
 		for (int y = y0; y < y1; y++) memset(self->bits + y * self->pitch + x0, colour, max(0, x1 - x0));
 	}
 	else if (src) {
-		RECT s = sr ? *sr : (RECT){ 0, 0, src->w, src->h };
+		RECT s = sr ? *sr : (RECT){ -src->org, 0, src->w - src->org, src->h };
 		int w = d.right - d.left, h = d.bottom - d.top;
 		if (w == s.right - s.left && h == s.bottom - s.top) {
 			copy_rect(self, d.left, d.top, src, s.left, s.top, w, h);
@@ -593,6 +623,8 @@ static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWOR
 			// Never seen from the game; nearest-pixel stretch so it still shows something.
 			static BOOL said;
 			if (!said) { said = TRUE; logf_("stretching Blt %ldx%ld -> %dx%d", s.right - s.left, s.bottom - s.top, w, h); }
+			OffsetRect(&d, self->org, 0);
+			OffsetRect(&s, src->org, 0);
 			for (int y = max(0, d.top); y < min(self->h, d.bottom); y++)
 				for (int x = max(0, d.left); x < min(self->w, d.right); x++) {
 					int u = s.left + (x - d.left) * (s.right - s.left) / w;
@@ -615,7 +647,7 @@ static HRESULT WINAPI surf_blt_fast(void *this_, DWORD x, DWORD y, void *src_, R
 	Surface *src = src_;
 	if (!src) return DDERR_INVALIDPARAMS;
 	if (trans & (DDBLTFAST_SRCCOLORKEY | DDBLTFAST_DESTCOLORKEY)) unexpected("BltFast with a colour key");
-	RECT s = sr ? *sr : (RECT){ 0, 0, src->w, src->h };
+	RECT s = sr ? *sr : (RECT){ -src->org, 0, src->w - src->org, src->h };
 	if (self->primary) EnterCriticalSection(&g_lock);
 	copy_rect(self, (int)x, (int)y, src, s.left, s.top, s.right - s.left, s.bottom - s.top);
 	if (self->primary) {
@@ -629,7 +661,7 @@ static HRESULT WINAPI surf_lock(void *this_, RECT *r, DDSURFACEDESC *d, DWORD fl
 {
 	SELF(Surface);
 	if (!d) return DDERR_INVALIDPARAMS;
-	BYTE *p = self->bits;
+	BYTE *p = self->bits + self->org; // the game keeps this pointer as its frame (DAT_004ea1a8)
 	if (r) p += r->top * self->pitch + r->left;
 	fill_desc(self, d, p);
 	return DD_OK;
@@ -776,10 +808,13 @@ static HRESULT WINAPI dd_create_surface(void *this_, DDSURFACEDESC *d, void **ou
 	s->w = s->primary || !(d->dwFlags & DDSD_WIDTH) ? g_frameW : (int)d->dwWidth;
 	s->h = s->primary || !(d->dwFlags & DDSD_HEIGHT) ? GAME_H : (int)d->dwHeight;
 	s->pitch = (s->w + 3) & ~3;
-	s->bits = calloc(1, s->pitch * s->h);
+	// One spare row: the game's whole-frame loops start at its x = 0, g_off bytes into the frame.
+	s->bits = calloc(1, s->pitch * (s->h + 1));
 	if (!s->bits) { free(s); return DDERR_OUTOFMEMORY; }
+	if (s->w == g_frameW && s->h == GAME_H) s->org = g_off;
 	if (d->dwFlags & DDSD_BACKBUFFERCOUNT) unexpected("CreateSurface with back buffers");
-	logf_("surface %p: %dx%d caps %08lx%s", (void *)s, s->w, s->h, (unsigned long)s->caps, s->primary ? " (primary)" : "");
+	logf_("surface %p: %dx%d caps %08lx, game x = 0 at %d%s", (void *)s, s->w, s->h, (unsigned long)s->caps, s->org,
+		s->primary ? " (primary)" : "");
 	if (s->primary) {
 		EnterCriticalSection(&g_lock);
 		g_primary = s;
@@ -908,7 +943,7 @@ static void client_to_game(int *x, int *y)
 	view_rect(&v);
 	int vw = max(1, v.right - v.left), vh = max(1, v.bottom - v.top);
 	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
-	*x = g_showX + max(0, min(g_showW - 1, gx));
+	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
 	*y = max(0, min(GAME_H - 1, gy));
 }
 
@@ -1202,7 +1237,7 @@ static decode_lbm_t o_decode_lbm;
 
 static int __cdecl h_decode_lbm(void *data, BYTE *dst, BYTE *pal, int size)
 {
-	if (!g_back || dst != g_back->bits || g_back->pitch == GAME_W) return o_decode_lbm(data, dst, pal, size);
+	if (!g_back || dst != g_back->bits + g_back->org || g_back->pitch == GAME_W) return o_decode_lbm(data, dst, pal, size);
 	static BYTE tmp[GAME_W * GAME_H];
 	memset(tmp, 0, sizeof tmp);
 	int r = o_decode_lbm(data, tmp, pal, size);
@@ -1230,7 +1265,8 @@ static void __cdecl h_load_screen(const char *name, int rows)
 		o_load_screen(name, rows); // the game reports the missing file its own way
 		return;
 	}
-	for (int y = 0; y < rows; y++) memcpy(g_back->bits + y * g_back->pitch, tmp + y * GAME_W, GAME_W);
+	BYTE *frame = g_back->bits + g_back->org;
+	for (int y = 0; y < rows; y++) memcpy(frame + y * g_back->pitch, tmp + y * GAME_W, GAME_W);
 }
 
 // Saving and restoring the frame under a window (FUN_004b3ec0 buffer -> frame, FUN_004b3f0a
@@ -1312,6 +1348,7 @@ static void install_wide(void)
 	for (int i = 0; i < (int)(sizeof kFrameSites / sizeof kFrameSites[0]); i++)
 		patch_dword(kFrameSites[i].addr, kFrameSites[i].value, kFrameSites[i].kind ? w * GAME_H : w);
 	g_frameW = w;
+	g_off = w - GAME_W;
 	if (memcmp(DECODE_LBM, kDecodePrologue, sizeof kDecodePrologue) == 0) {
 		o_decode_lbm = make_trampoline(DECODE_LBM, sizeof kDecodePrologue);
 		if (o_decode_lbm) redirect(DECODE_LBM, sizeof kDecodePrologue, h_decode_lbm);
