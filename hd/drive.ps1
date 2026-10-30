@@ -95,7 +95,8 @@ function Move-To([int]$gx, [int]$gy, [switch]$Wide, [switch]$Battle) {
         $shown = [Math]::Max(640, [Math]::Floor(480 * $b.Width / $b.Height / 16) * 16)
         $s = $b.Height / 960.0
         $mapW = 2 * $shown - 324
-        if ($gx -ge 478) { $lx = $mapW + ($gx - 478) * 2; $ly = 48 + ($gy - 24) * 2 } else { $lx = $gx + $mapW - 478; $ly = $gy + 24 }
+        if ($gy -lt 24) { $lx = ($gx + $shown - 640) * 2; $ly = $gy * 2 }
+        elseif ($gx -ge 478) { $lx = $mapW + ($gx - 478) * 2; $ly = 48 + ($gy - 24) * 2 } else { $lx = $gx + $mapW - 478; $ly = $gy + 24 }
         $sx = [int]($b.X + ($b.Width - 2 * $shown * $s) / 2 + ($lx + 0.5) * $s); $sy = [int]($b.Y + ($ly + 0.5) * $s)
         for ($i = 8; $i -ge 0; $i--) { [void][Native.Drive]::SetCursorPos($sx - $i * 5, $sy - $i * 3); Start-Sleep -Milliseconds 25 }
         return

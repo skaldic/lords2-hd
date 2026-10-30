@@ -2253,7 +2253,7 @@ static void install_wide(void)
 	}
 	for (int i = 0; i < (int)(sizeof kFrameSites / sizeof kFrameSites[0]); i++)
 		patch_dword(kFrameSites[i].addr, kFrameSites[i].value,
-			kFrameSites[i].kind == 2 ? g_frameH : kFrameSites[i].kind ? w * GAME_H : w);
+			kFrameSites[i].kind == 2 ? g_frameH : kFrameSites[i].kind ? w * g_frameH : w);
 	g_frameW = w;
 	g_off = w - GAME_W;
 	// Jumping to a spot on the battlefield (minimap click, FUN_00432443; a unit, FUN_0043c910) puts
