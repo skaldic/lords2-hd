@@ -465,6 +465,87 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 	}
 }
 
+// HD sprites: lords2hd\sprites\<file>.bin, noted against the buffer the game loaded the file into.
+// Each hooked blitter knows the buffer and frame; afterwards every opaque pixel of the frame that
+// the screen now holds is stamped into the layer. A wrong guess of position only fails the check.
+#define MAX_SPRITE_SETS 64
+static struct { const BYTE *buf; BYTE *data; } g_spriteSets[MAX_SPRITE_SETS];
+
+static void sprites_loaded(const char *name, const void *buffer)
+{
+	if (!g_hdTiles) return;
+	int slot = -1;
+	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
+		if (g_spriteSets[i].buf == buffer) {
+			free(g_spriteSets[i].data);
+			g_spriteSets[i].buf = NULL;
+			g_spriteSets[i].data = NULL;
+		}
+		if (!g_spriteSets[i].buf && slot < 0) slot = i;
+	}
+	char base[32], path[MAX_PATH];
+	lstrcpynA(base, name, sizeof base);
+	char *dot = strrchr(base, '.');
+	if (dot) *dot = 0;
+	CharLowerA(base);
+	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
+	FILE *f = fopen(path, "rb");
+	if (!f) return;
+	fseek(f, 0, SEEK_END);
+	long bytes = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	BYTE *data = slot >= 0 ? malloc(bytes) : NULL;
+	if (data && fread(data, 1, bytes, f) == (size_t)bytes) {
+		g_spriteSets[slot].buf = buffer;
+		g_spriteSets[slot].data = data;
+		logf_("HD sprites %s", base);
+	}
+	else free(data);
+	fclose(f);
+}
+
+static void stamp_sprite(const BYTE *buf, int index, int x, int y)
+{
+	if (!g_layer || !g_back) return;
+	const BYTE *data = NULL;
+	for (int i = 0; i < MAX_SPRITE_SETS; i++) if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; break; }
+	if (!data || index < 0 || index >= *(const int *)data) return;
+	int off = ((const int *)data)[1 + index];
+	if (!off) return;
+	const BYTE *p = data + off;
+	int w = *(const WORD *)p, h = *(const WORD *)(p + 2);
+	const BYTE *idx = p + 4;
+	const DWORD *hd = (const DWORD *)(idx + w * h);
+	static int logged;
+	if (g_timing && logged < 60) {
+		int total = 0, hit = 0;
+		for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+			int fy = y + r, fx = x + g_back->org + c;
+			if (!idx[r * w + c]) continue;
+			total++;
+			if (fy >= 0 && fy < GAME_H && fx >= 0 && fx < g_back->w && g_back->bits[fy * g_back->pitch + fx] == idx[r * w + c]) hit++;
+		}
+		logf_("sprite frame %d %dx%d at %d,%d: %d of %d pixels match", index, w, h, x, y, hit, total);
+		logged++;
+	}
+	for (int r = 0; r < h; r++) {
+		int fy = y + r;
+		if (fy < 0 || fy >= GAME_H) continue;
+		const BYTE *row = g_back->bits + fy * g_back->pitch;
+		for (int c = 0; c < w; c++) {
+			BYTE v = idx[r * w + c];
+			int fx = x + g_back->org + c;
+			if (!v || fx < 0 || fx >= g_back->w || row[fx] != v) continue;
+			const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
+			DWORD *o0 = g_layer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
+			o0[0] = h0[0]; o0[1] = h0[1];
+			o1[0] = h1[0]; o1[1] = h1[1];
+			g_layerShadow[fy * MAX_W + fx] = v;
+			g_layerValid[fy * MAX_W + fx] = 1;
+		}
+	}
+}
+
 static void forget_tiles(void)
 {
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
@@ -1414,7 +1495,9 @@ static load_file_t o_load_file;
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
 	int n = o_load_file(name, buffer, size, offset);
-	if (n > 0 && offset == 0 && (!_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4)))
+	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
+	if (n > 0 && offset == 0 && (!_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
+		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6)))
 		tiles_loaded(name, buffer, n);
 	if (g_logLoads) logf_("load %s -> %p, %d bytes", name, buffer, n);
 	note_load(name);
@@ -1778,6 +1861,8 @@ static void __cdecl h_cell_ground(int mode)
 	case 0x00: buf = *(BYTE **)0x00568208; break;
 	case 0x04: buf = *(BYTE **)0x0053e914; break;
 	case 0x08: buf = *(BYTE **)0x0057d344; break;
+	case 0x0c: buf = *(BYTE **)0x0055409c; break;
+	case 0x10: buf = *(BYTE **)0x0056898c; break;
 	}
 	stamp_tile(buf, TILE_FRAME, x, y);
 }
@@ -1793,6 +1878,19 @@ static void __cdecl h_cell_special2(int mode)
 	o_cell_special2(mode);
 	if (MAP_ZOOM == 0) stamp_tile(*(BYTE **)0x00568208, TILE_FRAME, x, y);
 }
+
+// The six sprite blitters: (file buffer) with the frame and position in globals. x and y have
+// already been moved past any clipped part (DAT_0058fd50 columns, DAT_0058feac rows).
+typedef int (__cdecl *blit_t)(const BYTE *);
+static blit_t o_blit[6];
+#define SPRITE_STAMP(i) \
+	static int __cdecl h_blit##i(const BYTE *buf) { \
+		int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac, frame = TILE_FRAME; \
+		int r = o_blit[i](buf); \
+		stamp_sprite(buf, frame, x, y); \
+		return r; \
+	}
+SPRITE_STAMP(0) SPRITE_STAMP(1) SPRITE_STAMP(2) SPRITE_STAMP(3) SPRITE_STAMP(4) SPRITE_STAMP(5)
 
 static void __cdecl h_redraw_map(void)
 {
@@ -1940,6 +2038,13 @@ static void install(void)
 	}
 	static const BYTE kCellPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };
 	static const BYTE kSpecialPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
+	static const BYTE kBlitPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
+	hook_code((BYTE *)0x004b43b1, kBlitPrologue, 6, h_blit0, &o_blit[0]);
+	hook_code((BYTE *)0x004b446d, kBlitPrologue, 6, h_blit1, &o_blit[1]);
+	hook_code((BYTE *)0x004b44d2, kBlitPrologue, 6, h_blit2, &o_blit[2]);
+	hook_code((BYTE *)0x004b4537, kBlitPrologue, 6, h_blit3, &o_blit[3]);
+	hook_code((BYTE *)0x004b4814, kBlitPrologue, 6, h_blit4, &o_blit[4]);
+	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
 	hook_code((BYTE *)0x004063c1, kCellPrologue, sizeof kCellPrologue, h_cell_ground, &o_cell_ground);
 	hook_code((BYTE *)0x0042a7f1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special, &o_cell_special);
 	hook_code((BYTE *)0x0042a8d1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special2, &o_cell_special2);

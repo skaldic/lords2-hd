@@ -79,7 +79,8 @@ public static class Pl8
                 }
                 else if (compressed == 0 || compressed == 2)
                 {
-                    if (avail >= n) Raw(b, f); else Diamond(b, f);
+                    // Map tiles are always diamonds, some with extra overhang data after them.
+                    if (avail >= n && !(f.Width == 58 && f.Height == 30)) Raw(b, f); else Diamond(b, f);
                 }
                 else throw new Exception("compression type " + compressed);
             }
