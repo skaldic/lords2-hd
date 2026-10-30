@@ -1775,7 +1775,7 @@ static clip_x_t o_clip_x;
 static BOOL g_drawingLeft; // a widened bar is being drawn: the screen's left edge is in the spare columns
 static void __cdecl h_clip_x(int left, int right)
 {
-	if (g_drawingLeft && left == 0) left = -g_extra;
+	if (g_drawingLeft && left == 0) left = battle_zoom_on() ? PANEL_X - battle_map_w() : -g_extra;
 	o_clip_x(max(left, -g_off), right);
 }
 
@@ -1807,12 +1807,29 @@ static void __cdecl h_menu_titles(short *table, int n)
 	o_menu_titles(table, n);
 	g_drawingLeft = FALSE;
 }
+// In the zoomed-out battle the titles are in the doubled top bar and the list on the 1:1
+// battlefield: this is the game x that puts the list right under its title.
+static int menu_list_x(int titleX) { return 2 * (titleX + g_extra) - battle_map_w() + PANEL_X; }
+
 static void __cdecl h_menu_open(void)
 {
 	BOOL wide = g_off && county_map_on();
+	short *title = *(short **)0x00522cac;
+	short saved = title ? title[0] : 0;
+	BOOL zoomed = title && battle_zoom_on();
+	if (zoomed) title[0] = (short)menu_list_x(saved);
 	g_drawingLeft = wide;
 	o_menu_open();
 	g_drawingLeft = FALSE;
+	if (zoomed) title[0] = saved;
+}
+
+// The open list's hit test (FUN_0040e099: items, count, x, y) looks in the same place.
+typedef int (__cdecl *menu_hit_t)(short *, int, int, int);
+static menu_hit_t o_menu_hit;
+static int __cdecl h_menu_hit(short *items, int n, int x, int y)
+{
+	return o_menu_hit(items, n, battle_zoom_on() ? menu_list_x(x) : x, y);
 }
 
 static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)
@@ -2333,6 +2350,8 @@ static void install(void)
 	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
 	hook_code((BYTE *)0x00403cf4, kBlitPrologue, 6, h_box, &o_box);
 	hook_code((BYTE *)0x00423b4f, kBlitPrologue, 6, h_paused, &o_paused);
+	static const BYTE kMenuHitPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };
+	hook_code((BYTE *)0x0040e099, kMenuHitPrologue, 6, h_menu_hit, &o_menu_hit);
 	hook_code((BYTE *)0x00477249, kBlitPrologue, 6, h_tip_clamp, &o_tip_clamp);
 	hook_code((BYTE *)0x00406673, kCellPrologue, sizeof kCellPrologue, h_cell_top, &o_cell_top);
 	hook_code((BYTE *)0x004063c1, kCellPrologue, sizeof kCellPrologue, h_cell_ground, &o_cell_ground);
