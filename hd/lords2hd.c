@@ -1974,6 +1974,29 @@ static void dump_overhang(void)
 	logf_("overhang layout written");
 }
 
+// The outline routine (FUN_00403cf4, the battle's selection box) moves a left edge below 0 to 0 but
+// keeps the width, which at 640 never happened. In wide mode the box's right side then lands in the
+// side panel, which nothing cleans. Boxes reaching into the spare columns are drawn here instead.
+typedef void (__cdecl *box_t)(int, int, int, int, int);
+static box_t o_box;
+static void __cdecl h_box(int x, int y, int w, int h, int colour)
+{
+	if (!g_off || !g_back || x >= 0 || !county_map_on()) {
+		o_box(x, y, w, h, colour);
+		return;
+	}
+	int left = max(x, -(g_off - GUARD)), right = x + w - 1, top = max(y, 0), bottom = min(y + h - 1, GAME_H - 1);
+	if (right < left || bottom < top) return;
+	BYTE *frame = g_back->bits + g_back->org;
+	int pitch = g_back->pitch;
+	memset(frame + top * pitch + left, colour, right - left + 1);
+	memset(frame + bottom * pitch + left, colour, right - left + 1);
+	for (int r = top; r <= bottom; r++) {
+		if (x == left) frame[r * pitch + left] = (BYTE)colour;
+		frame[r * pitch + right] = (BYTE)colour;
+	}
+}
+
 static void __cdecl h_redraw_map(void)
 {
 	dump_overhang();
@@ -2128,6 +2151,7 @@ static void install(void)
 	hook_code((BYTE *)0x004b4537, kBlitPrologue, 6, h_blit3, &o_blit[3]);
 	hook_code((BYTE *)0x004b4814, kBlitPrologue, 6, h_blit4, &o_blit[4]);
 	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
+	hook_code((BYTE *)0x00403cf4, kBlitPrologue, 6, h_box, &o_box);
 	hook_code((BYTE *)0x00406673, kCellPrologue, sizeof kCellPrologue, h_cell_top, &o_cell_top);
 	hook_code((BYTE *)0x004063c1, kCellPrologue, sizeof kCellPrologue, h_cell_ground, &o_cell_ground);
 	hook_code((BYTE *)0x0042a7f1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special, &o_cell_special);
