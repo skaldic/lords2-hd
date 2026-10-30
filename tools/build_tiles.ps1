@@ -1,7 +1,7 @@
 # Builds 2x county terrain: every 58x30 diamond of the ground sets, upscaled inside a lattice of
 # itself so the joins are seamless, then half blended with a plain enlargement to keep the grain.
 #   <game>\lords2hd\tiles\<set>.bin = frames x 116x60 BGRX, one slot per frame (others left black)
-param([string[]]$Sets = @('base1a','base1b','base1c','base1d','roads1a','roads1b','roads1c','roads1d','mtns1a','mtns1b','mtns1c','mtns1d'), [double]$Plain = 0.5, [switch]$Recut)
+param([string[]]$Sets = @('base1a','base1b','base1c','base1d','roads1a','roads1b','roads1c','roads1d','mtns1a','mtns1b','mtns1c','mtns1d'), [double]$Plain = 0.25, [switch]$Recut)
 $root = Split-Path $PSScriptRoot -Parent
 $game = Split-Path $root -Parent
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")

@@ -66,10 +66,22 @@ if (-not $Attach) {
     for ($i = 0; $i -lt 8 -and -not (Test-GameInFront); $i++) { Start-Sleep -Milliseconds 500; [void]$shell.AppActivate($proc.Id) }
 }
 
+Add-Type -Namespace Native -Name Win -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int l, t, r, b; }
+[StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
+[DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+[DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+'@
+
 function Update-View {
-    # The picture is the largest 4:3 rectangle centred on the primary screen. The screen size can
-    # change while the game runs (the stock game switches display modes).
-    $script:b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    # The picture is the largest 4:3 rectangle centred in the game's window (normally the whole
+    # primary screen; a window with Fullscreen=0). $b is that area in screen pixels.
+    $proc.Refresh()
+    $r = New-Object Native.Win+RECT; $pt = New-Object Native.Win+POINT
+    if ($proc.MainWindowHandle -ne [IntPtr]::Zero -and [Native.Win]::GetClientRect($proc.MainWindowHandle, [ref]$r) -and $r.r -gt 0) {
+        [void][Native.Win]::ClientToScreen($proc.MainWindowHandle, [ref]$pt)
+        $script:b = New-Object Drawing.Rectangle $pt.x, $pt.y, $r.r, $r.b
+    } else { $script:b = [Windows.Forms.Screen]::PrimaryScreen.Bounds }
     $script:scale = [Math]::Min($b.Width / [double]$GameW, $b.Height / [double]$GameH)
     $script:ox = ($b.Width - $GameW * $scale) / 2
     $script:oy = ($b.Height - $GameH * $scale) / 2
@@ -83,9 +95,9 @@ function Move-To([int]$gx, [int]$gy, [switch]$Wide) {
         # rounded down to 16 (lords2hd.c install_wide).
         $shown = [Math]::Max(640, [Math]::Floor(480 * $b.Width / $b.Height / 16) * 16)
         $s = $b.Height / 480.0
-        $sx = [int](($b.Width - $shown * $s) / 2 + ($gx + $shown - 640 + 0.5) * $s); $sy = [int](($gy + 0.5) * $s)
+        $sx = [int]($b.X + ($b.Width - $shown * $s) / 2 + ($gx + $shown - 640 + 0.5) * $s); $sy = [int]($b.Y + ($gy + 0.5) * $s)
     } else {
-        $sx = [int]($ox + ($gx + 0.5) * $scale); $sy = [int]($oy + ($gy + 0.5) * $scale)
+        $sx = [int]($b.X + $ox + ($gx + 0.5) * $scale); $sy = [int]($b.Y + $oy + ($gy + 0.5) * $scale)
     }
     # Arrive in a few steps so the game sees ordinary mouse movement.
     for ($i = 8; $i -ge 0; $i--) { [void][Native.Drive]::SetCursorPos($sx - $i * 5, $sy - $i * 3); Start-Sleep -Milliseconds 25 }
@@ -117,7 +129,9 @@ foreach ($step in $Steps) {
             $g = [Drawing.Graphics]::FromImage($full)
             $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size)
             Add-Cursor $g
-            $half = New-Object Drawing.Bitmap($full, [int]($b.Width / 2), [int]($b.Height / 2))
+            # A screen is saved at half size, a window at full size.
+            $div = if ($b.Width -ge 2560) { 2 } else { 1 }
+            $half = New-Object Drawing.Bitmap($full, [int]($b.Width / $div), [int]($b.Height / $div))
             $half.Save("$outDir\$arg.png", [Drawing.Imaging.ImageFormat]::Png)
             $g.Dispose(); $full.Dispose(); $half.Dispose()
             "saved $arg.png ($($b.Width)x$($b.Height))"
