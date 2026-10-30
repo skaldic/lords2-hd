@@ -598,10 +598,11 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 {
 	dx += dst->org;
 	sx += src->org;
-	if (g_wideScreen && dst->org && src->org && sx == src->org && dx == dst->org) {
-		dx -= dst->org;
-		sx -= src->org;
-		w += src->org;
+	// Battles redraw units in small rectangles and the game clamps those to its x = 0, so on a wide
+	// screen the spare columns of the rows being copied always go along.
+	if (g_wideScreen && dst->org && src->org && dx >= dst->org && sx >= src->org && dx - dst->org == sx - src->org) {
+		int y0 = max(0, dy), y1 = min(min(dst->h, src->h), dy + h);
+		for (int y = y0; y < y1; y++) memcpy(dst->bits + y * dst->pitch, src->bits + y * src->pitch, dst->org);
 	}
 	if (!clip_copy(dst, src, &dx, &dy, &sx, &sy, &w, &h)) return;
 	for (int y = 0; y < h; y++)
@@ -1447,6 +1448,7 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 // the columns beside it are filler the game never shows, so it stays at 640 like other screens.
 // A drop-down menu from the top bar is screen 0x32, with the screen under it kept in DAT_0056d894.
 #define MAP_ZOOM (*(int *)0x0057cb18)
+#define IN_BATTLE (*(int *)0x0057c8fc == 2)
 #define SCREEN_UNDER_MENU (*(int *)0x0056d894)
 // The wide view is on while the county map is the picture: from the moment the game redraws the
 // whole map (h_redraw_map sets g_mapSticky) until something replaces the whole picture - a painted
@@ -1456,11 +1458,51 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 // screen, runs as screen 39 like the map's message scrolls.
 static BOOL county_map_on(void)
 {
-	if (GAME_MODE != 3 || MAP_ZOOM == 2 || SCREEN_ID == 41) {
+	if (GAME_MODE != 3 || (!IN_BATTLE && MAP_ZOOM == 2)) {
 		g_mapSticky = FALSE;
 		return FALSE;
 	}
 	return g_mapSticky;
+}
+
+// The battlefield is widened for good when its view is set up (FUN_004bc020, x = 0, 15 columns of
+// 32 pixels): it starts k columns further left with k more columns. The game's scroll column then
+// simply means the view's new first column, and everything working from the view's x - picking,
+// units, missiles, clipping - follows; only the scroll limit (FUN_0047ed34) needs k less.
+typedef void (__cdecl *battle_view_t)(void *, void *, void *, int, int, int, int, int, int, int, int);
+static battle_view_t o_battle_view;
+static int g_battleK;
+static void __cdecl h_battle_view(void *a, void *b, void *c, int mapW, int d, int cell, int x, int y, int cols, int rows, int size)
+{
+	g_battleK = g_off && size > 0 ? (g_off - GUARD + size - 1) / size : 0;
+	o_battle_view(a, b, c, mapW, d, cell, x - g_battleK * size, y, cols + g_battleK, rows, size);
+	logf_("battle view: x %d, %d columns of %d", x - g_battleK * size, cols + g_battleK, size);
+}
+
+typedef void (__cdecl *battle_clamp_t)(void);
+static battle_clamp_t o_battle_clamp;
+#define BATTLE_COL (*(int *)0x0055ce70)
+static void __cdecl h_battle_clamp(void)
+{
+	o_battle_clamp();
+	if (BATTLE_COL > 0x41 - g_battleK) BATTLE_COL = 0x41 - g_battleK;
+}
+
+// Drawing the battlefield (FUN_004bc142) means it is the picture. On a full redraw the spare
+// columns below the field are cleared of the last screen's pixels.
+typedef void (__cdecl *battle_draw_t)(int, int);
+static battle_draw_t o_battle_draw;
+static void __cdecl h_battle_draw(int col, int row)
+{
+	if (g_off && g_back && GAME_MODE == 3) {
+		if (!g_mapSticky || *(int *)0x0053e9ac) {
+			BYTE *frame = g_back->bits + g_back->org;
+			for (int y = 24; y < GAME_H; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
+		}
+		if (!g_mapSticky) *(int *)0x0056d6a0 = 1; // the top bar was drawn narrow: draw it again
+		g_mapSticky = TRUE;
+	}
+	o_battle_draw(col > 0x41 - g_battleK ? 0x41 - g_battleK : col, row);
 }
 
 // The view as the game set it, while it is widened for one call.
@@ -1470,7 +1512,7 @@ static struct { int cols, firstX, firstCol, k; } g_view;
 // Returns FALSE (and changes nothing) when the map is not on a wide screen.
 static BOOL begin_wide_view(void)
 {
-	if (!g_off || !g_back || !county_map_on() || MAP_STEP <= 0) return FALSE;
+	if (!g_off || !g_back || IN_BATTLE || !county_map_on() || MAP_STEP <= 0) return FALSE;
 	int k = (g_off - GUARD + MAP_FIRST_X + MAP_STEP - 1) / MAP_STEP; // columns to cover the visible spare pixels
 	// The view reaches k columns further left, so the game's scroll stops k columns short of the
 	// map's left edge: scrolled fully left, the map's first column is at the screen's edge.
@@ -1594,6 +1636,17 @@ static void install_wide(void)
 		patch_dword(kFrameSites[i].addr, kFrameSites[i].value, kFrameSites[i].kind ? w * GAME_H : w);
 	g_frameW = w;
 	g_off = w - GAME_W;
+	// Jumping to a spot on the battlefield (minimap click, FUN_00432443; a unit, FUN_0043c910) puts
+	// it 7 columns in, the middle of 15: move that to the middle of the wider view.
+	static const DWORD kCentreSites[] = { 0x00432513, 0x0043ca27 }; // SUB EAX,7 of the column
+	for (int i = 0; i < 2; i++) {
+		BYTE *p = (BYTE *)kCentreSites[i];
+		DWORD old;
+		if (p[0] == 0x83 && p[1] == 0xE8 && p[2] == 7 && VirtualProtect(p, 3, PAGE_EXECUTE_READWRITE, &old)) {
+			p[2] = (BYTE)(7 + (g_off - GUARD + 31) / 32 / 2);
+			VirtualProtect(p, 3, old, &old);
+		}
+	}
 	if (memcmp(DECODE_LBM, kDecodePrologue, sizeof kDecodePrologue) == 0) {
 		o_decode_lbm = make_trampoline(DECODE_LBM, sizeof kDecodePrologue);
 		if (o_decode_lbm) redirect(DECODE_LBM, sizeof kDecodePrologue, h_decode_lbm);
@@ -1606,6 +1659,9 @@ static void install_wide(void)
 	static const BYTE kPickPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28 }; // push ebp; mov ebp,esp; sub esp,28h
 	hook_code((BYTE *)0x00429ba4, kPickPrologue, sizeof kPickPrologue, h_pick_cell, &o_pick_cell);
 	hook_code((BYTE *)0x0040464c, kBlockPrologue, sizeof kBlockPrologue, h_clip_x, &o_clip_x);
+	hook_code((BYTE *)0x004bc020, kBlockPrologue, sizeof kBlockPrologue, h_battle_view, &o_battle_view);
+	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
+	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
