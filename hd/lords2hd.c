@@ -20,7 +20,7 @@
 
 #define GAME_W 640  // the width every screen was designed for
 #define GAME_H 480
-#define MAX_W 1216  // widest frame wide mode makes (32:9, plus the guard columns)
+#define MAX_W 2560  // widest frame wide mode makes (32:9 with the zoomed-out battle view)
 // Wide mode keeps this many columns at the frame's left edge out of sight: the county map draws
 // whole tiles (up to 60 pixels) past the visible edge, which would otherwise land on the row above.
 #define GUARD 64
@@ -30,6 +30,15 @@
 // the first 640 columns and shown alone, centred.
 static int g_frameW = GAME_W;
 static int g_showX = 0, g_showW = GAME_W;
+static int g_frameH = GAME_H; // taller with the zoomed-out battle view
+static int g_extra;          // columns the county map shows left of the game's x = 0
+#define PANEL_X 478          // where the side panel starts, in the game's coordinates
+static BOOL g_battleZoom;    // [Display] BattleZoom: battles show twice as far
+// The zoomed-out view has 28 more columns and 15 more rows of 32-pixel cells (at 16:9).
+#define BATTLE_MORE_COLS ((battle_map_w() - PANEL_X + 31) / 32)
+#define BATTLE_MORE_ROWS 15
+static int battle_map_w(void) { return 2 * (GAME_W + g_extra) - 2 * (GAME_W - PANEL_X); }
+static BOOL battle_zoom_on(void);
 
 // ---------------------------------------------------------------------------------------------
 // Forwarding to the real ddraw.dll
@@ -98,6 +107,7 @@ static void read_settings(void)
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
 	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+	g_battleZoom = g_wantWide && GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
@@ -591,6 +601,91 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
 static BYTE g_shown8[MAX_W * GAME_H];
 
+// The zoomed-out battle's picture, twice the size of the normal one: the battlefield 1:1 from the
+// frame's tall area, the side panel and the top bar doubled. Above 2x on screen it is smoothed
+// once more; below (1080p is 1.125x) GDI's smooth mode does the rest.
+static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
+{
+	static DWORD *pic, *pic2;
+	static BYTE *copy, *shown;
+	static RECT lastView;
+	int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
+	int fh = g_primary->h, pitch = g_primary->pitch;
+	if (!pic) {
+		pic = malloc(lw * lh * 4);
+		pic2 = malloc(lw * 2 * lh * 2 * 4);
+		copy = malloc(pitch * fh);
+		shown = malloc(pitch * fh);
+		if (!pic || !pic2 || !copy || !shown) return FALSE;
+	}
+	EnterCriticalSection(&g_lock);
+	memcpy(copy, g_primary->bits, pitch * fh);
+	LeaveCriticalSection(&g_lock);
+	RECT v, c;
+	view_rect(&v);
+	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
+	if (!forced && palSame && memcmp(copy, shown, pitch * fh) == 0) return FALSE;
+	memcpy(shown, copy, pitch * fh);
+	lastView = v;
+
+	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
+	const BYTE *frame = copy + g_off; // the game's x = 0
+	for (int sy = 48; sy < lh; sy++) {
+		const BYTE *row = frame + (24 + sy - 48) * pitch + PANEL_X - mapW;
+		DWORD *o = pic + sy * lw;
+		for (int sx = 0; sx < mapW; sx++) o[sx] = g_lut[row[sx]];
+		const BYTE *pan = frame + (24 + (sy - 48) / 2) * pitch + PANEL_X;
+		for (int sx = mapW; sx < lw; sx++) o[sx] = g_lut[pan[(sx - mapW) / 2]];
+	}
+	for (int sy = 0; sy < 48; sy++) {
+		const BYTE *bar = frame + (sy / 2) * pitch - g_extra;
+		DWORD *o = pic + sy * lw;
+		for (int sx = 0; sx < lw; sx++) o[sx] = g_lut[bar[sx / 2]];
+	}
+
+	GetClientRect(g_hwnd, &c);
+	HDC dc = GetDC(g_hwnd);
+	if (!dc) return FALSE;
+	PatBlt(dc, 0, 0, c.right, v.top, BLACKNESS);
+	PatBlt(dc, 0, v.bottom, c.right, c.bottom - v.bottom, BLACKNESS);
+	PatBlt(dc, 0, v.top, v.left, v.bottom - v.top, BLACKNESS);
+	PatBlt(dc, v.right, v.top, c.right - v.right, v.bottom - v.top, BLACKNESS);
+	BITMAPINFOHEADER bi = { sizeof bi };
+	bi.biPlanes = 1;
+	bi.biBitCount = 32;
+	bi.biCompression = BI_RGB;
+	int vw = v.right - v.left, vh = v.bottom - v.top;
+	const DWORD *src = pic;
+	int sw = lw, sh = lh;
+	if (vh >= lh * 2) {
+		for (int y = 0; y < lh; y++) {
+			const DWORD *row = pic + y * lw, *up = pic + (y > 0 ? y - 1 : y) * lw, *dn = pic + (y < lh - 1 ? y + 1 : y) * lw;
+			DWORD *o0 = pic2 + 2 * y * 2 * lw, *o1 = o0 + 2 * lw;
+			for (int x = 0; x < lw; x++) {
+				int l = x > 0 ? x - 1 : x, r = x < lw - 1 ? x + 1 : x;
+				DWORD p = row[x];
+				o0[2 * x] = mix4(p, row[l], up[x], up[l]);
+				o0[2 * x + 1] = mix4(p, row[r], up[x], up[r]);
+				o1[2 * x] = mix4(p, row[l], dn[x], dn[l]);
+				o1[2 * x + 1] = mix4(p, row[r], dn[x], dn[r]);
+			}
+		}
+		src = pic2;
+		sw = lw * 2;
+		sh = lh * 2;
+		SetStretchBltMode(dc, COLORONCOLOR);
+	}
+	else {
+		SetStretchBltMode(dc, HALFTONE);
+		SetBrushOrgEx(dc, 0, 0, NULL);
+	}
+	bi.biWidth = sw;
+	bi.biHeight = -sh;
+	StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+	ReleaseDC(g_hwnd, dc);
+	return TRUE;
+}
+
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
 // the screen on every pass of its loop, paused or not.
 static BOOL present(void)
@@ -613,8 +708,8 @@ static BOOL present(void)
 	InterlockedExchange(&g_wideScreen, g_off && county_map_on());
 
 	EnterCriticalSection(&g_lock);
-	g_showX = g_wideScreen ? GUARD : g_off;
-	g_showW = g_wideScreen ? g_frameW - GUARD : GAME_W;
+	g_showX = g_wideScreen ? g_off - g_extra : g_off;
+	g_showW = g_wideScreen ? GAME_W + g_extra : GAME_W;
 	int sx = g_showX, sw = g_showW;
 	if (sx + sw > g_primary->w) sx = 0, sw = min(sw, g_primary->w);
 	for (int y = 0; y < GAME_H; y++) memcpy(g_frame8 + y * sw, g_primary->bits + y * g_primary->pitch + sx, sw);
@@ -633,6 +728,8 @@ static BOOL present(void)
 		dump_palette_if_new(pal);
 		palDumped = TRUE;
 	}
+
+	if (battle_zoom_on()) return present_battle(pal, palSame);
 
 	RECT v, c;
 	view_rect(&v);
@@ -1117,12 +1214,12 @@ static HRESULT WINAPI dd_create_surface(void *this_, DDSURFACEDESC *d, void **ou
 	s->caps = (d->dwFlags & DDSD_CAPS) ? d->ddsCaps.dwCaps : DDSCAPS_OFFSCREENPLAIN;
 	s->primary = (s->caps & DDSCAPS_PRIMARYSURFACE) != 0;
 	s->w = s->primary || !(d->dwFlags & DDSD_WIDTH) ? g_frameW : (int)d->dwWidth;
-	s->h = s->primary || !(d->dwFlags & DDSD_HEIGHT) ? GAME_H : (int)d->dwHeight;
+	s->h = s->primary || !(d->dwFlags & DDSD_HEIGHT) ? g_frameH : (int)d->dwHeight;
 	s->pitch = (s->w + 3) & ~3;
 	// One spare row: the game's whole-frame loops start at its x = 0, g_off bytes into the frame.
 	s->bits = calloc(1, s->pitch * (s->h + 1));
 	if (!s->bits) { free(s); return DDERR_OUTOFMEMORY; }
-	if (s->w == g_frameW && s->h == GAME_H) s->org = g_off;
+	if (s->w == g_frameW && s->h == g_frameH) s->org = g_off;
 	if (d->dwFlags & DDSD_BACKBUFFERCOUNT) unexpected("CreateSurface with back buffers");
 	logf_("surface %p: %dx%d caps %08lx, game x = 0 at %d%s", (void *)s, s->w, s->h, (unsigned long)s->caps, s->org,
 		s->primary ? " (primary)" : "");
@@ -1132,7 +1229,7 @@ static HRESULT WINAPI dd_create_surface(void *this_, DDSURFACEDESC *d, void **ou
 		LeaveCriticalSection(&g_lock);
 		start_presenter();
 	}
-	else if (s->w == g_frameW && s->h == GAME_H && (s->caps & DDSCAPS_SYSTEMMEMORY)) {
+	else if (s->w == g_frameW && s->h == g_frameH && (s->caps & DDSCAPS_SYSTEMMEMORY)) {
 		g_back = s;
 	}
 	*out = s;
@@ -1206,7 +1303,7 @@ static HRESULT WINAPI dd_set_display_mode(void *this_, DWORD w, DWORD h, DWORD b
 		DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 		RECT r = { 0, 0, GAME_W * g_windowScale, GAME_H * g_windowScale };
 		int fixedH = GetPrivateProfileIntA("Display", "WindowHeight", 0, g_iniPath); // e.g. 1080, to try that size
-		if (fixedH > 0) SetRect(&r, 0, 0, MulDiv(g_off ? g_frameW - GUARD : GAME_W, fixedH, GAME_H), fixedH);
+		if (fixedH > 0) SetRect(&r, 0, 0, MulDiv(GAME_W + g_extra, fixedH, GAME_H), fixedH);
 		AdjustWindowRect(&r, style, FALSE);
 		int ww = r.right - r.left, wh = r.bottom - r.top;
 		int x = mi.rcWork.left + max(0, (int)(mi.rcWork.right - mi.rcWork.left - ww) / 2);
@@ -1255,6 +1352,15 @@ static void client_to_game(int *x, int *y)
 	RECT v;
 	view_rect(&v);
 	int vw = max(1, v.right - v.left), vh = max(1, v.bottom - v.top);
+	if (battle_zoom_on()) {
+		// The zoomed-out battle's picture: top bar and side panel doubled, battlefield 1:1.
+		int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
+		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
+		if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
+		else if (sx >= mapW) { *x = PANEL_X + (sx - mapW) / 2; *y = 24 + (sy - 48) / 2; }
+		else { *x = PANEL_X - mapW + sx; *y = 24 + sy - 48; }
+		return;
+	}
 	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
 	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
 	*y = max(0, min(GAME_H - 1, gy));
@@ -1308,6 +1414,11 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 			if (cx <= v.left) x = 0;
 			else if (cx >= v.right - 1) x = right;
 			else x = max(1, min(right - 1, x));
+			// The same for the bottom edge, measured against the frame's height (DAT_004ea838).
+			int bottom = max(2, *(int *)0x004ea838 - 1), cy = p->y;
+			if (cy <= v.top) y = 0;
+			else if (cy >= v.bottom - 1) y = bottom;
+			else y = max(1, min(bottom - 1, y));
 		}
 		p->x = x;
 		p->y = y;
@@ -1318,7 +1429,7 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 static BOOL WINAPI h_GetClientRect(HWND hwnd, RECT *r)
 {
 	if (hwnd && hwnd == g_hwnd && r) {
-		SetRect(r, 0, 0, g_frameW, GAME_H);
+		SetRect(r, 0, 0, g_frameW, g_frameH);
 		return TRUE;
 	}
 	return o_GetClientRect(hwnd, r);
@@ -1349,7 +1460,7 @@ static int (WINAPI *o_GetSystemMetrics)(int);
 static int WINAPI h_GetSystemMetrics(int i)
 {
 	if (i == SM_CXSCREEN) return g_frameW; // the game scales the mouse by frame width / screen width
-	if (i == SM_CYSCREEN) return GAME_H;
+	if (i == SM_CYSCREEN) return g_frameH;
 	return o_GetSystemMetrics(i);
 }
 
@@ -1543,6 +1654,7 @@ static BOOL patch_dword(DWORD addr, LONG from, LONG to)
 // what it becomes (0 = width, 1 = width * height) }.
 static const struct { DWORD addr; LONG value; int kind; const char *what; } kFrameSites[] = {
 	{ 0x004b2371 + 6, 640, 0, "frame pitch at start-up (DAT_004eb274)" },
+	{ 0x004b237b + 6, 480, 2, "frame height at start-up (DAT_004eac4c)" },
 	{ 0x0042db8c + 1, 640, 0, "Smacker destination pitch" },
 	{ 0x0042de58 + 1, 640, 0, "Smacker destination pitch" },
 	{ 0x004b13b0 + 3, 640 * 480, 1, "whole-frame darkening loop" },
@@ -1609,7 +1721,7 @@ static BOOL county_map_on(void);
 static void menu_block(int skip, int *saved)
 {
 	*saved = BLOCK_X;
-	if (g_off && skip == 0xf0 && BLOCK_X == 0 && BLOCK_Y == 0x18 && county_map_on()) BLOCK_X = -(g_off - GUARD);
+	if (g_off && skip == 0xf0 && BLOCK_X == 0 && BLOCK_Y == 0x18 && county_map_on()) BLOCK_X = -g_extra;
 }
 static void __cdecl h_block_to_frame(void *buffer, int skip)
 {
@@ -1664,7 +1776,7 @@ static clip_x_t o_clip_x;
 static BOOL g_drawingLeft; // a widened bar is being drawn: the screen's left edge is in the spare columns
 static void __cdecl h_clip_x(int left, int right)
 {
-	if (g_drawingLeft && left == 0) left = -(g_off - GUARD);
+	if (g_drawingLeft && left == 0) left = -g_extra;
 	o_clip_x(max(left, -g_off), right);
 }
 
@@ -1707,9 +1819,9 @@ static void __cdecl h_menu_open(void)
 static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)
 {
 	if (x == 0 && y == 0 && nx == 25 && ny == 1)
-		MENU_FIRST_X = g_off && county_map_on() ? 10 - (g_off - GUARD) : 10;
+		MENU_FIRST_X = g_off && county_map_on() ? 10 - g_extra : 10;
 	if (g_off && x == 0 && y == 0 && nx == 25 && ny == 1 && county_map_on()) {
-		int n = (g_off - GUARD + 23) / 24;
+		int n = (g_extra + 23) / 24;
 		o_bar_tiles(-24 * n, y, nx + n, ny);
 		return;
 	}
@@ -1723,7 +1835,7 @@ static void __cdecl h_bar_outline(int x, int y, int w, int h)
 {
 	o_bar_outline(x, y, w, h);
 	if (!g_off || !g_back || x != 0 || y != 0 || w != GAME_W || h != 24 || !county_map_on()) return;
-	int n = (g_off - GUARD + 23) / 24, left = -24 * n;
+	int n = (g_extra + 23) / 24, left = -24 * n;
 	BYTE *frame = g_back->bits + g_back->org;
 	int pitch = g_back->pitch;
 	for (int r = 1; r < h - 1; r++) frame[r * pitch] = frame[r * pitch + 1];
@@ -1735,7 +1847,7 @@ static void __cdecl h_bar_outline(int x, int y, int w, int h)
 static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 {
 	if (g_off && x == 0 && y == 412 && nx == 30 && ny == 4 && county_map_on()) {
-		int n = (g_off - GUARD) / 16;
+		int n = g_extra / 16;
 		g_drawingLeft = TRUE;
 		o_framed_panel(-16 * n, y, nx + n, ny);
 		g_drawingLeft = FALSE;
@@ -1757,6 +1869,7 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 // (zoom 2) - or the game leaves the county game (mode 3). Dialogs, drop-down menus and message
 // scrolls drawn over the map keep it. Screen ids alone cannot tell: the castle builder, a painted
 // screen, runs as screen 39 like the map's message scrolls.
+static BOOL battle_zoom_on(void) { return g_battleZoom && g_off && IN_BATTLE && county_map_on(); }
 static BOOL county_map_on(void)
 {
 	if (GAME_MODE != 3 || (!IN_BATTLE && MAP_ZOOM == 2)) {
@@ -1772,12 +1885,18 @@ static BOOL county_map_on(void)
 // units, missiles, clipping - follows; only the scroll limit (FUN_0047ed34) needs k less.
 typedef void (__cdecl *battle_view_t)(void *, void *, void *, int, int, int, int, int, int, int, int);
 static battle_view_t o_battle_view;
-static int g_battleK;
+static int g_battleK, g_battleR;
+#define BATTLE_ROW (*(int *)0x005678a0)
 static void __cdecl h_battle_view(void *a, void *b, void *c, int mapW, int d, int cell, int x, int y, int cols, int rows, int size)
 {
-	g_battleK = g_off && size > 0 ? (g_off - GUARD + size - 1) / size : 0;
-	o_battle_view(a, b, c, mapW, d, cell, x - g_battleK * size, y, cols + g_battleK, rows, size);
-	logf_("battle view: x %d, %d columns of %d", x - g_battleK * size, cols + g_battleK, size);
+	g_battleK = g_off && size > 0 ? (g_extra + size - 1) / size : 0;
+	g_battleR = 0;
+	if (g_battleZoom) {
+		g_battleK = BATTLE_MORE_COLS;
+		g_battleR = BATTLE_MORE_ROWS;
+	}
+	o_battle_view(a, b, c, mapW, d, cell, x - g_battleK * size, y, cols + g_battleK, rows + g_battleR, size);
+	logf_("battle view: x %d, %d x %d cells of %d", x - g_battleK * size, cols + g_battleK, rows + g_battleR, size);
 }
 
 typedef void (__cdecl *battle_clamp_t)(void);
@@ -1787,6 +1906,7 @@ static void __cdecl h_battle_clamp(void)
 {
 	o_battle_clamp();
 	if (BATTLE_COL > 0x41 - g_battleK) BATTLE_COL = 0x41 - g_battleK;
+	if (BATTLE_ROW > 0x42 - g_battleR) BATTLE_ROW = 0x42 - g_battleR;
 }
 
 // Drawing the battlefield (FUN_004bc142) means it is the picture. On a full redraw the spare
@@ -1798,12 +1918,14 @@ static void __cdecl h_battle_draw(int col, int row)
 	if (g_off && g_back && GAME_MODE == 3) {
 		if (!g_mapSticky || *(int *)0x0053e9ac) {
 			BYTE *frame = g_back->bits + g_back->org;
-			for (int y = 24; y < GAME_H; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
+			for (int y = 24; y < g_frameH; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
 		}
 		if (!g_mapSticky) *(int *)0x0056d6a0 = 1; // the top bar was drawn narrow: draw it again
 		g_mapSticky = TRUE;
 	}
-	o_battle_draw(col > 0x41 - g_battleK ? 0x41 - g_battleK : col, row);
+	if (col > 0x41 - g_battleK) BATTLE_COL = col = 0x41 - g_battleK;
+	if (row > 0x42 - g_battleR) BATTLE_ROW = row = 0x42 - g_battleR;
+	o_battle_draw(col, row);
 }
 
 // The view as the game set it, while it is widened for one call.
@@ -1814,7 +1936,7 @@ static struct { int cols, firstX, firstCol, k; } g_view;
 static BOOL begin_wide_view(void)
 {
 	if (!g_off || !g_back || IN_BATTLE || !county_map_on() || MAP_STEP <= 0) return FALSE;
-	int k = (g_off - GUARD + MAP_FIRST_X + MAP_STEP - 1) / MAP_STEP; // columns to cover the visible spare pixels
+	int k = (g_extra + MAP_FIRST_X + MAP_STEP - 1) / MAP_STEP; // columns to cover the visible spare pixels
 	// The view reaches k columns further left, so the game's scroll stops k columns short of the
 	// map's left edge: scrolled fully left, the map's first column is at the screen's edge.
 	static int lastCol = -99, lastCols, lastK;
@@ -1981,11 +2103,19 @@ typedef void (__cdecl *box_t)(int, int, int, int, int);
 static box_t o_box;
 static void __cdecl h_box(int x, int y, int w, int h, int colour)
 {
-	if (!g_off || !g_back || x >= 0 || !county_map_on()) {
+	BOOL zoomed = battle_zoom_on();
+	if (!g_off || !g_back || !county_map_on() || (x >= 0 && !zoomed)) {
 		o_box(x, y, w, h, colour);
 		return;
 	}
-	int left = max(x, -(g_off - GUARD)), right = x + w - 1, top = max(y, 0), bottom = min(y + h - 1, GAME_H - 1);
+	int left = max(x, -g_extra), right = x + w - 1, top = max(y, 0), bottom = min(y + h - 1, GAME_H - 1);
+	if (zoomed) {
+		// The game cut the box's height at 480 rows: take it from the mouse again.
+		int y0 = *(int *)0x0057a0e8, y1 = *(int *)0x004e65f4;
+		left = max(x, PANEL_X - battle_map_w());
+		top = max(24, min(y0, y1));
+		bottom = min(g_frameH - 25, max(y0, y1));
+	}
 	if (right < left || bottom < top) return;
 	BYTE *frame = g_back->bits + g_back->org;
 	int pitch = g_back->pitch;
@@ -2037,7 +2167,14 @@ static void install_wide(void)
 		logf_("wide mode: the monitor (%dx%d) is not wider than 4:3", mw, mh);
 		return;
 	}
-	w += GUARD;
+	g_extra = w - GAME_W;
+	if (g_battleZoom) {
+		// The zoomed-out battlefield: twice the picture's size less the doubled side panel.
+		int mapW = 2 * w - 2 * (GAME_W - PANEL_X);
+		w = (GAME_W + mapW - PANEL_X + GUARD + 15) & ~15;
+		g_frameH = GAME_H * 2;
+	}
+	else w += GUARD;
 	int n = sizeof kPitchSites / sizeof kPitchSites[0];
 	for (int i = 0; i < n; i++) {
 		if (*(LONG *)(kPitchSites[i].addr + kPitchSites[i].off) != kPitchSites[i].value) {
@@ -2074,17 +2211,19 @@ static void install_wide(void)
 		FlushInstructionCache(GetCurrentProcess(), p, 6);
 	}
 	for (int i = 0; i < (int)(sizeof kFrameSites / sizeof kFrameSites[0]); i++)
-		patch_dword(kFrameSites[i].addr, kFrameSites[i].value, kFrameSites[i].kind ? w * GAME_H : w);
+		patch_dword(kFrameSites[i].addr, kFrameSites[i].value,
+			kFrameSites[i].kind == 2 ? g_frameH : kFrameSites[i].kind ? w * GAME_H : w);
 	g_frameW = w;
 	g_off = w - GAME_W;
 	// Jumping to a spot on the battlefield (minimap click, FUN_00432443; a unit, FUN_0043c910) puts
 	// it 7 columns in, the middle of 15: move that to the middle of the wider view.
-	static const DWORD kCentreSites[] = { 0x00432513, 0x0043ca27 }; // SUB EAX,7 of the column
-	for (int i = 0; i < 2; i++) {
+	static const DWORD kCentreSites[] = { 0x00432513, 0x0043ca27, 0x0043251e, 0x0043ca42 }; // SUB EAX,7: column, column, row, row
+	for (int i = 0; i < 4; i++) {
 		BYTE *p = (BYTE *)kCentreSites[i];
 		DWORD old;
+		int more = g_battleZoom ? (i < 2 ? BATTLE_MORE_COLS : BATTLE_MORE_ROWS) / 2 : (i < 2 ? (g_extra + 31) / 32 / 2 : 0);
 		if (p[0] == 0x83 && p[1] == 0xE8 && p[2] == 7 && VirtualProtect(p, 3, PAGE_EXECUTE_READWRITE, &old)) {
-			p[2] = (BYTE)(7 + (g_off - GUARD + 31) / 32 / 2);
+			p[2] = (BYTE)(7 + more);
 			VirtualProtect(p, 3, old, &old);
 		}
 	}

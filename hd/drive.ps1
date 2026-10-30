@@ -88,8 +88,18 @@ function Update-View {
 }
 Update-View
 
-function Move-To([int]$gx, [int]$gy, [switch]$Wide) {
+function Move-To([int]$gx, [int]$gy, [switch]$Wide, [switch]$Battle) {
     Update-View
+    if ($Battle) {
+        # The zoomed-out battle: the battlefield 1:1 on a picture twice the size, the panel doubled.
+        $shown = [Math]::Max(640, [Math]::Floor(480 * $b.Width / $b.Height / 16) * 16)
+        $s = $b.Height / 960.0
+        $mapW = 2 * $shown - 324
+        if ($gx -ge 478) { $lx = $mapW + ($gx - 478) * 2; $ly = 48 + ($gy - 24) * 2 } else { $lx = $gx + $mapW - 478; $ly = $gy + 24 }
+        $sx = [int]($b.X + ($b.Width - 2 * $shown * $s) / 2 + ($lx + 0.5) * $s); $sy = [int]($b.Y + ($ly + 0.5) * $s)
+        for ($i = 8; $i -ge 0; $i--) { [void][Native.Drive]::SetCursorPos($sx - $i * 5, $sy - $i * 3); Start-Sleep -Milliseconds 25 }
+        return
+    }
     if ($Wide) {
         # Wide mode shows the frame's spare columns too: as many as fit the monitor at 480 lines,
         # rounded down to 16 (lords2hd.c install_wide).
@@ -113,12 +123,21 @@ function Click([int]$down, [int]$up) {
 foreach ($step in $Steps) {
     if ($proc.HasExited) { "game exited (code $($proc.ExitCode)) before '$step'"; break }
     $verb, $arg = $step -split ':', 2
-    if ($verb -in 'click', 'rclick', 'key', 'move', 'wclick', 'wrclick', 'wmove' -and -not (Test-GameInFront)) { "the game is not in front: stopped before '$step'"; break }
+    if ($verb -in 'click', 'rclick', 'key', 'move', 'wclick', 'wrclick', 'wmove', 'bmove', 'bclick', 'bdrag', 'wdrag' -and -not (Test-GameInFront)) { "the game is not in front: stopped before '$step'"; break }
     switch ($verb) {
         'wait'   { Start-Sleep -Milliseconds ([int]([double]$arg * 1000)) }
         'move'   { $x, $y = $arg -split '[, ]+'; Move-To $x $y }
         'click'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 2 4 }
         'rclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 8 16 }
+        'bmove'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Battle }
+        'bclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Battle; Click 2 4 }
+        'bdrag'  {
+            $v = $arg -split '[, ]+'
+            Move-To $v[0] $v[1] -Battle; Start-Sleep -Milliseconds 200
+            [Native.Drive]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 300
+            Move-To $v[2] $v[3] -Battle; Start-Sleep -Milliseconds 500
+            [Native.Drive]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        }
         'wdrag'  {
             # wdrag:x1,y1,x2,y2 : a left-button drag on a widened screen
             $v = $arg -split '[, ]+'
