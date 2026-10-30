@@ -39,8 +39,6 @@ static BOOL g_battleZoom;    // [Display] BattleZoom: battles show twice as far
 #define BATTLE_MORE_ROWS 15
 static int battle_map_w(void) { return 2 * (GAME_W + g_extra) - 2 * (GAME_W - PANEL_X); }
 static BOOL battle_zoom_on(void);
-static volatile DWORD g_pausedTick; // when "Battle Paused" was last drawn
-
 // ---------------------------------------------------------------------------------------------
 // Forwarding to the real ddraw.dll
 
@@ -1359,16 +1357,7 @@ static void client_to_game(int *x, int *y)
 		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
 		if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
 		else if (sx >= mapW) { *x = PANEL_X + (sx - mapW) / 2; *y = 24 + (sy - 48) / 2; }
-		else {
-			*x = PANEL_X - mapW + sx;
-			*y = 24 + sy - 48;
-			// While "Battle Paused" shows, its arrow is drawn lower than the game checks for it.
-			const short *rec = (const short *)(0x005bb540 + 8 + 0x4d * 16);
-			int dy = g_frameH - GAME_H - 24;
-			if (GetTickCount() - g_pausedTick < 500 && *x >= 400 && *x < 400 + rec[0] &&
-				*y >= 0x1c4 + dy && *y < 0x1c4 + dy + rec[1])
-				*y -= dy;
-		}
+		else { *x = PANEL_X - mapW + sx; *y = 24 + sy - 48; }
 		return;
 	}
 	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
@@ -2130,7 +2119,6 @@ static void __cdecl h_paused(void)
 	typedef void (__cdecl *text_t)(int, int, int, int, void *, int);
 	typedef void (__cdecl *sprite_t)(int, int, int, int);
 	int dy = g_frameH - GAME_H - 24;
-	g_pausedTick = GetTickCount();
 	*(int *)0x005aea40 = 1;
 	((text_t)0x00402d37)(0x20, 0, 0x10e, 0x1ae + dy, (void *)0x005b2fa0, 0x20);
 	((sprite_t)0x0040a21a)(0x5bb540, 0x4d, 400, 0x1c4 + dy);
