@@ -165,6 +165,7 @@ static volatile LONG g_wideScreen; // the screen on now uses the whole frame (th
 
 static Surface *g_primary;
 static Surface *g_back; // the system-memory surface the game draws into
+static BOOL county_map_on(void);
 
 static void mark_dirty(void)
 {
@@ -313,7 +314,7 @@ static BOOL present(void)
 		lastMode = mode;
 	}
 	// The county map (mode 3; screen 0, or 39 with a message scroll on it) uses the whole frame.
-	InterlockedExchange(&g_wideScreen, g_off && mode == 3 && (screen == 0 || screen == 39));
+	InterlockedExchange(&g_wideScreen, g_off && county_map_on());
 
 	EnterCriticalSection(&g_lock);
 	g_showX = g_wideScreen ? GUARD : g_off;
@@ -1387,7 +1388,64 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 	o_framed_panel(x, y, nx, ny);
 }
 
-static BOOL county_map_on(void) { return GAME_MODE == 3 && (SCREEN_ID == 0 || SCREEN_ID == 39); }
+// The county map at a zoom that scrolls (DAT_0057cb18 0 or 1). The kingdom overview (2) is one
+// fixed picture of the kingdom - the game places it at column 14 and turns scrolling off - and
+// the columns beside it are filler the game never shows, so it stays at 640 like other screens.
+#define MAP_ZOOM (*(int *)0x0057cb18)
+static BOOL county_map_on(void) { return GAME_MODE == 3 && (SCREEN_ID == 0 || SCREEN_ID == 39) && MAP_ZOOM != 2; }
+
+// The view as the game set it, while it is widened for one call.
+static struct { int cols, firstX, firstCol, k; } g_view;
+
+// Widens the map view by k columns to the left, for the length of one call into the game.
+// Returns FALSE (and changes nothing) when the map is not on a wide screen.
+static BOOL begin_wide_view(void)
+{
+	if (!g_off || !g_back || !county_map_on() || MAP_STEP <= 0) return FALSE;
+	int k = (g_off - GUARD + MAP_FIRST_X + MAP_STEP - 1) / MAP_STEP; // columns to cover the visible spare pixels
+	// The view reaches k columns further left, so the game's scroll stops k columns short of the
+	// map's left edge: scrolled fully left, the map's first column is at the screen's edge.
+	static int lastCol = -99, lastCols, lastK;
+	if (MAP_FIRST_COL != lastCol || MAP_COLUMNS != lastCols || k != lastK) {
+		logf_("map view: first column %d, %d columns, first x %d, step %d, widened by %d",
+			MAP_FIRST_COL, MAP_COLUMNS, MAP_FIRST_X, MAP_STEP, k);
+		lastCol = MAP_FIRST_COL;
+		lastCols = MAP_COLUMNS;
+		lastK = k;
+	}
+	if (MAP_FIRST_COL < k) MAP_FIRST_COL = k;
+	g_view.cols = MAP_COLUMNS;
+	g_view.firstX = MAP_FIRST_X;
+	g_view.firstCol = MAP_FIRST_COL;
+	g_view.k = k;
+	MAP_COLUMNS = g_view.cols + k;
+	MAP_FIRST_X = g_view.firstX - k * MAP_STEP;
+	MAP_FIRST_COL = g_view.firstCol - k;
+	return TRUE;
+}
+
+static void end_wide_view(void)
+{
+	MAP_COLUMNS = g_view.cols;
+	MAP_FIRST_X = g_view.firstX;
+	MAP_FIRST_COL = g_view.firstCol;
+}
+
+// The map cell under the mouse (FUN_00429ba4): with the view widened it also finds cells over the
+// spare columns. The column it leaves in DAT_00553f04 is relative to the scroll column, and the
+// game adds its own scroll column to it, so it is moved back by k (negative over the spare
+// columns, which every user of it handles: they add the scroll column or work out a screen x).
+#define PICKED_COL (*(int *)0x00553f04)
+typedef int (__cdecl *pick_cell_t)(int);
+static pick_cell_t o_pick_cell;
+static int __cdecl h_pick_cell(int arg)
+{
+	if (!begin_wide_view()) return o_pick_cell(arg);
+	int r = o_pick_cell(arg);
+	end_wide_view();
+	PICKED_COL -= g_view.k;
+	return r;
+}
 
 static void __cdecl h_redraw_map(void)
 {
@@ -1395,25 +1453,15 @@ static void __cdecl h_redraw_map(void)
 		o_redraw_map();
 		return;
 	}
-	int cols = MAP_COLUMNS, firstX = MAP_FIRST_X;
-	int k = (g_off - GUARD + firstX + MAP_STEP - 1) / MAP_STEP; // columns to cover the visible spare pixels
-	// The view now reaches k columns further left, so the game's scroll stops k columns short of
-	// the map's left edge: scrolled fully left, the map's first column is at the screen's edge.
-	if (MAP_FIRST_COL < k) MAP_FIRST_COL = k;
-	int firstCol = MAP_FIRST_COL;
 	// Whatever is left of the map is black, not the last screen's pixels - between the top bar and
 	// the map's bottom edge (DAT_00553254: 408 in the kingdom overview, where the caption panel is
 	// below), since the game does not always draw those two again after the map.
 	BYTE *frame = g_back->bits + g_back->org;
 	int bottom = max(24, min(GAME_H, *(int *)0x00553254));
 	for (int y = 24; y < bottom; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
-	MAP_COLUMNS = cols + k;
-	MAP_FIRST_X = firstX - k * MAP_STEP;
-	MAP_FIRST_COL = firstCol - k;
+	begin_wide_view();
 	o_redraw_map();
-	MAP_COLUMNS = cols;
-	MAP_FIRST_X = firstX;
-	MAP_FIRST_COL = firstCol;
+	end_wide_view();
 }
 
 // "y * 640" compiled as LEA r,[r+r*4] ; SHL r,7 (tools\find_mul640.ps1), in the rectangle
@@ -1485,6 +1533,8 @@ static void install_wide(void)
 		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
 	}
 	hook_code((BYTE *)0x004050c0, kRedrawPrologue, sizeof kRedrawPrologue, h_redraw_map, &o_redraw_map);
+	static const BYTE kPickPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28 }; // push ebp; mov ebp,esp; sub esp,28h
+	hook_code((BYTE *)0x00429ba4, kPickPrologue, sizeof kPickPrologue, h_pick_cell, &o_pick_cell);
 	hook_code((BYTE *)0x0040464c, kBlockPrologue, sizeof kBlockPrologue, h_clip_x, &o_clip_x);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
