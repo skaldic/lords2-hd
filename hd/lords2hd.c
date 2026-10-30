@@ -1350,8 +1350,37 @@ static strip_t o_bar_tiles, o_framed_panel;
 static strip_t o_bar_outline;
 static BOOL county_map_on(void);
 
+// The bar's menu titles (File, Options, Help): a table of {x, x end, y, text, items, count} at
+// 0x004dc428, drawn left to right from the first x (10), each 32 pixels after the last. Their drop-
+// downs open below them and clicks are matched against the x ranges the drawing wrote back, so
+// moving the first x to the wide map's left edge moves all of it.
+#define MENU_FIRST_X (*(short *)0x004dc428)
+
+// The titles (FUN_0040c5b0) and an open drop-down (FUN_0040c725: panel and items, every frame)
+// are drawn with the clip reaching into the spare columns, where they now start.
+typedef void (__cdecl *menu_titles_t)(short *, int);
+typedef void (__cdecl *menu_open_t)(void);
+static menu_titles_t o_menu_titles;
+static menu_open_t o_menu_open;
+static void __cdecl h_menu_titles(short *table, int n)
+{
+	BOOL wide = g_off && county_map_on();
+	g_drawingLeft = wide;
+	o_menu_titles(table, n);
+	g_drawingLeft = FALSE;
+}
+static void __cdecl h_menu_open(void)
+{
+	BOOL wide = g_off && county_map_on();
+	g_drawingLeft = wide;
+	o_menu_open();
+	g_drawingLeft = FALSE;
+}
+
 static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)
 {
+	if (x == 0 && y == 0 && nx == 25 && ny == 1)
+		MENU_FIRST_X = g_off && county_map_on() ? 10 - (g_off - GUARD) : 10;
 	if (g_off && x == 0 && y == 0 && nx == 25 && ny == 1 && county_map_on()) {
 		int n = (g_off - GUARD + 23) / 24;
 		o_bar_tiles(-24 * n, y, nx + n, ny);
@@ -1391,8 +1420,15 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 // The county map at a zoom that scrolls (DAT_0057cb18 0 or 1). The kingdom overview (2) is one
 // fixed picture of the kingdom - the game places it at column 14 and turns scrolling off - and
 // the columns beside it are filler the game never shows, so it stays at 640 like other screens.
+// A drop-down menu from the top bar is screen 0x32, with the screen under it kept in DAT_0056d894.
 #define MAP_ZOOM (*(int *)0x0057cb18)
-static BOOL county_map_on(void) { return GAME_MODE == 3 && (SCREEN_ID == 0 || SCREEN_ID == 39) && MAP_ZOOM != 2; }
+#define SCREEN_UNDER_MENU (*(int *)0x0056d894)
+static BOOL map_screen(int id) { return id == 0 || id == 39; }
+static BOOL county_map_on(void)
+{
+	return GAME_MODE == 3 && MAP_ZOOM != 2 &&
+		(map_screen(SCREEN_ID) || (SCREEN_ID == 0x32 && map_screen(SCREEN_UNDER_MENU)));
+}
 
 // The view as the game set it, while it is widened for one call.
 static struct { int cols, firstX, firstCol, k; } g_view;
@@ -1539,6 +1575,10 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
+	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
+	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
+	static const BYTE kDropPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }; // push ebp; mov ebp,esp; sub esp,1Ch
+	hook_code((BYTE *)0x0040c725, kDropPrologue, sizeof kDropPrologue, h_menu_open, &o_menu_open);
 	hook_code((BYTE *)0x004b3ec0, kBlockPrologue, sizeof kBlockPrologue, h_block_to_frame, &o_block_to_frame);
 	hook_code((BYTE *)0x004b3f0a, kBlockPrologue, sizeof kBlockPrologue, h_block_from_frame, &o_block_from_frame);
 	logf_("wide mode: frame %dx%d (%d shown) for a %dx%d monitor; %d pitch sites rewritten", w, GAME_H, w - GUARD, mw, mh, n);
