@@ -65,7 +65,7 @@ public static class Lattice {
                 // Towards the diamond's edge, more of the original: its tiles were drawn to join.
                 int r1 = y / 2, k = r1 < 15 ? r1 : 29 - r1, rw = 2 + 4 * k, x0 = (58 - rw) / 2;
                 int edge = Math.Min(Math.Min(x / 2 - x0, x0 + rw - 1 - x / 2) / 2, k);
-                double w = Math.Max(plain, 1.0 - edge / 4.0);
+                double w = edge < 1 ? Math.Max(plain, 0.4) : plain; // more than this draws a grid on the sea
                 o[p] = (byte)(o[p] * (1 - w) + c.B * w);
                 o[p + 1] = (byte)(o[p + 1] * (1 - w) + c.G * w);
                 o[p + 2] = (byte)(o[p + 2] * (1 - w) + c.R * w);
