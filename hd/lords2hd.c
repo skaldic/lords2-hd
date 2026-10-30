@@ -39,6 +39,7 @@ static BOOL g_battleZoom;    // [Display] BattleZoom: battles show twice as far
 #define BATTLE_MORE_ROWS 15
 static int battle_map_w(void) { return 2 * (GAME_W + g_extra) - 2 * (GAME_W - PANEL_X); }
 static BOOL battle_zoom_on(void);
+static volatile DWORD g_pausedTick; // when "Battle Paused" was last drawn
 
 // ---------------------------------------------------------------------------------------------
 // Forwarding to the real ddraw.dll
@@ -1358,7 +1359,16 @@ static void client_to_game(int *x, int *y)
 		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
 		if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
 		else if (sx >= mapW) { *x = PANEL_X + (sx - mapW) / 2; *y = 24 + (sy - 48) / 2; }
-		else { *x = PANEL_X - mapW + sx; *y = 24 + sy - 48; }
+		else {
+			*x = PANEL_X - mapW + sx;
+			*y = 24 + sy - 48;
+			// While "Battle Paused" shows, its arrow is drawn lower than the game checks for it.
+			const short *rec = (const short *)(0x005bb540 + 8 + 0x4d * 16);
+			int dy = g_frameH - GAME_H - 24;
+			if (GetTickCount() - g_pausedTick < 500 && *x >= 400 && *x < 400 + rec[0] &&
+				*y >= 0x1c4 + dy && *y < 0x1c4 + dy + rec[1])
+				*y -= dy;
+		}
 		return;
 	}
 	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
@@ -2096,6 +2106,37 @@ static void dump_overhang(void)
 	logf_("overhang layout written");
 }
 
+// Tooltips (position clamped by FUN_00477249) would straddle the side panel, half 1:1 and half
+// doubled, in the zoomed-out view: they stay wholly on the battlefield, 192 wide with their saved
+// background.
+typedef void (__cdecl *tip_clamp_t)(void);
+static tip_clamp_t o_tip_clamp;
+static void __cdecl h_tip_clamp(void)
+{
+	o_tip_clamp();
+	if (battle_zoom_on() && *(int *)0x004eb268 > PANEL_X - 192) *(int *)0x004eb268 = PANEL_X - 192;
+}
+
+// "Battle Paused" (FUN_00423b4f) sits near the bottom of the 480-row screen: in the zoomed-out
+// view it goes to the same place at the bottom of the taller battlefield.
+typedef void (__cdecl *paused_t)(void);
+static paused_t o_paused;
+static void __cdecl h_paused(void)
+{
+	if (!battle_zoom_on()) {
+		o_paused();
+		return;
+	}
+	typedef void (__cdecl *text_t)(int, int, int, int, void *, int);
+	typedef void (__cdecl *sprite_t)(int, int, int, int);
+	int dy = g_frameH - GAME_H - 24;
+	g_pausedTick = GetTickCount();
+	*(int *)0x005aea40 = 1;
+	((text_t)0x00402d37)(0x20, 0, 0x10e, 0x1ae + dy, (void *)0x005b2fa0, 0x20);
+	((sprite_t)0x0040a21a)(0x5bb540, 0x4d, 400, 0x1c4 + dy);
+	*(int *)0x005aea40 = 0;
+}
+
 // The outline routine (FUN_00403cf4, the battle's selection box) moves a left edge below 0 to 0 but
 // keeps the width, which at 640 never happened. In wide mode the box's right side then lands in the
 // side panel, which nothing cleans. Boxes reaching into the spare columns are drawn here instead.
@@ -2103,7 +2144,19 @@ typedef void (__cdecl *box_t)(int, int, int, int, int);
 static box_t o_box;
 static void __cdecl h_box(int x, int y, int w, int h, int colour)
 {
-	BOOL zoomed = battle_zoom_on();
+	BOOL zoomed = battle_zoom_on() && __builtin_return_address(0) == (void *)0x00412a9d; // FUN_0041298a, the selection box
+	if (g_timing && battle_zoom_on()) {
+		static void *seen[32];
+		void *from = __builtin_return_address(0);
+		for (int i = 0; i < 32; i++) {
+			if (seen[i] == from) break;
+			if (!seen[i]) {
+				seen[i] = from;
+				logf_("box from %p: %d,%d %dx%d colour %d", from, x, y, w, h, colour);
+				break;
+			}
+		}
+	}
 	if (!g_off || !g_back || !county_map_on() || (x >= 0 && !zoomed)) {
 		o_box(x, y, w, h, colour);
 		return;
@@ -2291,6 +2344,8 @@ static void install(void)
 	hook_code((BYTE *)0x004b4814, kBlitPrologue, 6, h_blit4, &o_blit[4]);
 	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
 	hook_code((BYTE *)0x00403cf4, kBlitPrologue, 6, h_box, &o_box);
+	hook_code((BYTE *)0x00423b4f, kBlitPrologue, 6, h_paused, &o_paused);
+	hook_code((BYTE *)0x00477249, kBlitPrologue, 6, h_tip_clamp, &o_tip_clamp);
 	hook_code((BYTE *)0x00406673, kCellPrologue, sizeof kCellPrologue, h_cell_top, &o_cell_top);
 	hook_code((BYTE *)0x004063c1, kCellPrologue, sizeof kCellPrologue, h_cell_ground, &o_cell_ground);
 	hook_code((BYTE *)0x0042a7f1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special, &o_cell_special);
