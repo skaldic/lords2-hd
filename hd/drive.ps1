@@ -164,6 +164,17 @@ foreach ($step in $Steps) {
             $g.Dispose(); $full.Dispose(); $half.Dispose()
             "saved $arg.png ($($b.Width)x$($b.Height))"
         }
+        'region' {
+            # region:name,x,y,w,h : full-resolution capture of a part of the game's window
+            $v = $arg -split '[, ]+'
+            Update-View
+            $bmp = New-Object Drawing.Bitmap([int]$v[3], [int]$v[4])
+            $g = [Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.X + [int]$v[1], $b.Y + [int]$v[2], 0, 0, $bmp.Size)
+            $bmp.Save("$outDir\$($v[0]).png", [Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+            "saved $($v[0]).png"
+        }
         'crop'   {
             $bmp = New-Object Drawing.Bitmap(1000, 700)
             $g = [Drawing.Graphics]::FromImage($bmp)

@@ -309,6 +309,10 @@ static void double_frame(int w)
 // lords2hd\screens\<name>.bin, with the original 1x picture as a "shadow": a pixel is shown from the
 // 2x picture while the frame still holds what the picture put there and the palette still gives it
 // the picture's colour. Anything drawn on top, or a fade, shows the smoothed 1x frame.
+// HD troops in the zoomed-out battle: 2x blocks per frame pixel, 4 DWORDs each, with the same shadow
+// check as the county layers. FUN_004b5333 redrawing a ground cell forgets what stood on it.
+static DWORD *g_btLayer;
+static BYTE *g_btShadow, *g_btValid;
 static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
 
 static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
@@ -522,7 +526,12 @@ static void sprites_loaded(const char *name, const void *buffer)
 
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
-	if (!g_sprLayer || !g_back) return;
+	if (battle_zoom_on() && !g_btLayer) {
+		g_btLayer = malloc(g_frameW * g_frameH * 4 * 4);
+		g_btShadow = calloc(g_frameW, g_frameH);
+		g_btValid = calloc(g_frameW, g_frameH);
+	}
+	if ((!g_sprLayer && !g_btLayer) || !g_back) return;
 	const BYTE *data = NULL;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; break; }
 	if (!data || index < 0 || index >= *(const int *)data) return;
@@ -532,6 +541,24 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	int w = *(const WORD *)p, h = *(const WORD *)(p + 2);
 	const BYTE *idx = p + 4;
 	const DWORD *hd = (const DWORD *)(idx + w * h);
+	if (battle_zoom_on() && g_btLayer) {
+		for (int r = 0; r < h; r++) {
+			int fy = y + r;
+			if (fy < 0 || fy >= g_frameH) continue;
+			const BYTE *row = g_back->bits + fy * g_back->pitch;
+			for (int c = 0; c < w; c++) {
+				BYTE v = idx[r * w + c];
+				int fx = x + g_back->org + c;
+				if (!v || fx < 0 || fx >= g_frameW || row[fx] != v) continue;
+				const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
+				DWORD *o = g_btLayer + (fy * g_frameW + fx) * 4;
+				o[0] = h0[0]; o[1] = h0[1]; o[2] = h1[0]; o[3] = h1[1];
+				g_btShadow[fy * g_frameW + fx] = v;
+				g_btValid[fy * g_frameW + fx] = 1;
+			}
+		}
+		return;
+	}
 	static int logged;
 	if (g_timing && logged < 60) {
 		int total = 0, hit = 0;
@@ -642,6 +669,23 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		for (int sx = 0; sx < lw; sx++) o[sx] = g_lut[bar[sx / 2]];
 	}
 
+	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
+	BOOL big = (v.bottom - v.top) >= lh * 2;
+	if (g_btLayer && !big) {
+		for (int sy = 48; sy < lh; sy++) {
+			int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
+			const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
+			DWORD *o = pic + sy * lw;
+			for (int sx = 0; sx < mapW; sx++) {
+				int f = f0 + sx;
+				if (!g_btValid[f] || row[sx] != g_btShadow[f]) continue;
+				const DWORD *h = g_btLayer + f * 4;
+				DWORD rb = (h[0] & 0xff00ff) + (h[1] & 0xff00ff) + (h[2] & 0xff00ff) + (h[3] & 0xff00ff);
+				DWORD gg = (h[0] & 0xff00) + (h[1] & 0xff00) + (h[2] & 0xff00) + (h[3] & 0xff00);
+				o[sx] = ((rb >> 2) & 0xff00ff) | ((gg >> 2) & 0xff00);
+			}
+		}
+	}
 	GetClientRect(g_hwnd, &c);
 	HDC dc = GetDC(g_hwnd);
 	if (!dc) return FALSE;
@@ -667,6 +711,20 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				o0[2 * x + 1] = mix4(p, row[r], up[x], up[r]);
 				o1[2 * x] = mix4(p, row[l], dn[x], dn[l]);
 				o1[2 * x + 1] = mix4(p, row[r], dn[x], dn[r]);
+			}
+		}
+		if (g_btLayer) {
+			for (int sy = 48; sy < lh; sy++) {
+				int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
+				const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
+				DWORD *o0 = pic2 + 2 * sy * 2 * lw, *o1 = o0 + 2 * lw;
+				for (int sx = 0; sx < mapW; sx++) {
+					int f = f0 + sx;
+					if (!g_btValid[f] || row[sx] != g_btShadow[f]) continue;
+					const DWORD *h = g_btLayer + f * 4;
+					o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
+					o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
+				}
 			}
 		}
 		src = pic2;
@@ -2185,6 +2243,20 @@ static void __cdecl h_box(int x, int y, int w, int h, int colour)
 	}
 }
 
+typedef void (__cdecl *cell_32_t)(const BYTE *);
+static cell_32_t o_cell_32;
+static void __cdecl h_cell_32(const BYTE *buf)
+{
+	if (g_btValid && battle_zoom_on() && g_back) {
+		int x = BLOCK_X + g_back->org, y = BLOCK_Y, w = *(short *)0x005c9258, h = *(short *)0x005aeb70;
+		for (int r = max(y, 0); r < min(y + h, g_frameH); r++) {
+			int x0 = max(x, 0), x1 = min(x + w, g_frameW);
+			if (x1 > x0) memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
+		}
+	}
+	o_cell_32(buf);
+}
+
 static void __cdecl h_redraw_map(void)
 {
 	dump_overhang();
@@ -2350,6 +2422,7 @@ static void install(void)
 	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
 	hook_code((BYTE *)0x00403cf4, kBlitPrologue, 6, h_box, &o_box);
 	hook_code((BYTE *)0x00423b4f, kBlitPrologue, 6, h_paused, &o_paused);
+	hook_code((BYTE *)0x004b5333, kBlitPrologue, 6, h_cell_32, &o_cell_32);
 	static const BYTE kMenuHitPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };
 	hook_code((BYTE *)0x0040e099, kMenuHitPrologue, 6, h_menu_hit, &o_menu_hit);
 	hook_code((BYTE *)0x00477249, kBlitPrologue, 6, h_tip_clamp, &o_tip_clamp);
