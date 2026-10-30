@@ -79,7 +79,7 @@ static int g_windowScale = 2;
 static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
 static BOOL g_wantWide;
-static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE;
+static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE;
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -109,6 +109,7 @@ static void read_settings(void)
 	g_battleZoom = g_wantWide && GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
+	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
@@ -589,10 +590,13 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	}
 }
 
+static void text_clear(int x, int y, int w, int h);
+
 static void forget_tiles(void)
 {
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
 	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H);
+	text_clear(-g_off, 24, g_frameW, g_frameH);
 }
 
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
@@ -620,6 +624,75 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
 				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
 			}
+		}
+	}
+}
+
+// Sharp text: each letter is enlarged by the EPX rule from its own shape into a layer of 2x palette
+// indices (so fades and palette changes still apply), over whatever was under it, which keeps the
+// game's three-pass engraved letters. A frame pixel shows from the layer while it still holds what
+// the letter left there.
+static BYTE *g_txt, *g_txtShadow, *g_txtValid;
+
+static void text_clear(int x, int y, int w, int h)
+{
+	if (!g_txtValid || !g_back) return;
+	x += g_back->org;
+	int x0 = max(x, 0), x1 = min(x + w, g_back->w);
+	if (x1 <= x0) return;
+	for (int r = max(y, 0); r < min(y + h, g_back->h); r++) memset(g_txtValid + r * g_back->w + x0, 0, x1 - x0);
+}
+
+// w x h letter at game x, y, drawn in "colour" (-1: its own pixels); before = the frame under it.
+static void text_stamp(const BYTE *src, int w, int h, int x, int y, int colour, const BYTE *before)
+{
+	int W = g_back->w, H = g_back->h;
+	if (!g_txt) {
+		g_txt = malloc(W * H * 4);
+		g_txtShadow = malloc(W * H);
+		g_txtValid = calloc(W, H);
+		if (!g_txt || !g_txtShadow || !g_txtValid) { g_hdText = FALSE; return; }
+	}
+#define ON(c, r) ((c) >= 0 && (r) >= 0 && (c) < w && (r) < h && src[(r) * w + (c)] != 0)
+	for (int r = 0; r < h; r++) {
+		int fy = y + r;
+		if (fy < 0 || fy >= H) continue;
+		for (int c = 0; c < w; c++) {
+			int fx = x + g_back->org + c;
+			if (fx < 0 || fx >= W) continue;
+			BOOL P = ON(c, r), A = ON(c, r - 1), B = ON(c + 1, r), C = ON(c - 1, r), D = ON(c, r + 1);
+			BOOL s[4] = { P, P, P, P };
+			if (C == A && C != D && A != B) s[0] = A;
+			if (A == B && A != C && B != D) s[1] = B;
+			if (D == C && D != B && C != A) s[2] = C;
+			if (B == D && B != A && D != C) s[3] = D;
+			if (!s[0] && !s[1] && !s[2] && !s[3]) continue;
+			int f = fy * W + fx;
+			BYTE old = before[r * w + c], now = g_back->bits[fy * g_back->pitch + fx];
+			BYTE *t = g_txt + f * 4;
+			if (!(g_txtValid[f] && g_txtShadow[f] == old)) t[0] = t[1] = t[2] = t[3] = old;
+			for (int i = 0; i < 4; i++) if (s[i]) t[i] = colour >= 0 ? (BYTE)colour : now;
+			g_txtShadow[f] = now;
+			g_txtValid[f] = 1;
+		}
+	}
+#undef ON
+}
+
+static void text_overlay(int sx, int sw)
+{
+	if (!g_txt || !g_hdText) return;
+	int W = g_back->w;
+	for (int y = 0; y < GAME_H; y++) {
+		const BYTE *fr = g_frame8 + y * sw;
+		int f0 = y * W + sx;
+		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
+		for (int x = 0; x < sw; x++) {
+			int f = f0 + x;
+			if (!g_txtValid[f] || fr[x] != g_txtShadow[f]) continue;
+			const BYTE *t = g_txt + f * 4;
+			o0[2 * x] = g_lut[t[0]]; o0[2 * x + 1] = g_lut[t[1]];
+			o1[2 * x] = g_lut[t[2]]; o1[2 * x + 1] = g_lut[t[3]];
 		}
 	}
 }
@@ -669,6 +742,21 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		for (int sx = 0; sx < lw; sx++) o[sx] = g_lut[bar[sx / 2]];
 	}
 
+	// Letters in the doubled top bar and side panel.
+	if (g_txt && g_hdText) {
+		int W = g_back->w;
+		for (int sy = 0; sy < lh; sy++) {
+			DWORD *o = pic + sy * lw;
+			int from = sy < 48 ? 0 : mapW;
+			for (int sx = from; sx < lw; sx++) {
+				int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
+				int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
+				int f = gy * W + gx;
+				if (g_txtValid[f] && copy[gy * pitch + gx] == g_txtShadow[f])
+					o[sx] = g_lut[g_txt[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)]];
+			}
+		}
+	}
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
 	BOOL big = (v.bottom - v.top) >= lh * 2;
 	if (g_btLayer && !big) {
@@ -814,6 +902,7 @@ static BOOL present(void)
 		double_frame(sw);
 		if (sw == GAME_W) hd_overlay(pal);
 		tile_overlay(pal, sx, sw);
+		text_overlay(sx, sw);
 		// Below 4x, as at 1080p (2.25x), a plain stretch of the 2x frame drops rows and columns
 		// unevenly: use GDI's smooth mode, affordable at those sizes. Larger stays fast.
 		if (vh < GAME_H * 4 && vh != GAME_H * 2) {
@@ -1761,6 +1850,7 @@ static void __cdecl h_load_screen(const char *name, int rows)
 	}
 	BYTE *frame = g_back->bits + g_back->org;
 	for (int y = 0; y < rows; y++) memcpy(frame + y * g_back->pitch, tmp + y * GAME_W, GAME_W);
+	text_clear(0, 0, GAME_W, rows);
 	hd_picture_loaded(name, tmp, rows);
 }
 
@@ -2098,6 +2188,7 @@ static blit_t o_blit[8]; // 6 and 7: the panels' solid 16x16 and 24x24 tiles
 #define SPRITE_STAMP(i) \
 	static int __cdecl h_blit##i(const BYTE *buf) { \
 		int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac, frame = TILE_FRAME; \
+		text_clear(BLOCK_X, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70); \
 		int r = o_blit[i](buf); \
 		stamp_sprite(buf, frame, x, y); \
 		return r; \
@@ -2258,6 +2349,30 @@ static void __cdecl h_cell_32(const BYTE *buf)
 	o_cell_32(buf);
 }
 
+// The three letter blitters (FUN_004b41b7 and its two clipped versions; only text uses them).
+static blit_t o_glyph[3];
+static int glyph_common(int i, const BYTE *buf)
+{
+	int index = TILE_FRAME;
+	const short *rec = (const short *)(buf + 8 + index * 16);
+	int w = rec[0], h = rec[1];
+	enum { MAXG = 128 };
+	if (!g_hdText || !g_back || w <= 0 || h <= 0 || w > MAXG || h > MAXG) return o_glyph[i](buf);
+	int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac;
+	int colour = *(int *)0x005cd40c == 1 ? -1 : (BYTE)*(int *)0x0057d3bc;
+	static BYTE before[MAXG * MAXG];
+	for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+		int fx = x + g_back->org + c, fy = y + r;
+		before[r * w + c] = fx >= 0 && fx < g_back->w && fy >= 0 && fy < g_back->h ? g_back->bits[fy * g_back->pitch + fx] : 0;
+	}
+	int ret = o_glyph[i](buf);
+	text_stamp(buf + *(const int *)(rec + 2), w, h, x, y, colour, before);
+	return ret;
+}
+static int __cdecl h_glyph0(const BYTE *b) { return glyph_common(0, b); }
+static int __cdecl h_glyph1(const BYTE *b) { return glyph_common(1, b); }
+static int __cdecl h_glyph2(const BYTE *b) { return glyph_common(2, b); }
+
 static void __cdecl h_redraw_map(void)
 {
 	dump_overhang();
@@ -2415,6 +2530,9 @@ static void install(void)
 	static const BYTE kCellPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };
 	static const BYTE kSpecialPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
 	static const BYTE kBlitPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
+	hook_code((BYTE *)0x004b41b7, kBlitPrologue, 6, h_glyph0, &o_glyph[0]);
+	hook_code((BYTE *)0x004b425c, kBlitPrologue, 6, h_glyph1, &o_glyph[1]);
+	hook_code((BYTE *)0x004b42c5, kBlitPrologue, 6, h_glyph2, &o_glyph[2]);
 	hook_code((BYTE *)0x004b43b1, kBlitPrologue, 6, h_blit0, &o_blit[0]);
 	hook_code((BYTE *)0x004b446d, kBlitPrologue, 6, h_blit1, &o_blit[1]);
 	hook_code((BYTE *)0x004b44d2, kBlitPrologue, 6, h_blit2, &o_blit[2]);
