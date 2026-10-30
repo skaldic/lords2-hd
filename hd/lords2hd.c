@@ -71,7 +71,7 @@ static int g_windowScale = 2;
 static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
 static BOOL g_wantWide;
-static BOOL g_hdScreens = TRUE;
+static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE;
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -99,6 +99,7 @@ static void read_settings(void)
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
 	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
+	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
@@ -372,6 +373,124 @@ static void hd_overlay(const PALETTEENTRY *pal)
 	LeaveCriticalSection(&g_lock);
 }
 
+// HD terrain. Ground files (lords2hd\tiles\<set>.bin: one 116x60 slot per frame) are noted against
+// the buffer the game loads them into. After a map cell is drawn, each pixel of the tile that the
+// frame now holds is stamped into a 2x layer the size of the frame, with its 1x value as a shadow.
+// A pixel is shown from the layer while the screen still holds that value, so sprites and text
+// over the ground simply show through as the smoothed 1x frame. Partly clipped tiles need no
+// special case: pixels the game did not draw do not match.
+#define TILE_W 58
+#define TILE_H 30
+#define MAX_TILE_SETS 16
+static struct { const BYTE *buf; DWORD *px; int frames; } g_tileSets[MAX_TILE_SETS];
+static DWORD *g_layer;
+static BYTE *g_layerShadow, *g_layerValid;
+static BYTE g_tilePal[768];
+
+static void tiles_loaded(const char *name, void *buffer, int size)
+{
+	if (!g_hdTiles || !buffer || size < 8) return;
+	char base[32], path[MAX_PATH];
+	lstrcpynA(base, name, sizeof base);
+	char *dot = strrchr(base, '.');
+	if (dot) *dot = 0;
+	CharLowerA(base);
+	int slot = -1;
+	for (int i = 0; i < MAX_TILE_SETS; i++) {
+		if (g_tileSets[i].buf == buffer) { slot = i; break; }
+		if (!g_tileSets[i].buf && slot < 0) slot = i;
+	}
+	if (slot < 0) return;
+	if (g_tileSets[slot].px) {
+		free(g_tileSets[slot].px);
+		g_tileSets[slot].px = NULL;
+		g_tileSets[slot].buf = NULL;
+	}
+	snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
+	FILE *f = fopen(path, "rb");
+	if (!f) return;
+	fseek(f, 0, SEEK_END);
+	long bytes = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	DWORD *px = malloc(bytes);
+	if (px && fread(px, 1, bytes, f) == (size_t)bytes) {
+		g_tileSets[slot].px = px;
+		g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
+		g_tileSets[slot].buf = buffer;
+	}
+	else free(px);
+	fclose(f);
+	if (!g_layer) {
+		g_layer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
+		g_layerShadow = calloc(MAX_W, GAME_H);
+		g_layerValid = calloc(MAX_W, GAME_H);
+		char pal[MAX_PATH];
+		snprintf(pal, sizeof pal, "%s\\Base01.256", g_gameDir);
+		FILE *p = fopen(pal, "rb");
+		if (p) { if (fread(g_tilePal, 1, 768, p) != 768) memset(g_tilePal, 0, 768); fclose(p); }
+	}
+	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
+}
+
+// Stamps the tile just drawn: frame "index" of the file at "buf", at game position x, y.
+static void stamp_tile(const BYTE *buf, int index, int x, int y)
+{
+	if (!g_layer || !g_back || !buf || index < 0) return;
+	DWORD *px = NULL;
+	int frames = 0;
+	for (int i = 0; i < MAX_TILE_SETS; i++)
+		if (g_tileSets[i].buf == buf) { px = g_tileSets[i].px; frames = g_tileSets[i].frames; break; }
+	if (!px || index >= frames) return;
+	const short *rec = (const short *)(buf + 8 + index * 16);
+	if (rec[0] != TILE_W || rec[1] != TILE_H) return;
+	const BYTE *src = buf + *(const int *)(rec + 2);
+	const DWORD *hd = px + index * (TILE_W * 2 * TILE_H * 2);
+	int W = g_back->w;
+	for (int r = 0; r < TILE_H; r++) {
+		int k = r < TILE_H / 2 ? r : TILE_H - 1 - r;
+		int w = 2 + 4 * k, x0 = (TILE_W - w) / 2;
+		int fy = y + r;
+		if (fy < 0 || fy >= GAME_H) { src += w; continue; }
+		const BYTE *row = g_back->bits + fy * g_back->pitch;
+		for (int i = 0; i < w; i++, src++) {
+			int tx = x0 + i, fx = x + g_back->org + tx;
+			if (fx < 0 || fx >= W || row[fx] != *src) continue;
+			const DWORD *h0 = hd + (2 * r) * (2 * TILE_W) + 2 * tx, *h1 = h0 + 2 * TILE_W;
+			DWORD *o0 = g_layer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
+			o0[0] = h0[0]; o0[1] = h0[1];
+			o1[0] = h1[0]; o1[1] = h1[1];
+			g_layerShadow[fy * MAX_W + fx] = *src;
+			g_layerValid[fy * MAX_W + fx] = 1;
+		}
+	}
+}
+
+static void forget_tiles(void)
+{
+	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
+}
+
+// Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
+static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
+{
+	if (!g_layer || !g_hdTiles || !county_map_on() || *(int *)0x0057cb18 != 0) return;
+	BYTE ok[256];
+	for (int i = 0; i < 256; i++)
+		ok[i] = pal[i].peRed >> 2 == g_tilePal[i * 3] && pal[i].peGreen >> 2 == g_tilePal[i * 3 + 1] &&
+			pal[i].peBlue >> 2 == g_tilePal[i * 3 + 2];
+	for (int y = 0; y < GAME_H; y++) {
+		const BYTE *fr = g_frame8 + y * sw;
+		const BYTE *sh = g_layerShadow + y * MAX_W + sx, *va = g_layerValid + y * MAX_W + sx;
+		const DWORD *h0 = g_layer + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
+		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
+		for (int x = 0; x < sw; x++) {
+			if (!va[x] || fr[x] != sh[x] || !ok[fr[x]]) continue;
+			o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
+			o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
+		}
+	}
+}
+
 static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
 static BYTE g_shown8[MAX_W * GAME_H];
 
@@ -443,6 +562,13 @@ static BOOL present(void)
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
 		double_frame(sw);
 		if (sw == GAME_W) hd_overlay(pal);
+		tile_overlay(pal, sx, sw);
+		// Below 4x, as at 1080p (2.25x), a plain stretch of the 2x frame drops rows and columns
+		// unevenly: use GDI's smooth mode, affordable at those sizes. Larger stays fast.
+		if (vh < GAME_H * 4 && vh != GAME_H * 2) {
+			SetStretchBltMode(dc, HALFTONE);
+			SetBrushOrgEx(dc, 0, 0, NULL);
+		}
 		bi.h.biWidth = sw * 2;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
@@ -982,6 +1108,8 @@ static HRESULT WINAPI dd_set_display_mode(void *this_, DWORD w, DWORD h, DWORD b
 	else {
 		DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 		RECT r = { 0, 0, GAME_W * g_windowScale, GAME_H * g_windowScale };
+		int fixedH = GetPrivateProfileIntA("Display", "WindowHeight", 0, g_iniPath); // e.g. 1080, to try that size
+		if (fixedH > 0) SetRect(&r, 0, 0, MulDiv(g_off ? g_frameW - GUARD : GAME_W, fixedH, GAME_H), fixedH);
 		AdjustWindowRect(&r, style, FALSE);
 		int ww = r.right - r.left, wh = r.bottom - r.top;
 		int x = mi.rcWork.left + max(0, (int)(mi.rcWork.right - mi.rcWork.left - ww) / 2);
@@ -1286,6 +1414,8 @@ static load_file_t o_load_file;
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
 	int n = o_load_file(name, buffer, size, offset);
+	if (n > 0 && offset == 0 && (!_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4)))
+		tiles_loaded(name, buffer, n);
 	if (g_logLoads) logf_("load %s -> %p, %d bytes", name, buffer, n);
 	note_load(name);
 	return n;
@@ -1630,9 +1760,44 @@ static int __cdecl h_pick_cell(int arg)
 	return r;
 }
 
+// A cell's ground: FUN_004063c1(mode) picks the file from the cell's record (the same choice as the
+// game's), and the special cells' FUN_0042a7f1 / FUN_0042a8d1 (sea, shore) always use the base file.
+typedef void (__cdecl *cell_t)(int);
+static cell_t o_cell_ground, o_cell_special, o_cell_special2;
+#define TILE_FRAME (*(int *)0x005c9288)
+static void __cdecl h_cell_ground(int mode)
+{
+	int x = BLOCK_X, y = BLOCK_Y;
+	o_cell_ground(mode);
+	if (MAP_ZOOM != 0) return;
+	BYTE flags = ((BYTE *)0x00522f92)[*(int *)0x00567954];
+	int sel = flags & 0x1c;
+	if (*(int *)0x0053f264 == 1 && !(flags & 0x20)) sel = 0;
+	const BYTE *buf = NULL;
+	switch (sel) {
+	case 0x00: buf = *(BYTE **)0x00568208; break;
+	case 0x04: buf = *(BYTE **)0x0053e914; break;
+	case 0x08: buf = *(BYTE **)0x0057d344; break;
+	}
+	stamp_tile(buf, TILE_FRAME, x, y);
+}
+static void __cdecl h_cell_special(int mode)
+{
+	int x = BLOCK_X, y = BLOCK_Y;
+	o_cell_special(mode);
+	if (MAP_ZOOM == 0) stamp_tile(*(BYTE **)0x00568208, TILE_FRAME, x, y);
+}
+static void __cdecl h_cell_special2(int mode)
+{
+	int x = BLOCK_X, y = BLOCK_Y;
+	o_cell_special2(mode);
+	if (MAP_ZOOM == 0) stamp_tile(*(BYTE **)0x00568208, TILE_FRAME, x, y);
+}
+
 static void __cdecl h_redraw_map(void)
 {
 	if (GAME_MODE == 3) g_mapSticky = TRUE; // the map is the picture again
+	if (*(int *)0x0053e9ac) forget_tiles(); // a full redraw: everything is stamped again
 	if (!g_off || !g_back || !county_map_on() || MAP_STEP <= 0) {
 		o_redraw_map();
 		return;
@@ -1773,6 +1938,11 @@ static void install(void)
 		o_show_frame = make_trampoline((BYTE *)0x00452160, sizeof kShowPrologue);
 		if (o_show_frame) redirect((BYTE *)0x00452160, sizeof kShowPrologue, h_show_frame);
 	}
+	static const BYTE kCellPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };
+	static const BYTE kSpecialPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
+	hook_code((BYTE *)0x004063c1, kCellPrologue, sizeof kCellPrologue, h_cell_ground, &o_cell_ground);
+	hook_code((BYTE *)0x0042a7f1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special, &o_cell_special);
+	hook_code((BYTE *)0x0042a8d1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special2, &o_cell_special2);
 	if (memcmp(LOAD_SCREEN, kLoadScreenPrologue, sizeof kLoadScreenPrologue) == 0) {
 		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
 		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
