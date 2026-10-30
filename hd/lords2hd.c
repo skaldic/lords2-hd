@@ -166,6 +166,7 @@ static volatile LONG g_wideScreen; // the screen on now uses the whole frame (th
 static Surface *g_primary;
 static Surface *g_back; // the system-memory surface the game draws into
 static BOOL county_map_on(void);
+static volatile BOOL g_mapSticky; // the wide map view carries on under dialogs (see county_map_on)
 
 static void mark_dirty(void)
 {
@@ -1258,6 +1259,7 @@ static decode_lbm_t o_decode_lbm;
 
 static int __cdecl h_decode_lbm(void *data, BYTE *dst, BYTE *pal, int size)
 {
+	g_mapSticky = FALSE;
 	if (!g_back || dst != g_back->bits + g_back->org || g_back->pitch == GAME_W) return o_decode_lbm(data, dst, pal, size);
 	static BYTE tmp[GAME_W * GAME_H];
 	memset(tmp, 0, sizeof tmp);
@@ -1277,6 +1279,7 @@ static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, lo
 
 static void __cdecl h_load_screen(const char *name, int rows)
 {
+	g_mapSticky = FALSE; // a painted full-screen background replaces the map
 	if (!g_back || g_back->pitch == GAME_W || rows <= 0 || rows > GAME_H) {
 		o_load_screen(name, rows);
 		return;
@@ -1296,8 +1299,30 @@ static void __cdecl h_load_screen(const char *name, int rows)
 static const BYTE kBlockPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
 typedef void (__cdecl *block_copy_t)(void *, int);
 static block_copy_t o_block_to_frame, o_block_from_frame;
-static void __cdecl h_block_to_frame(void *buffer, int skip) { o_block_to_frame(buffer, skip + g_frameW - GAME_W); }
-static void __cdecl h_block_from_frame(void *buffer, int skip) { o_block_from_frame(buffer, skip + g_frameW - GAME_W); }
+// The block under a drop-down menu (FUN_0040c8d1 saves, FUN_0040c928 restores: 400x180 at 0,24,
+// skip 0xf0) moves with the menus to the wide map's left edge.
+#define BLOCK_X (*(int *)0x00591524)
+#define BLOCK_Y (*(int *)0x00591528)
+static BOOL county_map_on(void);
+static void menu_block(int skip, int *saved)
+{
+	*saved = BLOCK_X;
+	if (g_off && skip == 0xf0 && BLOCK_X == 0 && BLOCK_Y == 0x18 && county_map_on()) BLOCK_X = -(g_off - GUARD);
+}
+static void __cdecl h_block_to_frame(void *buffer, int skip)
+{
+	int x;
+	menu_block(skip, &x);
+	o_block_to_frame(buffer, skip + g_frameW - GAME_W);
+	BLOCK_X = x;
+}
+static void __cdecl h_block_from_frame(void *buffer, int skip)
+{
+	int x;
+	menu_block(skip, &x);
+	o_block_from_frame(buffer, skip + g_frameW - GAME_W);
+	BLOCK_X = x;
+}
 
 static BOOL hook_code(BYTE *site, const BYTE *prologue, int len, void *hook, void *orig)
 {
@@ -1423,11 +1448,19 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 // A drop-down menu from the top bar is screen 0x32, with the screen under it kept in DAT_0056d894.
 #define MAP_ZOOM (*(int *)0x0057cb18)
 #define SCREEN_UNDER_MENU (*(int *)0x0056d894)
-static BOOL map_screen(int id) { return id == 0 || id == 39; }
+// The wide view is on while the county map is the picture: from the moment the game redraws the
+// whole map (h_redraw_map sets g_mapSticky) until something replaces the whole picture - a painted
+// full-screen background (the loader hooks clear it), a battle (screen 41), the kingdom overview
+// (zoom 2) - or the game leaves the county game (mode 3). Dialogs, drop-down menus and message
+// scrolls drawn over the map keep it. Screen ids alone cannot tell: the castle builder, a painted
+// screen, runs as screen 39 like the map's message scrolls.
 static BOOL county_map_on(void)
 {
-	return GAME_MODE == 3 && MAP_ZOOM != 2 &&
-		(map_screen(SCREEN_ID) || (SCREEN_ID == 0x32 && map_screen(SCREEN_UNDER_MENU)));
+	if (GAME_MODE != 3 || MAP_ZOOM == 2 || SCREEN_ID == 41) {
+		g_mapSticky = FALSE;
+		return FALSE;
+	}
+	return g_mapSticky;
 }
 
 // The view as the game set it, while it is widened for one call.
@@ -1485,6 +1518,7 @@ static int __cdecl h_pick_cell(int arg)
 
 static void __cdecl h_redraw_map(void)
 {
+	if (GAME_MODE == 3) g_mapSticky = TRUE; // the map is the picture again
 	if (!g_off || !g_back || !county_map_on() || MAP_STEP <= 0) {
 		o_redraw_map();
 		return;
