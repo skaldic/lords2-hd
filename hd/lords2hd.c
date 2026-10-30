@@ -71,6 +71,7 @@ static int g_windowScale = 2;
 static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
 static BOOL g_wantWide;
+static BOOL g_hdScreens = TRUE;
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -97,6 +98,7 @@ static void read_settings(void)
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
 	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
@@ -293,6 +295,83 @@ static void double_frame(int w)
 	}
 }
 
+// HD paintings. When a full-screen picture is loaded its 2x version is read from
+// lords2hd\screens\<name>.bin, with the original 1x picture as a "shadow": a pixel is shown from the
+// 2x picture while the frame still holds what the picture put there and the palette still gives it
+// the picture's colour. Anything drawn on top, or a fade, shows the smoothed 1x frame.
+static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
+
+static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
+{
+	if (!g_hdScreens) return;
+	EnterCriticalSection(&g_lock);
+	g_hdPic.on = FALSE;
+	LeaveCriticalSection(&g_lock);
+	if (rows != GAME_H) return;
+	char base[64], path[MAX_PATH];
+	lstrcpynA(base, name, sizeof base);
+	char *dot = strrchr(base, '.');
+	if (dot) *dot = 0;
+	CharLowerA(base);
+	snprintf(path, sizeof path, "%s\\lords2hd\\screens\\%s.bin", g_gameDir, base);
+	FILE *f = fopen(path, "rb");
+	if (!f) return;
+	if (!g_hdPic.px) g_hdPic.px = malloc(GAME_W * 2 * GAME_H * 2 * 4);
+	EnterCriticalSection(&g_lock);
+	BOOL ok = g_hdPic.px && fread(g_hdPic.pal, 1, 768, f) == 768 &&
+		fread(g_hdPic.px, 4, GAME_W * 2 * GAME_H * 2, f) == GAME_W * 2 * GAME_H * 2;
+	if (ok) {
+		memcpy(g_hdPic.shadow, pic, GAME_W * GAME_H);
+		g_hdPic.on = TRUE;
+		g_hdPic.seen = FALSE;
+	}
+	LeaveCriticalSection(&g_lock);
+	fclose(f);
+	logf_("HD painting %s%s", base, ok ? "" : ": bad file");
+	mark_dirty();
+}
+
+// Over the doubled frame, the pixels the painting still owns. The palette is compared index by
+// index. The picture is forgotten once most of the frame is something else.
+static void hd_overlay(const PALETTEENTRY *pal)
+{
+	EnterCriticalSection(&g_lock);
+	if (g_hdPic.on) {
+		BYTE ok[256];
+		for (int i = 0; i < 256; i++)
+			ok[i] = pal[i].peRed >> 2 == g_hdPic.pal[i * 3] && pal[i].peGreen >> 2 == g_hdPic.pal[i * 3 + 1] &&
+				pal[i].peBlue >> 2 == g_hdPic.pal[i * 3 + 2];
+		int same = 0;
+		for (int y = 0; y < GAME_H; y++) {
+			const BYTE *fr = g_frame8 + y * GAME_W, *sh = g_hdPic.shadow + y * GAME_W;
+			const DWORD *h0 = g_hdPic.px + 2 * y * 2 * GAME_W, *h1 = h0 + 2 * GAME_W;
+			DWORD *o0 = g_frame2x + 2 * y * 2 * GAME_W, *o1 = o0 + 2 * GAME_W;
+			for (int x = 0; x < GAME_W; x++) {
+				if (fr[x] != sh[x]) continue;
+				same++;
+				if (!ok[fr[x]]) continue;
+				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
+				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
+			}
+		}
+		static int lastOk = -1, lastSame = -1;
+		int okCount = 0;
+		for (int i = 0; i < 256; i++) okCount += ok[i];
+		if (okCount != lastOk || abs(same - lastSame) > 20000) {
+			logf_("HD painting: %d of 256 palette entries match, %d pixels unchanged", okCount, same);
+			if (okCount < 256) logf_("  entry 100: screen %d,%d,%d picture %d,%d,%d", pal[100].peRed, pal[100].peGreen, pal[100].peBlue,
+				g_hdPic.pal[300], g_hdPic.pal[301], g_hdPic.pal[302]);
+			lastOk = okCount;
+			lastSame = same;
+		}
+		// The frame reaches the screen a moment after the load: only a picture that has been seen
+		// can be gone.
+		if (same >= GAME_W * GAME_H / 8) g_hdPic.seen = TRUE;
+		else if (g_hdPic.seen) g_hdPic.on = FALSE;
+	}
+	LeaveCriticalSection(&g_lock);
+}
+
 static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
 static BYTE g_shown8[MAX_W * GAME_H];
 
@@ -363,6 +442,7 @@ static BOOL present(void)
 		for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
 		double_frame(sw);
+		if (sw == GAME_W) hd_overlay(pal);
 		bi.h.biWidth = sw * 2;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
@@ -1272,7 +1352,7 @@ static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, lo
 static void __cdecl h_load_screen(const char *name, int rows)
 {
 	g_mapSticky = FALSE; // a painted full-screen background replaces the map
-	if (!g_back || g_back->pitch == GAME_W || rows <= 0 || rows > GAME_H) {
+	if (!g_back || rows <= 0 || rows > GAME_H) {
 		o_load_screen(name, rows);
 		return;
 	}
@@ -1283,6 +1363,7 @@ static void __cdecl h_load_screen(const char *name, int rows)
 	}
 	BYTE *frame = g_back->bits + g_back->org;
 	for (int y = 0; y < rows; y++) memcpy(frame + y * g_back->pitch, tmp + y * GAME_W, GAME_W);
+	hd_picture_loaded(name, tmp, rows);
 }
 
 // Saving and restoring the frame under a window (FUN_004b3ec0 buffer -> frame, FUN_004b3f0a
@@ -1642,10 +1723,6 @@ static void install_wide(void)
 		o_decode_lbm = make_trampoline(DECODE_LBM, sizeof kDecodePrologue);
 		if (o_decode_lbm) redirect(DECODE_LBM, sizeof kDecodePrologue, h_decode_lbm);
 	}
-	if (memcmp(LOAD_SCREEN, kLoadScreenPrologue, sizeof kLoadScreenPrologue) == 0) {
-		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
-		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
-	}
 	hook_code((BYTE *)0x004050c0, kRedrawPrologue, sizeof kRedrawPrologue, h_redraw_map, &o_redraw_map);
 	static const BYTE kPickPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28 }; // push ebp; mov ebp,esp; sub esp,28h
 	hook_code((BYTE *)0x00429ba4, kPickPrologue, sizeof kPickPrologue, h_pick_cell, &o_pick_cell);
@@ -1695,6 +1772,10 @@ static void install(void)
 	if (memcmp((BYTE *)0x00452160, kShowPrologue, sizeof kShowPrologue) == 0) {
 		o_show_frame = make_trampoline((BYTE *)0x00452160, sizeof kShowPrologue);
 		if (o_show_frame) redirect((BYTE *)0x00452160, sizeof kShowPrologue, h_show_frame);
+	}
+	if (memcmp(LOAD_SCREEN, kLoadScreenPrologue, sizeof kLoadScreenPrologue) == 0) {
+		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
+		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
 	}
 	install_wide();
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
