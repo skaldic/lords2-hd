@@ -2094,7 +2094,7 @@ static void __cdecl h_cell_special2(int mode)
 // The six sprite blitters: (file buffer) with the frame and position in globals. x and y have
 // already been moved past any clipped part (DAT_0058fd50 columns, DAT_0058feac rows).
 typedef int (__cdecl *blit_t)(const BYTE *);
-static blit_t o_blit[6];
+static blit_t o_blit[8]; // 6 and 7: the panels' solid 16x16 and 24x24 tiles
 #define SPRITE_STAMP(i) \
 	static int __cdecl h_blit##i(const BYTE *buf) { \
 		int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac, frame = TILE_FRAME; \
@@ -2103,6 +2103,7 @@ static blit_t o_blit[6];
 		return r; \
 	}
 SPRITE_STAMP(0) SPRITE_STAMP(1) SPRITE_STAMP(2) SPRITE_STAMP(3) SPRITE_STAMP(4) SPRITE_STAMP(5)
+SPRITE_STAMP(6) SPRITE_STAMP(7)
 
 // Overhang: trees, mountains, buildings and sheep are extra data after a tile's diamond, drawn
 // upwards by FUN_00406673. Their art, tools\build_overhang.ps1, is a tall picture 36 rows above the
@@ -2420,6 +2421,8 @@ static void install(void)
 	hook_code((BYTE *)0x004b4537, kBlitPrologue, 6, h_blit3, &o_blit[3]);
 	hook_code((BYTE *)0x004b4814, kBlitPrologue, 6, h_blit4, &o_blit[4]);
 	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
+	hook_code((BYTE *)0x004b49f7, kBlitPrologue, 6, h_blit6, &o_blit[6]);
+	hook_code((BYTE *)0x004b4cb8, kBlitPrologue, 6, h_blit7, &o_blit[7]);
 	hook_code((BYTE *)0x00403cf4, kBlitPrologue, 6, h_box, &o_box);
 	hook_code((BYTE *)0x00423b4f, kBlitPrologue, 6, h_paused, &o_paused);
 	hook_code((BYTE *)0x004b5333, kBlitPrologue, 6, h_cell_32, &o_cell_32);
