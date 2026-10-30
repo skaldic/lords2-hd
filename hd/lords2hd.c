@@ -68,7 +68,7 @@ static BOOL g_emulate;          // our DirectDraw is in use (known exe build and
 static int g_scale = SCALE_SMOOTH;
 static BOOL g_fullscreen = TRUE, g_integerScale;
 static int g_windowScale = 2;
-static int g_cursorScale = 100; // percent of the cursor's original size relative to the screen
+static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
 static BOOL g_wantWide;
 
@@ -97,7 +97,7 @@ static void read_settings(void)
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
 	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
-	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 100, g_iniPath);
+	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
 	g_dumpPalettes = GetPrivateProfileIntA("Debug", "DumpPalettes", 0, g_iniPath) != 0;
@@ -1053,11 +1053,11 @@ static int WINAPI h_GetSystemMetrics(int i)
 static struct { HCURSOR from, to; int viewH; } g_cursors[64];
 static int g_cursorCount;
 
-static HCURSOR rebuild_cursor(HCURSOR src, int k)
+static HCURSOR rebuild_cursor(HCURSOR src, int target)
 {
 	ICONINFO ii;
 	BITMAP bm;
-	if (k <= 1 || !GetIconInfo(src, &ii)) return src;
+	if (target < 8 || !GetIconInfo(src, &ii)) return src;
 	HCURSOR result = src;
 	DWORD *mask = NULL, *colour = NULL, *out = NULL;
 	HDC dc = GetDC(NULL);
@@ -1084,14 +1084,14 @@ static HCURSOR rebuild_cursor(HCURSOR src, int k)
 		if (!colour || !GetDIBits(dc, ii.hbmColor, 0, h, colour, &bi, DIB_RGB_COLORS)) goto done;
 	}
 
-	int W = w * k, H = h * k;
+	int W = target, H = MulDiv(h, target, w);
 	bi.bmiHeader.biWidth = W;
 	bi.bmiHeader.biHeight = -H;
 	HBITMAP colourBmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void **)&out, NULL, 0);
 	if (!colourBmp) goto done;
 	for (int y = 0; y < H; y++) {
 		for (int x = 0; x < W; x++) {
-			int i = (y / k) * w + (x / k);
+			int i = (y * h / H) * w + (x * w / W);
 			BOOL transparent = (mask[i] & 0xffffff) != 0;
 			DWORD rgb = colour ? (colour[i] & 0xffffff) : ((mask[i + w * h] & 0xffffff) ? 0xffffff : 0);
 			DWORD px;
@@ -1102,7 +1102,7 @@ static HCURSOR rebuild_cursor(HCURSOR src, int k)
 		}
 	}
 	HBITMAP maskBmp = CreateBitmap(W, H, 1, 1, NULL);
-	ICONINFO made = { FALSE, ii.xHotspot * k, ii.yHotspot * k, maskBmp, colourBmp };
+	ICONINFO made = { FALSE, MulDiv(ii.xHotspot, W, w), MulDiv(ii.yHotspot, H, h), maskBmp, colourBmp };
 	HCURSOR cur = (HCURSOR)CreateIconIndirect(&made);
 	DeleteObject(maskBmp);
 	DeleteObject(colourBmp);
@@ -1128,22 +1128,13 @@ static HCURSOR WINAPI h_SetCursor(HCURSOR cur)
 		if (g_cursors[i].from == cur && g_cursors[i].viewH == viewH) return o_SetCursor(g_cursors[i].to);
 		if (g_cursors[i].to == cur) return o_SetCursor(cur); // one of ours, handed back to us
 	}
-	// The game's cursors were 32 pixels on a 480-line screen; Windows may already hand them over
-	// enlarged for the desktop's DPI, so the factor is worked out from the size it gives us.
-	ICONINFO ii;
-	BITMAP bm;
-	int srcW = 32;
-	if (GetIconInfo(cur, &ii)) {
-		if (GetObjectA(ii.hbmColor ? ii.hbmColor : ii.hbmMask, sizeof bm, &bm)) srcW = bm.bmWidth;
-		if (ii.hbmColor) DeleteObject(ii.hbmColor);
-		if (ii.hbmMask) DeleteObject(ii.hbmMask);
-	}
+	// The game's cursors were 32 pixels on a 480-line screen; CursorScale is a percentage of that
+	// share of the screen. Windows may hand them over larger for the desktop's DPI; any size works.
 	int target = 32 * viewH / GAME_H * g_cursorScale / 100;
-	int k = max(1, (target + srcW / 2) / max(1, srcW));
 	// A rebuilt cursor is never destroyed (the game may hand it back at any time), so only as
 	// many are made as can be remembered.
 	if (g_cursorCount >= (int)(sizeof g_cursors / sizeof g_cursors[0])) return o_SetCursor(cur);
-	HCURSOR made = rebuild_cursor(cur, k);
+	HCURSOR made = rebuild_cursor(cur, target);
 	g_cursors[g_cursorCount].from = cur;
 	g_cursors[g_cursorCount].to = made;
 	g_cursors[g_cursorCount].viewH = viewH;
