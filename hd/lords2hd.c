@@ -1683,6 +1683,15 @@ static BOOL known_build(void)
 		memcmp(LOAD_FILE, kLoadPrologue, sizeof kLoadPrologue) == 0;
 }
 
+// Old-game bug: started without focus, the game gets a paint message before its surfaces exist and
+// its frame copy (FUN_00452160) calls through a null primary surface. Nothing to show yet: skip it.
+typedef void (__cdecl *show_frame_t)(int);
+static show_frame_t o_show_frame;
+static void __cdecl h_show_frame(int force)
+{
+	if (*(void **)0x004eabd0) o_show_frame(force);
+}
+
 static void install(void)
 {
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
@@ -1691,6 +1700,11 @@ static void install(void)
 	hook_import("USER32.dll", "SetCursor", h_SetCursor, &o_SetCursor);
 	hook_import("USER32.dll", "GetSystemMetrics", h_GetSystemMetrics, &o_GetSystemMetrics);
 	hook_import("GDI32.dll", "GetDeviceCaps", h_GetDeviceCaps, &o_GetDeviceCaps);
+	static const BYTE kShowPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }; // push ebp; mov ebp,esp; sub esp,10h
+	if (memcmp((BYTE *)0x00452160, kShowPrologue, sizeof kShowPrologue) == 0) {
+		o_show_frame = make_trampoline((BYTE *)0x00452160, sizeof kShowPrologue);
+		if (o_show_frame) redirect((BYTE *)0x00452160, sizeof kShowPrologue, h_show_frame);
+	}
 	install_wide();
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");

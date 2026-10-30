@@ -60,6 +60,12 @@ $game = Resolve-Path "$PSScriptRoot\..\.."
 $proc = if ($Attach) { Get-Process "Lords2" | Select-Object -First 1 }
         else { Start-Process -FilePath "$game\Lords2.exe" -WorkingDirectory $game -PassThru }
 
+# A launch from a background process may not get focus: ask for it, a few times.
+if (-not $Attach) {
+    $shell = New-Object -ComObject WScript.Shell
+    for ($i = 0; $i -lt 8 -and -not (Test-GameInFront); $i++) { Start-Sleep -Milliseconds 500; [void]$shell.AppActivate($proc.Id) }
+}
+
 function Update-View {
     # The picture is the largest 4:3 rectangle centred on the primary screen. The screen size can
     # change while the game runs (the stock game switches display modes).
