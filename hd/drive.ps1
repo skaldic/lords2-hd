@@ -119,6 +119,14 @@ foreach ($step in $Steps) {
         'move'   { $x, $y = $arg -split '[, ]+'; Move-To $x $y }
         'click'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 2 4 }
         'rclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y; Click 8 16 }
+        'wdrag'  {
+            # wdrag:x1,y1,x2,y2 : a left-button drag on a widened screen
+            $v = $arg -split '[, ]+'
+            Move-To $v[0] $v[1] -Wide; Start-Sleep -Milliseconds 200
+            [Native.Drive]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 300
+            Move-To $v[2] $v[3] -Wide; Start-Sleep -Milliseconds 500
+            [Native.Drive]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        }
         'wmove'  { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Wide }
         'wclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Wide; Click 2 4 }
         'wrclick' { $x, $y = $arg -split '[, ]+'; Move-To $x $y -Wide; Click 8 16 }

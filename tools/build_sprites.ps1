@@ -3,7 +3,7 @@
 #   <game>\lords2hd\sprites\<file>.bin = u32 frames, then per frame u32 offset (0 = none), then per
 #   frame at its offset: u16 w, u16 h, w*h bytes original indices (0 = transparent), 2w*2h BGRX
 param([string[]]$Files = @('sprite1a','sprite1b','sprite2a','sprite2b','flags1a','flags2a'),
-      [string]$Palette = "Base01.256", [string]$Model = 'realesrgan-x4plus-anime')
+      [string]$Palette = "Base01.256", [string]$Model = 'realesrgan-x4plus')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $game = Split-Path $root -Parent

@@ -18,6 +18,6 @@ for ($u = 1; $u -le 80; $u++) {
     if (-not $a[$o + 0x2c]) { continue }
     $c = [BitConverter]::ToInt16($a, $o + 0x20); $r = [BitConverter]::ToInt16($a, $o + 0x22)
     if ($c -ge $col -and $c -lt $col + $n -and $r -ge $row -and $r -lt $row + 14) {
-        "unit $u side $($a[$o + 0x2c]) cell $c,$r at game x $(($c - $col) * 32 + $x0 + 16), y $(($r - $row) * 32 + 24 + 16)"
+        "unit $u side $($a[$o + 0x2c]) cell $c,$r at game x $(($c - $col) * 32 + $x0 + 16), y $(($r - $row) * 32 + 24 + 16) selected $($a[$o + 0xa])"
     }
 }

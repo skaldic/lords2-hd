@@ -385,6 +385,10 @@ static void hd_overlay(const PALETTEENTRY *pal)
 static struct { const BYTE *buf; DWORD *px; int frames; } g_tileSets[MAX_TILE_SETS];
 static DWORD *g_layer;
 static BYTE *g_layerShadow, *g_layerValid;
+// Sprites and overhang have their own layer: when one moves away, the ground under it is still
+// known, so the screen shows HD ground again instead of a soft patch.
+static DWORD *g_sprLayer;
+static BYTE *g_sprShadow, *g_sprValid;
 static BYTE g_tilePal[768];
 
 static void tiles_loaded(const char *name, void *buffer, int size)
@@ -424,6 +428,9 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		g_layer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_layerShadow = calloc(MAX_W, GAME_H);
 		g_layerValid = calloc(MAX_W, GAME_H);
+		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
+		g_sprShadow = calloc(MAX_W, GAME_H);
+		g_sprValid = calloc(MAX_W, GAME_H);
 		char pal[MAX_PATH];
 		snprintf(pal, sizeof pal, "%s\\Base01.256", g_gameDir);
 		FILE *p = fopen(pal, "rb");
@@ -506,7 +513,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
-	if (!g_layer || !g_back) return;
+	if (!g_sprLayer || !g_back) return;
 	const BYTE *data = NULL;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; break; }
 	if (!data || index < 0 || index >= *(const int *)data) return;
@@ -537,11 +544,11 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			int fx = x + g_back->org + c;
 			if (!v || fx < 0 || fx >= g_back->w || row[fx] != v) continue;
 			const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
-			DWORD *o0 = g_layer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
+			DWORD *o0 = g_sprLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
 			o0[0] = h0[0]; o0[1] = h0[1];
 			o1[0] = h1[0]; o1[1] = h1[1];
-			g_layerShadow[fy * MAX_W + fx] = v;
-			g_layerValid[fy * MAX_W + fx] = 1;
+			g_sprShadow[fy * MAX_W + fx] = v;
+			g_sprValid[fy * MAX_W + fx] = 1;
 		}
 	}
 }
@@ -549,6 +556,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 static void forget_tiles(void)
 {
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
+	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H);
 }
 
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
@@ -563,11 +571,19 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 		const BYTE *fr = g_frame8 + y * sw;
 		const BYTE *sh = g_layerShadow + y * MAX_W + sx, *va = g_layerValid + y * MAX_W + sx;
 		const DWORD *h0 = g_layer + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
+		const BYTE *ss = g_sprShadow + y * MAX_W + sx, *sv = g_sprValid + y * MAX_W + sx;
+		const DWORD *s0 = g_sprLayer + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
-			if (!va[x] || fr[x] != sh[x] || !ok[fr[x]]) continue;
-			o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
-			o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
+			if (!ok[fr[x]]) continue;
+			if (sv[x] && fr[x] == ss[x]) {
+				o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
+				o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
+			}
+			else if (va[x] && fr[x] == sh[x]) {
+				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
+				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
+			}
 		}
 	}
 }
@@ -1892,8 +1908,75 @@ static blit_t o_blit[6];
 	}
 SPRITE_STAMP(0) SPRITE_STAMP(1) SPRITE_STAMP(2) SPRITE_STAMP(3) SPRITE_STAMP(4) SPRITE_STAMP(5)
 
+// Overhang: trees, mountains, buildings and sheep are extra data after a tile's diamond, drawn
+// upwards by FUN_00406673. Their art, tools\build_overhang.ps1, is a tall picture 36 rows above the
+// cell, stored like a sprite under the tile file's name.
+typedef void (__cdecl *cell_top_t)(int);
+static cell_top_t o_cell_top;
+static void __cdecl h_cell_top(int mode)
+{
+	int x = BLOCK_X, y = BLOCK_Y;
+	o_cell_top(mode);
+	if (MAP_ZOOM != 0) return;
+	BYTE flags = ((BYTE *)0x00522f92)[*(int *)0x00567954];
+	const BYTE *buf = NULL;
+	switch (flags & 0x1c) {
+	case 0x00: buf = *(BYTE **)0x00568208; break;
+	case 0x04: buf = *(BYTE **)0x0053e914; break;
+	case 0x08: buf = *(BYTE **)0x0057d344; break;
+	case 0x0c: buf = *(BYTE **)0x0055409c; break;
+	case 0x10: buf = *(BYTE **)0x0056898c; break;
+	}
+	if (buf) stamp_sprite(buf, TILE_FRAME, x, y - 36);
+}
+
+// [Debug] DumpOverhang=1: runs the three overhang blitters once on numbered bytes, in a scratch
+// frame, and writes where each source byte lands: lords2hd_overhang.txt, "type h src dx dy".
+static void dump_overhang(void)
+{
+	static BOOL done;
+	if (done || !GetPrivateProfileIntA("Debug", "DumpOverhang", 0, g_iniPath) || !g_back) return;
+	done = TRUE;
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\lords2hd_overhang.txt", g_gameDir);
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	enum { ROWS = 120, SRC = 4096 };
+	int pitch = g_back->pitch;
+	BYTE *scratch = malloc(pitch * ROWS), *a = malloc(pitch * ROWS), *src = malloc(SRC);
+	BYTE **framePtr = (BYTE **)0x004ea1a8;
+	BYTE *savedFrame = *framePtr;
+	int savedX = BLOCK_X, savedY = BLOCK_Y, savedOff = *(int *)0x005aeb6c, savedH = *(int *)0x005bb478;
+	*framePtr = scratch;
+	BLOCK_X = 16;
+	BLOCK_Y = 80;
+	*(int *)0x005aeb6c = 0;
+	typedef void (__cdecl *over_t)(const BYTE *, int, int);
+	static const over_t fns[3] = { (over_t)0x00453e71, (over_t)0x004580a9, (over_t)0x00459258 };
+	for (int type = 2; type <= 4; type++) for (int h = 1; h <= 40; h++) {
+		*(int *)0x005bb478 = h;
+		for (int pass = 0; pass < 2; pass++) {
+			for (int i = 0; i < SRC; i++) src[i] = pass ? 1 + i / 255 : 1 + i % 255;
+			memset(scratch, 0, pitch * ROWS);
+			fns[type - 2](src, 0, 0);
+			if (!pass) memcpy(a, scratch, pitch * ROWS);
+		}
+		for (int i = 0; i < pitch * ROWS; i++) if (a[i])
+			fprintf(f, "%d %d %d %d %d\n", type, h, (scratch[i] - 1) * 255 + a[i] - 1, i % pitch - 16, i / pitch - 80);
+	}
+	*framePtr = savedFrame;
+	BLOCK_X = savedX;
+	BLOCK_Y = savedY;
+	*(int *)0x005aeb6c = savedOff;
+	*(int *)0x005bb478 = savedH;
+	free(scratch); free(a); free(src);
+	fclose(f);
+	logf_("overhang layout written");
+}
+
 static void __cdecl h_redraw_map(void)
 {
+	dump_overhang();
 	if (GAME_MODE == 3) g_mapSticky = TRUE; // the map is the picture again
 	if (*(int *)0x0053e9ac) forget_tiles(); // a full redraw: everything is stamped again
 	if (!g_off || !g_back || !county_map_on() || MAP_STEP <= 0) {
@@ -2045,6 +2128,7 @@ static void install(void)
 	hook_code((BYTE *)0x004b4537, kBlitPrologue, 6, h_blit3, &o_blit[3]);
 	hook_code((BYTE *)0x004b4814, kBlitPrologue, 6, h_blit4, &o_blit[4]);
 	hook_code((BYTE *)0x004b48b8, kBlitPrologue, 6, h_blit5, &o_blit[5]);
+	hook_code((BYTE *)0x00406673, kCellPrologue, sizeof kCellPrologue, h_cell_top, &o_cell_top);
 	hook_code((BYTE *)0x004063c1, kCellPrologue, sizeof kCellPrologue, h_cell_ground, &o_cell_ground);
 	hook_code((BYTE *)0x0042a7f1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special, &o_cell_special);
 	hook_code((BYTE *)0x0042a8d1, kSpecialPrologue, sizeof kSpecialPrologue, h_cell_special2, &o_cell_special2);

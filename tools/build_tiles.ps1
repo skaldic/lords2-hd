@@ -62,9 +62,13 @@ public static class Lattice {
                 if (!f.Opaque[i]) continue;
                 Color c = pal[f.Pixels[i]];
                 int p = (y * 116 + x) * 4;
-                o[p] = (byte)(o[p] * (1 - plain) + c.B * plain);
-                o[p + 1] = (byte)(o[p + 1] * (1 - plain) + c.G * plain);
-                o[p + 2] = (byte)(o[p + 2] * (1 - plain) + c.R * plain);
+                // Towards the diamond's edge, more of the original: its tiles were drawn to join.
+                int r1 = y / 2, k = r1 < 15 ? r1 : 29 - r1, rw = 2 + 4 * k, x0 = (58 - rw) / 2;
+                int edge = Math.Min(Math.Min(x / 2 - x0, x0 + rw - 1 - x / 2) / 2, k);
+                double w = Math.Max(plain, 1.0 - edge / 4.0);
+                o[p] = (byte)(o[p] * (1 - w) + c.B * w);
+                o[p + 1] = (byte)(o[p + 1] * (1 - w) + c.G * w);
+                o[p + 2] = (byte)(o[p + 2] * (1 - w) + c.R * w);
             }
             return o;
         }
