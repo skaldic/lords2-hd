@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <math.h>
 
 #define GAME_W 640  // the width every screen was designed for
 #define GAME_H 480
@@ -79,7 +80,7 @@ static int g_windowScale = 2;
 static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
 static BOOL g_wantWide;
-static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE;
+static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -110,6 +111,7 @@ static void read_settings(void)
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
+	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
@@ -396,14 +398,118 @@ static void hd_overlay(const PALETTEENTRY *pal)
 #define TILE_W 58
 #define TILE_H 30
 #define MAX_TILE_SETS 16
-static struct { const BYTE *buf; DWORD *px; int frames; } g_tileSets[MAX_TILE_SETS];
+static struct { const BYTE *buf; DWORD *px; BYTE *wave; int frames; } g_tileSets[MAX_TILE_SETS];
 static DWORD *g_layer;
 static BYTE *g_layerShadow, *g_layerValid;
+// Shore waves: each 2x ground pixel's distance to the shore (0 = not water near a shore).
+#define WAVE_BAND 14
+static BYTE *g_waveD;
+static volatile BOOL g_waveActive;
 // Sprites and overhang have their own layer: when one moves away, the ground under it is still
 // known, so the screen shows HD ground again instead of a soft patch.
 static DWORD *g_sprLayer;
 static BYTE *g_sprShadow, *g_sprValid;
 static BYTE g_tilePal[768];
+
+static BOOL wave_is_water(DWORD p)
+{
+	int b = p & 255, g = (p >> 8) & 255, r = (p >> 16) & 255;
+	return b > g + 15 && b > r + 25;
+}
+
+// The base files' coast frames. Pure sea has no shore; rivers and blue fields are left alone.
+static BOOL wave_frame(int i)
+{
+	return (i >= 38 && i <= 53) || (i >= 80 && i <= 92) || (i >= 96 && i <= 121);
+}
+
+// For one set: land is any patch of non-water big enough not to be a glint on the sea, and each
+// water pixel gets its distance from land. A winter set's sea is ice, so it gets no waves.
+static BYTE *wave_build(const DWORD *px, int frames)
+{
+	enum { W = TILE_W * 2, H = TILE_H * 2, N = W * H, FAR_ = 9999 };
+	if (frames <= 121) return NULL;
+	const DWORD *sea = px + 22 * N;
+	int wet = 0;
+	for (int i = 0; i < N; i++) wet += wave_is_water(sea[i]);
+	BYTE *out = calloc(frames, N);
+	static BYTE land[N], seen[N], inside[N];
+	static int stack[N], dist[N];
+	if (!out || wet < N / 4) { free(out); return NULL; } // the diamond is half of the slot
+	for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+		int r = y / 2, k = r < TILE_H / 2 ? r : TILE_H - 1 - r, w = 2 + 4 * k, x0 = (TILE_W - w) / 2;
+		inside[y * W + x] = x / 2 >= x0 && x / 2 < x0 + w;
+	}
+	for (int f = 0; f < frames; f++) {
+		if (!wave_frame(f)) continue;
+		const DWORD *t = px + f * N;
+		memset(land, 0, N);
+		memset(seen, 0, N);
+		for (int i = 0; i < N; i++) {
+			if (seen[i] || !inside[i] || wave_is_water(t[i])) continue;
+			int sp = 0, head = 0;
+			stack[sp++] = i;
+			seen[i] = 1;
+			while (head < sp) {
+				int c = stack[head++], x = c % W;
+				int nb[4] = { x > 0 ? c - 1 : -1, x < W - 1 ? c + 1 : -1, c - W, c + W };
+				for (int n = 0; n < 4; n++) {
+					int o = nb[n];
+					if (o < 0 || o >= N || seen[o] || !inside[o] || wave_is_water(t[o])) continue;
+					seen[o] = 1;
+					stack[sp++] = o;
+				}
+			}
+			if (sp >= 150) for (int k = 0; k < sp; k++) land[stack[k]] = 1;
+		}
+		// Whatever is left in small pieces is stray pixels on the land's side, not sea.
+		memset(seen, 0, N);
+		for (int i = 0; i < N; i++) {
+			if (seen[i] || !inside[i] || land[i]) continue;
+			int sp = 0, head = 0;
+			stack[sp++] = i;
+			seen[i] = 1;
+			while (head < sp) {
+				int c = stack[head++], x = c % W;
+				int nb[4] = { x > 0 ? c - 1 : -1, x < W - 1 ? c + 1 : -1, c - W, c + W };
+				for (int n = 0; n < 4; n++) {
+					int o = nb[n];
+					if (o < 0 || o >= N || seen[o] || !inside[o] || land[o]) continue;
+					seen[o] = 1;
+					stack[sp++] = o;
+				}
+			}
+			if (sp < 150) for (int k = 0; k < sp; k++) land[stack[k]] = 2;
+		}
+		for (int i = 0; i < N; i++) dist[i] = land[i] == 1 ? 0 : FAR_;
+		for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) { // chamfer distance, 3 = one pixel
+			int i = y * W + x, d = dist[i];
+			if (x > 0) d = min(d, dist[i - 1] + 3);
+			if (y > 0) {
+				d = min(d, dist[i - W] + 3);
+				if (x > 0) d = min(d, dist[i - W - 1] + 4);
+				if (x < W - 1) d = min(d, dist[i - W + 1] + 4);
+			}
+			dist[i] = d;
+		}
+		for (int y = H - 1; y >= 0; y--) for (int x = W - 1; x >= 0; x--) {
+			int i = y * W + x, d = dist[i];
+			if (x < W - 1) d = min(d, dist[i + 1] + 3);
+			if (y < H - 1) {
+				d = min(d, dist[i + W] + 3);
+				if (x < W - 1) d = min(d, dist[i + W + 1] + 4);
+				if (x > 0) d = min(d, dist[i + W - 1] + 4);
+			}
+			dist[i] = d;
+		}
+		BYTE *o = out + f * N;
+		for (int i = 0; i < N; i++) {
+			int d = dist[i] / 3;
+			if (inside[i] && !land[i] && d >= 1 && d <= WAVE_BAND) o[i] = (BYTE)d;
+		}
+	}
+	return out;
+}
 
 static void tiles_loaded(const char *name, void *buffer, int size)
 {
@@ -421,7 +527,9 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 	if (slot < 0) return;
 	if (g_tileSets[slot].px) {
 		free(g_tileSets[slot].px);
+		free(g_tileSets[slot].wave);
 		g_tileSets[slot].px = NULL;
+		g_tileSets[slot].wave = NULL;
 		g_tileSets[slot].buf = NULL;
 	}
 	snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
@@ -435,11 +543,13 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		g_tileSets[slot].px = px;
 		g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
 		g_tileSets[slot].buf = buffer;
+		if (g_shoreWaves && !strncmp(base, "base1", 5)) g_tileSets[slot].wave = wave_build(px, g_tileSets[slot].frames);
 	}
 	else free(px);
 	fclose(f);
 	if (!g_layer) {
 		g_layer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
+		g_waveD = calloc(MAX_W * 2, GAME_H * 2);
 		g_layerShadow = calloc(MAX_W, GAME_H);
 		g_layerValid = calloc(MAX_W, GAME_H);
 		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
@@ -458,10 +568,12 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 {
 	if (!g_layer || !g_back || !buf || index < 0) return;
 	DWORD *px = NULL;
+	const BYTE *wave = NULL;
 	int frames = 0;
 	for (int i = 0; i < MAX_TILE_SETS; i++)
-		if (g_tileSets[i].buf == buf) { px = g_tileSets[i].px; frames = g_tileSets[i].frames; break; }
+		if (g_tileSets[i].buf == buf) { px = g_tileSets[i].px; wave = g_tileSets[i].wave; frames = g_tileSets[i].frames; break; }
 	if (!px || index >= frames) return;
+	if (wave) wave += index * (TILE_W * 2 * TILE_H * 2);
 	const short *rec = (const short *)(buf + 8 + index * 16);
 	if (rec[0] != TILE_W || rec[1] != TILE_H) return;
 	const BYTE *src = buf + *(const int *)(rec + 2);
@@ -480,6 +592,12 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 			DWORD *o0 = g_layer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
 			o0[0] = h0[0]; o0[1] = h0[1];
 			o1[0] = h1[0]; o1[1] = h1[1];
+			if (g_waveD) {
+				BYTE *wd = g_waveD + (2 * fy) * (2 * MAX_W) + 2 * fx;
+				const BYTE *ws = wave ? wave + (2 * r) * (2 * TILE_W) + 2 * tx : NULL;
+				wd[0] = ws ? ws[0] : 0; wd[1] = ws ? ws[1] : 0;
+				wd[2 * MAX_W] = ws ? ws[2 * TILE_W] : 0; wd[2 * MAX_W + 1] = ws ? ws[2 * TILE_W + 1] : 0;
+			}
 			g_layerShadow[fy * MAX_W + fx] = *src;
 			g_layerValid[fy * MAX_W + fx] = 1;
 		}
@@ -599,11 +717,57 @@ static void forget_tiles(void)
 	text_clear(-g_off, 24, g_frameW, g_frameH);
 }
 
+// One 2x pixel of water near a shore: crests roll in towards the land and fade up as they arrive,
+// broken by drifting noise, with a wash pulsing on the waterline itself.
+static BYTE g_waveSin[256], g_waveNoise[64 * 64];
+
+static void wave_tables(void)
+{
+	static BOOL done;
+	if (done) return;
+	done = TRUE;
+	for (int i = 0; i < 256; i++) g_waveSin[i] = (BYTE)(127.5 + 127.5 * sin(i * 6.2831853 / 256));
+	unsigned seed = 12345;
+	for (int i = 0; i < 64 * 64; i++) {
+		seed = seed * 1103515245 + 12345;
+		g_waveNoise[i] = (BYTE)((seed >> 16) & 255);
+	}
+	for (int pass = 0; pass < 2; pass++) { // soften to blobs a few pixels across
+		for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {
+			int s = 0;
+			for (int a = -1; a <= 1; a++) for (int b = -1; b <= 1; b++) s += g_waveNoise[((y + a) & 63) * 64 + ((x + b) & 63)];
+			g_waveNoise[y * 64 + x] = (BYTE)(s / 9);
+		}
+	}
+}
+
+static __inline void wave_px(DWORD *o, int d, int X, int Y, DWORD t)
+{
+	int wobble = (g_waveSin[(X / 6) & 255] + g_waveSin[(Y / 3 + X / 13) & 255]) / 3;
+	int c = d * 256 / WAVE_BAND + (int)(t / 20) + wobble;
+	int s = g_waveSin[c & 255];
+	int a = s > 150 ? (s - 150) * 255 / 105 : 0;
+	a = a * (WAVE_BAND + 1 - d) / WAVE_BAND;
+	if (d <= 2) a = max(a, 70 + g_waveSin[(t / 12 + X / 9) & 255] / 3);
+	int n = g_waveNoise[(((Y + t / 90) & 63) * 64) + ((X / 2 + t / 160) & 63)];
+	a = a * max(n * 3 - 200, 0) / 256; // the noise averages about 128
+	if (a <= 0) return;
+	if (a > 215) a = 215;
+	DWORD p = *o;
+	int b = p & 255, g = (p >> 8) & 255, r = (p >> 16) & 255;
+	b += (250 - b) * a / 256; g += (245 - g) * a / 256; r += (235 - r) * a / 256;
+	*o = (r << 16) | (g << 8) | b;
+}
+
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
 static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
 	int zoom = *(int *)0x0057cb18, gameMode = *(int *)0x0052af94;
 	BOOL overview = zoom == 2 && gameMode == 3 && *(int *)0x0057c8fc != 2;
+	BOOL waved = FALSE;
+	DWORD waveT = GetTickCount();
+	g_waveActive = FALSE;
+	wave_tables();
 	if (!g_layer || !g_hdTiles || (!county_map_on() && !overview) || (zoom != 0 && !overview)) return;
 	BYTE ok[256];
 	for (int i = 0; i < 256; i++)
@@ -625,9 +789,21 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 			else if (va[x] && fr[x] == sh[x]) {
 				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
 				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
+				if (g_shoreWaves && zoom == 0 && g_waveD) {
+					int X = 2 * (x + sx), Y = 2 * y;
+					const BYTE *w0 = g_waveD + Y * (2 * MAX_W) + X, *w1 = w0 + 2 * MAX_W;
+					if (w0[0] | w0[1] | w1[0] | w1[1]) {
+						waved = TRUE;
+						if (w0[0]) wave_px(&o0[2 * x], w0[0], X, Y, waveT);
+						if (w0[1]) wave_px(&o0[2 * x + 1], w0[1], X + 1, Y, waveT);
+						if (w1[0]) wave_px(&o1[2 * x], w1[0], X, Y + 1, waveT);
+						if (w1[1]) wave_px(&o1[2 * x + 1], w1[1], X + 1, Y + 1, waveT);
+					}
+				}
 			}
 		}
 	}
+	g_waveActive = waved;
 }
 
 // Sharp text: each letter is enlarged by the EPX rule from its own shape into a layer of 2x palette
@@ -880,7 +1056,7 @@ static BOOL present(void)
 
 	RECT v, c;
 	view_rect(&v);
-	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
+	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView) || g_waveActive;
 	if (!forced && palSame && memcmp(g_frame8, g_shown8, sw * GAME_H) == 0) return FALSE;
 	memcpy(g_shown8, g_frame8, sw * GAME_H);
 	lastView = v;
@@ -950,7 +1126,7 @@ static DWORD WINAPI presenter(void *unused)
 	for (;;) {
 		WaitForSingleObject(g_dirtyEvent, 50);
 		BOOL dirty = InterlockedExchange(&g_dirty, 0) != 0;
-		if (!dirty && !g_dumpPalettes) continue; // DumpPalettes: lets a palette that stays put be logged
+		if (!dirty && !g_dumpPalettes && !g_waveActive) continue; // DumpPalettes: lets a palette that stays put be logged
 		QueryPerformanceCounter(&t0);
 		BOOL shown = present();
 		QueryPerformanceCounter(&t1);
