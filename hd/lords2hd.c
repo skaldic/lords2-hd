@@ -177,6 +177,7 @@ struct Surface {
 // at the right edge. g_off is 0 at 640.
 static int g_off;
 static volatile LONG g_wideScreen; // the screen on now uses the whole frame (the county map)
+static volatile LONG g_roomShown;  // a wider room is on screen (see room_col)
 
 static Surface *g_primary;
 static Surface *g_back; // the system-memory surface the game draws into
@@ -318,11 +319,87 @@ static DWORD *g_btLayer;
 static BYTE *g_btShadow, *g_btValid;
 static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
 
+// Wider rooms. A painting with a file in lords2hd\wide (four ints: width, the columns where the wide
+// art's left and right new sections start, floor row, bar row; then 2w x 960 BGRX) fills the frame
+// instead of standing in black bars. In the art the side walls stand at the frame's edges with new
+// wall between them. What the game draws on the picture is never split: it shows as one centred
+// block over that art, and the bottom bar's as one block against the right edge.
+static struct { int w, cutL, cutR, floorY, barY, on, extra; DWORD *px, *out; } g_room;
+
+// The game column shown at frame column x (-1 for new art), and the art column.
+static int room_col(int x, int y, int *art)
+{
+	int more = g_room.w - GAME_W, left = g_room.extra / 2, ex = g_room.extra;
+	if (y >= g_room.barY) *art = x + more - ex;
+	else if (y >= g_room.floorY || x < g_room.cutL + left) *art = x;
+	else if (x < g_room.cutR + left) *art = x - left + more / 2;
+	else if (x < g_room.cutR + ex) *art = g_room.cutR + more / 2 + x - g_room.cutR - left;
+	else *art = x - ex + more;
+	int g = y >= g_room.barY ? x - ex : x - left;
+	return g >= 0 && g < GAME_W ? g : -1;
+}
+
+static void room_load(const char *base)
+{
+	char path[MAX_PATH];
+	g_room.on = FALSE;
+	snprintf(path, sizeof path, "%s\\lords2hd\\wide\\%s.bin", g_gameDir, base);
+	FILE *f = fopen(path, "rb");
+	if (!f) return;
+	int head[5];
+	if (fread(head, 4, 5, f) == 5 && head[0] > GAME_W && head[0] <= 2 * GAME_W) {
+		free(g_room.px); free(g_room.out);
+		g_room.px = malloc(head[0] * 2 * GAME_H * 2 * 4);
+		g_room.out = malloc(head[0] * 2 * GAME_H * 2 * 4);
+		if (g_room.px && g_room.out && fread(g_room.px, 4, head[0] * 2 * GAME_H * 2, f) == (size_t)(head[0] * 2 * GAME_H * 2)) {
+			g_room.w = head[0]; g_room.cutL = head[1]; g_room.cutR = head[2];
+			g_room.floorY = head[3]; g_room.barY = head[4];
+			g_room.on = TRUE;
+		}
+	}
+	fclose(f);
+	logf_("wider room %s: %s", base, g_room.on ? "loaded" : "bad file");
+}
+
+// The frame as the room: the art where the painting is still showing, dimmed along with any fade,
+// and the doubled frame wherever the game has drawn on it.
+static void room_compose(const PALETTEENTRY *pal, int sw)
+{
+	int have = 0, want = 0, match = 1;
+	for (int i = 0; i < 768; i++) want += g_hdPic.pal[i];
+	for (int i = 0; i < 256; i++) {
+		have += (pal[i].peRed >> 2) + (pal[i].peGreen >> 2) + (pal[i].peBlue >> 2);
+		match &= pal[i].peRed >> 2 == g_hdPic.pal[i * 3] && pal[i].peGreen >> 2 == g_hdPic.pal[i * 3 + 1] &&
+			pal[i].peBlue >> 2 == g_hdPic.pal[i * 3 + 2];
+	}
+	int k = match || !want ? 256 : min(256, have * 256 / want);
+	int lw = 2 * g_room.w, ow = 2 * sw;
+	for (int y = 0; y < GAME_H; y++) {
+		const BYTE *fr = g_frame8 + y * GAME_W, *sh = g_hdPic.shadow + y * GAME_W;
+		for (int x = 0; x < sw; x++) {
+			int art, g = room_col(x, y, &art);
+			for (int b = 0; b < 2; b++) {
+				const DWORD *a = g_room.px + 2 * y * lw + 2 * art + b * lw;
+				const DWORD *f = g >= 0 ? g_frame2x + 2 * y * 2 * GAME_W + 2 * g + b * 2 * GAME_W : NULL;
+				DWORD *o = g_room.out + (2 * y + b) * ow + 2 * x;
+				for (int c = 0; c < 2; c++) {
+					DWORD v;
+					if (g >= 0 && fr[g] != sh[g]) v = f[c];
+					else if (k == 256) v = a[c];
+					else v = (((a[c] & 0xff00ff) * k >> 8) & 0xff00ff) | (((a[c] & 0xff00) * k >> 8) & 0xff00);
+					o[c] = v;
+				}
+			}
+		}
+	}
+}
+
 static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 {
 	if (!g_hdScreens) return;
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
+	g_room.on = FALSE;
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H) return;
 	char base[64], path[MAX_PATH];
@@ -341,6 +418,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 		memcpy(g_hdPic.shadow, pic, GAME_W * GAME_H);
 		g_hdPic.on = TRUE;
 		g_hdPic.seen = FALSE;
+		room_load(base);
 	}
 	LeaveCriticalSection(&g_lock);
 	fclose(f);
@@ -1034,6 +1112,17 @@ static BOOL present(void)
 	g_showX = g_wideScreen ? g_off - g_extra : g_off;
 	g_showW = g_wideScreen ? GAME_W + g_extra : GAME_W;
 	int sx = g_showX, sw = g_showW;
+	// A wider room takes the frame, built from the game's 640 columns.
+	BOOL room = g_room.on && g_hdPic.on && g_hdPic.seen && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
+	int roomW = 0;
+	if (room) {
+		g_room.extra = min(g_extra, g_room.w - GAME_W);
+		roomW = (GAME_W + g_room.extra) & ~1;
+		g_room.extra = roomW - GAME_W;
+		g_showX = g_off - g_room.extra;
+		g_showW = roomW;
+	}
+	InterlockedExchange(&g_roomShown, room);
 	if (sx + sw > g_primary->w) sx = 0, sw = min(sw, g_primary->w);
 	for (int y = 0; y < GAME_H; y++) memcpy(g_frame8 + y * sw, g_primary->bits + y * g_primary->pitch + sx, sw);
 	PALETTEENTRY pal[256];
@@ -1081,16 +1170,21 @@ static BOOL present(void)
 		if (sw == GAME_W) hd_overlay(pal);
 		tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
+		EnterCriticalSection(&g_lock);
+		room = room && g_room.on && g_hdPic.on;
+		if (room) room_compose(pal, roomW);
+		LeaveCriticalSection(&g_lock);
 		// Below 4x, as at 1080p (2.25x), a plain stretch of the 2x frame drops rows and columns
 		// unevenly: use GDI's smooth mode, affordable at those sizes. Larger stays fast.
 		if (vh < GAME_H * 4 && vh != GAME_H * 2) {
 			SetStretchBltMode(dc, HALFTONE);
 			SetBrushOrgEx(dc, 0, 0, NULL);
 		}
-		bi.h.biWidth = sw * 2;
+		int dw = room ? roomW * 2 : sw * 2;
+		bi.h.biWidth = dw;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
-		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, sw * 2, GAME_H * 2, g_frame2x,
+		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, dw, GAME_H * 2, room ? g_room.out : g_frame2x,
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
 	else {
@@ -1686,6 +1780,15 @@ static void client_to_game(int *x, int *y)
 		return;
 	}
 	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
+	if (g_roomShown) {
+		// New wall answers as the nearest column the game knows, and has nothing on it to click.
+		int art, row = max(0, min(GAME_H - 1, gy)), cx = max(0, min(g_showW - 1, gx));
+		int g = room_col(cx, row, &art);
+		if (g < 0) g = cx < g_showW / 2 ? 0 : GAME_W - 1; // beyond the game's columns: the nearest one
+		*x = g;
+		*y = row;
+		return;
+	}
 	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
 	*y = max(0, min(GAME_H - 1, gy));
 }
