@@ -2428,7 +2428,7 @@ static void dump_overhang(void)
 		for (int pass = 0; pass < 2; pass++) {
 			for (int i = 0; i < SRC; i++) src[i] = pass ? 1 + i / 255 : 1 + i % 255;
 			memset(scratch, 0, pitch * ROWS);
-			fns[type - 2](src, 0, 0);
+			fns[type - 2](src, 1000, 0); // strips drawn in full: a smaller count is for cells near the top
 			if (!pass) memcpy(a, scratch, pitch * ROWS);
 		}
 		for (int i = 0; i < pitch * ROWS; i++) if (a[i])
