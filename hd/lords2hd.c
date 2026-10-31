@@ -602,7 +602,9 @@ static void forget_tiles(void)
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
 static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
-	if (!g_layer || !g_hdTiles || !county_map_on() || *(int *)0x0057cb18 != 0) return;
+	int zoom = *(int *)0x0057cb18, gameMode = *(int *)0x0052af94;
+	BOOL overview = zoom == 2 && gameMode == 3 && *(int *)0x0057c8fc != 2;
+	if (!g_layer || !g_hdTiles || (!county_map_on() && !overview) || (zoom != 0 && !overview)) return;
 	BYTE ok[256];
 	for (int i = 0; i < 256; i++)
 		ok[i] = pal[i].peRed >> 2 == g_tilePal[i * 3] && pal[i].peGreen >> 2 == g_tilePal[i * 3 + 1] &&
@@ -2154,7 +2156,8 @@ static void __cdecl h_cell_ground(int mode)
 {
 	int x = BLOCK_X, y = BLOCK_Y;
 	o_cell_ground(mode);
-	if (MAP_ZOOM != 0) return;
+	BOOL overview = MAP_ZOOM == 2;
+	if (MAP_ZOOM != 0 && !overview) return;
 	BYTE flags = ((BYTE *)0x00522f92)[*(int *)0x00567954];
 	int sel = flags & 0x1c;
 	if (*(int *)0x0053f264 == 1 && !(flags & 0x20)) sel = 0;
@@ -2166,19 +2169,22 @@ static void __cdecl h_cell_ground(int mode)
 	case 0x0c: buf = *(BYTE **)0x0055409c; break;
 	case 0x10: buf = *(BYTE **)0x0056898c; break;
 	}
-	stamp_tile(buf, TILE_FRAME, x, y);
+	if (overview) stamp_sprite(buf, TILE_FRAME, x, y); // 10x6 tiles, kept in the sprite format
+	else stamp_tile(buf, TILE_FRAME, x, y);
 }
 static void __cdecl h_cell_special(int mode)
 {
 	int x = BLOCK_X, y = BLOCK_Y;
 	o_cell_special(mode);
 	if (MAP_ZOOM == 0) stamp_tile(*(BYTE **)0x00568208, TILE_FRAME, x, y);
+	else if (MAP_ZOOM == 2) stamp_sprite(*(BYTE **)0x00568208, TILE_FRAME, x, y);
 }
 static void __cdecl h_cell_special2(int mode)
 {
 	int x = BLOCK_X, y = BLOCK_Y;
 	o_cell_special2(mode);
 	if (MAP_ZOOM == 0) stamp_tile(*(BYTE **)0x00568208, TILE_FRAME, x, y);
+	else if (MAP_ZOOM == 2) stamp_sprite(*(BYTE **)0x00568208, TILE_FRAME, x, y);
 }
 
 // The six sprite blitters: (file buffer) with the frame and position in globals. x and y have
@@ -2346,7 +2352,9 @@ static void __cdecl h_cell_32(const BYTE *buf)
 			if (x1 > x0) memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
 		}
 	}
+	int x = BLOCK_X, y = BLOCK_Y, frame = TILE_FRAME;
 	o_cell_32(buf);
+	if (battle_zoom_on()) stamp_sprite(buf, frame, x, y); // the ground itself
 }
 
 // The three letter blitters (FUN_004b41b7 and its two clipped versions; only text uses them).

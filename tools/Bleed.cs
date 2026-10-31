@@ -10,6 +10,16 @@ public static class Bleed {
             int p = (y + pad) * PW + x + pad;
             px[p] = pal[f.Pixels[i]].ToArgb(); known[p] = true;
         }
+        bool full = true;
+        for (int i = 0; i < W * H && full; i++) full = !Key(f, i);
+        if (full) { // a solid tile: wrap it around itself, so its edges upscale as if joined
+            for (int y = 0; y < PH; y++) for (int x = 0; x < PW; x++) {
+                int p = y * PW + x;
+                if (known[p]) continue;
+                int sy = ((y - pad) % H + H) % H, sx = ((x - pad) % W + W) % W;
+                px[p] = pal[f.Pixels[sy * W + sx]].ToArgb(); known[p] = true;
+            }
+        }
         for (int pass = 0; pass < 6; pass++) {
             var nk = (bool[])known.Clone();
             for (int y = 0; y < PH; y++) for (int x = 0; x < PW; x++) {
@@ -47,6 +57,22 @@ public static class Bleed {
             Marshal.Copy(d.Scan0, o, 4 + W * H, W * 2 * H * 2 * 4);
             hd.UnlockBits(d);
             return o;
+        }
+    }
+}
+
+public static class BlendBack {
+    // Mixes the doubled original into a Bleed.Frame record: o = u16 w, u16 h, indices, 2w x 2h BGRX.
+    public static void Apply(byte[] o, Pl8Frame f, System.Drawing.Color[] pal, double plain) {
+        int W = f.Width, H = f.Height, start = 4 + W * H;
+        for (int y = 0; y < 2 * H; y++) for (int x = 0; x < 2 * W; x++) {
+            int i = (y / 2) * W + x / 2;
+            if (Bleed.Key(f, i)) continue;
+            var c = pal[f.Pixels[i]];
+            int p = start + (y * 2 * W + x) * 4;
+            o[p] = (byte)(o[p] * (1 - plain) + c.B * plain);
+            o[p + 1] = (byte)(o[p + 1] * (1 - plain) + c.G * plain);
+            o[p + 2] = (byte)(o[p + 2] * (1 - plain) + c.R * plain);
         }
     }
 }
