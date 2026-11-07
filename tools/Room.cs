@@ -194,6 +194,40 @@ public static class Room
         Save(outBin, o, 0, 640, 480, 480);
     }
 
+    // A patch of a 2x painting (1x rectangle px, py, pw, ph) tiled to and fro to w x h, as a PNG: the
+    // starting picture the image model repaints into a strip of the screen's own texture.
+    public static void TilePatch(string bin, int px, int py, int pw, int ph, int w, int h, int shift, string png)
+    {
+        byte[] pic = Load(bin);
+        using (var b = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+        {
+            var d = b.LockBits(new System.Drawing.Rectangle(0, 0, w, h), System.Drawing.Imaging.ImageLockMode.WriteOnly, b.PixelFormat);
+            byte[] o = new byte[w * h * 4];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    Get(pic, 2 * px + PingPong(x + shift, 2 * pw), 2 * py + PingPong(y + shift, 2 * ph), 1, o, (y * w + x) * 4);
+            System.Runtime.InteropServices.Marshal.Copy(o, 0, d.Scan0, o.Length);
+            b.UnlockBits(d);
+            b.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+        }
+    }
+
+    // Two repainted strips (left, right; 2x, at least 2M + 24 wide) as the sides of a 1708x960 picture
+    // for Painted.
+    public static void Strips(string left, string right, string png)
+    {
+        using (var o = new System.Drawing.Bitmap(2 * W, 2 * H))
+        using (var g = System.Drawing.Graphics.FromImage(o))
+        using (var l = new System.Drawing.Bitmap(left))
+        using (var r = new System.Drawing.Bitmap(right))
+        {
+            g.Clear(System.Drawing.Color.Black);
+            g.DrawImage(l, 0, 0, l.Width, 2 * H);
+            g.DrawImage(r, 2 * W - r.Width, 0, r.Width, 2 * H);
+            o.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+        }
+    }
+
     // Plain dark sides, with a soft shadow where the picture ends: nothing copied.
     public static void DarkSides(string bin, string outBin)
     {

@@ -21,6 +21,11 @@ $ErrorActionPreference = 'Stop'
 foreach ($f in Get-ChildItem $pup -Filter *.png) {
     [Room]::Painted((Join-Path $game "lords2hd\screens\$($f.BaseName).bin"), $f.FullName, (Join-Path $wide "$($f.BaseName).bin"))
 }
+# Panel screens: their own stone repainted by tools\paint_texture.ps1 (already 2x).
+foreach ($n in 'skircust', 'skirmish', 'custom', 'cas_back') {
+    $src = Join-Path $art "$n-tex.png"
+    if (Test-Path $src) { [Room]::Painted((Join-Path $game "lords2hd\screens\$n.bin"), $src, (Join-Path $wide "$n.bin")) }
+}
 
 # The skirmish screens' fighting pair (misc_ske frames 33-44) has its own background.
 $c = 0; $h = ""
