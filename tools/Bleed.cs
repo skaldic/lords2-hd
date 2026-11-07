@@ -61,6 +61,53 @@ public static class Bleed {
     }
 }
 
+// Water keeps its original look: the upscaler reads each tile differently, so tiles showed as squares.
+// Solid water tiles get Scale2x (EPX) of the original instead, which only looks at a pixel's
+// neighbours and so stays seamless.
+public static class PixelWater {
+    public static bool IsWater(Pl8Frame f, System.Drawing.Color[] pal) {
+        long r = 0, g = 0, b = 0;
+        for (int i = 0; i < f.Pixels.Length; i++) {
+            if (Bleed.Key(f, i)) return false;
+            var c = pal[f.Pixels[i]]; r += c.R; g += c.G; b += c.B;
+        }
+        int n = f.Pixels.Length;
+        return n > 0 && b / n > r / n + 15 && g / n > r / n + 15;
+    }
+    static byte Epx(Pl8Frame f, int x, int y) {
+        int W = f.Width, H = f.Height, cx = x / 2, cy = y / 2;
+        Func<int, int, byte> P = (a, c) => f.Pixels[((c % H + H) % H) * W + ((a % W + W) % W)];
+        byte e = P(cx, cy), up = P(cx, cy - 1), l = P(cx - 1, cy), r = P(cx + 1, cy), dn = P(cx, cy + 1);
+        if (up == dn || l == r) return e;
+        bool right = (x & 1) == 1, down = (y & 1) == 1;
+        if (!right && !down) return l == up ? l : e;
+        if (right && !down) return up == r ? r : e;
+        if (!right && down) return l == dn ? l : e;
+        return dn == r ? r : e;
+    }
+    // Overwrites the 2x pixels of a Bleed.Frame record (u16 w, u16 h, indices, 2w x 2h BGRX).
+    public static void Apply(byte[] o, int at, Pl8Frame f, System.Drawing.Color[] pal) {
+        int W = f.Width, H = f.Height, start = at + 4 + W * H;
+        for (int y = 0; y < 2 * H; y++) for (int x = 0; x < 2 * W; x++) {
+            var c = pal[Epx(f, x, y)];
+            int p = start + (y * 2 * W + x) * 4;
+            o[p] = c.B; o[p + 1] = c.G; o[p + 2] = c.R;
+        }
+    }
+    // The same on a built sprite file, in place: returns how many tiles changed.
+    public static int Patch(string bin, Pl8Frame[] f, System.Drawing.Color[] pal) {
+        byte[] d = File.ReadAllBytes(bin);
+        int n = 0;
+        for (int i = 0; i < f.Length; i++) {
+            int off = BitConverter.ToInt32(d, 4 + 4 * i);
+            if (off == 0 || f[i].Error != null || !IsWater(f[i], pal)) continue;
+            Apply(d, off, f[i], pal); n++;
+        }
+        File.WriteAllBytes(bin, d);
+        return n;
+    }
+}
+
 public static class BlendBack {
     // Mixes the doubled original into a Bleed.Frame record: o = u16 w, u16 h, indices, 2w x 2h BGRX.
     public static void Apply(byte[] o, Pl8Frame f, System.Drawing.Color[] pal, double plain) {

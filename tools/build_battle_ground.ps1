@@ -39,7 +39,8 @@ foreach ($n in $Sets) {
         if (-not (Test-Path $u)) { continue }
         $table[$i] = [int]$s.Position
         $b = [Bleed]::Frame($f[$i], $u)
-        [BlendBack]::Apply($b, $f[$i], $pal, $Plain)
+        if ([PixelWater]::IsWater($f[$i], $pal)) { [PixelWater]::Apply($b, 0, $f[$i], $pal) }
+        else { [BlendBack]::Apply($b, $f[$i], $pal, $Plain) }
         $s.Write($b, 0, $b.Length)
     }
     $s.Position = 4
