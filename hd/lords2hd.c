@@ -1,4 +1,4 @@
-// Lords of the Realm II HD - stage 1: show the fixed 640x480 game at the display's resolution.
+﻿// Lords of the Realm II HD - stage 1: show the fixed 640x480 game at the display's resolution.
 //
 // Built as ddraw.dll and dropped next to the game, so the exe loads it in place of the system
 // DirectDraw. Nothing on disk is patched; deleting ddraw.dll restores the stock game.
@@ -79,6 +79,15 @@ static BOOL g_fullscreen = TRUE, g_integerScale;
 static int g_windowScale = 2;
 static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
+// [Debug] Remote=1: testing without the user's mouse, screen or speakers. The window is cloaked
+// and click-through, the sound muted, and hd\bgdrive.ps1 posts WM_REMOTE + n messages to it:
+// 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
+// 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
+static BOOL g_remote;
+static POINT g_fake;                // the pretend mouse, in game coordinates
+static volatile LONG g_shotWanted;
+#define WM_REMOTE (WM_APP + 0x100)
+static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
 
@@ -117,6 +126,8 @@ static void read_settings(void)
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
 	g_dumpPalettes = GetPrivateProfileIntA("Debug", "DumpPalettes", 0, g_iniPath) != 0;
 	g_timing = GetPrivateProfileIntA("Debug", "Timing", 0, g_iniPath) != 0;
+	g_remote = GetPrivateProfileIntA("Debug", "Remote", 0, g_iniPath) != 0;
+	if (g_remote) logf_("remote testing mode: hidden, muted, input from hd\\bgdrive.ps1");
 	logf_("settings: Enabled=%d Scale=%s Fullscreen=%d WindowScale=%d IntegerScale=%d Wide=%d CursorScale=%d LogLoads=%d DumpPalettes=%d Timing=%d",
 		g_emulate, g_scale == SCALE_NONE ? "none" : g_scale == SCALE_SHARP ? "sharp" : "smooth",
 		g_fullscreen, g_windowScale, g_integerScale, g_wantWide, g_cursorScale, g_logLoads, g_dumpPalettes, g_timing);
@@ -1191,6 +1202,20 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			}
 		}
 	}
+	// HD sprites in the doubled top bar and side panel: already at 2x there.
+	if (g_btLayer) {
+		for (int sy = 0; sy < lh; sy++) {
+			DWORD *o = pic + sy * lw;
+			int from = sy < 48 ? 0 : mapW;
+			for (int sx = from; sx < lw; sx++) {
+				int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
+				int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
+				int f = gy * g_frameW + gx;
+				if (gx < 0 || gx >= g_frameW || !g_btValid[f] || copy[gy * pitch + gx] != g_btShadow[f]) continue;
+				o[sx] = g_btLayer[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)];
+			}
+		}
+	}
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
 	BOOL big = (v.bottom - v.top) >= lh * 2;
 	if (g_btLayer && !big) {
@@ -1260,9 +1285,28 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	}
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
+	shot_save(src, sw, sh);
 	StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	ReleaseDC(g_hwnd, dc);
 	return TRUE;
+}
+
+// Remote mode's screenshot: the picture about to be shown (BGRX, w x h, top-down) as a BMP.
+static void shot_save(const DWORD *px, int w, int h)
+{
+	if (!InterlockedExchange(&g_shotWanted, 0)) return;
+	char path[MAX_PATH], tmp[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\lords2hd-shot.bmp", g_gameDir);
+	snprintf(tmp, sizeof tmp, "%s.part", path);
+	FILE *f = fopen(tmp, "wb");
+	if (!f) return;
+	BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + w * h * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+	BITMAPINFOHEADER ih = { sizeof ih, w, -h, 1, 32, BI_RGB };
+	fwrite(&fh, sizeof fh, 1, f);
+	fwrite(&ih, sizeof ih, 1, f);
+	fwrite(px, 4, (size_t)w * h, f);
+	fclose(f);
+	MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
 }
 
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
@@ -1363,6 +1407,7 @@ static BOOL present(void)
 		bi.h.biWidth = dw;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
+		shot_save(room ? g_room.out : g_frame2x, dw, GAME_H * 2);
 		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, dw, GAME_H * 2, room ? g_room.out : g_frame2x,
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
@@ -1894,7 +1939,7 @@ static HRESULT WINAPI dd_set_display_mode(void *this_, DWORD w, DWORD h, DWORD b
 	if (g_fullscreen) {
 		SetWindowLongA(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_SYSMENU);
 		SetWindowPos(g_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
-			mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+			mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW | (g_remote ? SWP_NOACTIVATE : 0));
 	}
 	else {
 		DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
@@ -1907,7 +1952,7 @@ static HRESULT WINAPI dd_set_display_mode(void *this_, DWORD w, DWORD h, DWORD b
 		int y = mi.rcWork.top + max(0, (int)(mi.rcWork.bottom - mi.rcWork.top - wh) / 2);
 		SetWindowLongA(g_hwnd, GWL_STYLE, style);
 		SetWindowLongA(g_hwnd, GWL_EXSTYLE, GetWindowLongA(g_hwnd, GWL_EXSTYLE) & ~WS_EX_TOPMOST);
-		SetWindowPos(g_hwnd, HWND_NOTOPMOST, x, y, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+		SetWindowPos(g_hwnd, HWND_NOTOPMOST, x, y, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW | (g_remote ? SWP_NOACTIVATE : 0));
 	}
 	RECT v;
 	view_rect(&v);
@@ -1972,8 +2017,53 @@ static void client_to_game(int *x, int *y)
 	*y = max(0, min(GAME_H - 1, gy));
 }
 
+// Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
+static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	int n = msg - WM_REMOTE;
+	if (n == 0x10) {
+		InterlockedExchange(&g_shotWanted, 1);
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+		return 0;
+	}
+	if (n == 4) {
+		CallWindowProcA(g_gameProc, hwnd, WM_KEYDOWN, wp, 1);
+		return CallWindowProcA(g_gameProc, hwnd, WM_KEYUP, wp, 0xC0000001);
+	}
+	static const UINT mouse[] = { 0, WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, 0, WM_RBUTTONDOWN, WM_RBUTTONUP };
+	static WPARAM buttons;
+	if (n < 1 || n > 6 || !mouse[n]) return 0;
+	g_fake.x = (short)LOWORD(lp);
+	g_fake.y = (short)HIWORD(lp);
+	if (n == 2) buttons |= MK_LBUTTON; else if (n == 3) buttons &= ~MK_LBUTTON;
+	if (n == 5) buttons |= MK_RBUTTON; else if (n == 6) buttons &= ~MK_RBUTTON;
+	return CallWindowProcA(g_gameProc, hwnd, mouse[n], buttons, lp);
+}
+
+static void remote_hide(HWND hwnd)
+{
+	HMODULE dwm = LoadLibraryA("dwmapi.dll");
+	HRESULT (WINAPI *set_attr)(HWND, DWORD, const void *, DWORD) = dwm ? (void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
+	BOOL cloak = TRUE;
+	if (set_attr) set_attr(hwnd, 13 /* DWMWA_CLOAK */, &cloak, sizeof cloak);
+	SetWindowLongA(hwnd, GWL_EXSTYLE, GetWindowLongA(hwnd, GWL_EXSTYLE) | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW);
+	SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\lords2hd-remote.txt", g_gameDir);
+	FILE *f = fopen(path, "w");
+	if (f) { fprintf(f, "%lu %lu\n", (unsigned long)(ULONG_PTR)hwnd, GetCurrentProcessId()); fclose(f); }
+}
+
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+	if (g_remote) {
+		if (msg > WM_REMOTE && msg <= WM_REMOTE + 0x10) return remote_message(hwnd, msg, wp, lp);
+		if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+		if (msg == WM_ACTIVATEAPP) wp = TRUE;            // the game would pause, thinking it is in the background
+		if (msg == WM_ACTIVATE) wp = WA_ACTIVE;
+		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) return 0; // only the driver's mouse
+	}
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
 		client_to_game(&x, &y);
@@ -1992,6 +2082,7 @@ static void subclass_window(HWND hwnd)
 	g_hwnd = hwnd;
 	g_gameProc = (WNDPROC)SetWindowLongA(hwnd, GWLP_WNDPROC, (LONG)window_proc);
 	logf_("window %p subclassed", (void *)hwnd);
+	if (g_remote) remote_hide(hwnd);
 }
 
 static BOOL (WINAPI *o_GetCursorPos)(POINT *);
@@ -2008,6 +2099,11 @@ static HCURSOR (WINAPI *o_SetCursor)(HCURSOR);
 
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
+	if (g_remote) { // the driver's mouse, kept off the scrolling edges
+		p->x = max(1, min(max(2, SCROLL_EDGE_W - 1) - 1, g_fake.x));
+		p->y = max(1, min(max(2, *(int *)0x004ea838 - 1) - 1, g_fake.y));
+		return TRUE;
+	}
 	if (!o_GetCursorPos(p)) return FALSE;
 	if (g_hwnd) {
 		ScreenToClient(g_hwnd, p);
@@ -2030,6 +2126,31 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		p->y = y;
 	}
 	return TRUE;
+}
+
+// Remote mode: the game believes it is in front, and never brings itself there.
+static HWND (WINAPI *o_GetForegroundWindow)(void);
+static BOOL (WINAPI *o_SetForegroundWindow)(HWND);
+static HWND WINAPI h_GetForegroundWindow(void) { return g_remote && g_hwnd ? g_hwnd : o_GetForegroundWindow(); }
+static BOOL WINAPI h_SetForegroundWindow(HWND hwnd) { return g_remote ? TRUE : o_SetForegroundWindow(hwnd); }
+// ... and its window is hidden from the moment it exists, never taking the focus.
+static HWND (WINAPI *o_CreateWindowExA)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
+static BOOL (WINAPI *o_ShowWindow)(HWND, int);
+static HWND WINAPI h_CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR name, DWORD style, int x, int y, int w, int h,
+	HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
+{
+	if (!g_remote || parent) return o_CreateWindowExA(ex, cls, name, style, x, y, w, h, parent, menu, inst, param);
+	HWND hwnd = o_CreateWindowExA(ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, cls, name, style & ~WS_VISIBLE, x, y, w, h, parent, menu, inst, param);
+	if (hwnd) {
+		remote_hide(hwnd);
+		if (style & WS_VISIBLE) o_ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+	}
+	return hwnd;
+}
+static BOOL WINAPI h_ShowWindow(HWND hwnd, int cmd)
+{
+	if (g_remote && (cmd == SW_SHOW || cmd == SW_SHOWNORMAL || cmd == SW_SHOWMAXIMIZED || cmd == SW_RESTORE)) cmd = SW_SHOWNOACTIVATE;
+	return o_ShowWindow(hwnd, cmd);
 }
 
 static BOOL WINAPI h_GetClientRect(HWND hwnd, RECT *r)
@@ -2983,6 +3104,11 @@ static void __cdecl h_show_frame(int force)
 static void install(void)
 {
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
+	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
+	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);
+	hook_import("USER32.dll", "CreateWindowExA", h_CreateWindowExA, &o_CreateWindowExA);
+	hook_import("USER32.dll", "ShowWindow", h_ShowWindow, &o_ShowWindow);
+	if (g_remote) waveOutSetVolume(0, 0); // the process's audio session: DirectSound too
 	hook_import("USER32.dll", "GetClientRect", h_GetClientRect, &o_GetClientRect);
 	hook_import("USER32.dll", "ClientToScreen", h_ClientToScreen, &o_ClientToScreen);
 	hook_import("USER32.dll", "SetCursor", h_SetCursor, &o_SetCursor);
