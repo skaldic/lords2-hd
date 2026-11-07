@@ -330,7 +330,12 @@ static struct { int w, cutL, cutR, floorY, barY, on, extra; DWORD *px, *out; } g
 // still holding the frames' background shows the room behind it. Each key is found on screen by
 // its pixels that are background in every frame, and remembered until they stop matching.
 #define MAX_KEYS 4
-static struct { int w, h, x, y, found; BYTE *bg, *mark; int probe[24], probes; } g_keys[MAX_KEYS];
+#define MAX_KEY_FRAMES 16
+static struct {
+	int w, h, x, y, found; BYTE *bg, *mark; int probe[24], probes;
+	int frames, shown;                       // the frame on screen now (-1 = none matches)
+	BYTE *pix[MAX_KEY_FRAMES]; DWORD *hd[MAX_KEY_FRAMES];
+} g_keys[MAX_KEYS];
 static int g_keyCount;
 
 static BOOL key_at(int k, int x, int y)
@@ -346,32 +351,66 @@ static void keys_find(void)
 {
 	for (int k = 0; k < g_keyCount; k++) {
 		int w = g_keys[k].w, h = g_keys[k].h;
-		if (g_keys[k].found && key_at(k, g_keys[k].x, g_keys[k].y)) continue;
-		g_keys[k].found = FALSE;
+		if (!g_keys[k].found || !key_at(k, g_keys[k].x, g_keys[k].y)) g_keys[k].found = FALSE;
 		for (int y = 0; y + h <= GAME_H && !g_keys[k].found; y++)
 			for (int x = 0; x + w <= GAME_W; x++)
 				if (key_at(k, x, y)) {
 					g_keys[k].x = x; g_keys[k].y = y; g_keys[k].found = TRUE;
 					break;
 				}
+		// Which frame: the one whose figure pixels the screen holds (most of them, as the mouse
+		// may be over it).
+		g_keys[k].shown = -1;
+		if (!g_keys[k].found) continue;
+		int best = 0;
+		for (int f = 0; f < g_keys[k].frames; f++) {
+			int same = 0, all = 0;
+			for (int t = 0; t < h; t += 2)
+				for (int u = t & 2 ? 1 : 0; u < w; u += 3) {
+					int i = t * w + u;
+					if (g_keys[k].mark[i] && g_keys[k].pix[f][i] == g_keys[k].bg[i]) continue;
+					all++;
+					same += g_frame8[(g_keys[k].y + t) * GAME_W + g_keys[k].x + u] == g_keys[k].pix[f][i];
+				}
+			if (all && same * 10 >= all * 9 && same > best) { best = same; g_keys[k].shown = f; }
+		}
 	}
 }
 
-// The game's pixel at x, y is an animation's own background.
-static BOOL key_bg(int x, int y, BYTE v)
+// The game's pixel at x, y within an animation: 1 = its own background, 2 = its figure, with *hd
+// set to the frame's 2x pixels for it; 0 = neither.
+static int key_px(int x, int y, BYTE v, const DWORD **hd, int *hw)
 {
 	for (int k = 0; k < g_keyCount; k++) {
 		int u = x - g_keys[k].x, t = y - g_keys[k].y;
 		if (!g_keys[k].found || u < 0 || t < 0 || u >= g_keys[k].w || t >= g_keys[k].h) continue;
-		int i = t * g_keys[k].w + u;
-		return g_keys[k].mark[i] && g_keys[k].bg[i] == v;
+		int i = t * g_keys[k].w + u, w = g_keys[k].w, f = g_keys[k].shown;
+		if (g_keys[k].mark[i] && g_keys[k].bg[i] == v) {
+			// Specks of background inside the figure (between dithered legs) take its 2x frame.
+			if (f < 0 || u == 0 || t == 0 || u == w - 1 || t == g_keys[k].h - 1) return 1;
+			const BYTE *p = g_keys[k].pix[f], *bg = g_keys[k].bg, *m = g_keys[k].mark;
+			int fig = 0;
+			for (int d = 0; d < 4; d++) {
+				int j = i + (d == 0 ? -1 : d == 1 ? 1 : d == 2 ? -w : w);
+				fig += !(m[j] && p[j] == bg[j]);
+			}
+			if (fig < 3) return 1;
+		}
+		else if (f < 0 || g_keys[k].pix[f][i] != v) return 0;
+		*hw = 2 * w;
+		*hd = g_keys[k].hd[f] + 2 * t * *hw + 2 * u;
+		return 2;
 	}
-	return FALSE;
+	return 0;
 }
 
 static void keys_load(FILE *f)
 {
-	for (int k = 0; k < g_keyCount; k++) { free(g_keys[k].bg); free(g_keys[k].mark); g_keys[k].bg = g_keys[k].mark = NULL; }
+	for (int k = 0; k < g_keyCount; k++) {
+		free(g_keys[k].bg); free(g_keys[k].mark); g_keys[k].bg = g_keys[k].mark = NULL;
+		for (int f = 0; f < g_keys[k].frames; f++) { free(g_keys[k].pix[f]); free(g_keys[k].hd[f]); }
+		g_keys[k].frames = 0;
+	}
 	g_keyCount = 0;
 	int n;
 	if (fread(&n, 4, 1, f) != 1) return;
@@ -388,7 +427,20 @@ static void keys_load(FILE *f)
 		g_keys[k].probes = 0;
 		for (int i = 0, seen = 0; i < size && g_keys[k].probes < 24; i++)
 			if (mark[i] == 2 && seen++ % max(1, all / 24) == 0) g_keys[k].probe[g_keys[k].probes++] = i;
+		g_keys[k].shown = -1;
 		g_keyCount = k + 1;
+		int frames;
+		if (fread(&frames, 4, 1, f) != 1) return;
+		for (int fr = 0; fr < frames && fr < MAX_KEY_FRAMES; fr++) {
+			BYTE *pix = malloc(size);
+			DWORD *hd = malloc(size * 4 * 4);
+			if (!pix || !hd || fread(pix, 1, size, f) != (size_t)size || fread(hd, 4, size * 4, f) != (size_t)(size * 4)) {
+				free(pix); free(hd);
+				return;
+			}
+			g_keys[k].pix[fr] = pix; g_keys[k].hd[fr] = hd;
+			g_keys[k].frames = fr + 1;
+		}
 	}
 }
 
@@ -450,9 +502,15 @@ static void room_compose(const PALETTEENTRY *pal, int sw)
 				const DWORD *a = g_room.px + 2 * y * lw + 2 * art + b * lw;
 				const DWORD *f = g >= 0 ? g_frame2x + 2 * y * 2 * GAME_W + 2 * g + b * 2 * GAME_W : NULL;
 				DWORD *o = g_room.out + (2 * y + b) * ow + 2 * x;
+				// Within an animation with its own background: its background shows the room, its
+				// figure its own 2x frame.
+				int kp = 0, hw = 0;
+				const DWORD *kh = NULL;
+				if (g >= 0 && fr[g] != sh[g] && g_keyCount) kp = key_px(g, y, fr[g], &kh, &hw);
 				for (int c = 0; c < 2; c++) {
 					DWORD v;
-					if (g >= 0 && fr[g] != sh[g] && !(g_keyCount && key_bg(g, y, fr[g]))) v = f[c];
+					if (kp == 2) v = kh[b * hw + c];
+					else if (g >= 0 && fr[g] != sh[g] && kp != 1) v = f[c];
 					else if (k == 256) v = a[c];
 					else v = (((a[c] & 0xff00ff) * k >> 8) & 0xff00ff) | (((a[c] & 0xff00) * k >> 8) & 0xff00);
 					o[c] = v;

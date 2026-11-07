@@ -30,10 +30,29 @@ public static class Room
     // Some animations carry their own background, cut from elsewhere in the texture. The frames'
     // background (each pixel's commonest value, kept where at least 4 frames share it) is appended to
     // the room file as a key: int count; per key int w, h, then w*h values and w*h marks (1 = background,
-    // 2 = background in every frame, which the DLL uses to find where the animation is drawn).
-    public static void AppendKey(string outBin, byte[][] frames, int w, int h)
+    // 2 = background in every frame, which the DLL uses to find where the animation is drawn); then
+    // int frames, and per frame w*h values and its 2x version, 2w*2h BGRX.
+    public static void AppendKey(string outBin, byte[][] frames, int w, int h, byte[][] hd)
     {
-        byte[] bg = new byte[w * h], mark = new byte[w * h];
+        byte[] bg, mark;
+        KeyBackground(frames, w, h, out bg, out mark);
+        byte[] old = File.ReadAllBytes(outBin);
+        int baseLen = 20 + 2 * W * 2 * H * 4;
+        using (var f = new BinaryWriter(File.Create(outBin)))
+        {
+            f.Write(old, 0, baseLen);
+            int count = old.Length > baseLen ? BitConverter.ToInt32(old, baseLen) : 0;
+            f.Write(count + 1);
+            if (old.Length > baseLen + 4) f.Write(old, baseLen + 4, old.Length - baseLen - 4);
+            f.Write(w); f.Write(h); f.Write(bg); f.Write(mark);
+            f.Write(frames.Length);
+            for (int k = 0; k < frames.Length; k++) { f.Write(frames[k]); f.Write(hd[k]); }
+        }
+    }
+
+    public static void KeyBackground(byte[][] frames, int w, int h, out byte[] bg, out byte[] mark)
+    {
+        bg = new byte[w * h]; mark = new byte[w * h];
         for (int i = 0; i < w * h; i++)
         {
             int[] n = new int[256];
@@ -48,16 +67,6 @@ public static class Room
         bool[] bgColour = new bool[256];
         for (int i = 0; i < w * h; i++) if (mark[i] == 2) bgColour[bg[i]] = true;
         for (int i = 0; i < w * h; i++) if (mark[i] == 1 && !bgColour[bg[i]]) mark[i] = 0;
-        byte[] old = File.ReadAllBytes(outBin);
-        int baseLen = 20 + 2 * W * 2 * H * 4;
-        using (var f = new BinaryWriter(File.Create(outBin)))
-        {
-            f.Write(old, 0, baseLen);
-            int count = old.Length > baseLen ? BitConverter.ToInt32(old, baseLen) : 0;
-            f.Write(count + 1);
-            if (old.Length > baseLen + 4) f.Write(old, baseLen + 4, old.Length - baseLen - 4);
-            f.Write(w); f.Write(h); f.Write(bg); f.Write(mark);
-        }
     }
 
     // A preview at 1x, as a 24-bit BMP.
