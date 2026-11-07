@@ -1,7 +1,8 @@
-# Builds 2x battle ground: the t32_* sheets, in the sprite format, with part of the original kept
+﻿# Builds 2x battle ground: the t32_* sheets, in the sprite format, with part of the original kept
 # so grass does not turn to plastic. Transparent pixels stay transparent.
-param([string[]]$Sets = @('t32_bat1','t32_stn1','t32_stn2','t32_wod1','t32_wod2'), [double]$Plain = 0.25, [string]$Palette = "")
+param([string[]]$Sets = @('t32_bat1','t32_stn1','t32_stn2','t32_wod1','t32_wod2'), [double]$Plain = 0.25, [string]$Palette = "", [switch]$AiWater) # -AiWater: water upscaled like the rest (the county map)
 $ErrorActionPreference = 'Stop'
+$Sets = $Sets | ForEach-Object { $_ -split ',' } # "a,b" as one argument, as powershell -File passes it
 $root = Split-Path $PSScriptRoot -Parent
 $game = Split-Path $root -Parent
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
@@ -39,10 +40,10 @@ foreach ($n in $Sets) {
         if (-not (Test-Path $u)) { continue }
         $table[$i] = [int]$s.Position
         $b = [Bleed]::Frame($f[$i], $u)
-        if ([PixelWater]::IsWater($f[$i], $pal)) { [PixelWater]::Apply($b, 0, $f[$i], $pal) }
+        if (-not $AiWater -and [PixelWater]::IsWater($f[$i], $pal)) { [PixelWater]::Apply($b, 0, $f[$i], $pal) }
         else {
             [BlendBack]::Apply($b, $f[$i], $pal, $Plain)
-            if ([PixelWater]::IsShore($f[$i], $wc)) { [PixelWater]::ApplyShore($b, 0, $f[$i], $pal, $wc) }
+            if (-not $AiWater -and [PixelWater]::IsShore($f[$i], $wc)) { [PixelWater]::ApplyShore($b, 0, $f[$i], $pal, $wc) }
         }
         $s.Write($b, 0, $b.Length)
     }
