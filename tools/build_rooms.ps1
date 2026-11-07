@@ -9,6 +9,19 @@ Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs"), (Join-Path $PSScriptRoot "Roo
 $wide = Join-Path $game "lords2hd\wide"
 [Room]::Build((Join-Path $game "lords2hd\screens"), $wide)
 
+# Screens whose sides were painted by tools\paint_sides.ps1: the chosen picture of each, upscaled.
+$painted = @{ merchant = 'merchant-gen6'; start = 'start-gen2f'; lords2 = 'lords2-gen1'; gateway = 'gateway-gen1'; score1 = 'score1-gen2f' }
+$art = Join-Path $root "assets\wide"; $pin = Join-Path $art "pick"; $pup = Join-Path $art "pick_x4"
+Remove-Item $pin, $pup -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $pin, $pup | Out-Null
+foreach ($n in $painted.Keys) { $src = Join-Path $art "$($painted[$n]).png"; if (Test-Path $src) { Copy-Item $src (Join-Path $pin "$n.png") } }
+$ErrorActionPreference = 'Continue'
+& (Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe") -i $pin -o $pup -n realesrgan-x4plus -s 4 -f png -m (Join-Path $tools "realesrgan\models") 2>$null | Out-Null
+$ErrorActionPreference = 'Stop'
+foreach ($f in Get-ChildItem $pup -Filter *.png) {
+    [Room]::Painted((Join-Path $game "lords2hd\screens\$($f.BaseName).bin"), $f.FullName, (Join-Path $wide "$($f.BaseName).bin"))
+}
+
 # The skirmish screens' fighting pair (misc_ske frames 33-44) has its own background.
 $c = 0; $h = ""
 $ske = [Pl8]::Read((Join-Path $game "misc_ske.pl8"), [ref]$c, [ref]$h)

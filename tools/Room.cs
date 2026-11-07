@@ -159,6 +159,41 @@ public static class Room
         Save(outBin, o, 0, 640, 480, 480);
     }
 
+    // Sides painted by tools\paint_sides.ps1 (assets\wide\<name>-gen<seed>.png, 854x480), upscaled to
+    // 1708x960 (sides2x): the HD painting stays in the middle, faded into the painted sides at the joins.
+    public static void Painted(string bin, string sides2x, string outBin)
+    {
+        byte[] pic = Load(bin);
+        byte[] side;
+        using (var b = new System.Drawing.Bitmap(sides2x))
+        using (var c = new System.Drawing.Bitmap(2 * W, 2 * H, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+        {
+            using (var g = System.Drawing.Graphics.FromImage(c))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                g.DrawImage(b, 0, 0, 2 * W, 2 * H);
+            }
+            var d = c.LockBits(new System.Drawing.Rectangle(0, 0, 2 * W, 2 * H), System.Drawing.Imaging.ImageLockMode.ReadOnly, c.PixelFormat);
+            side = new byte[2 * W * 2 * H * 4];
+            System.Runtime.InteropServices.Marshal.Copy(d.Scan0, side, 0, side.Length);
+            c.UnlockBits(d);
+        }
+        const int fade = 24;
+        byte[] o = Centred(pic, (o2, d, x2, y2, s, i2) => { for (int k = 0; k < 3; k++) o2[d + k] = side[d + k]; });
+        for (int y = 0; y < 2 * H; y++)
+            for (int k = 0; k < fade; k++)
+            {
+                double t = 1 - (k + 0.5) / fade; // share of the painted side
+                foreach (int x in new[] { 2 * M + k, 2 * M + 1279 - k })
+                {
+                    int d = (y * 2 * W + x) * 4;
+                    for (int c = 0; c < 3; c++) o[d + c] = (byte)(o[d + c] * (1 - t) + side[d + c] * t);
+                }
+            }
+        Save(outBin, o, 0, 640, 480, 480);
+    }
+
     // Plain dark sides, with a soft shadow where the picture ends: nothing copied.
     public static void DarkSides(string bin, string outBin)
     {
