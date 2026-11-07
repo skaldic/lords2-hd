@@ -5,6 +5,7 @@
 param([string[]]$Files = @('sprite1a','sprite1b','sprite2a','sprite2b','flags1a','flags2a'),
       [string]$Palette = "Base01.256", [string]$Model = 'realesrgan-x4plus')
 $ErrorActionPreference = 'Stop'
+$Files = $Files | ForEach-Object { $_ -split ',' } # "a,b" as one argument, as powershell -File passes it
 $root = Split-Path $PSScriptRoot -Parent
 $game = Split-Path $root -Parent
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
@@ -98,5 +99,7 @@ foreach ($n in $Files) {
     $s.Position = 4
     foreach ($o in $table) { $s.Write([BitConverter]::GetBytes($o), 0, 4) }
     $s.Close()
+    # The palette the art was made with: the DLL uses it only under that palette.
+    [IO.File]::WriteAllBytes((Join-Path $out "$n.pal"), [IO.File]::ReadAllBytes((Join-Path $game $Palette))[0..767])
     "{0}: {1:N1} MB" -f $n, ((Get-Item (Join-Path $out "$n.bin")).Length / 1MB)
 }

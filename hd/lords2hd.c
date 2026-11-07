@@ -318,6 +318,8 @@ static void double_frame(int w)
 static DWORD *g_btLayer;
 static BYTE *g_btShadow, *g_btValid;
 static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
+static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
+#define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
 
 // Wider rooms. A painting with a file in lords2hd\wide (four ints: width, the columns where the wide
 // art's left and right new sections start, floor row, bar row; then 2w x 960 BGRX) fills the frame
@@ -526,6 +528,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
+	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H); // a new screen: nothing stamped on it yet
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H) return;
 	char base[64], path[MAX_PATH];
@@ -612,7 +615,8 @@ static volatile BOOL g_waveActive;
 // Sprites and overhang have their own layer: when one moves away, the ground under it is still
 // known, so the screen shows HD ground again instead of a soft patch.
 static DWORD *g_sprLayer;
-static BYTE *g_sprShadow, *g_sprValid;
+static BYTE *g_sprShadow;
+static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
 static BYTE g_tilePal[768];
 
 static BOOL wave_is_water(DWORD p)
@@ -812,7 +816,15 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 // Each hooked blitter knows the buffer and frame; afterwards every opaque pixel of the frame that
 // the screen now holds is stamped into the layer. A wrong guess of position only fails the check.
 #define MAX_SPRITE_SETS 64
-static struct { const BYTE *buf; BYTE *data; } g_spriteSets[MAX_SPRITE_SETS];
+// pal: the palette the 2x art was made with (lords2hd\sprites\<file>.pal, else Base01.256), 6-bit.
+static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; } g_spriteSets[MAX_SPRITE_SETS];
+
+static void read_palette(const char *path, BYTE *pal)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f || fread(pal, 1, 768, f) != 768) memset(pal, 0, 768);
+	if (f) fclose(f);
+}
 
 static void sprites_loaded(const char *name, const void *buffer)
 {
@@ -841,6 +853,9 @@ static void sprites_loaded(const char *name, const void *buffer)
 	if (data && fread(data, 1, bytes, f) == (size_t)bytes) {
 		g_spriteSets[slot].buf = buffer;
 		g_spriteSets[slot].data = data;
+		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
+		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+		read_palette(path, g_spriteSets[slot].pal);
 		logf_("HD sprites %s", base);
 	}
 	else free(data);
@@ -854,10 +869,29 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		g_btShadow = calloc(g_frameW, g_frameH);
 		g_btValid = calloc(g_frameW, g_frameH);
 	}
-	if ((!g_sprLayer && !g_btLayer) || !g_back) return;
-	const BYTE *data = NULL;
-	for (int i = 0; i < MAX_SPRITE_SETS; i++) if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; break; }
-	if (!data || index < 0 || index >= *(const int *)data) return;
+	const BYTE *data = NULL, *setPal = NULL;
+	for (int i = 0; i < MAX_SPRITE_SETS; i++)
+		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
+	if (!data || index < 0 || index >= *(const int *)data || !g_back) return;
+	// Off the map a sprite may be drawn under another screen's palette than its art was made with
+	// (map portraits in the Armoury's scroll): then it stays as the game drew it.
+	if (!county_map_on() && !IN_BATTLE_NOW() && g_primary && g_primary->pal) {
+		const PALETTEENTRY *e = g_primary->pal->e;
+		const BYTE *idx0 = data + ((const int *)data)[1 + index] + 4;
+		int w0 = *(const WORD *)(idx0 - 4), h0 = *(const WORD *)(idx0 - 2);
+		BYTE used[256] = { 0 };
+		if (((const int *)data)[1 + index]) for (int i = 0; i < w0 * h0; i++) used[idx0[i]] = 1;
+		for (int i = 1; i < 256; i++)
+			if (used[i] && (e[i].peRed >> 2 != setPal[i * 3] || e[i].peGreen >> 2 != setPal[i * 3 + 1] || e[i].peBlue >> 2 != setPal[i * 3 + 2])) return;
+	}
+	if (!g_sprLayer) { // screens before any map: the layer on its own
+		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
+		g_sprShadow = calloc(MAX_W, GAME_H);
+		g_sprValid = calloc(MAX_W, GAME_H);
+		if (!g_sprLayer || !g_sprShadow || !g_sprValid) return;
+	}
+	// Off the map the screen's own palette is what the sprite was made for (see screen_sprites).
+	if (!county_map_on() && g_primary && g_primary->pal) memcpy(g_sprPal, g_primary->pal->e, sizeof g_sprPal);
 	int off = ((const int *)data)[1 + index];
 	if (!off) return;
 	const BYTE *p = data + off;
@@ -961,6 +995,24 @@ static __inline void wave_px(DWORD *o, int d, int X, int Y, DWORD t)
 	int b = p & 255, g = (p >> 8) & 255, r = (p >> 16) & 255;
 	b += (250 - b) * a / 256; g += (245 - g) * a / 256; r += (235 - r) * a / 256;
 	*o = (r << 16) | (g << 8) | b;
+}
+
+// Off the map (painted screens, scrolls): the HD sprites the screen still shows, while the palette is
+// the one they were drawn under, so a fade shows the smoothed frame.
+static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
+{
+	if (!g_sprLayer || county_map_on() || IN_BATTLE_NOW() || memcmp(pal, g_sprPal, sizeof g_sprPal)) return;
+	for (int y = 0; y < GAME_H; y++) {
+		const BYTE *fr = g_frame8 + y * sw;
+		const BYTE *ss = g_sprShadow + y * MAX_W + sx, *sv = g_sprValid + y * MAX_W + sx;
+		const DWORD *s0 = g_sprLayer + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
+		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
+		for (int x = 0; x < sw; x++) {
+			if (!sv[x] || fr[x] != ss[x]) continue;
+			o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
+			o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
+		}
+	}
 }
 
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
@@ -1294,6 +1346,7 @@ static BOOL present(void)
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
 		double_frame(sw);
 		if (sw == GAME_W) hd_overlay(pal);
+		screen_sprites(pal, sx, sw);
 		tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
 		EnterCriticalSection(&g_lock);
