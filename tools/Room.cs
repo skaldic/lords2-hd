@@ -159,6 +159,83 @@ public static class Room
         Save(outBin, o, 0, 640, 480, 480);
     }
 
+    // Plain dark sides, with a soft shadow where the picture ends: nothing copied.
+    public static void DarkSides(string bin, string outBin)
+    {
+        byte[] pic = Load(bin);
+        byte[] o = Centred(pic, (o2, d, x2, y2, side, i2) => { o2[d] = o2[d + 1] = o2[d + 2] = 0; });
+        // the shadow falls on the picture's own edge columns
+        int w2 = 2 * W;
+        for (int y = 0; y < 2 * H; y++)
+            for (int k = 0; k < 24; k++)
+            {
+                double t = 0.35 + 0.65 * k / 24.0;
+                foreach (int x in new[] { 2 * M + k, 2 * M + 1279 - k })
+                {
+                    int d = (y * w2 + x) * 4;
+                    for (int c = 0; c < 3; c++) o[d + c] = (byte)(o[d + c] * t);
+                }
+            }
+        Save(outBin, o, 0, 640, 480, 480);
+    }
+
+    // The picture itself enlarged to fill the frame, blurred hard and dimmed, behind the picture.
+    public static void BlurBackdrop(string bin, string outBin)
+    {
+        byte[] pic = Load(bin);
+        int w2 = 2 * W, h2 = 2 * H, sw = 160, sh = 120;   // blurred at a small size, then enlarged
+        double[] small = new double[sw * sh * 3];
+        // scale the 1280x960 picture to fill 1708 wide (crop top and bottom), sampled down
+        double scale = 1280.0 / w2, cropY = (960 - h2 * scale) / 2;
+        for (int y = 0; y < sh; y++)
+            for (int x = 0; x < sw; x++)
+            {
+                double[] acc = new double[3]; int n = 0;
+                for (int dy = 0; dy < 8; dy++)
+                    for (int dx = 0; dx < 8; dx++)
+                    {
+                        int sx = (int)(((x + dx / 8.0) / sw) * w2 * scale), sy = (int)(cropY + ((y + dy / 8.0) / sh) * h2 * scale);
+                        sx = Math.Max(0, Math.Min(1279, sx)); sy = Math.Max(0, Math.Min(959, sy));
+                        int s = 768 + (sy * 1280 + sx) * 4;
+                        for (int c = 0; c < 3; c++) acc[c] += pic[s + c];
+                        n++;
+                    }
+                for (int c = 0; c < 3; c++) small[(y * sw + x) * 3 + c] = acc[c] / n;
+            }
+        for (int pass = 0; pass < 6; pass++) // box blur, several times
+        {
+            double[] t = new double[small.Length];
+            for (int y = 0; y < sh; y++)
+                for (int x = 0; x < sw; x++)
+                    for (int c = 0; c < 3; c++)
+                    {
+                        double a = 0; int n = 0;
+                        for (int dy = -2; dy <= 2; dy++)
+                            for (int dx = -2; dx <= 2; dx++)
+                            {
+                                int xx = Math.Max(0, Math.Min(sw - 1, x + dx)), yy = Math.Max(0, Math.Min(sh - 1, y + dy));
+                                a += small[(yy * sw + xx) * 3 + c]; n++;
+                            }
+                        t[(y * sw + x) * 3 + c] = a / n;
+                    }
+            small = t;
+        }
+        byte[] o = Centred(pic, (o2, d, x2, y2, side, i2) =>
+        {
+            double fx = x2 * (double)sw / w2 - 0.5, fy = y2 * (double)sh / h2 - 0.5;
+            int x0 = Math.Max(0, Math.Min(sw - 2, (int)fx)), y0 = Math.Max(0, Math.Min(sh - 2, (int)fy));
+            double ax = Math.Max(0, Math.Min(1, fx - x0)), ay = Math.Max(0, Math.Min(1, fy - y0));
+            double k = 0.55 * (0.75 + 0.25 * Math.Min(1, i2 / 60.0));  // a touch darker next to the picture
+            for (int c = 0; c < 3; c++)
+            {
+                double v = (small[(y0 * sw + x0) * 3 + c] * (1 - ax) + small[(y0 * sw + x0 + 1) * 3 + c] * ax) * (1 - ay)
+                         + (small[((y0 + 1) * sw + x0) * 3 + c] * (1 - ax) + small[((y0 + 1) * sw + x0 + 1) * 3 + c] * ax) * ay;
+                o2[d + c] = (byte)(v * k);
+            }
+        });
+        Save(outBin, o, 0, 640, 480, 480);
+    }
+
     // The outer strips (left, right columns wide) reflected to and fro.
     static void EdgeBounce(string bin, string outBin, int left, int right)
     {

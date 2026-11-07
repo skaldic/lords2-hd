@@ -957,12 +957,122 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	}
 }
 
+// The minimap: FUN_0046a037 loads a 128x128 picture of the counties (map file frame variant*5+1)
+// into 0x569590; FUN_00410cbd copies it and repaints every pixel holding 10..13 (four placeholder
+// shades) in its county's colour (0x52aff0: county per pixel). In HD: the picture's 2x version, its
+// placeholder pixels recoloured by their shade from the colours the game just used for that county.
+#define MINI_PIC ((const BYTE *)0x00569590)
+#define MINI_COUNTY ((const BYTE *)0x0052aff0)
+static DWORD *g_miniHD; // 256x256 BGRX, NULL when the map has no HD file
+
+typedef void (__cdecl *mini_load_t)(unsigned);
+static mini_load_t o_mini_load;
+static void __cdecl h_mini_load(unsigned which)
+{
+	o_mini_load(which);
+	free(g_miniHD);
+	g_miniHD = NULL;
+	char base[16], path[MAX_PATH];
+	lstrcpynA(base, (const char *)0x004d6af8 + ((int)which >> 2) * 0x10, sizeof base);
+	char *dot = strrchr(base, '.');
+	if (dot) *dot = 0;
+	CharLowerA(base);
+	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
+	FILE *f = fopen(path, "rb");
+	if (!f) return;
+	int frame = (which & 3) * 5 + 1, count = 0, off = 0;
+	WORD wh[2];
+	if (fread(&count, 4, 1, f) == 1 && frame < count && !fseek(f, 4 + 4 * frame, SEEK_SET) && fread(&off, 4, 1, f) == 1 && off &&
+		!fseek(f, off, SEEK_SET) && fread(wh, 2, 2, f) == 2 && wh[0] == 128 && wh[1] == 128 && !fseek(f, 128 * 128, SEEK_CUR)) {
+		g_miniHD = malloc(256 * 256 * 4);
+		if (g_miniHD && fread(g_miniHD, 4, 256 * 256, f) != 256 * 256) { free(g_miniHD); g_miniHD = NULL; }
+	}
+	fclose(f);
+	logf_("minimap %s variant %u%s", base, which & 3, g_miniHD ? ": HD" : "");
+}
+
+static DWORD mix_rgb(DWORD a, DWORD b, int t) // t of 256 towards b
+{
+	DWORD rb = ((a & 0xff00ff) * (256 - t) + (b & 0xff00ff) * t) >> 8 & 0xff00ff;
+	DWORD g = ((a & 0xff00) * (256 - t) + (b & 0xff00) * t) >> 8 & 0xff00;
+	return rb | g;
+}
+
+typedef void (__cdecl *mini_paint_t)(unsigned, int, int, int);
+static mini_paint_t o_mini_paint;
+static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
+{
+	o_mini_paint(player, x, y, mode);
+	if (!g_miniHD || !g_sprLayer || !g_back || !g_primary || !g_primary->pal) return;
+	const PALETTEENTRY *pe = g_primary->pal->e;
+	DWORD pal[256];
+	for (int i = 0; i < 256; i++) pal[i] = (pe[i].peRed << 16) | (pe[i].peGreen << 8) | pe[i].peBlue;
+	// The colour each county got for each shade, read back from what was drawn.
+	static short shade[256][4];
+	for (int i = 0; i < 256; i++) shade[i][0] = shade[i][1] = shade[i][2] = shade[i][3] = -1;
+	for (int r = 0; r < 128; r++) {
+		int fy = y + r;
+		if (fy < 0 || fy >= GAME_H) continue;
+		const BYTE *row = g_back->bits + fy * g_back->pitch + g_back->org + x;
+		for (int c = 0; c < 128; c++) {
+			BYTE v = MINI_PIC[r * 128 + c];
+			if (v >= 10 && v <= 13) shade[MINI_COUNTY[r * 128 + c]][v - 10] = row[c];
+		}
+	}
+	// The placeholder shades' own colours, to tell an HD pixel's shade.
+	DWORD ref[4];
+	int stamped = 0;
+	for (int s = 0; s < 4; s++) ref[s] = pal[10 + s];
+	for (int r = 0; r < 128; r++) {
+		int fy = y + r;
+		if (fy < 0 || fy >= GAME_H) continue;
+		const BYTE *row = g_back->bits + fy * g_back->pitch;
+		for (int c = 0; c < 128; c++) {
+			int fx = x + g_back->org + c;
+			if (fx < 0 || fx >= g_back->w) continue;
+			BYTE v = MINI_PIC[r * 128 + c], now = row[fx];
+			BOOL placeholder = v >= 10 && v <= 13;
+			if (!placeholder && now != v) continue;        // something else drawn there
+			const short *cs = placeholder ? shade[MINI_COUNTY[r * 128 + c]] : NULL;
+			if (placeholder && (cs[v - 10] < 0 || cs[v - 10] != now)) continue; // not what we read back
+			DWORD *o0 = g_sprLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
+			for (int b = 0; b < 4; b++) {
+				DWORD h = g_miniHD[(2 * r + (b >> 1)) * 256 + 2 * c + (b & 1)];
+				if (placeholder && v == 10) h = pal[now]; // shade 0 is the county's border line (white for the selected one)
+				else if (placeholder) {
+					// The HD pixel's shade: between the two nearest placeholder colours by brightness.
+					int lum = ((h >> 16) & 255) + ((h >> 8) & 255) + (h & 255), L[4];
+					for (int s = 0; s < 4; s++) L[s] = ((ref[s] >> 16) & 255) + ((ref[s] >> 8) & 255) + (ref[s] & 255);
+					int lo = 1, hi = 1, best = 1 << 30;
+					for (int s = 1; s < 4; s++) if (abs(L[s] - lum) < best) { best = abs(L[s] - lum); lo = s; }
+					hi = lo;
+					for (int s = 1; s < 4; s++) if (s != lo && cs[s] >= 0 && (lum - L[lo]) * (L[s] - L[lo]) > 0 && (hi == lo || abs(L[s] - L[lo]) < abs(L[hi] - L[lo]))) hi = s;
+					DWORD a = pal[cs[lo] >= 0 ? cs[lo] : now], z = pal[cs[hi] >= 0 ? cs[hi] : now];
+					int t = hi == lo || L[hi] == L[lo] ? 0 : max(0, min(256, (lum - L[lo]) * 256 / (L[hi] - L[lo])));
+					h = mix_rgb(a, z, t);
+				}
+				(b < 2 ? o0 : o1)[b & 1] = h;
+			}
+			g_sprShadow[fy * MAX_W + fx] = now;
+			g_sprValid[fy * MAX_W + fx] = 1;
+			stamped++;
+		}
+	}
+	static int logged;
+	if (logged++ < 6) logf_("minimap at %d,%d mode %d: %d of 16384 pixels HD (back %dx%d org %d)", x, y, mode, stamped, g_back->w, g_back->h, g_back->org);
+}
+
 static void text_clear(int x, int y, int w, int h);
 
 static void forget_tiles(void)
 {
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
-	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H);
+	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
+	if (g_sprValid) {
+		int keep = g_off + PANEL_X;
+		if (keep <= 0 || keep >= MAX_W || IN_BATTLE_NOW()) memset(g_sprValid, 0, MAX_W * GAME_H);
+		else for (int y = 0; y < GAME_H; y++) memset(g_sprValid + y * MAX_W, 0, keep);
+	}
 	text_clear(-g_off, 24, g_frameW, g_frameH);
 }
 
@@ -3122,6 +3232,9 @@ static void install(void)
 	static const BYTE kCellPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };
 	static const BYTE kSpecialPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
 	static const BYTE kBlitPrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };
+	static const BYTE kMiniLoad[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }, kMiniPaint[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C };
+	hook_code((BYTE *)0x0046a037, kMiniLoad, 6, h_mini_load, &o_mini_load);
+	hook_code((BYTE *)0x00410cbd, kMiniPaint, 6, h_mini_paint, &o_mini_paint);
 	hook_code((BYTE *)0x004b41b7, kBlitPrologue, 6, h_glyph0, &o_glyph[0]);
 	hook_code((BYTE *)0x004b425c, kBlitPrologue, 6, h_glyph1, &o_glyph[1]);
 	hook_code((BYTE *)0x004b42c5, kBlitPrologue, 6, h_glyph2, &o_glyph[2]);
