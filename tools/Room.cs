@@ -228,6 +228,139 @@ public static class Room
         }
     }
 
+    // Greatest nobles: a picture (sky, battlement) inside a sandstone frame, with the button bar below.
+    // The image model widens only the picture (tools\paint_nobles.ps1); the frame is rebuilt around it.
+    // 2x: picture x 40..1242, y 38..854. Model canvases: 832 x 832 from y 30, one per side, the new
+    // columns (2M plus an overlap) at the outer edge.
+    const int NobX0 = 40, NobX1 = 1242, NobY0 = 38, NobY1 = 854, NobCanvas = 832, NobTop = 30, NobOverlap = 24;
+
+    public static void NoblesCanvas(string bin, int side, string init, string mask)
+    {
+        byte[] pic = Load(bin);
+        int nw = 2 * M + NobOverlap;
+        using (var b = new System.Drawing.Bitmap(NobCanvas, NobCanvas, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+        using (var k = new System.Drawing.Bitmap(NobCanvas, NobCanvas, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+        {
+            var d = b.LockBits(new System.Drawing.Rectangle(0, 0, NobCanvas, NobCanvas), System.Drawing.Imaging.ImageLockMode.WriteOnly, b.PixelFormat);
+            byte[] o = new byte[NobCanvas * NobCanvas * 4], m = new byte[o.Length];
+            for (int y = 0; y < NobCanvas; y++)
+                for (int c = 0; c < NobCanvas; c++)
+                {
+                    int u = side < 0 ? c : NobCanvas - 1 - c;  // columns from the outer edge
+                    int known = u - 2 * M;                       // picture columns in from its edge
+                    int sx = known >= 0 ? known : -known - 1;   // the new part starts as a mirror
+                    sx = side < 0 ? NobX0 + sx : NobX1 - 1 - sx;
+                    Get(pic, sx, NobTop + y, 1, o, (y * NobCanvas + c) * 4);
+                    byte v = (byte)(u < nw ? 255 : 0);
+                    m[(y * NobCanvas + c) * 4] = m[(y * NobCanvas + c) * 4 + 1] = m[(y * NobCanvas + c) * 4 + 2] = v;
+                }
+            System.Runtime.InteropServices.Marshal.Copy(o, 0, d.Scan0, o.Length);
+            b.UnlockBits(d);
+            b.Save(init, System.Drawing.Imaging.ImageFormat.Png);
+            var e = k.LockBits(new System.Drawing.Rectangle(0, 0, NobCanvas, NobCanvas), System.Drawing.Imaging.ImageLockMode.WriteOnly, k.PixelFormat);
+            System.Runtime.InteropServices.Marshal.Copy(m, 0, e.Scan0, m.Length);
+            k.UnlockBits(e);
+            k.Save(mask, System.Drawing.Imaging.ImageFormat.Png);
+        }
+    }
+
+    static byte[] Pixels(string png, int w, int h)
+    {
+        using (var b = new System.Drawing.Bitmap(png))
+        using (var c = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+        {
+            using (var g = System.Drawing.Graphics.FromImage(c)) g.DrawImage(b, 0, 0, w, h);
+            var d = c.LockBits(new System.Drawing.Rectangle(0, 0, w, h), System.Drawing.Imaging.ImageLockMode.ReadOnly, c.PixelFormat);
+            byte[] o = new byte[w * h * 4];
+            System.Runtime.InteropServices.Marshal.Copy(d.Scan0, o, 0, o.Length);
+            c.UnlockBits(d);
+            return o;
+        }
+    }
+
+    // The model paints the sky lighter than the original: each row of a canvas is shifted by the
+    // difference between the original and the painting in the columns they share next to the join
+    // (smoothed over neighbouring rows).
+    static void MatchRows(byte[] pic, byte[] s, int side)
+    {
+        double[,] off = new double[NobCanvas, 3];
+        for (int y = 0; y < NobCanvas; y++)
+            for (int k = 0; k < 3; k++)
+            {
+                double a = 0, b = 0; int n = 0;
+                for (int u = 2 * M + NobOverlap; u < 2 * M + NobOverlap + 48; u++)
+                {
+                    int c = side < 0 ? u : NobCanvas - 1 - u;
+                    int sx = side < 0 ? NobX0 + (u - 2 * M) : NobX1 - 1 - (u - 2 * M);
+                    int sy = Math.Max(0, Math.Min(959, NobTop + y));
+                    a += pic[768 + (sy * 1280 + sx) * 4 + k];
+                    b += s[(y * NobCanvas + c) * 4 + k]; n++;
+                }
+                off[y, k] = (a - b) / n;
+            }
+        for (int y = 0; y < NobCanvas; y++)
+            for (int k = 0; k < 3; k++)
+            {
+                double t = 0; int n = 0;
+                for (int d = -24; d <= 24; d++) { int yy = y + d; if (yy >= 0 && yy < NobCanvas) { t += off[yy, k]; n++; } }
+                double o = t / n;
+                for (int c = 0; c < NobCanvas; c++)
+                {
+                    int p = (y * NobCanvas + c) * 4 + k;
+                    s[p] = (byte)Math.Max(0, Math.Min(255, s[p] + o));
+                }
+            }
+    }
+
+    public static void Nobles(string bin, string leftPng, string rightPng, string outBin)
+    {
+        byte[] pic = Load(bin), L = Pixels(leftPng, NobCanvas, NobCanvas), R = Pixels(rightPng, NobCanvas, NobCanvas);
+        MatchRows(pic, L, -1); MatchRows(pic, R, 1);
+        int w2 = 2 * W, h2 = 2 * H, sh = 4 * M;  // the right part moves 2M (2x) over
+        byte[] o = new byte[w2 * h2 * 4];
+        for (int y = 0; y < h2; y++)
+            for (int x = 0; x < w2; x++)
+            {
+                int d = (y * w2 + x) * 4;
+                bool inRows = y >= NobY0 && y < NobY1;
+                if (y >= NobY1)
+                {
+                    // the bar moves whole with the middle; the frame below carried on to the edges
+                    int v = x - 2 * M;
+                    if (v < 0 || v >= 1280) Get(pic, 4 + PingPong(v < 0 ? -v : v - 1280, 72), y, 1, o, d);
+                    else Get(pic, v, y, 1, o, d);
+                }
+                else if (x < NobX0) Get(pic, x, y, 1, o, d);                       // left frame, at the edge
+                else if (x >= NobX1 + sh) Get(pic, x - sh, y, 1, o, d);            // right frame, at the edge
+                else if (!inRows) Get(pic, NobX0 + PingPong(x - NobX0, NobX1 - NobX0), y, 1, o, d); // top frame, carried on
+                else if (x >= NobX0 + 2 * M && x < NobX1 + 2 * M) Get(pic, x - 2 * M, y, 1, o, d); // the picture, as painted
+                else
+                {
+                    bool left = x < NobX0 + 2 * M;
+                    int c = left ? x - NobX0 : NobCanvas - (NobX1 + sh - x);
+                    byte[] s = left ? L : R;
+                    int p = ((y - NobTop) * NobCanvas + c) * 4;
+                    for (int k = 0; k < 3; k++) o[d + k] = s[p + k];
+                }
+                // fade the painted columns into the picture across the overlap
+                if (inRows)
+                {
+                    int inL = x - (NobX0 + 2 * M), inR = (NobX1 + 2 * M - 1) - x;
+                    int into = Math.Min(inL, inR);
+                    if (into >= 0 && into < 2 * NobOverlap)
+                    {
+                        bool left = inL < inR;
+                        int c = left ? x - NobX0 : NobCanvas - (NobX1 + sh - x);
+                        byte[] s = left ? L : R;
+                        int p = ((y - NobTop) * NobCanvas + c) * 4;
+                        double t = 1 - (into + 0.5) / (2 * NobOverlap);
+                        for (int k = 0; k < 3; k++) o[d + k] = (byte)(o[d + k] * (1 - t) + s[p + k] * t);
+                    }
+                }
+            }
+        Save(outBin, o, 20, 621, 427, 480);
+    }
+
     // Plain dark sides, with a soft shadow where the picture ends: nothing copied.
     public static void DarkSides(string bin, string outBin)
     {

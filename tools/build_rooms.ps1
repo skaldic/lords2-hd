@@ -26,6 +26,9 @@ foreach ($n in 'skircust', 'skirmish', 'custom', 'cas_back') {
     $src = Join-Path $art "$n-tex.png"
     if (Test-Path $src) { [Room]::Painted((Join-Path $game "lords2hd\screens\$n.bin"), $src, (Join-Path $wide "$n.bin")) }
 }
+# Greatest nobles: its picture widened by tools\paint_nobles.ps1, the frame rebuilt around it.
+$nl = Join-Path $art "grtnoble-left1.png"; $nr = Join-Path $art "grtnoble-right1.png"
+if ((Test-Path $nl) -and (Test-Path $nr)) { [Room]::Nobles((Join-Path $game "lords2hd\screens\grtnoble.bin"), $nl, $nr, (Join-Path $wide "grtnoble.bin")) }
 
 # The skirmish screens' fighting pair (misc_ske frames 33-44) has its own background.
 $c = 0; $h = ""
