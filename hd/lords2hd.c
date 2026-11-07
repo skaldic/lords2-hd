@@ -326,6 +326,72 @@ static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWOR
 // block over that art, and the bottom bar's as one block against the right edge.
 static struct { int w, cutL, cutR, floorY, barY, on, extra; DWORD *px, *out; } g_room;
 
+// Animations with their own background (see Room.AppendKey): where a key's frames are drawn, a pixel
+// still holding the frames' background shows the room behind it. Each key is found on screen by
+// its pixels that are background in every frame, and remembered until they stop matching.
+#define MAX_KEYS 4
+static struct { int w, h, x, y, found; BYTE *bg, *mark; int probe[24], probes; } g_keys[MAX_KEYS];
+static int g_keyCount;
+
+static BOOL key_at(int k, int x, int y)
+{
+	for (int i = 0; i < g_keys[k].probes; i++) {
+		int p = g_keys[k].probe[i], px = x + p % g_keys[k].w, py = y + p / g_keys[k].w;
+		if (g_frame8[py * GAME_W + px] != g_keys[k].bg[p]) return FALSE;
+	}
+	return TRUE;
+}
+
+static void keys_find(void)
+{
+	for (int k = 0; k < g_keyCount; k++) {
+		int w = g_keys[k].w, h = g_keys[k].h;
+		if (g_keys[k].found && key_at(k, g_keys[k].x, g_keys[k].y)) continue;
+		g_keys[k].found = FALSE;
+		for (int y = 0; y + h <= GAME_H && !g_keys[k].found; y++)
+			for (int x = 0; x + w <= GAME_W; x++)
+				if (key_at(k, x, y)) {
+					g_keys[k].x = x; g_keys[k].y = y; g_keys[k].found = TRUE;
+					break;
+				}
+	}
+}
+
+// The game's pixel at x, y is an animation's own background.
+static BOOL key_bg(int x, int y, BYTE v)
+{
+	for (int k = 0; k < g_keyCount; k++) {
+		int u = x - g_keys[k].x, t = y - g_keys[k].y;
+		if (!g_keys[k].found || u < 0 || t < 0 || u >= g_keys[k].w || t >= g_keys[k].h) continue;
+		int i = t * g_keys[k].w + u;
+		return g_keys[k].mark[i] && g_keys[k].bg[i] == v;
+	}
+	return FALSE;
+}
+
+static void keys_load(FILE *f)
+{
+	for (int k = 0; k < g_keyCount; k++) { free(g_keys[k].bg); free(g_keys[k].mark); g_keys[k].bg = g_keys[k].mark = NULL; }
+	g_keyCount = 0;
+	int n;
+	if (fread(&n, 4, 1, f) != 1) return;
+	for (int k = 0; k < n && k < MAX_KEYS; k++) {
+		int wh[2];
+		if (fread(wh, 4, 2, f) != 2 || wh[0] <= 0 || wh[1] <= 0 || wh[0] > GAME_W || wh[1] > GAME_H) return;
+		int size = wh[0] * wh[1];
+		BYTE *bg = malloc(size), *mark = malloc(size);
+		if (!bg || !mark || fread(bg, 1, size, f) != (size_t)size || fread(mark, 1, size, f) != (size_t)size) { free(bg); free(mark); return; }
+		g_keys[k].w = wh[0]; g_keys[k].h = wh[1]; g_keys[k].bg = bg; g_keys[k].mark = mark; g_keys[k].found = FALSE;
+		// Probes: up to 24 always-background pixels spread over the frame.
+		int all = 0;
+		for (int i = 0; i < size; i++) all += mark[i] == 2;
+		g_keys[k].probes = 0;
+		for (int i = 0, seen = 0; i < size && g_keys[k].probes < 24; i++)
+			if (mark[i] == 2 && seen++ % max(1, all / 24) == 0) g_keys[k].probe[g_keys[k].probes++] = i;
+		g_keyCount = k + 1;
+	}
+}
+
 // The game column shown at frame column x (-1 for new art), and the art column.
 static int room_col(int x, int y, int *art)
 {
@@ -355,6 +421,7 @@ static void room_load(const char *base)
 			g_room.w = head[0]; g_room.cutL = head[1]; g_room.cutR = head[2];
 			g_room.floorY = head[3]; g_room.barY = head[4];
 			g_room.on = TRUE;
+			keys_load(f);
 		}
 	}
 	fclose(f);
@@ -374,6 +441,7 @@ static void room_compose(const PALETTEENTRY *pal, int sw)
 	}
 	int k = match || !want ? 256 : min(256, have * 256 / want);
 	int lw = 2 * g_room.w, ow = 2 * sw;
+	keys_find();
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * GAME_W, *sh = g_hdPic.shadow + y * GAME_W;
 		for (int x = 0; x < sw; x++) {
@@ -384,7 +452,7 @@ static void room_compose(const PALETTEENTRY *pal, int sw)
 				DWORD *o = g_room.out + (2 * y + b) * ow + 2 * x;
 				for (int c = 0; c < 2; c++) {
 					DWORD v;
-					if (g >= 0 && fr[g] != sh[g]) v = f[c];
+					if (g >= 0 && fr[g] != sh[g] && !(g_keyCount && key_bg(g, y, fr[g]))) v = f[c];
 					else if (k == 256) v = a[c];
 					else v = (((a[c] & 0xff00ff) * k >> 8) & 0xff00ff) | (((a[c] & 0xff00) * k >> 8) & 0xff00);
 					o[c] = v;
