@@ -94,14 +94,60 @@ public static class PixelWater {
             o[p] = c.B; o[p + 1] = c.G; o[p + 2] = c.R;
         }
     }
+    // Shore tiles: only their water pixels (colours the solid water tiles use, with water around them
+    // so a lone pixel of that colour on land stays), the land keeps its upscale.
+    public static void ApplyShore(byte[] o, int at, Pl8Frame f, System.Drawing.Color[] pal, bool[] waterColour) {
+        int W = f.Width, H = f.Height, start = at + 4 + W * H;
+        // The water: teal pixels, and every water-tile colour joined to them (the dark ripples).
+        bool[] any = AnyWater(pal, waterColour), water = new bool[W * H];
+        var todo = new System.Collections.Generic.Stack<int>();
+        for (int i = 0; i < W * H; i++) if (!Bleed.Key(f, i) && waterColour[f.Pixels[i]]) { water[i] = true; todo.Push(i); }
+        while (todo.Count > 0) {
+            int i = todo.Pop(), x0 = i % W, y0 = i / W;
+            foreach (int j in new[] { x0 > 0 ? i - 1 : -1, x0 < W - 1 ? i + 1 : -1, y0 > 0 ? i - W : -1, y0 < H - 1 ? i + W : -1 })
+                if (j >= 0 && !water[j] && !Bleed.Key(f, j) && any[f.Pixels[j]]) { water[j] = true; todo.Push(j); }
+        }
+        Func<int, int, bool> wet = (a, c) => a < 0 || c < 0 || a >= W || c >= H || water[c * W + a];
+        for (int y = 0; y < 2 * H; y++) for (int x = 0; x < 2 * W; x++) {
+            int cx = x / 2, cy = y / 2;
+            if (!water[cy * W + cx]) continue;
+            int around = (wet(cx - 1, cy) ? 1 : 0) + (wet(cx + 1, cy) ? 1 : 0) + (wet(cx, cy - 1) ? 1 : 0) + (wet(cx, cy + 1) ? 1 : 0);
+            if (around < 3) continue;
+            var c = pal[Epx(f, x, y)];
+            int p = start + (y * 2 * W + x) * 4;
+            o[p] = c.B; o[p + 1] = c.G; o[p + 2] = c.R;
+        }
+    }
+    // Every colour the solid water tiles use (set by WaterColours).
+    static bool[] s_any;
+    static bool[] AnyWater(System.Drawing.Color[] pal, bool[] teal) { return s_any ?? teal; }
+    public static bool[] WaterColours(Pl8Frame[] f, System.Drawing.Color[] pal) {
+        s_any = new bool[256];
+        foreach (var fr in f) if (fr.Error == null && IsWater(fr, pal)) foreach (var v in fr.Pixels) s_any[v] = true;
+        // The teal colours the water tiles use: grass shares some dark ones, which are left out.
+        long[] wet = new long[256];
+        foreach (var fr in f) if (fr.Error == null && IsWater(fr, pal)) foreach (var v in fr.Pixels) wet[v]++;
+        var w = new bool[256];
+        for (int v = 0; v < 256; v++) {
+            var c = pal[v];
+            w[v] = wet[v] > 0 && c.B > c.R + 25 && c.G > c.R + 25 && c.B + c.G > 120;
+        }
+        return w;
+    }
+    static int Count(Pl8Frame f, bool[] wc) { int n = 0; for (int i = 0; i < f.Pixels.Length; i++) if (!Bleed.Key(f, i) && wc[f.Pixels[i]]) n++; return n; }
+    // A tile with a real stretch of water in it (a quarter or more).
+    public static bool IsShore(Pl8Frame f, bool[] wc) { return Count(f, wc) * 4 >= f.Pixels.Length; }
+
     // The same on a built sprite file, in place: returns how many tiles changed.
     public static int Patch(string bin, Pl8Frame[] f, System.Drawing.Color[] pal) {
         byte[] d = File.ReadAllBytes(bin);
+        bool[] wc = WaterColours(f, pal);
         int n = 0;
         for (int i = 0; i < f.Length; i++) {
             int off = BitConverter.ToInt32(d, 4 + 4 * i);
-            if (off == 0 || f[i].Error != null || !IsWater(f[i], pal)) continue;
-            Apply(d, off, f[i], pal); n++;
+            if (off == 0 || f[i].Error != null) continue;
+            if (IsWater(f[i], pal)) { Apply(d, off, f[i], pal); n++; }
+            else if (IsShore(f[i], wc)) { ApplyShore(d, off, f[i], pal, wc); n++; }
         }
         File.WriteAllBytes(bin, d);
         return n;

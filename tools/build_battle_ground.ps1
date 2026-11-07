@@ -29,7 +29,7 @@ $ErrorActionPreference = 'Continue'
 $ErrorActionPreference = 'Stop'
 if ((Get-ChildItem $up).Count -ne (Get-ChildItem $in).Count) { throw "the upscaler did not finish" }
 foreach ($n in $Sets) {
-    $f = $all[$n]; $pal = $pals[$n]
+    $f = $all[$n]; $pal = $pals[$n]; $wc = [PixelWater]::WaterColours($f, $pal)
     $s = [IO.File]::Create((Join-Path $out "$n.bin"))
     $s.Write([BitConverter]::GetBytes([int]$f.Length), 0, 4)
     $s.Write((New-Object byte[] (4 * $f.Length)), 0, 4 * $f.Length)
@@ -40,7 +40,10 @@ foreach ($n in $Sets) {
         $table[$i] = [int]$s.Position
         $b = [Bleed]::Frame($f[$i], $u)
         if ([PixelWater]::IsWater($f[$i], $pal)) { [PixelWater]::Apply($b, 0, $f[$i], $pal) }
-        else { [BlendBack]::Apply($b, $f[$i], $pal, $Plain) }
+        else {
+            [BlendBack]::Apply($b, $f[$i], $pal, $Plain)
+            if ([PixelWater]::IsShore($f[$i], $wc)) { [PixelWater]::ApplyShore($b, 0, $f[$i], $pal, $wc) }
+        }
         $s.Write($b, 0, $b.Length)
     }
     $s.Position = 4
