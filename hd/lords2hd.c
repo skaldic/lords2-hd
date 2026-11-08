@@ -2775,11 +2775,12 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 	o_framed_panel(x, y, nx, ny);
 }
 
-// The county map at a zoom that scrolls (DAT_0057cb18 0 or 1). The kingdom overview (2) is one
-// fixed picture of the kingdom - the game places it at column 14 and turns scrolling off - and
-// the columns beside it are filler the game never shows, so it stays at 640 like other screens.
+// The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
+// picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
+// the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
 // A drop-down menu from the top bar is screen 0x32, with the screen under it kept in DAT_0056d894.
 #define MAP_ZOOM (*(int *)0x0057cb18)
+static BOOL g_wideOverview = TRUE;
 #define IN_BATTLE (*(int *)0x0057c8fc == 2)
 #define SCREEN_UNDER_MENU (*(int *)0x0056d894)
 // The wide view is on while the county map is the picture: from the moment the game redraws the
@@ -2791,7 +2792,7 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 static BOOL battle_zoom_on(void) { return g_battleZoom && g_off && IN_BATTLE && county_map_on(); }
 static BOOL county_map_on(void)
 {
-	if (GAME_MODE != 3 || (!IN_BATTLE && MAP_ZOOM == 2)) {
+	if (GAME_MODE != 3 || (!IN_BATTLE && MAP_ZOOM == 2 && !g_wideOverview)) {
 		g_mapSticky = FALSE;
 		return FALSE;
 	}
@@ -2866,7 +2867,9 @@ static BOOL begin_wide_view(void)
 		lastCols = MAP_COLUMNS;
 		lastK = k;
 	}
-	if (MAP_FIRST_COL < k) MAP_FIRST_COL = k;
+	// The kingdom overview stays where the game put it: only the map's real columns left of it.
+	if (MAP_ZOOM == 2) k = min(k, MAP_FIRST_COL);
+	else if (MAP_FIRST_COL < k) MAP_FIRST_COL = k;
 	g_view.cols = MAP_COLUMNS;
 	g_view.firstX = MAP_FIRST_X;
 	g_view.firstCol = MAP_FIRST_COL;
@@ -3149,9 +3152,29 @@ static void __cdecl h_redraw_map(void)
 	BYTE *frame = g_back->bits + g_back->org;
 	int bottom = max(24, min(GAME_H, *(int *)0x00553254));
 	for (int y = 24; y < bottom; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
-	begin_wide_view();
+	if (!begin_wide_view()) {
+		o_redraw_map();
+		return;
+	}
 	o_redraw_map();
 	end_wide_view();
+	// The kingdom overview runs out of map columns before the screen's left edge: the strip left
+	// is filled with the land 4 columns to its right (the map repeats every column), HD layer too.
+	int strip = g_extra - g_view.k * MAP_STEP - g_view.firstX, shift = 4 * MAP_STEP;
+	if (MAP_ZOOM == 2 && strip > 0 && strip <= shift) {
+		int x0 = g_back->org - g_extra;
+		for (int y = 24; y < bottom; y++) {
+			BYTE *row = g_back->bits + y * g_back->pitch + x0;
+			memcpy(row, row + shift, strip);
+			if (!g_sprLayer) continue;
+			memcpy(g_sprShadow + y * MAX_W + x0, g_sprShadow + y * MAX_W + x0 + shift, strip);
+			memcpy(g_sprValid + y * MAX_W + x0, g_sprValid + y * MAX_W + x0 + shift, strip);
+			for (int r = 0; r < 2; r++) {
+				DWORD *o = g_sprLayer + (2 * y + r) * (2 * MAX_W) + 2 * x0;
+				memcpy(o, o + 2 * shift, strip * 2 * sizeof(DWORD));
+			}
+		}
+	}
 }
 
 // "y * 640" compiled as LEA r,[r+r*4] ; SHL r,7 (tools\find_mul640.ps1), in the rectangle
