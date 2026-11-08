@@ -1003,10 +1003,12 @@ static mini_paint_t o_mini_paint;
 static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 {
 	o_mini_paint(player, x, y, mode);
-	if (!g_miniHD || !g_sprLayer || !g_back || !g_primary || !g_primary->pal) return;
-	const PALETTEENTRY *pe = g_primary->pal->e;
+	if (!g_miniHD || !g_sprLayer || !g_back || !g_layer) return; // g_layer: g_tilePal is loaded
+	// The map's own palette, not the screen's: coming back from another screen the screen is still
+	// faded to black when the minimap is drawn, and its colours would be baked in black.
 	DWORD pal[256];
-	for (int i = 0; i < 256; i++) pal[i] = (pe[i].peRed << 16) | (pe[i].peGreen << 8) | pe[i].peBlue;
+	for (int i = 0; i < 256; i++)
+		pal[i] = (g_tilePal[i * 3] * 255 / 63 << 16) | (g_tilePal[i * 3 + 1] * 255 / 63 << 8) | g_tilePal[i * 3 + 2] * 255 / 63;
 	// The colour each county got for each shade, read back from what was drawn.
 	static short shade[256][4];
 	for (int i = 0; i < 256; i++) shade[i][0] = shade[i][1] = shade[i][2] = shade[i][3] = -1;
@@ -1063,6 +1065,8 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 }
 
 static void text_clear(int x, int y, int w, int h);
+static void text_stale(void);
+static void text_publish(int y0, int y1);
 
 static void forget_tiles(void)
 {
@@ -1070,10 +1074,14 @@ static void forget_tiles(void)
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
 		int keep = g_off + PANEL_X;
-		if (keep <= 0 || keep >= MAX_W || IN_BATTLE_NOW()) memset(g_sprValid, 0, MAX_W * GAME_H);
-		else for (int y = 0; y < GAME_H; y++) memset(g_sprValid + y * MAX_W, 0, keep);
+		// Only remembered (2), as the letters: a scroll's icons come back from the game's saved copy.
+		if (keep <= 0 || keep >= MAX_W || IN_BATTLE_NOW()) keep = MAX_W;
+		for (int y = 0; y < GAME_H; y++) {
+			BYTE *v = g_sprValid + y * MAX_W;
+			for (int x = 0; x < keep; x++) if (v[x]) v[x] = 2;
+		}
 	}
-	text_clear(-g_off, 24, g_frameW, g_frameH);
+	text_stale(); // a scroll over the map comes back from the game's saved copy, letters and all
 }
 
 // One 2x pixel of water near a shore: crests roll in towards the land and fade up as they arrive,
@@ -1159,7 +1167,10 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
 			if (!ok[fr[x]]) continue;
-			if (sv[x] && fr[x] == ss[x]) {
+			BOOL spr = sv[x] && fr[x] == ss[x];
+			if (spr && sv[x] == 2) // remembered only: inside a cluster of matching pixels
+				spr = x > 0 && x < sw - 1 && sv[x - 1] && fr[x - 1] == ss[x - 1] && sv[x + 1] && fr[x + 1] == ss[x + 1];
+			if (spr) {
 				o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
 				o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
 			}
@@ -1188,6 +1199,27 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 // game's three-pass engraved letters. A frame pixel shows from the layer while it still holds what
 // the letter left there.
 static BYTE *g_txt, *g_txtShadow, *g_txtValid;
+// The layer as of the frame on screen: the live one follows the game's back buffer, where a scroll
+// being redrawn has lost its letters for a moment while the screen still shows the finished frame
+// (all text blinked soft). Rows are copied over with the frame, under g_lock.
+static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;
+
+static void text_publish(int y0, int y1)
+{
+	if (!g_txt || !g_back) return;
+	int W = g_back->w, H = g_back->h;
+	if (!g_txtS) {
+		g_txtS = malloc(W * H * 4);
+		g_txtShadowS = malloc(W * H);
+		g_txtValidS = calloc(W, H);
+		if (!g_txtS || !g_txtShadowS || !g_txtValidS) return;
+	}
+	y0 = max(0, y0); y1 = min(H, y1);
+	if (y1 <= y0) return;
+	memcpy(g_txtS + y0 * W * 4, g_txt + y0 * W * 4, (y1 - y0) * W * 4);
+	memcpy(g_txtShadowS + y0 * W, g_txtShadow + y0 * W, (y1 - y0) * W);
+	memcpy(g_txtValidS + y0 * W, g_txtValid + y0 * W, (y1 - y0) * W);
+}
 
 static void text_clear(int x, int y, int w, int h)
 {
@@ -1196,6 +1228,17 @@ static void text_clear(int x, int y, int w, int h)
 	int x0 = max(x, 0), x1 = min(x + w, g_back->w);
 	if (x1 <= x0) return;
 	for (int r = max(y, 0); r < min(y + h, g_back->h); r++) memset(g_txtValid + r * g_back->w + x0, 0, x1 - x0);
+}
+static void text_stale(void);
+
+// After a full map redraw the letters are only remembered (2): the game often puts a scroll back
+// from its saved copy without drawing the text again. A remembered pixel shows only inside a
+// cluster of matching ones, so map pixels that happen to have a letter's colour stay plain.
+static void text_stale(void)
+{
+	if (!g_txtValid || !g_back) return;
+	int n = g_back->w * g_back->h;
+	for (int i = 0; i < n; i++) if (g_txtValid[i]) g_txtValid[i] = 2;
 }
 
 // w x h letter at game x, y, drawn in "colour" (-1: its own pixels); before = the frame under it.
@@ -1238,14 +1281,24 @@ static void text_overlay(int sx, int sw)
 {
 	if (!g_txt || !g_hdText) return;
 	int W = g_back->w;
+	// what the frame on screen had (see text_publish); the live layer until the first copy
+	const BYTE *g_txt_ = g_txtS ? g_txtS : g_txt, *shadow = g_txtS ? g_txtShadowS : g_txtShadow, *valid = g_txtS ? g_txtValidS : g_txtValid;
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * sw;
 		int f0 = y * W + sx;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
 			int f = f0 + x;
-			if (!g_txtValid[f] || fr[x] != g_txtShadow[f]) continue;
-			const BYTE *t = g_txt + f * 4;
+			if (!valid[f] || fr[x] != shadow[f]) continue;
+			if (valid[f] == 2) {
+				int around = 0;
+				if (x > 0 && valid[f - 1] && fr[x - 1] == shadow[f - 1]) around++;
+				if (x < sw - 1 && valid[f + 1] && fr[x + 1] == shadow[f + 1]) around++;
+				if (y > 0 && valid[f - W] && g_frame8[(y - 1) * sw + x] == shadow[f - W]) around++;
+				if (y < GAME_H - 1 && valid[f + W] && g_frame8[(y + 1) * sw + x] == shadow[f + W]) around++;
+				if (around < 2) continue;
+			}
+			const BYTE *t = g_txt_ + f * 4;
 			o0[2 * x] = g_lut[t[0]]; o0[2 * x + 1] = g_lut[t[1]];
 			o1[2 * x] = g_lut[t[2]]; o1[2 * x + 1] = g_lut[t[3]];
 		}
@@ -1307,8 +1360,8 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
 				int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
 				int f = gy * W + gx;
-				if (g_txtValid[f] && copy[gy * pitch + gx] == g_txtShadow[f])
-					o[sx] = g_lut[g_txt[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)]];
+				if ((g_txtS ? g_txtValidS : g_txtValid)[f] && copy[gy * pitch + gx] == (g_txtS ? g_txtShadowS : g_txtShadow)[f])
+					o[sx] = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)]];
 			}
 		}
 	}
@@ -1445,7 +1498,17 @@ static BOOL present(void)
 	g_showW = g_wideScreen ? GAME_W + g_extra : GAME_W;
 	int sx = g_showX, sw = g_showW;
 	// A wider room takes the frame, built from the game's 640 columns.
-	BOOL room = g_room.on && g_hdPic.on && g_hdPic.seen && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
+	BOOL room = g_room.on && g_hdPic.on && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
+	if (room && !g_hdPic.seen) {
+		// The painting's first frame on screen goes wide at once (waiting for hd_overlay to have
+		// seen it showed one narrow frame: a flicker on every painted screen).
+		int same = 0;
+		for (int y = 0; y < GAME_H; y += 4) {
+			const BYTE *fr = g_primary->bits + y * g_primary->pitch + g_off, *sh = g_hdPic.shadow + y * GAME_W;
+			for (int x = 0; x < GAME_W; x += 4) same += fr[x] == sh[x];
+		}
+		room = same >= (GAME_W / 4) * (GAME_H / 4) / 8;
+	}
 	int roomW = 0;
 	if (room) {
 		g_room.extra = min(g_extra, g_room.w - GAME_W);
@@ -1759,6 +1822,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 	if (!clip_copy(dst, src, &dx, &dy, &sx, &sy, &w, &h)) return;
 	for (int y = 0; y < h; y++)
 		memmove(dst->bits + (dy + y) * dst->pitch + dx, src->bits + (sy + y) * src->pitch + sx, w);
+	if (dst->primary && src == g_back && dy == sy) text_publish(dy, dy + h);
 }
 
 static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWORD flags, DDBLTFX *fx)
@@ -3218,7 +3282,20 @@ static void install(void)
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);
 	hook_import("USER32.dll", "CreateWindowExA", h_CreateWindowExA, &o_CreateWindowExA);
 	hook_import("USER32.dll", "ShowWindow", h_ShowWindow, &o_ShowWindow);
-	if (g_remote) waveOutSetVolume(0, 0); // the process's audio session: DirectSound too
+	// Remote mode mutes the process's audio session (DirectSound too). Windows remembers that volume
+	// for the exe, so the next normal start would be silent: a marker file says to turn it back up.
+	char muted[MAX_PATH];
+	snprintf(muted, sizeof muted, "%s\\lords2hd-muted.txt", g_gameDir);
+	if (g_remote) {
+		waveOutSetVolume(0, 0);
+		FILE *m = fopen(muted, "w");
+		if (m) fclose(m);
+	}
+	else if (GetFileAttributesA(muted) != INVALID_FILE_ATTRIBUTES) {
+		waveOutSetVolume(0, 0xFFFFFFFF);
+		DeleteFileA(muted);
+		logf_("sound turned back up after remote testing");
+	}
 	hook_import("USER32.dll", "GetClientRect", h_GetClientRect, &o_GetClientRect);
 	hook_import("USER32.dll", "ClientToScreen", h_ClientToScreen, &o_ClientToScreen);
 	hook_import("USER32.dll", "SetCursor", h_SetCursor, &o_SetCursor);

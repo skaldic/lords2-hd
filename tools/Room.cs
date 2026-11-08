@@ -361,6 +361,69 @@ public static class Room
         Save(outBin, o, 20, 621, 427, 480);
     }
 
+    // The same from the image model's own 2x canvases (paint_sides.ps1's _<name>-left/right-<seed>.png,
+    // 832x960: the frame's first / last 832 columns at 2x), so the sides keep the model's detail.
+    // Each row is shifted to the colour of the HD painting at the join, and faded in over 64 columns.
+    // right = null: the left canvas mirrored for the right side.
+    public static void PaintedRaw(string bin, string leftPng, string rightPng, string outBin)
+    {
+        const int cw = 832, fade = 64;
+        byte[] pic = Load(bin), L = Pixels(leftPng, cw, 2 * H);
+        byte[] R = !string.IsNullOrEmpty(rightPng) ? Pixels(rightPng, cw, 2 * H) : null;
+        Func<int, int, int, int> side = (x, y, k) =>   // 2x frame column x (outside the painting), row y
+        {
+            if (x < 2 * W / 2) return L[(y * cw + x) * 4 + k];
+            int c = 2 * W - 1 - x;                      // columns from the right edge
+            return R != null ? R[(y * cw + cw - 1 - c) * 4 + k] : L[(y * cw + c) * 4 + k];
+        };
+        // per row and side: the HD painting minus the canvas, near the join
+        double[,,] off = new double[2, 2 * H, 3];
+        for (int s = 0; s < 2; s++)
+            for (int y = 0; y < 2 * H; y++)
+                for (int k = 0; k < 3; k++)
+                {
+                    double a = 0, b = 0; int n = 0;
+                    for (int u = 0; u < 48; u++)
+                    {
+                        int x = s == 0 ? 2 * M + fade + u : 2 * M + 1279 - fade - u;
+                        a += pic[768 + (y * 1280 + x - 2 * M) * 4 + k];
+                        b += side(x, y, k); n++;
+                    }
+                    off[s, y, k] = (a - b) / n;
+                }
+        double[,,] sm = new double[2, 2 * H, 3];
+        for (int s = 0; s < 2; s++)
+            for (int y = 0; y < 2 * H; y++)
+                for (int k = 0; k < 3; k++)
+                {
+                    double t = 0; int n = 0;
+                    for (int d = -32; d <= 32; d++) { int yy = y + d; if (yy >= 0 && yy < 2 * H) { t += off[s, yy, k]; n++; } }
+                    sm[s, y, k] = t / n;
+                }
+        int w2 = 2 * W;
+        byte[] o = new byte[w2 * 2 * H * 4];
+        for (int y = 0; y < 2 * H; y++)
+            for (int x = 0; x < w2; x++)
+            {
+                int d = (y * w2 + x) * 4, v = x - 2 * M, s = x < w2 / 2 ? 0 : 1;
+                int into = v < 0 || v >= 1280 ? -1 : Math.Min(v, 1279 - v);  // painting columns from its edge
+                for (int k = 0; k < 3; k++)
+                {
+                    double painted = into >= fade || into >= 0 && false ? 0 : side(x, y, k) + sm[s, y, k];
+                    double val;
+                    if (into < 0) val = painted;
+                    else
+                    {
+                        double hd = pic[768 + (y * 1280 + v) * 4 + k];
+                        double t = into >= fade ? 1 : (into + 0.5) / fade; // share of the painting
+                        val = into >= fade ? hd : hd * t + painted * (1 - t);
+                    }
+                    o[d + k] = (byte)Math.Max(0, Math.Min(255, val));
+                }
+            }
+        Save(outBin, o, 0, 640, 480, 480);
+    }
+
     // Plain dark sides, with a soft shadow where the picture ends: nothing copied.
     public static void DarkSides(string bin, string outBin)
     {
@@ -546,6 +609,13 @@ public static class Room
                 else if (x1 < CutL) sx = x;
                 else if (x1 >= CutL + M && x1 < CutR + M) sx = x - 2 * M;
                 else if (x1 >= CutR + 2 * M) sx = x - 4 * M;
+                else if (y1 >= 56 && y1 < 86) sx = 430 + (x1 < 400 ? x - 2 * CutL : x - 2 * (CutR + M)) % 90; // the beam, from its plain middle
+                else if (y1 >= 0)
+                {
+                    // The wall next to each side wall copied whole (a shield and real bricks), the
+                    // joins falling in the dark corners.
+                    sx = x1 < 400 ? x : x - 4 * M;
+                }
                 else
                 {
                     int i = x1 < 400 ? x - 2 * CutL : x - 2 * (CutR + M);
