@@ -1,0 +1,37 @@
+Lords of the Realm II HD: an unofficial fan patch for the GOG version of the game.
+You need your own copy of the game.
+
+INSTALL
+Unzip everything into the game's folder, the one holding Lords2.exe, so that ddraw.dll and
+lords2hd.ini sit next to it. Then start the game as usual.
+
+UNINSTALL
+Delete ddraw.dll, lords2hd.ini, lords2hd.log and the lords2hd folder. Your game files are not changed.
+
+WHAT IT DOES
+- Runs fullscreen at your monitor's resolution, without switching its display mode
+- Fills widescreen monitors on the county map, the kingdom overview and in battles; battles show a
+  much larger field
+- Full-screen paintings (merchant, armoury, castle builder, menus) widened to fill the screen
+- Double-detail paintings, ground, buildings, troops, minimap, panels and lettering
+- Foam rolling in along the coast on the county map
+- A smaller mouse cursor
+
+SETTINGS (lords2hd.ini)
+Enabled=0       the stock game
+Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
+Wide=0          4:3 instead of widescreen
+BattleZoom=0    battles at normal size
+HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
+CursorScale=50  cursor size in percent
+
+KNOWN LIMITS
+- The new sides of the widened paintings were painted by an AI image model (see NOTICE.md); screens
+  without a widened version stay centred at 4:3
+- Text on the battlefield is soft and dialogs in battle are small
+- The winter sea has no waves
+- Tested on a 2560x1440 monitor. A real 1080p monitor has not been tried yet.
+
+BUGS
+After a crash, keep lords2hd.log from the game's folder straight away: it is rewritten at each start.
+Say which monitor you use and whether another ddraw.dll wrapper or an overlay is running.
