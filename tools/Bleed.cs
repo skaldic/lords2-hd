@@ -169,3 +169,47 @@ public static class BlendBack {
         }
     }
 }
+
+// Portraits: the upscaler sharpens faces but shifts their light and colour (waxy skin, brighter eyes).
+// Likeness.Patch puts the original's own tones back under the new detail - hd + (blur(orig) - blur(hd)) -
+// and mixes a share of the doubled original back in as grain. Works on a built sprite file in place.
+public static class Likeness {
+    static double[] Blur(double[] a, int W, int H, int r) {
+        var t = new double[a.Length]; var b = new double[a.Length];
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) for (int c = 0; c < 3; c++) {
+            double s = 0; int n = 0;
+            for (int k = -r; k <= r; k++) { int xx = x + k; if (xx < 0 || xx >= W) continue; s += a[(y * W + xx) * 3 + c]; n++; }
+            t[(y * W + x) * 3 + c] = s / n;
+        }
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) for (int c = 0; c < 3; c++) {
+            double s = 0; int n = 0;
+            for (int k = -r; k <= r; k++) { int yy = y + k; if (yy < 0 || yy >= H) continue; s += t[(yy * W + x) * 3 + c]; n++; }
+            b[(y * W + x) * 3 + c] = s / n;
+        }
+        return b;
+    }
+    public static int Patch(string bin, System.Drawing.Color[] pal, double grain) {
+        byte[] d = File.ReadAllBytes(bin); int n = BitConverter.ToInt32(d, 0), done = 0;
+        for (int i = 0; i < n; i++) {
+            int off = BitConverter.ToInt32(d, 4 + 4 * i); if (off == 0) continue;
+            int w = BitConverter.ToUInt16(d, off), h = BitConverter.ToUInt16(d, off + 2), idx = off + 4, hd = idx + w * h, W = 2 * w, H = 2 * h;
+            var o2 = new double[W * H * 3]; var h2 = new double[W * H * 3];
+            for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+                int p = (y * W + x) * 3, q = hd + (y * W + x) * 4; var c = pal[d[idx + (y / 2) * w + x / 2]];
+                o2[p] = c.R; o2[p + 1] = c.G; o2[p + 2] = c.B; h2[p] = d[q + 2]; h2[p + 1] = d[q + 1]; h2[p + 2] = d[q];
+            }
+            var bo = Blur(o2, W, H, 4); var bh = Blur(h2, W, H, 4);
+            for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+                if (d[idx + (y / 2) * w + x / 2] == 0) continue;
+                int p = (y * W + x) * 3, q = hd + (y * W + x) * 4;
+                for (int c = 0; c < 3; c++) {
+                    double v = (h2[p + c] + bo[p + c] - bh[p + c]) * (1 - grain) + o2[p + c] * grain;
+                    d[q + 2 - c] = (byte)Math.Max(0, Math.Min(255, v + 0.5));
+                }
+            }
+            done++;
+        }
+        File.WriteAllBytes(bin, d);
+        return done;
+    }
+}

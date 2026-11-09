@@ -1,6 +1,7 @@
 ﻿# Widens a 640x480 screen to 16:9 with FLUX.1 Fill (stable-diffusion.cpp): the model sees the whole 2x
-# picture with empty sides and carries the scene on. The original stays untouched in the middle, the
-# new sides are faded in over -Overlap columns. Results: assets\wide\<name>-flux<seed>.png (1708x960).
+# picture with empty sides and carries the scene on. The original stays untouched in the middle.
+# Results in assets\wide: <name>-flux<seed>.bin (a wide room file) and .png (the same, to look at),
+# and the side canvases _<name>-fxleft-<seed>.png / -fxright- that build_rooms.ps1 uses.
 #   .\tools\expand_sides.ps1 -Name merchant -Prompt "a medieval market yard ..." -Seed 1 -Count 3
 # Models (tools dir, sdcpp\models): flux1-fill-dev-Q6_K.gguf, flux_ae.safetensors, clip_l.safetensors,
 # t5xxl-Q8_0.gguf. FLUX.1 Fill [dev] is licensed for non-commercial use.
@@ -14,7 +15,8 @@ param(
     [int]$Steps = 30,
     [double]$Guidance = 30,
     [int]$GenW = 1136,
-    [int]$GenH = 640
+    [int]$GenH = 640,
+    [switch]$ComposeOnly   # no painting: build again from the model's pictures already in assets\wide
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -53,26 +55,38 @@ $a = @('--diffusion-model', (Join-Path $models "flux1-fill-dev-Q6_K.gguf"), '--v
     '--cfg-scale', '1.0', '--guidance', $Guidance, '--sampling-method', 'euler', '-s', $Seed, '-b', $Count,
     '--output-begin-idx', $Seed, '--vae-tiling', '-o', (Join-Path $work "_$Name-flux-raw%d.png"))
 $line = ($a | ForEach-Object { '"' + "$_" + '"' }) -join ' '
-$proc = Start-Process $sd -ArgumentList $line -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
-$proc.PriorityClass = 'BelowNormal'
-$proc.WaitForExit()
+if (-not $ComposeOnly) {
+    $proc = Start-Process $sd -ArgumentList $line -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+    $proc.PriorityClass = 'BelowNormal'
+    $proc.WaitForExit()
+}
+Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs"), (Join-Path $PSScriptRoot "Room.cs") -ReferencedAssemblies System.Drawing
+$esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 foreach ($s in $Seed..($Seed + $Count - 1)) {
     $raw = Join-Path $work "_$Name-flux-raw$s.png"
     if (-not (Test-Path $raw)) { throw "no image for seed $s - see _$Name-flux.log" }
-    # The original over the middle, the generated sides faded in across the overlap.
-    $gen = [Drawing.Bitmap]::FromFile($raw)
-    $out = New-Object Drawing.Bitmap $W, $H, ([Drawing.Imaging.PixelFormat]::Format32bppRgb)
-    $g = [Drawing.Graphics]::FromImage($out); $g.InterpolationMode = 'HighQualityBicubic'; $g.PixelOffsetMode = 'HighQuality'; $g.DrawImage($gen, (Rect 0 0 $W $H))
-    $g.DrawImage($pic, (Rect ($M + $Overlap) 0 ($PW - 2 * $Overlap) $H), (Rect $Overlap 0 ($PW - 2 * $Overlap) $H), 'Pixel')
-    for ($k = 0; $k -lt $Overlap; $k++) {
-        $cm = New-Object Drawing.Imaging.ColorMatrix; $cm.Matrix33 = ($k + 1) / ($Overlap + 1)
-        $ia = New-Object Drawing.Imaging.ImageAttributes; $ia.SetColorMatrix($cm)
-        $g.DrawImage($pic, (Rect ($M + $k) 0 1 $H), $k, 0, 1, $H, 'Pixel', $ia)
-        $g.DrawImage($pic, (Rect ($M + $PW - 1 - $k) 0 1 $H), ($PW - 1 - $k), 0, 1, $H, 'Pixel', $ia)
-    }
-    $g.Dispose(); $gen.Dispose()
-    $final = $out.Clone((Rect 2 0 1708 $H), $out.PixelFormat); $out.Dispose()
-    $final.Save((Join-Path $work "$Name-flux$s.png")); $final.Dispose()
+    # The model's picture enlarged the same way as the painting in the middle (Real-ESRGAN), then cut
+    # into the two side canvases Room.PaintedRaw takes: it matches their colour to the painting row
+    # by row and fades them in at the joins. The original stays untouched in the middle.
+    $x4 = Join-Path $work "_$Name-flux-x4-$s.png"
+    $ErrorActionPreference = 'Continue'
+    & $esr -i $raw -o $x4 -n realesrgan-x4plus -s 4 -f png -m (Join-Path $tools "realesrgan\models") 2>$null | Out-Null
+    $ErrorActionPreference = 'Stop'
+    $gen = [Drawing.Bitmap]::FromFile($(if (Test-Path $x4) { $x4 } else { $raw }))
+    $full = New-Object Drawing.Bitmap $W, $H, ([Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $g = [Drawing.Graphics]::FromImage($full); $g.InterpolationMode = 'HighQualityBicubic'; $g.PixelOffsetMode = 'HighQuality'
+    $g.DrawImage($gen, (Rect 0 0 $W $H)); $g.Dispose(); $gen.Dispose()
+    $left = Join-Path $work "_$Name-fxleft-$s.png"; $right = Join-Path $work "_$Name-fxright-$s.png"
+    $c = $full.Clone((Rect 2 0 832 $H), $full.PixelFormat); $c.Save($left); $c.Dispose()
+    $c = $full.Clone((Rect ($W - 2 - 832) 0 832 $H), $full.PixelFormat); $c.Save($right); $c.Dispose(); $full.Dispose()
+    $bin = Join-Path $work "$Name-flux$s.bin"
+    [Room]::PaintedRaw((Join-Path $game "lords2hd\screens\$Name.bin"), $left, $right, $bin)
+    # a full-size picture of the result, to look at
+    $b = [IO.File]::ReadAllBytes($bin)
+    $view = New-Object Drawing.Bitmap 1708, $H, ([Drawing.Imaging.PixelFormat]::Format32bppRgb)
+    $d = $view.LockBits((Rect 0 0 1708 $H), 'WriteOnly', $view.PixelFormat)
+    [Runtime.InteropServices.Marshal]::Copy($b, 20, $d.Scan0, 1708 * $H * 4); $view.UnlockBits($d)
+    $view.Save((Join-Path $work "$Name-flux$s.png")); $view.Dispose()
     "$Name seed $s done"
 }
 $pic.Dispose(); $init.Dispose()

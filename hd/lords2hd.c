@@ -1341,8 +1341,18 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		const BYTE *row = frame + (24 + sy - 48) * pitch + PANEL_X - mapW;
 		DWORD *o = pic + sy * lw;
 		for (int sx = 0; sx < mapW; sx++) o[sx] = g_lut[row[sx]];
-		const BYTE *pan = frame + (24 + (sy - 48) / 2) * pitch + PANEL_X;
-		for (int sx = mapW; sx < lw; sx++) o[sx] = g_lut[pan[(sx - mapW) / 2]];
+		// The panel doubled smoothly (3:1 between neighbours), not as square blocks: its stone and
+		// the battle overview have no 2x art.
+		int py = sy - 48, y0 = py / 2, y1 = max(0, min(GAME_H - 25, y0 + ((py & 1) ? 1 : -1)));
+		const BYTE *pan = frame + (24 + y0) * pitch + PANEL_X, *pan1 = frame + (24 + y1) * pitch + PANEL_X;
+		int pw = (lw - mapW) / 2;
+		for (int sx = mapW; sx < lw; sx++) {
+			int px = sx - mapW, x0 = px / 2, x1 = max(0, min(pw - 1, x0 + ((px & 1) ? 1 : -1)));
+			DWORD a = g_lut[pan[x0]], b = g_lut[pan[x1]], c2 = g_lut[pan1[x0]], d = g_lut[pan1[x1]];
+			DWORD rb = (a & 0xff00ff) * 9 + (b & 0xff00ff) * 3 + (c2 & 0xff00ff) * 3 + (d & 0xff00ff);
+			DWORD gg = (a & 0xff00) * 9 + (b & 0xff00) * 3 + (c2 & 0xff00) * 3 + (d & 0xff00);
+			o[sx] = ((rb >> 4) & 0xff00ff) | ((gg >> 4) & 0xff00);
+		}
 	}
 	for (int sy = 0; sy < 48; sy++) {
 		const BYTE *bar = frame + (sy / 2) * pitch - g_extra;
