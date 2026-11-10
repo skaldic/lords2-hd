@@ -537,6 +537,8 @@ public static class Room
     // The greatest nobles: the frame stays at the edges and the sky and battlement carry on between,
     // copied whole merlon periods over (faded into a mirror of the sky at the joins). The bottom bar
     // moves whole with the middle, its frame carried on to the edges.
+    static bool Sky(byte[] p, int i) { return p[i] >= p[i + 1] && p[i] + p[i + 1] + p[i + 2] > 450; } // light and blue, not stone
+
     static void Grtnoble(string bin, string outBin)
     {
         const int frameL = 24, frameR = 621, contentR = 600, floorY = 428, period = 131, skyY = 250;
@@ -561,11 +563,13 @@ public static class Room
                     Get(pic, left ? v + 2 * period : v - 2 * period, y, 1, o, d);
                     int fromJoin = left ? 2 * frameL - 1 - v : v - 2 * contentR;
                     const int blend = 60;
-                    if (fromJoin < blend && y1 < skyY)
+                    if (fromJoin < blend)
                     {
+                        // above the merlons everywhere; between them only where both pixels are sky
                         int b = left ? 2 * frameL + fromJoin : 2 * contentR - 1 - fromJoin;
-                        double t = (1 - fromJoin / (double)blend) * Math.Min(1, (skyY - y1) / 30.0); // fading out above the merlons
                         int s = 768 + (y * 1280 + b) * 4;
+                        if (y1 >= skyY + 4 && !(Sky(o, d) && Sky(pic, s))) continue;
+                        double t = 1 - fromJoin / (double)blend;
                         for (int c = 0; c < 3; c++) o[d + c] = (byte)(o[d + c] * (1 - t) + pic[s + c] * t);
                     }
                 }

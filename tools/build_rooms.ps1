@@ -30,9 +30,8 @@ foreach ($n in $painted.Keys) {
     $l = Join-Path $art "$($painted[$n][0]).png"; $r = if ($painted[$n][1]) { Join-Path $art "$($painted[$n][1]).png" } else { $null }
     if (Test-Path $l) { [Room]::PaintedRaw((Join-Path $game "lords2hd\screens\$n.bin"), $l, $r, (Join-Path $wide "$n.bin")) }
 }
-# Greatest nobles: its picture widened by tools\paint_nobles.ps1, the frame rebuilt around it.
-$nl = Join-Path $art "grtnoble-left3.png"; $nr = Join-Path $art "grtnoble-right3.png"
-if ((Test-Path $nl) -and (Test-Path $nr)) { [Room]::Nobles((Join-Path $game "lords2hd\screens\grtnoble.bin"), $nl, $nr, (Join-Path $wide "grtnoble.bin")) }
+# Greatest nobles: its own battlement repeated by whole merlons (Room.Build). The image model's
+# versions (tools\paint_nobles.ps1, Room.Nobles) turned the wall's ends into towers.
 
 # The skirmish screens' fighting pair (misc_ske frames 33-44) has its own background.
 $c = 0; $h = ""
