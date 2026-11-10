@@ -1,4 +1,4 @@
-﻿// Lords of the Realm II HD - stage 1: show the fixed 640x480 game at the display's resolution.
+// Lords of the Realm II HD - stage 1: show the fixed 640x480 game at the display's resolution.
 //
 // Built as ddraw.dll and dropped next to the game, so the exe loads it in place of the system
 // DirectDraw. Nothing on disk is patched; deleting ddraw.dll restores the stock game.
@@ -79,6 +79,16 @@ static BOOL g_fullscreen = TRUE, g_integerScale;
 static int g_windowScale = 2;
 static int g_cursorScale = 50; // percent of the cursor's original size relative to the screen
 static BOOL g_logLoads, g_dumpPalettes, g_timing;
+// Timing=1: how long the game's own map and battlefield redraws take with the hooks in them.
+static struct { double ms, worst; int n; } g_draw[2]; // 0 county map, 1 battlefield
+static void draw_timed(int which, LARGE_INTEGER t0)
+{
+	LARGE_INTEGER t1, f;
+	QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&f);
+	double ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / f.QuadPart;
+	g_draw[which].ms += ms; g_draw[which].n++;
+	if (ms > g_draw[which].worst) g_draw[which].worst = ms;
+}
 // [Debug] Remote=1: testing without the user's mouse, screen or speakers. The window is cloaked
 // and click-through, the sound muted, and hd\bgdrive.ps1 posts WM_REMOTE + n messages to it:
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
@@ -1645,6 +1655,10 @@ static DWORD WINAPI presenter(void *unused)
 		if (g_timing && (t1.QuadPart - since.QuadPart) > 5 * freq.QuadPart) {
 			logf_("timing: %d presents in 5 s, %.1f ms average, %.1f ms worst; %d unchanged frames skipped",
 				presents, presents ? busy / presents : 0.0, worst, skipped);
+			for (int i = 0; i < 2; i++) if (g_draw[i].n) {
+				logf_("timing: %d %s redraws, %.1f ms average, %.1f ms worst", g_draw[i].n, i ? "battlefield" : "map", g_draw[i].ms / g_draw[i].n, g_draw[i].worst);
+				g_draw[i].n = 0; g_draw[i].ms = g_draw[i].worst = 0;
+			}
 			since = t1;
 			busy = worst = 0;
 			presents = skipped = 0;
@@ -2865,7 +2879,9 @@ static void __cdecl h_battle_draw(int col, int row)
 	}
 	if (col > 0x41 - g_battleK) BATTLE_COL = col = 0x41 - g_battleK;
 	if (row > 0x42 - g_battleR) BATTLE_ROW = row = 0x42 - g_battleR;
+	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
 	o_battle_draw(col, row);
+	if (g_timing) draw_timed(1, t0);
 }
 
 // The view as the game set it, while it is widened for one call.
@@ -3178,13 +3194,16 @@ static void __cdecl h_redraw_map(void)
 	// below), since the game does not always draw those two again after the map.
 	BYTE *frame = g_back->bits + g_back->org;
 	int bottom = max(24, min(GAME_H, *(int *)0x00553254));
-	for (int y = 24; y < bottom; y++) memset(frame + y * g_back->pitch - g_off, 0, g_off);
+	// (only the columns on screen: the game calls this hundreds of times a second)
+	for (int y = 24; y < bottom; y++) memset(frame + y * g_back->pitch - g_extra, 0, g_extra);
 	if (!begin_wide_view()) {
 		o_redraw_map();
 		return;
 	}
+	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
 	o_redraw_map();
 	end_wide_view();
+	if (g_timing) draw_timed(0, t0);
 	// The kingdom overview runs out of map columns before the screen's left edge: the strip left
 	// is filled with the land 4 columns to its right (the map repeats every column), HD layer too.
 	int strip = g_extra - g_view.k * MAP_STEP - g_view.firstX, shift = 4 * MAP_STEP;
