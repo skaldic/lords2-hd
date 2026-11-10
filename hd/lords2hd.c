@@ -2202,6 +2202,7 @@ static void client_to_game(int *x, int *y)
 }
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
+static int g_fakeEdge;
 static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
@@ -2209,6 +2210,10 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+		return 0;
+	}
+	if (n == 7) { // hold the mouse at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 = let go
+		g_fakeEdge = (int)wp;
 		return 0;
 	}
 	if (n == 4) {
@@ -2283,9 +2288,14 @@ static HCURSOR (WINAPI *o_SetCursor)(HCURSOR);
 
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
-	if (g_remote) { // the driver's mouse, kept off the scrolling edges
-		p->x = max(1, min(max(2, SCROLL_EDGE_W - 1) - 1, g_fake.x));
-		p->y = max(1, min(max(2, *(int *)0x004ea838 - 1) - 1, g_fake.y));
+	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
+		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
+		p->x = max(1, min(right - 1, g_fake.x));
+		p->y = max(1, min(bottom - 1, g_fake.y));
+		if (g_fakeEdge & 1) p->x = 0;
+		if (g_fakeEdge & 2) p->x = right;
+		if (g_fakeEdge & 4) p->y = 0;
+		if (g_fakeEdge & 8) p->y = bottom;
 		return TRUE;
 	}
 	if (!o_GetCursorPos(p)) return FALSE;
@@ -3051,7 +3061,9 @@ typedef void (__cdecl *paused_t)(void);
 static paused_t o_paused;
 static void __cdecl h_paused(void)
 {
-	if (!battle_zoom_on()) {
+	// Asked of the battle itself, not of battle_zoom_on(): that is briefly off after the game loads
+	// a picture, and the label then went to the 480-row place, in the middle of the field.
+	if (!(g_battleZoom && g_off && IN_BATTLE && GAME_MODE == 3)) {
 		o_paused();
 		return;
 	}
@@ -3071,7 +3083,12 @@ typedef void (__cdecl *box_t)(int, int, int, int, int);
 static box_t o_box;
 static void __cdecl h_box(int x, int y, int w, int h, int colour)
 {
-	BOOL zoomed = battle_zoom_on() && __builtin_return_address(0) == (void *)0x00412a9d; // FUN_0041298a, the selection box
+	BOOL inZoom = g_battleZoom && g_off && IN_BATTLE && GAME_MODE == 3; // see h_paused
+	BOOL zoomed = inZoom && __builtin_return_address(0) == (void *)0x00412a9d; // FUN_0041298a, the selection box
+	// A selection box never reaches into the side panel: nothing there would clean it, and it
+	// stayed on the battle overview as a second, black rectangle.
+	if (zoomed && x + w - 1 >= PANEL_X) w = PANEL_X - x;
+	if (zoomed && (x >= PANEL_X || w <= 0)) return;
 	if (g_timing && battle_zoom_on()) {
 		static void *seen[32];
 		void *from = __builtin_return_address(0);
@@ -3084,7 +3101,7 @@ static void __cdecl h_box(int x, int y, int w, int h, int colour)
 			}
 		}
 	}
-	if (!g_off || !g_back || !county_map_on() || (x >= 0 && !zoomed)) {
+	if (!g_off || !g_back || (!county_map_on() && !zoomed) || (x >= 0 && !zoomed)) {
 		o_box(x, y, w, h, colour);
 		return;
 	}

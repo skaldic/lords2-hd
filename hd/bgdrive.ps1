@@ -35,6 +35,9 @@ foreach ($step in $Steps) {
         'move'   { Post 1 0 (XY $arg); Start-Sleep -Milliseconds 60 }
         'click'  { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 2 0 $l; Start-Sleep -Milliseconds 80; Post 3 0 $l; Start-Sleep -Milliseconds 60 }
         'rclick' { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 5 0 $l; Start-Sleep -Milliseconds 80; Post 6 0 $l; Start-Sleep -Milliseconds 60 }
+        'down'   { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 2 0 $l; Start-Sleep -Milliseconds 80 }
+        'up'     { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 3 0 $l; Start-Sleep -Milliseconds 60 }
+        'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
         'key'    {
             if ($keys.ContainsKey($arg)) { Post 4 $keys[$arg] 0 }
             else { foreach ($c in $arg.ToCharArray()) { Post 4 ([int][char]([string]$c).ToUpper()) 0; Start-Sleep -Milliseconds 40 } }
