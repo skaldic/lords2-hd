@@ -577,13 +577,15 @@ public static class Room
         Func<string, string> i = n => Path.Combine(screens, n + ".bin");
         Func<string, string> w = n => Path.Combine(wide, n + ".bin");
         Armoury(i("armoury"), w("armoury"));
-        foreach (var n in new[] { "start", "lords2", "gateway" }) MirrorFade(i(n), w(n));
+        // the dark screens end in their own shadow; lords2 gets painted sides later (build_rooms.ps1)
+        foreach (var n in new[] { "start", "gateway" }) DarkSides(i(n), w(n));
+        MirrorFade(i("lords2"), w("lords2"));
         Courses(i("cas_back"), w("cas_back"), 170, 441, 94, 0.3);
         Texture(i("custom"), w("custom"), 170, 250, 450, 220, 0.3);
         TextureFrom(i("skirmish"), i("skircust"), w("skirmish"), 226, 180, 212, 190, 0.3);
         TextureFrom(i("skircust"), i("skircust"), w("skircust"), 226, 180, 212, 190, 0.3);
-        Texture(i("score2"), w("score2"), 210, 25, 210, 115, 0.2);
-        EdgeBounce(i("score1"), w("score1"), 70, 80);
+        BlurBackdrop(i("score2"), w("score2")); // a dim, blurred copy of the picture behind it
+        BlurBackdrop(i("score1"), w("score1"));
         SoftEdge(i("merchant"), w("merchant"));
         Grtnoble(i("grtnoble"), w("grtnoble"));
     }
