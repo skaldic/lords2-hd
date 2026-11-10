@@ -22,15 +22,16 @@ $painted = [ordered]@{
     skirmish = @('_skirmish-fxleft-3', '_skircust-fxright-2')
     cas_back = @('_cas_back-fxleft-3', '_cas_back-fxright-3')
     armoury  = @('_armoury-fxleft-2', '_armoury-fxright-2')   # the room's side walls, in place of Room.Armoury
+    score1   = @('_score1-fxleft-2', '_score1-fxright-2')
 }
-# Not painted: start and gateway end in their own shadow, the score screens stand on a dim blurred
-# copy of themselves (Room.Build). The model drew grey panels, glowing patches or mush for those.
+# Not painted: start and gateway end in their own shadow, score2 stands on a dim blurred copy of
+# itself (Room.Build). The model drew grey panels, glowing patches or mush for those.
 foreach ($n in $painted.Keys) {
     $l = Join-Path $art "$($painted[$n][0]).png"; $r = if ($painted[$n][1]) { Join-Path $art "$($painted[$n][1]).png" } else { $null }
     if (Test-Path $l) { [Room]::PaintedRaw((Join-Path $game "lords2hd\screens\$n.bin"), $l, $r, (Join-Path $wide "$n.bin")) }
 }
 # Greatest nobles: its picture widened by tools\paint_nobles.ps1, the frame rebuilt around it.
-$nl = Join-Path $art "grtnoble-left1.png"; $nr = Join-Path $art "grtnoble-right1.png"
+$nl = Join-Path $art "grtnoble-left3.png"; $nr = Join-Path $art "grtnoble-right3.png"
 if ((Test-Path $nl) -and (Test-Path $nr)) { [Room]::Nobles((Join-Path $game "lords2hd\screens\grtnoble.bin"), $nl, $nr, (Join-Path $wide "grtnoble.bin")) }
 
 # The skirmish screens' fighting pair (misc_ske frames 33-44) has its own background.
