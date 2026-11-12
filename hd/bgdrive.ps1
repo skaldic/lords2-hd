@@ -8,9 +8,10 @@
 param(
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Steps,
     [switch]$Start,
-    [switch]$Stop
+    [switch]$Stop,
+    [string]$Game = ""   # another copy of the game (e.g. a test install from the release zip)
 )
-$game = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$game = if ($Game) { $Game } else { Split-Path (Split-Path $PSScriptRoot -Parent) -Parent }
 $shots = Join-Path $PSScriptRoot "shots"
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace BG -Name M -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);'
