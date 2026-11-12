@@ -25,11 +25,8 @@ BattleZoom=0    battles at normal size
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
 CursorScale=50  cursor size in percent
 
-KNOWN LIMITS
-- The new sides of the widened paintings were painted by an AI image model (see NOTICE.md); screens
-  without a widened version stay centred at 4:3
-- The title and main menu pictures fade into black at the sides instead of being widened
-- In zoomed-out battles the troops are small; BattleZoom=0 shows them at normal size
+ABOUT THE ART
+The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.
 
 REQUIREMENTS
 The GOG version of the game, Windows, and a screen of 720p (1280x720) or larger.

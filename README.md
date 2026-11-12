@@ -4,7 +4,7 @@ An unofficial fan patch for the GOG version of **Lords of the Realm II**. It mak
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **0.9.0**, a first release. See [what is not finished](#known-limits).
+Current version: **0.9.0**.
 
 ![County map](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/map.jpg)
 
@@ -46,12 +46,6 @@ readme inside the zip.
 
 - The GOG version of Lords of the Realm II
 - Windows, and a screen of 720p (1280x720) or larger; it fills any size from there up
-
-## Known limits
-
-- The title and main menu pictures fade into black at the sides instead of being widened.
-- In zoomed-out battles the troops are small; `BattleZoom=0` shows battles at normal size.
-
 ## About the art
 
 The HD art is the game's own art enlarged with an AI upscaler (Real-ESRGAN). The new left and right
