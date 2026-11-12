@@ -1077,6 +1077,8 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 static void text_clear(int x, int y, int w, int h);
 static void text_stale(void);
 static void text_publish(int y0, int y1);
+static void bt_publish(int y0, int y1);
+static BOOL battle_zoom_on(void);
 
 static void forget_tiles(void)
 {
@@ -1214,6 +1216,30 @@ static BYTE *g_txt, *g_txtShadow, *g_txtValid;
 // (all text blinked soft). Rows are copied over with the frame, under g_lock.
 static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;
 
+// The zoomed battle's HD layer as of the frame on screen, for the same reason as the letters: the
+// game redraws the ground under the troops in its back buffer (which forgets their HD blocks) and
+// draws them again, while the screen still shows the finished frame - every troop blinked between
+// the HD and the original sprite. Rows are copied over with the frame, under g_lock.
+static DWORD *g_btLayerS;
+static BYTE *g_btShadowS, *g_btValidS;
+
+static void bt_publish(int y0, int y1)
+{
+	if (!g_btLayer || !battle_zoom_on()) return;
+	if (!g_btLayerS) {
+		g_btLayerS = malloc(g_frameW * g_frameH * 4 * 4);
+		g_btShadowS = malloc(g_frameW * g_frameH);
+		g_btValidS = calloc(g_frameW, g_frameH);
+		if (!g_btLayerS || !g_btShadowS || !g_btValidS) { free(g_btLayerS); g_btLayerS = NULL; return; }
+	}
+	y0 = max(0, y0); y1 = min(g_frameH, y1);
+	if (y1 <= y0) return;
+	size_t n = (size_t)(y1 - y0) * g_frameW;
+	memcpy(g_btLayerS + (size_t)y0 * g_frameW * 4, g_btLayer + (size_t)y0 * g_frameW * 4, n * 16);
+	memcpy(g_btShadowS + (size_t)y0 * g_frameW, g_btShadow + (size_t)y0 * g_frameW, n);
+	memcpy(g_btValidS + (size_t)y0 * g_frameW, g_btValid + (size_t)y0 * g_frameW, n);
+}
+
 static void text_publish(int y0, int y1)
 {
 	if (!g_txt || !g_back) return;
@@ -1345,6 +1371,9 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	memcpy(shown, copy, pitch * fh);
 	lastView = v;
 
+	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
+	const DWORD *btL = g_btLayerS ? g_btLayerS : g_btLayer;
+	const BYTE *btS = g_btLayerS ? g_btShadowS : g_btShadow, *btV = g_btLayerS ? g_btValidS : g_btValid;
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
 	const BYTE *frame = copy + g_off; // the game's x = 0
 	for (int sy = 48; sy < lh; sy++) {
@@ -1394,8 +1423,8 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
 				int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
 				int f = gy * g_frameW + gx;
-				if (gx < 0 || gx >= g_frameW || !g_btValid[f] || copy[gy * pitch + gx] != g_btShadow[f]) continue;
-				o[sx] = g_btLayer[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)];
+				if (gx < 0 || gx >= g_frameW || !btV[f] || copy[gy * pitch + gx] != btS[f]) continue;
+				o[sx] = btL[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)];
 			}
 		}
 	}
@@ -1408,8 +1437,8 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			DWORD *o = pic + sy * lw;
 			for (int sx = 0; sx < mapW; sx++) {
 				int f = f0 + sx;
-				if (!g_btValid[f] || row[sx] != g_btShadow[f]) continue;
-				const DWORD *h = g_btLayer + f * 4;
+				if (!btV[f] || row[sx] != btS[f]) continue;
+				const DWORD *h = btL + f * 4;
 				DWORD rb = (h[0] & 0xff00ff) + (h[1] & 0xff00ff) + (h[2] & 0xff00ff) + (h[3] & 0xff00ff);
 				DWORD gg = (h[0] & 0xff00) + (h[1] & 0xff00) + (h[2] & 0xff00) + (h[3] & 0xff00);
 				o[sx] = ((rb >> 2) & 0xff00ff) | ((gg >> 2) & 0xff00);
@@ -1450,8 +1479,8 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				DWORD *o0 = pic2 + 2 * sy * 2 * lw, *o1 = o0 + 2 * lw;
 				for (int sx = 0; sx < mapW; sx++) {
 					int f = f0 + sx;
-					if (!g_btValid[f] || row[sx] != g_btShadow[f]) continue;
-					const DWORD *h = g_btLayer + f * 4;
+					if (!btV[f] || row[sx] != btS[f]) continue;
+					const DWORD *h = btL + f * 4;
 					o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
 					o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
 				}
@@ -1846,7 +1875,10 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 	if (!clip_copy(dst, src, &dx, &dy, &sx, &sy, &w, &h)) return;
 	for (int y = 0; y < h; y++)
 		memmove(dst->bits + (dy + y) * dst->pitch + dx, src->bits + (sy + y) * src->pitch + sx, w);
-	if (dst->primary && src == g_back && dy == sy) text_publish(dy, dy + h);
+	if (dst->primary && src == g_back && dy == sy) {
+		text_publish(dy, dy + h);
+		bt_publish(dy, dy + h);
+	}
 }
 
 static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWORD flags, DDBLTFX *fx)
