@@ -4,36 +4,61 @@ An unofficial fan patch for the GOG version of **Lords of the Realm II**. It mak
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-<!-- Screenshots go here once a release exists: they are hosted on the release, not in this repository. -->
+Current version: **0.9.0**, a first release. See [what is not finished](#known-limits).
+
+![County map](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/map.jpg)
+
+| | |
+|---|---|
+| ![Merchant](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/merchant.jpg) | ![Armoury](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/armoury.jpg) |
+| ![Battle](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/battle.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/overview.jpg) |
+
+The screenshots are hosted on the release: this repository holds no game art.
 
 ## What it does
 
 - Runs fullscreen at your monitor's resolution, without switching its display mode
 - Fills widescreen monitors: the county map, the kingdom overview and battles show more of the world,
-  and the full-screen paintings (merchant, armoury, castle builder, menus) are widened
-- Double-detail paintings, ground, buildings, troops, minimap, panels and lettering
+  and the full-screen paintings (merchant, armoury, castle builder, skirmish and score screens) are
+  widened
+- Battles can zoom out to show four times the field
+- Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels and lettering
 - Foam rolling in along the coast on the county map
 - A smaller mouse cursor
 - Every feature can be switched off in `lords2hd.ini`
 
 ## Install
 
-Download the zip from the releases page and unzip it into the game's folder, the one holding
-`Lords2.exe`. Start the game as usual. To remove the patch, delete `ddraw.dll`, `lords2hd.ini`,
-`lords2hd.log` and the `lords2hd` folder.
+Download `Lords2-HD-0.9.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+and unzip it into the game's folder, the one holding `Lords2.exe`. Start the game as usual. To
+remove the patch, delete `ddraw.dll`, `lords2hd.ini`, `lords2hd.log` and the `lords2hd` folder.
 
 The patch is a `ddraw.dll` the game loads by itself. If the game folder already holds a `ddraw.dll`
-from another wrapper, this one replaces it.
+from another wrapper, this one replaces it. The download is about 450 MB and unpacks to about
+900 MB of art.
 
-## Settings and known limits
+## Settings
 
-See [hd/INSTALL.txt](hd/INSTALL.txt), which is also the readme inside the zip.
+All in `lords2hd.ini`, next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt) lists them and is also the
+readme inside the zip.
+
+## Known limits
+
+- Tested on one machine, at 2560x1440. A real 1080p monitor has not been tried.
+- The title and main menu pictures fade into black at the sides instead of being widened.
+- In zoomed-out battles the troops and labels are small (`BattleZoom=0` gives the normal size), and
+  bridge ends are drawn at the original detail.
+- Text on the battlefield is soft, and the winter sea has no waves.
+- The greatest-nobles and score screens and the large troop pictures were checked as built art, not
+  yet seen in a running game.
 
 ## About the art
 
 The HD art is the game's own art enlarged with an AI upscaler (Real-ESRGAN). The new left and right
-parts of the widened paintings were painted by an AI image model (FLUX.1 Fill) from the game's own
-pictures; the original 4:3 picture is unchanged in the middle. See [NOTICE.md](NOTICE.md).
+parts of most widened paintings were painted by an AI image model (FLUX.1 Fill) from the game's own
+pictures; the original 4:3 picture is unchanged in the middle. Where a model's result did not look
+like the original (the greatest-nobles battlement, the menu stone), the original's own stonework is
+repeated instead. See [NOTICE.md](NOTICE.md).
 
 ## Building it yourself
 
@@ -41,11 +66,17 @@ The repository holds only original code: nothing extracted from the game is in i
 `tools/` rebuild the art from your own copy of the game.
 
 - `hd/build.ps1 -Install` builds `ddraw.dll` (32-bit, llvm-mingw) and copies it to the game folder
-- `tools/build_screens.ps1`, `build_tiles.ps1`, `build_sprites.ps1`, `build_battle_ground.ps1` and
-  `build_rooms.ps1` make the art in `<game>\lords2hd`
+- `tools/build_screens.ps1`, `build_tiles.ps1`, `build_sprites.ps1`, `build_battle_ground.ps1`,
+  `likeness.ps1` and `build_rooms.ps1` make the art in `<game>\lords2hd`
+- `tools/expand_sides.ps1` and `expand_all.ps1` paint the sides of the widened screens
 - `tools/make_release.ps1 -Version x.y.z` makes the release zip
 - External tools (llvm-mingw, Real-ESRGAN, stable-diffusion.cpp and its models) are found through
   the `L2HD_TOOLS` environment variable, or `tools\external`
+- `NOTES.md` holds the reverse-engineering notes; `docs/swift-handoff/` sums up the file formats
+  and what was learned about the art
+
+Testing uses a hidden, muted mode (`[Debug] Remote=1` in the ini) driven by `hd/bgdrive.ps1`, so
+it never takes the mouse or the speakers.
 
 ## Bugs
 

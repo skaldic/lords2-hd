@@ -1,4 +1,4 @@
-Lords of the Realm II HD: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 0.9.0: an unofficial fan patch for the GOG version of the game.
 You need your own copy of the game.
 
 INSTALL
@@ -30,6 +30,8 @@ KNOWN LIMITS
   without a widened version stay centred at 4:3
 - Text on the battlefield is soft and dialogs in battle are small
 - The winter sea has no waves
+- The title and main menu pictures fade into black at the sides instead of being widened
+- In zoomed-out battles the troops are small; BattleZoom=0 shows them at normal size
 - Tested on a 2560x1440 monitor. A real 1080p monitor has not been tried yet.
 
 BUGS
