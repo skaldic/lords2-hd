@@ -42,15 +42,15 @@ from another wrapper, this one replaces it. The download is about 450 MB and unp
 All in `lords2hd.ini`, next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt) lists them and is also the
 readme inside the zip.
 
+## Requirements
+
+- The GOG version of Lords of the Realm II
+- Windows, and a screen of 720p (1280x720) or larger; it fills any size from there up
+
 ## Known limits
 
-- Tested on one machine, at 2560x1440. A real 1080p monitor has not been tried.
 - The title and main menu pictures fade into black at the sides instead of being widened.
-- In zoomed-out battles the troops and labels are small (`BattleZoom=0` gives the normal size), and
-  bridge ends are drawn at the original detail.
-- Text on the battlefield is soft, and the winter sea has no waves.
-- The greatest-nobles and score screens and the large troop pictures were checked as built art, not
-  yet seen in a running game.
+- In zoomed-out battles the troops are small; `BattleZoom=0` shows battles at normal size.
 
 ## About the art
 

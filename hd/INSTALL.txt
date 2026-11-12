@@ -28,11 +28,11 @@ CursorScale=50  cursor size in percent
 KNOWN LIMITS
 - The new sides of the widened paintings were painted by an AI image model (see NOTICE.md); screens
   without a widened version stay centred at 4:3
-- Text on the battlefield is soft and dialogs in battle are small
-- The winter sea has no waves
 - The title and main menu pictures fade into black at the sides instead of being widened
 - In zoomed-out battles the troops are small; BattleZoom=0 shows them at normal size
-- Tested on a 2560x1440 monitor. A real 1080p monitor has not been tried yet.
+
+REQUIREMENTS
+The GOG version of the game, Windows, and a screen of 720p (1280x720) or larger.
 
 BUGS
 After a crash, keep lords2hd.log from the game's folder straight away: it is rewritten at each start.

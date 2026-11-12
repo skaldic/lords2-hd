@@ -1078,7 +1078,14 @@ static void text_clear(int x, int y, int w, int h);
 static void text_stale(void);
 static void text_publish(int y0, int y1);
 static void bt_publish(int y0, int y1);
+static void spr_publish(int y0, int y1);
 static BOOL battle_zoom_on(void);
+// the sprite layer as of the frame on screen (spr_publish); the live one until the first copy
+static DWORD *g_sprLayerS;
+static BYTE *g_sprShadowS, *g_sprValidS;
+#define SPR_L (g_sprLayerS ? g_sprLayerS : g_sprLayer)
+#define SPR_S (g_sprLayerS ? g_sprShadowS : g_sprShadow)
+#define SPR_V (g_sprLayerS ? g_sprValidS : g_sprValid)
 
 static void forget_tiles(void)
 {
@@ -1145,8 +1152,8 @@ static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 	if (!g_sprLayer || county_map_on() || IN_BATTLE_NOW() || memcmp(pal, g_sprPal, sizeof g_sprPal)) return;
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * sw;
-		const BYTE *ss = g_sprShadow + y * MAX_W + sx, *sv = g_sprValid + y * MAX_W + sx;
-		const DWORD *s0 = g_sprLayer + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
+		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
+		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
 			if (!sv[x] || fr[x] != ss[x]) continue;
@@ -1174,8 +1181,8 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 		const BYTE *fr = g_frame8 + y * sw;
 		const BYTE *sh = g_layerShadow + y * MAX_W + sx, *va = g_layerValid + y * MAX_W + sx;
 		const DWORD *h0 = g_layer + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
-		const BYTE *ss = g_sprShadow + y * MAX_W + sx, *sv = g_sprValid + y * MAX_W + sx;
-		const DWORD *s0 = g_sprLayer + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
+		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
+		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
 			if (!ok[fr[x]]) continue;
@@ -1222,6 +1229,26 @@ static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;
 // the HD and the original sprite. Rows are copied over with the frame, under g_lock.
 static DWORD *g_btLayerS;
 static BYTE *g_btShadowS, *g_btValidS;
+
+// The same for the HD sprites of the map and the screens (dialogs, scrolls, the side panel): while
+// the army division dialog counts troops across, the game rubs out and redraws its icons in the
+// back buffer at every step, and each icon blinked between HD and the original.
+static void spr_publish(int y0, int y1)
+{
+	if (!g_sprLayer) return;
+	if (!g_sprLayerS) {
+		g_sprLayerS = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+		g_sprShadowS = malloc((size_t)MAX_W * GAME_H);
+		g_sprValidS = calloc(MAX_W, GAME_H);
+		if (!g_sprLayerS || !g_sprShadowS || !g_sprValidS) { free(g_sprLayerS); g_sprLayerS = NULL; return; }
+	}
+	y0 = max(0, y0); y1 = min(GAME_H, y1);
+	if (y1 <= y0) return;
+	size_t n = (size_t)(y1 - y0) * MAX_W;
+	memcpy(g_sprLayerS + (size_t)y0 * 4 * MAX_W, g_sprLayer + (size_t)y0 * 4 * MAX_W, n * 16);
+	memcpy(g_sprShadowS + (size_t)y0 * MAX_W, g_sprShadow + (size_t)y0 * MAX_W, n);
+	memcpy(g_sprValidS + (size_t)y0 * MAX_W, g_sprValid + (size_t)y0 * MAX_W, n);
+}
 
 static void bt_publish(int y0, int y1)
 {
@@ -1878,6 +1905,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 	if (dst->primary && src == g_back && dy == sy) {
 		text_publish(dy, dy + h);
 		bt_publish(dy, dy + h);
+		spr_publish(dy, dy + h);
 	}
 }
 
