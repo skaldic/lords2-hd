@@ -23,3 +23,6 @@
 /hd/shots/
 /*.txt
 /save_backup_*/
+
+# Notes for another project, kept local
+/docs/

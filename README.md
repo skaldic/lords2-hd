@@ -1,17 +1,17 @@
-# Lords of the Realm II HD
+﻿# Lords of the Realm II HD
 
 An unofficial fan patch for the GOG version of **Lords of the Realm II**. It makes the game fill a
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **0.9.0**.
+Current version: **1.0.0**.
 
-![County map](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/map.jpg)
+![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
 | | |
 |---|---|
-| ![Merchant](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/merchant.jpg) | ![Armoury](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/armoury.jpg) |
-| ![Battle](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/battle.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/download/v0.9.0/overview.jpg) |
+| ![Merchant](https://github.com/skaldic/lords2-hd/releases/latest/download/merchant.jpg) | ![Armoury](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg) |
+| ![Battle](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/latest/download/overview.jpg) |
 
 The screenshots are hosted on the release: this repository holds no game art.
 
@@ -29,7 +29,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 
 ## Install
 
-Download `Lords2-HD-0.9.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.0.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and unzip it into the game's folder, the one holding `Lords2.exe`. Start the game as usual. To
 remove the patch, delete `ddraw.dll`, `lords2hd.ini`, `lords2hd.log` and the `lords2hd` folder.
 
@@ -66,8 +66,7 @@ The repository holds only original code: nothing extracted from the game is in i
 - `tools/make_release.ps1 -Version x.y.z` makes the release zip
 - External tools (llvm-mingw, Real-ESRGAN, stable-diffusion.cpp and its models) are found through
   the `L2HD_TOOLS` environment variable, or `tools\external`
-- `NOTES.md` holds the reverse-engineering notes; `docs/swift-handoff/` sums up the file formats
-  and what was learned about the art
+- `NOTES.md` holds the reverse-engineering notes
 
 Testing uses a hidden, muted mode (`[Debug] Remote=1` in the ini) driven by `hd/bgdrive.ps1`, so
 it never takes the mouse or the speakers.
