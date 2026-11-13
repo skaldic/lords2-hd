@@ -2857,7 +2857,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	int n = msg - WM_REMOTE;
 	if (n == 0x10) {
 		music_status(); // sound is muted in remote mode: the log says whether the music stream is playing
-		logf_("view: map column %d, first x %d", *(int *)0x005651b4, *(int *)0x0052afdc);
+		logf_("view: map column %d, first x %d, selected county %d", *(int *)0x005651b4, *(int *)0x0052afdc, *(int *)0x0057c93c);
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
@@ -3836,10 +3836,9 @@ typedef int (__cdecl *pick_cell_t)(int);
 static pick_cell_t o_pick_cell;
 static int __cdecl h_pick_cell(int arg)
 {
-	if (!begin_wide_view()) return o_pick_cell(arg);
-	int r = o_pick_cell(arg);
-	end_wide_view();
-	PICKED_COL -= g_view.k;
+	int r;
+	if (begin_wide_view()) { r = o_pick_cell(arg); end_wide_view(); PICKED_COL -= g_view.k; }
+	else r = o_pick_cell(arg);
 	return r;
 }
 
@@ -3848,10 +3847,19 @@ static int __cdecl h_pick_cell(int arg)
 typedef void (__cdecl *cell_t)(int);
 static cell_t o_cell_ground, o_cell_special, o_cell_special2;
 #define TILE_FRAME (*(int *)0x005c9288)
+static BOOL g_wideRedraw; // inside a widened map redraw (h_redraw_map)
 static void __cdecl h_cell_ground(int mode)
 {
 	int x = BLOCK_X, y = BLOCK_Y;
 	o_cell_ground(mode);
+	// After a redraw the game makes the county with the most cells on screen the current one
+	// (FUN_004050f6, counts in 0x52f020 added after each mode-0 cell). The spare columns are not
+	// counted, so the choice is the 4:3 screen's: they made a neighbouring county current - its
+	// name in the panel, its Town Center opened from the clicked county's town.
+	if (g_wideRedraw && mode == 0 && x < g_view.firstX) {
+		int county = *(BYTE *)0x0057d384;
+		((int *)0x0052f020)[county] -= (*(BYTE *)0x0057d374 & 0x40) ? 5 : 1;
+	}
 	BOOL overview = MAP_ZOOM == 2;
 	if (MAP_ZOOM != 0 && !overview) return;
 	BYTE flags = ((BYTE *)0x00522f92)[*(int *)0x00567954];
@@ -4111,7 +4119,9 @@ static void __cdecl h_redraw_map(void)
 	}
 	BOOL rec = g_stampCur && g_stampPrev;
 	if (rec) { g_stampN = 0; g_stampOverflow = FALSE; g_stampRec = TRUE; }
+	g_wideRedraw = TRUE;
 	o_redraw_map();
+	g_wideRedraw = FALSE;
 	if (rec) {
 		g_stampRec = FALSE;
 		BOOL same = !g_stampOverflow && g_stampN == g_stampPrevN && g_layerGen == g_stampPrevGen &&
