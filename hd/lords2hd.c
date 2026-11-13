@@ -12,9 +12,13 @@
 // interpolation and stretches it into the game's window, which covers the monitor.
 // Mouse positions are converted back to 640x480 on their way into the game.
 
+#define COBJMACROS
 #include <windows.h>
 #include <ddraw.h>
 #include <dsound.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -1304,6 +1308,160 @@ static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 	HMMIO h = replaced ? o_mmioOpenA(alt, info, flags) : NULL;
 	if (!h) h = o_mmioOpenA(name, info, flags);
 	return h;
+}
+
+// Players get the remastered soundtrack as MP3s with names like "07. Scroll 1 (1996, Remastered).mp3".
+// Dropped into lords2hd\music, they are turned into the WAVs above on a low-priority thread at start,
+// by Windows' own decoder (Media Foundation, loaded by hand so the DLL still loads where it's missing).
+// Each file is matched to a track by its name; files already converted are skipped.
+static const char *music_track(const char *file)
+{
+	char s[MAX_PATH];
+	int i = 0;
+	for (; file[i] && i < MAX_PATH - 1; i++) s[i] = (char)tolower((unsigned char)file[i]);
+	s[i] = 0;
+	static const struct { const char *word; const char *out[6]; } kinds[] = {
+		{ "battle", { NULL, "battle1.wav", "battle2.wav", "battle3.wav", "battle4.wav", "battle5.wav" } },
+		{ "scroll", { NULL, "scroll1.wav", "scroll2.wav", "scroll3.wav", "scroll4.wav", "scroll5.wav" } },
+		// the remaster has no Setup2; its "Siege Pack Setup 2" is the game's SETUP3 (same length, 1:57)
+		{ "setup",  { "setup.wav", NULL, "setup3.wav", "setup3.wav", NULL, NULL } },
+	};
+	for (int k = 0; k < 3; k++) {
+		const char *p = strstr(s, kinds[k].word);
+		if (!p) continue;
+		p += strlen(kinds[k].word);
+		while (*p == ' ' || *p == '_' || *p == '-') p++;
+		int d = (*p >= '1' && *p <= '5' && !(p[1] >= '0' && p[1] <= '9')) ? *p - '0' : 0;
+		return kinds[k].out[d];
+	}
+	return NULL;
+}
+
+typedef HRESULT (WINAPI *MFStartup_t)(ULONG, DWORD);
+typedef HRESULT (WINAPI *MFShutdown_t)(void);
+typedef HRESULT (WINAPI *MFCreateMediaType_t)(IMFMediaType **);
+typedef HRESULT (WINAPI *MFCreateSourceReaderFromURL_t)(LPCWSTR, IMFAttributes *, IMFSourceReader **);
+
+static BOOL music_decode(MFCreateSourceReaderFromURL_t open, MFCreateMediaType_t newtype, const char *src, const char *dst)
+{
+	WCHAR wsrc[MAX_PATH];
+	MultiByteToWideChar(CP_ACP, 0, src, -1, wsrc, MAX_PATH);
+	IMFSourceReader *r = NULL;
+	IMFMediaType *t = NULL, *got = NULL;
+	FILE *f = NULL;
+	BOOL ok = FALSE;
+	DWORD stream = (DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM;
+	UINT32 rate = 0, ch = 0, bits = 0, bytes = 0;
+	char tmp[MAX_PATH];
+	snprintf(tmp, sizeof tmp, "%s.part", dst);
+	if (FAILED(open(wsrc, NULL, &r))) goto done;
+	IMFSourceReader_SetStreamSelection(r, (DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
+	IMFSourceReader_SetStreamSelection(r, stream, TRUE);
+	if (FAILED(newtype(&t))) goto done;
+	IMFMediaType_SetGUID(t, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+	IMFMediaType_SetGUID(t, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+	IMFMediaType_SetUINT32(t, &MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+	if (FAILED(IMFSourceReader_SetCurrentMediaType(r, stream, NULL, t))) goto done;
+	if (FAILED(IMFSourceReader_GetCurrentMediaType(r, stream, &got))) goto done;
+	IMFMediaType_GetUINT32(got, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate);
+	IMFMediaType_GetUINT32(got, &MF_MT_AUDIO_NUM_CHANNELS, &ch);
+	IMFMediaType_GetUINT32(got, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits);
+	if (!rate || !ch || bits != 16) goto done;
+	f = fopen(tmp, "wb");
+	if (!f) goto done;
+	BYTE hdr[44] = {0};
+	fwrite(hdr, 1, 44, f);
+	for (;;) {
+		DWORD flags = 0;
+		IMFSample *smp = NULL;
+		if (FAILED(IMFSourceReader_ReadSample(r, stream, 0, NULL, &flags, NULL, &smp))) break;
+		if (smp) {
+			IMFMediaBuffer *mb = NULL;
+			if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &mb))) {
+				BYTE *p; DWORD n = 0;
+				if (SUCCEEDED(IMFMediaBuffer_Lock(mb, &p, NULL, &n))) {
+					fwrite(p, 1, n, f);
+					bytes += n;
+					IMFMediaBuffer_Unlock(mb);
+				}
+				IMFMediaBuffer_Release(mb);
+			}
+			IMFSample_Release(smp);
+		}
+		if (flags & MF_SOURCE_READERF_ENDOFSTREAM) { ok = bytes > 0; break; }
+		if (flags & MF_SOURCE_READERF_ERROR) break;
+	}
+	// RIFF header: PCM, rate, channels, 16-bit
+	UINT32 align = ch * 2, v;
+	memcpy(hdr, "RIFF", 4); v = 36 + bytes; memcpy(hdr + 4, &v, 4);
+	memcpy(hdr + 8, "WAVEfmt ", 8); v = 16; memcpy(hdr + 16, &v, 4);
+	hdr[20] = 1; hdr[22] = (BYTE)ch; memcpy(hdr + 24, &rate, 4);
+	v = rate * align; memcpy(hdr + 28, &v, 4); hdr[32] = (BYTE)align; hdr[34] = 16;
+	memcpy(hdr + 36, "data", 4); memcpy(hdr + 40, &bytes, 4);
+	fseek(f, 0, SEEK_SET);
+	fwrite(hdr, 1, 44, f);
+done:
+	if (f) fclose(f);
+	if (got) IMFMediaType_Release(got);
+	if (t) IMFMediaType_Release(t);
+	if (r) IMFSourceReader_Release(r);
+	if (ok) ok = MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING);
+	if (!ok) DeleteFileA(tmp);
+	logf_("music: %s %s -> %s (%u Hz, %u ch, %.0f s)", ok ? "converted" : "could not convert", strrchr(src, '\\') + 1,
+		strrchr(dst, '\\') + 1, rate, ch, (rate && ch) ? bytes / (double)(rate * ch * 2) : 0.0);
+	return ok;
+}
+
+static DWORD WINAPI music_convert_thread(void *arg)
+{
+	(void)arg;
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+	char dir[MAX_PATH], pat[MAX_PATH];
+	snprintf(dir, sizeof dir, "%s\\lords2hd\\music", g_gameDir);
+	snprintf(pat, sizeof pat, "%s\\*", dir);
+	WIN32_FIND_DATAA fd;
+	HANDLE fh = FindFirstFileA(pat, &fd);
+	if (fh == INVALID_HANDLE_VALUE) return 0;
+	HMODULE plat = NULL, rw = NULL;
+	MFStartup_t start = NULL; MFShutdown_t stop = NULL; MFCreateMediaType_t newtype = NULL;
+	MFCreateSourceReaderFromURL_t open = NULL;
+	BOOL com = FALSE, mf = FALSE;
+	do {
+		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+		const char *ext = strrchr(fd.cFileName, '.');
+		if (!ext || !lstrcmpiA(ext, ".wav") || !lstrcmpiA(ext, ".part")) continue;
+		if (lstrcmpiA(ext, ".mp3") && lstrcmpiA(ext, ".flac") && lstrcmpiA(ext, ".m4a") && lstrcmpiA(ext, ".wma")) continue;
+		const char *track = music_track(fd.cFileName);
+		if (!track) { logf_("music: %s is not one of the game's tracks, left alone", fd.cFileName); continue; }
+		char src[MAX_PATH], dst[MAX_PATH];
+		snprintf(src, sizeof src, "%s\\%s", dir, fd.cFileName);
+		snprintf(dst, sizeof dst, "%s\\%s", dir, track);
+		WIN32_FILE_ATTRIBUTE_DATA a;
+		if (GetFileAttributesExA(dst, GetFileExInfoStandard, &a) && CompareFileTime(&a.ftLastWriteTime, &fd.ftLastWriteTime) >= 0)
+			continue; // converted before
+		if (!open) {
+			if (!com) com = SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED));
+			plat = LoadLibraryA("mfplat.dll");
+			rw = LoadLibraryA("mfreadwrite.dll");
+			if (plat && rw) {
+				start = (MFStartup_t)GetProcAddress(plat, "MFStartup");
+				stop = (MFShutdown_t)GetProcAddress(plat, "MFShutdown");
+				newtype = (MFCreateMediaType_t)GetProcAddress(plat, "MFCreateMediaType");
+				open = (MFCreateSourceReaderFromURL_t)GetProcAddress(rw, "MFCreateSourceReaderFromURL");
+			}
+			if (!start || !stop || !newtype || !open || FAILED(start(MF_VERSION, MFSTARTUP_LITE))) {
+				logf_("music: Windows Media Foundation is not available here, so MP3s can't be converted (WAVs still work)");
+				open = NULL;
+				break;
+			}
+			mf = TRUE;
+		}
+		music_decode(open, newtype, src, dst);
+	} while (FindNextFileA(fh, &fd));
+	FindClose(fh);
+	if (mf) stop();
+	if (com) CoUninitialize();
+	return 0;
 }
 
 static void music_status(void)
@@ -3618,6 +3776,12 @@ static void install(void)
 	hook_import("smackw32.DLL", "#19", h_SmackDoFrame, &o_SmackDoFrame);
 	hook_import("smackw32.DLL", "#18", h_SmackClose, &o_SmackClose);
 	hook_import("WINMM.dll", "mmioOpenA", h_mmioOpenA, &o_mmioOpenA);
+	char musicDir[MAX_PATH];
+	snprintf(musicDir, sizeof musicDir, "%s\\lords2hd\\music", g_gameDir);
+	if (GetFileAttributesA(musicDir) != INVALID_FILE_ATTRIBUTES) {
+		HANDLE t = CreateThread(NULL, 0, music_convert_thread, NULL, 0, NULL);
+		if (t) CloseHandle(t);
+	}
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
 	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);
