@@ -105,6 +105,7 @@ static volatile LONG g_shotWanted;
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
+static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -136,6 +137,9 @@ static void read_settings(void)
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
+	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
+	if (g_frameLimit < 0) g_frameLimit = 0;
+	logf_("frame limit: %d game frames a second%s", g_frameLimit, g_frameLimit ? "" : " (off: as fast as the CPU allows)");
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
@@ -2675,6 +2679,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	int n = msg - WM_REMOTE;
 	if (n == 0x10) {
 		music_status(); // sound is muted in remote mode: the log says whether the music stream is playing
+		logf_("view: map column %d, first x %d", *(int *)0x005651b4, *(int *)0x0052afdc);
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
@@ -3895,8 +3900,37 @@ static void __cdecl h_show_frame(int force)
 	if (*(void **)0x004eabd0) o_show_frame(force);
 }
 
+// Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
+// (FUN_0040e8bb) at once, so the game redraws its map thousands of times a second and keeps a CPU
+// core busy. Each frame is spaced to at least 1/FrameLimit s here: the screen is shown at most once
+// per display refresh anyway, and the game times its animations and scrolling by the clock.
+typedef char (__cdecl *game_frame_t)(void);
+static game_frame_t o_game_frame;
+static char __cdecl h_game_frame(void)
+{
+	static LARGE_INTEGER next, freq;
+	static BOOL fine;
+	if (g_frameLimit > 0) {
+		if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+		if (!fine) { timeBeginPeriod(1); fine = TRUE; } // Sleep to the millisecond
+		LARGE_INTEGER now;
+		QueryPerformanceCounter(&now);
+		LONGLONG period = freq.QuadPart / g_frameLimit;
+		if (next.QuadPart && now.QuadPart < next.QuadPart) {
+			DWORD ms = (DWORD)((next.QuadPart - now.QuadPart) * 1000 / freq.QuadPart);
+			if (ms) Sleep(ms);
+			while (QueryPerformanceCounter(&now), now.QuadPart < next.QuadPart) Sleep(0);
+		}
+		// a frame that ran long (a turn being worked out) doesn't make the next ones hurry
+		next.QuadPart = (now.QuadPart - next.QuadPart > period ? now.QuadPart : next.QuadPart) + period;
+	}
+	return o_game_frame();
+}
+
 static void install(void)
 {
+	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
+		hook_code((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue, h_game_frame, &o_game_frame);
 	hook_import("smackw32.DLL", "#14", h_SmackOpen, &o_SmackOpen);
 	hook_import("smackw32.DLL", "#23", h_SmackToBuffer, &o_SmackToBuffer);
 	hook_import("smackw32.DLL", "#19", h_SmackDoFrame, &o_SmackDoFrame);
