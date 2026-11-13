@@ -849,6 +849,10 @@ static BOOL stamp_record(const BYTE *buf, int index, int x, int y, int sprite)
 	return TRUE;
 }
 
+static DWORD *g_layerS;
+static BYTE *g_layerShadowS, *g_layerValidS, *g_waveDS;
+static BYTE g_layerDirty[GAME_H];
+static void tile_dirty(int y0, int y1);
 // Stamps the tile just drawn: frame "index" of the file at "buf", at game position x, y.
 static void stamp_tile(const BYTE *buf, int index, int x, int y)
 {
@@ -866,6 +870,7 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 	const BYTE *src = buf + *(const int *)(rec + 2);
 	const DWORD *hd = px + index * (TILE_W * 2 * TILE_H * 2);
 	int W = g_back->w;
+	tile_dirty(y, y + TILE_H);
 	for (int r = 0; r < TILE_H; r++) {
 		int k = r < TILE_H / 2 ? r : TILE_H - 1 - r;
 		int w = 2 + 4 * k, x0 = (TILE_W - w) / 2;
@@ -1164,6 +1169,7 @@ static void forget_tiles(void)
 {
 	g_layerGen++;
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
+	tile_dirty(0, GAME_H);
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
 		int keep = g_off + PANEL_X;
@@ -1591,6 +1597,12 @@ static void video_overlay(const PALETTEENTRY *pal, int sx, int sw)
 }
 
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
+// the tile layer as of the frame on screen (tile_publish); the live one until the first copy
+#define TL_ON (g_layerS != NULL)
+#define TL_L (TL_ON ? g_layerS : g_layer)
+#define TL_S (TL_ON ? g_layerShadowS : g_layerShadow)
+#define TL_V (TL_ON ? g_layerValidS : g_layerValid)
+#define TL_W (TL_ON && g_waveDS ? g_waveDS : g_waveD)
 static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
 	int zoom = *(int *)0x0057cb18, gameMode = *(int *)0x0052af94;
@@ -1606,8 +1618,8 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 			pal[i].peBlue >> 2 == g_tilePal[i * 3 + 2];
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * sw;
-		const BYTE *sh = g_layerShadow + y * MAX_W + sx, *va = g_layerValid + y * MAX_W + sx;
-		const DWORD *h0 = g_layer + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
+		const BYTE *sh = TL_S + y * MAX_W + sx, *va = TL_V + y * MAX_W + sx;
+		const DWORD *h0 = TL_L + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
 		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
@@ -1625,7 +1637,7 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
 				if (g_shoreWaves && zoom == 0 && g_waveD) {
 					int X = 2 * (x + sx), Y = 2 * y;
-					const BYTE *w0 = g_waveD + Y * (2 * MAX_W) + X, *w1 = w0 + 2 * MAX_W;
+					const BYTE *w0 = TL_W + Y * (2 * MAX_W) + X, *w1 = w0 + 2 * MAX_W;
 					if (w0[0] | w0[1] | w1[0] | w1[1]) {
 						waved = TRUE;
 						if (w0[0]) wave_px(&o0[2 * x], w0[0], X, Y, waveT);
@@ -1678,6 +1690,36 @@ static void spr_publish(int y0, int y1)
 	memcpy(g_sprLayerS + (size_t)y0 * 4 * MAX_W, g_sprLayer + (size_t)y0 * 4 * MAX_W, n * 16);
 	memcpy(g_sprShadowS + (size_t)y0 * MAX_W, g_sprShadow + (size_t)y0 * MAX_W, n);
 	memcpy(g_sprValidS + (size_t)y0 * MAX_W, g_sprValid + (size_t)y0 * MAX_W, n);
+}
+
+// The ground tile layer as of the frame on screen, like the sprites (spr_publish). It was shown
+// live: while the game redraws the next frame (a scroll moves every tile; a full redraw clears the
+// layer first and stamps it at the end) the frame on screen and the layer disagreed, and the map
+// showed its 1x pixels for a frame. Only rows written since their last copy are copied.
+static void tile_dirty(int y0, int y1)
+{
+	for (int y = max(0, y0); y < min(GAME_H, y1); y++) g_layerDirty[y] = 1;
+}
+static void tile_publish(int y0, int y1)
+{
+	if (!g_layer || !g_layerShadow || !g_layerValid) return;
+	if (!g_layerS) {
+		DWORD *l = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+		BYTE *s = calloc(MAX_W, GAME_H), *v = calloc(MAX_W, GAME_H), *w = g_waveD ? calloc(MAX_W * 2, GAME_H * 2) : NULL;
+		if (!l || !s || !v || (g_waveD && !w)) { free(l); free(s); free(v); free(w); return; }
+		g_layerShadowS = s; g_layerValidS = v; g_waveDS = w;
+		MemoryBarrier();
+		g_layerS = l;
+		tile_dirty(0, GAME_H);
+	}
+	for (int y = max(0, y0); y < min(GAME_H, y1); y++) {
+		if (!g_layerDirty[y]) continue;
+		g_layerDirty[y] = 0;
+		memcpy(g_layerS + (size_t)y * 4 * MAX_W, g_layer + (size_t)y * 4 * MAX_W, (size_t)MAX_W * 16);
+		memcpy(g_layerShadowS + (size_t)y * MAX_W, g_layerShadow + (size_t)y * MAX_W, MAX_W);
+		memcpy(g_layerValidS + (size_t)y * MAX_W, g_layerValid + (size_t)y * MAX_W, MAX_W);
+		if (g_waveDS) memcpy(g_waveDS + (size_t)y * 4 * MAX_W, g_waveD + (size_t)y * 4 * MAX_W, (size_t)MAX_W * 4);
+	}
 }
 
 static void bt_publish(int y0, int y1)
@@ -2432,6 +2474,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 		text_publish(dy, dy + h);
 		bt_publish(dy, dy + h);
 		spr_publish(dy, dy + h);
+		tile_publish(dy, dy + h);
 	}
 }
 
