@@ -100,6 +100,7 @@ static void draw_timed(int which, LARGE_INTEGER t0)
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
 // 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
 static BOOL g_remote;
+static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
 static volatile LONG g_shotWanted;
 #define WM_REMOTE (WM_APP + 0x100)
@@ -557,6 +558,19 @@ static void room_compose(const PALETTEENTRY *pal, int sw)
 static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 {
 	if (!g_hdScreens) return;
+	// Some screens load their picture again every frame (the skirmish score screen: 60 times a
+	// second). The same picture again changes nothing: reading its HD files each time (several MB)
+	// and freeing the buffers the presenter was showing broke that screen.
+	static char shownBase[64];
+	{
+		char b[64];
+		lstrcpynA(b, name, sizeof b);
+		char *d = strrchr(b, '.');
+		if (d) *d = 0;
+		CharLowerA(b);
+		if (rows == GAME_H && g_hdPic.on && !strcmp(b, shownBase) && !memcmp(pic, g_hdPic.shadow, GAME_W * GAME_H)) return;
+		lstrcpynA(shownBase, b, sizeof shownBase);
+	}
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
@@ -872,7 +886,7 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 // the screen now holds is stamped into the layer. A wrong guess of position only fails the check.
 #define MAX_SPRITE_SETS 64
 // pal: the palette the 2x art was made with (lords2hd\sprites\<file>.pal, else Base01.256), 6-bit.
-static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; } g_spriteSets[MAX_SPRITE_SETS];
+static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[32]; } g_spriteSets[MAX_SPRITE_SETS];
 
 static void read_palette(const char *path, BYTE *pal)
 {
@@ -884,6 +898,8 @@ static void read_palette(const char *path, BYTE *pal)
 static void sprites_loaded(const char *name, const void *buffer)
 {
 	if (!g_hdTiles) return;
+	for (int i = 0; i < MAX_SPRITE_SETS; i++) // the same file into the same buffer again: already have it
+		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, name)) return;
 	int slot = -1;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
 		if (g_spriteSets[i].buf == buffer) {
@@ -908,6 +924,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 	if (data && fread(data, 1, bytes, f) == (size_t)bytes) {
 		g_spriteSets[slot].buf = buffer;
 		g_spriteSets[slot].data = data;
+		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
 		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
 		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 		read_palette(path, g_spriteSets[slot].pal);
@@ -2731,6 +2748,15 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+	if (n == 11) { // testing: the end-of-battle scroll and its video over a running battle (screen 43)
+		g_battleEndKeep = wp == 1;
+		*(BYTE *)0x004eac50 = 0x2b;
+		*(int *)0x005533d0 = 1;
+		((void (__cdecl *)(void))0x00423241)();
+		((BOOL (__cdecl *)(const char *, int, int, int, int))0x0042d91b)("bat_win1.smk", 0x27, 0x49, 0, 0x2b);
+		mark_dirty();
+		return 0;
+	}
 	if (n == 8) { // play a video now (testing): wParam = index in the table, at the place the game uses
 		static const struct { const char *name; int x, y; } v[] = {
 			{ "hang.smk", 25, 81 }, { "jail.smk", 25, 81 }, { "axmen.smk", 25, 81 }, { "cart_kgt.smk", 25, 81 },
@@ -3417,6 +3443,80 @@ static void __cdecl h_yesno_draw(void)
 	g_drawingLeft = FALSE;
 }
 
+// The end of a battle (screen 43): FUN_00423241 draws a scroll with the result, the video's frame
+// and a close arrow, all at fixed x (the scroll 16 .. 464, centred over the 4:3 battlefield), and
+// FUN_00477dfc starts the result video (bat_winN.smk) at 39,73. In the zoomed-out battle both move
+// left by the same amount, to the middle of the battlefield the player sees. Most of the x values
+// are single signed bytes in the code, too small for the move, so FUN_00423241 is done here in
+// full: the same calls with x shifted. The close arrow's click spot follows (FUN_0040d1bc).
+static int battle_end_shift(void) { return battle_zoom_on() && !g_battleEndKeep ? 240 - (PANEL_X - battle_map_w() / 2) : 0; }
+static void frame_box(int x, int y, int w, int h);
+typedef void (__cdecl *battle_end_draw_t)(void);
+static battle_end_draw_t o_battle_end_draw;
+static void __cdecl h_battle_end_draw(void)
+{
+	void (__cdecl *prepare)(void) = (void *)0x004b1de0, (__cdecl *redraw)(void) = (void *)0x0045240a;
+	void (__cdecl *video_frame_on)(void) = (void *)0x0047703a, (__cdecl *video_prepare)(void) = (void *)0x004b1310;
+	void (__cdecl *scroll)(int, int, int, int) = (void *)0x004093e0;
+	void (__cdecl *arrow)(int, int, int) = (void *)0x0040d1bc;
+	void (__cdecl *line)(int, int, int, int, void *, int) = (void *)0x00402d37;
+	void (__cdecl *para)(int, int, int, int, int, int, int, int, void *, int) = (void *)0x0040328e;
+	void (__cdecl *box)(int, int, int, int) = (void *)0x00403deb;
+	void *title = (void *)0x005b2fa0, *body = (void *)0x005af8f0;
+	int s = battle_end_shift(), result = *(int *)0x00553fb8;
+	prepare();
+	*(int *)0x004eb260 = 2;
+	*(int *)0x004e65f8 = 1;
+	redraw();
+	g_drawingLeft = s != 0;
+	if (*(int *)0x005533d0 == 0) {
+		scroll(0x10 - s, 0x90, 0x1c, 10);
+		arrow(0x1a0 - s, 0x100, 0);
+		line(0x52, 0xc, 0x30 - s, 0xa8, title, 0x3f);
+		para(0x52, 0xd, 0x30 - s, 0xe0, 0x180, 100, 0, 0, body, 0x3f);
+	}
+	else if (*(int *)0x0053f248 == 0) {
+		scroll(0x10 - s, 0x90, 0x1c, 10);
+		arrow(0x1a0 - s, 0x100, 0);
+		line(0x52, result * 2, 0x30 - s, 0xa8, title, 0x3f);
+		para(0x52, result * 2 + 1, 0x30 - s, 0xe0, 0x180, 100, 0, 0, body, 0x3f);
+	}
+	else {
+		video_frame_on();
+		video_prepare();
+		scroll(0x10 - s, 0x30, 0x1c, 0x16);
+		if (0x27 - s >= 1) box(0x27 - s, 0x48, 0x192, 0xc2);
+		else frame_box(0x27 - s, 0x48, 0x192, 0xc2);
+		arrow(0x1a0 - s, 0x160, 0);
+		line(0x52, result * 2, 0x30 - s, 0x138, title, 0x3f);
+		para(0x52, result * 2 + 1, 0x30 - s, 0x158, 0x180, 100, 0x20 - s, 0x1a0, body, 0x3f);
+	}
+	g_drawingLeft = FALSE;
+}
+// FUN_00403deb's frame (top and right lines colour 0x10, bottom and left 0x1f) for an x left of 0,
+// which it clamps to 0 while keeping the width (the frame landed at 0 .. 401, apart from the video).
+static void frame_px(int x, int y, BYTE colour)
+{
+	if (y >= 0 && y < GAME_H && x + g_back->org >= 0 && x + g_back->org < g_back->w)
+		g_back->bits[y * g_back->pitch + g_back->org + x] = colour;
+}
+static void frame_box(int x, int y, int w, int h)
+{
+	if (!g_back) return;
+	int x1 = x + w - 1, y1 = y + h - 1;
+	for (int c = x; c <= x1; c++) frame_px(c, y, 0x10);   // top
+	for (int r = y; r <= y1; r++) frame_px(x1, r, 0x10);  // right
+	for (int c = x; c <= x1; c++) frame_px(c, y1, 0x1f);  // bottom
+	for (int r = y; r <= y1; r++) frame_px(x, r, 0x1f);   // left
+}
+typedef BOOL (__cdecl *play_video_t)(const char *, int, int, int, int);
+static play_video_t o_play_video;
+static BOOL __cdecl h_play_video(const char *name, int x, int y, int mode, int next)
+{
+	if (x == 0x27 && y == 0x49 && SCREEN_ID == 0x2b) x -= battle_end_shift(); // the result video, in its frame
+	return o_play_video(name, x, y, mode, next);
+}
+
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
 // picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
 // the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
@@ -3955,6 +4055,9 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
 	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
 	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
+	static const BYTE kEndPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
+	hook_code((BYTE *)0x00423241, kEndPrologue, sizeof kEndPrologue, h_battle_end_draw, &o_battle_end_draw);
+	hook_code((BYTE *)0x0042d91b, kBlockPrologue, sizeof kBlockPrologue, h_play_video, &o_play_video);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
