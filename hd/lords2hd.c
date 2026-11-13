@@ -107,6 +107,9 @@ static volatile int g_menuX = -10000, g_menuY, g_menuH = 12 * 16;
 #define MENU_W (12 * 16)
 #define MENU_H g_menuH
 static BOOL menu_doubled(void) { return *(BYTE *)0x004eac50 == 0x32 && *(int *)0x00522cb4 != 0 && g_menuX > -10000; }
+static DWORD g_battleEntered;    // a battle started then (present)
+static BOOL g_battleEntry;       // ... less than 3 s ago
+static BOOL entry_dark(const DWORD *px, int w, int h, int w1);
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
 static volatile LONG g_shotWanted;
@@ -1808,22 +1811,6 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	EnterCriticalSection(&g_lock);
 	memcpy(copy, g_primary->bits, pitch * fh);
 	LeaveCriticalSection(&g_lock);
-	// Entering a battle the game shows its frame before the battlefield is drawn into it: for a
-	// moment the field is black, then half drawn. Until it is filled in (3 s at most) the picture
-	// on screen stays as it was.
-	static DWORD lastCall, entered;
-	DWORD now = GetTickCount();
-	if (now - lastCall > 500) entered = now;
-	lastCall = now;
-	if (now - entered < 3000) {
-		int black = 0, n = 0;
-		for (int y = 40; y < GAME_H; y += 8) {
-			const BYTE *row = copy + y * pitch + g_off + PANEL_X - mapW;
-			for (int x = 0; x < mapW; x += 8, n++) { BYTE i = row[x]; black += pal[i].peRed + pal[i].peGreen + pal[i].peBlue < 16; }
-		}
-		if (g_remote) logf_("battle entry: %d of %d samples dark at %lu ms", black, n, now - entered);
-		if (black * 20 > n) return FALSE; // more than 5% black
-	}
 	RECT v, c;
 	view_rect(&v);
 	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
@@ -1977,6 +1964,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		SetStretchBltMode(dc, HALFTONE);
 		SetBrushOrgEx(dc, 0, 0, NULL);
 	}
+	if (entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
@@ -2050,6 +2038,24 @@ static void shot_save(const DWORD *px, int w, int h)
 	MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
 }
 
+// A frame caught half drawn: the top bar is there but much of the field below it is still black
+// (entering a battle the game shows its frame before the battlefield is drawn into it). Such a
+// picture is held back for up to half a second; a fade, which darkens the bar too, never is.
+static BOOL entry_dark(const DWORD *px, int w, int h, int w1)
+{
+	static DWORD since;
+	int bar = 0, nb = 0, black = 0, n = 0;
+	for (int x = 8; x < w; x += 16, nb++) bar += (px[(h / 40) * w + x] & 0xf0f0f0) != 0;
+	for (int y = h / 10; y < h; y += 16)
+		for (int x = 0; x < w1; x += 16, n++) black += (px[y * w + x] & 0xf0f0f0) == 0;
+	BOOL hold = nb && bar * 10 > nb * 6 && n && black * 4 > n; // bar 60% drawn (letters are dark), field 25% black
+	DWORD now = GetTickCount();
+	if (g_remote && n && black * 4 > n) logf_("dark frame: bar %d/%d field %d/%d (%dx%d)", bar, nb, black, n, w, h);
+	if (!hold) { since = 0; return FALSE; }
+	if (!since) since = now;
+	if (g_remote) logf_("half-drawn frame held (%d of %d field samples black)", black, n);
+	return now - since < 500;
+}
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
 // the screen on every pass of its loop, paused or not.
 static BOOL present(void)
@@ -2114,6 +2120,16 @@ static BOOL present(void)
 		palDumped = TRUE;
 	}
 
+	// Entering a battle the game shows a frame before the battlefield is drawn into it: for a moment
+	// the field is black, then half drawn. While a battle has just started (3 s), a finished picture
+	// with much black in it (entry_dark) is not shown; the one on screen stays.
+	{
+		static BOOL wasBattle;
+		BOOL battle = *(int *)0x0057c8fc == 2 || *(BYTE *)0x004eac50 == 41; // screen 41 comes first
+		if (battle && !wasBattle) g_battleEntered = GetTickCount();
+		wasBattle = battle;
+		g_battleEntry = battle && GetTickCount() - g_battleEntered < 3000;
+	}
 	if (battle_zoom_on()) return present_battle(pal, palSame);
 
 	RECT v, c;
@@ -2159,6 +2175,7 @@ static BOOL present(void)
 		bi.h.biWidth = dw;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
+		if (entry_dark(room ? g_room.out : g_frame2x, dw, GAME_H * 2, dw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; } // retried until drawn or shown
 		shot_save(room ? g_room.out : g_frame2x, dw, GAME_H * 2);
 		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, dw, GAME_H * 2, room ? g_room.out : g_frame2x,
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
@@ -3514,6 +3531,44 @@ static void __cdecl h_yesno_draw(void)
 	g_drawingLeft = FALSE;
 }
 
+// The game draws the yes/no box once, when it opens (and on some refreshes). If the screen behind
+// is redrawn afterwards - closing the drop-down menu the question came from redraws the map where
+// the menu was - part of the box is gone and stays gone ("torn"). While the box is up (screen 30)
+// its pixels are checked after every game frame and it is drawn again when anything changed them.
+#define YN_W (14 * 16)
+#define YN_H (8 * 16)
+static BYTE g_ynSnap[YN_W * YN_H];
+static int g_ynHave, g_ynX, g_ynY;
+static BOOL yn_region(BOOL save)
+{
+	if (!g_back) return FALSE;
+	int x0 = *(int *)0x0052af90 - 16, y0 = *(int *)0x0052af98 - 16;
+	BOOL same = TRUE;
+	for (int r = 0; r < YN_H; r++) {
+		int y = y0 + r;
+		if (y < 0 || y >= GAME_H) continue;
+		for (int c = 0; c < YN_W; c++) {
+			int x = g_back->org + x0 + c;
+			if (x < 0 || x >= g_back->w) continue;
+			BYTE *p = g_back->bits + y * g_back->pitch + x;
+			if (save) g_ynSnap[r * YN_W + c] = *p;
+			else if (g_ynSnap[r * YN_W + c] != *p) { same = FALSE; r = YN_H; break; }
+		}
+	}
+	return same;
+}
+static void yesno_keep(void)
+{
+	if (*(BYTE *)0x004eac50 != 0x1e || !g_back) { g_ynHave = 0; return; }
+	int x = *(int *)0x0052af90, y = *(int *)0x0052af98;
+	if (g_ynHave && x == g_ynX && y == g_ynY && yn_region(FALSE)) return;
+	h_yesno_draw();                                                                       // FUN_0040ccfa
+	((void (__cdecl *)(int, int, short *, int))0x0040cfd2)(x, y, (short *)0x004dd310, 2); // its two buttons
+	((void (__cdecl *)(void))0x0045240a)();                                               // to the screen
+	yn_region(TRUE);
+	g_ynHave = 1; g_ynX = x; g_ynY = y;
+}
+
 // The end of a battle (screen 43): FUN_00423241 draws a scroll with the result, the video's frame
 // and a close arrow, all at fixed x (the scroll 16 .. 464, centred over the 4:3 battlefield), and
 // FUN_00477dfc starts the result video (bat_winN.smk) at 39,73. In the zoomed-out battle both move
@@ -4229,7 +4284,9 @@ static char __cdecl h_game_frame(void)
 		// the next slot is a frame period after this frame, whatever woke it
 		next.QuadPart = now.QuadPart + period;
 	}
-	return o_game_frame();
+	char r = o_game_frame();
+	yesno_keep();
+	return r;
 }
 
 // Timing=1: how many logic steps the game runs a second (FUN_004bb978 works them out from the
