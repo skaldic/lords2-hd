@@ -107,8 +107,6 @@ static volatile int g_menuX = -10000, g_menuY, g_menuH = 12 * 16;
 #define MENU_W (12 * 16)
 #define MENU_H g_menuH
 static BOOL menu_doubled(void) { return *(BYTE *)0x004eac50 == 0x32 && *(int *)0x00522cb4 != 0 && g_menuX > -10000; }
-static DWORD g_battleEntered;    // a battle started then (present)
-static BOOL g_battleEntry;       // ... less than 3 s ago
 static BOOL entry_dark(const DWORD *px, int w, int h, int w1);
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
@@ -951,10 +949,19 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
 	if (stamp_record(buf, index, x, y, 1)) return;
 	if (battle_zoom_on() && !g_btLayer) {
-		g_btLayer = malloc(g_frameW * g_frameH * 4 * 4);
-		g_btShadow = calloc(g_frameW, g_frameH);
-		g_btValid = calloc(g_frameW, g_frameH);
+		// The presenter thread reads these as soon as g_btLayer is set: it is set last, and only
+		// when all three exist (it once saw the layer before the table and read through null).
+		DWORD *layer = malloc(g_frameW * g_frameH * 4 * 4);
+		BYTE *shadow = calloc(g_frameW, g_frameH), *valid = calloc(g_frameW, g_frameH);
+		if (layer && shadow && valid) {
+			g_btShadow = shadow;
+			g_btValid = valid;
+			MemoryBarrier();
+			g_btLayer = layer;
+		}
+		else { free(layer); free(shadow); free(valid); }
 	}
+	if (battle_zoom_on() && !g_btLayer) return;
 	const BYTE *data = NULL, *setPal = NULL;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++)
 		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
@@ -1657,10 +1664,13 @@ static void spr_publish(int y0, int y1)
 {
 	if (!g_sprLayer) return;
 	if (!g_sprLayerS) {
-		g_sprLayerS = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
-		g_sprShadowS = malloc((size_t)MAX_W * GAME_H);
-		g_sprValidS = calloc(MAX_W, GAME_H);
-		if (!g_sprLayerS || !g_sprShadowS || !g_sprValidS) { free(g_sprLayerS); g_sprLayerS = NULL; return; }
+		// the presenter reads the tables as soon as the layer pointer is set: it is set last
+		DWORD *l = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+		BYTE *s = calloc(MAX_W, GAME_H), *v = calloc(MAX_W, GAME_H);
+		if (!l || !s || !v) { free(l); free(s); free(v); return; }
+		g_sprShadowS = s; g_sprValidS = v;
+		MemoryBarrier();
+		g_sprLayerS = l;
 	}
 	y0 = max(0, y0); y1 = min(GAME_H, y1);
 	if (y1 <= y0) return;
@@ -1674,10 +1684,12 @@ static void bt_publish(int y0, int y1)
 {
 	if (!g_btLayer || !battle_zoom_on()) return;
 	if (!g_btLayerS) {
-		g_btLayerS = malloc(g_frameW * g_frameH * 4 * 4);
-		g_btShadowS = malloc(g_frameW * g_frameH);
-		g_btValidS = calloc(g_frameW, g_frameH);
-		if (!g_btLayerS || !g_btShadowS || !g_btValidS) { free(g_btLayerS); g_btLayerS = NULL; return; }
+		DWORD *l = malloc(g_frameW * g_frameH * 4 * 4); // (set last, as in spr_publish)
+		BYTE *s = calloc(g_frameW, g_frameH), *v = calloc(g_frameW, g_frameH);
+		if (!l || !s || !v) { free(l); free(s); free(v); return; }
+		g_btShadowS = s; g_btValidS = v;
+		MemoryBarrier();
+		g_btLayerS = l;
 	}
 	y0 = max(0, y0); y1 = min(g_frameH, y1);
 	if (y1 <= y0) return;
@@ -1692,10 +1704,11 @@ static void text_publish(int y0, int y1)
 	if (!g_txt || !g_back) return;
 	int W = g_back->w, H = g_back->h;
 	if (!g_txtS) {
-		g_txtS = malloc(W * H * 4);
-		g_txtShadowS = malloc(W * H);
-		g_txtValidS = calloc(W, H);
-		if (!g_txtS || !g_txtShadowS || !g_txtValidS) return;
+		BYTE *l = malloc(W * H * 4), *s = calloc(W, H), *v = calloc(W, H); // (set last, as in spr_publish)
+		if (!l || !s || !v) { free(l); free(s); free(v); return; }
+		g_txtShadowS = s; g_txtValidS = v;
+		MemoryBarrier();
+		g_txtS = l;
 	}
 	y0 = max(0, y0); y1 = min(H, y1);
 	if (y1 <= y0) return;
@@ -1821,6 +1834,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
 	const DWORD *btL = g_btLayerS ? g_btLayerS : g_btLayer;
 	const BYTE *btS = g_btLayerS ? g_btShadowS : g_btShadow, *btV = g_btLayerS ? g_btValidS : g_btValid;
+	BOOL btOn = btL && btS && btV; // all three, or the HD battle layer is left out of this picture
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
 	const BYTE *frame = copy + g_off; // the game's x = 0
 	for (int sy = 48; sy < lh; sy++) {
@@ -1862,7 +1876,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		}
 	}
 	// HD sprites in the doubled top bar and side panel: already at 2x there.
-	if (g_btLayer) {
+	if (btOn) {
 		for (int sy = 0; sy < lh; sy++) {
 			DWORD *o = pic + sy * lw;
 			int from = sy < 48 ? 0 : mapW;
@@ -1890,7 +1904,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				BYTE v8 = copy[gy * pitch + gx];
 				DWORD p = g_lut[v8];
 				int q = (sy & 1) * 2 + ((sx - mx0) & 1);
-				if (g_btLayer && gx < g_frameW) { int f = gy * g_frameW + gx; if (btV[f] && btS[f] == v8) p = btL[f * 4 + q]; }
+				if (btOn && gx < g_frameW) { int f = gy * g_frameW + gx; if (btV[f] && btS[f] == v8) p = btL[f * 4 + q]; }
 				if (g_txt && g_hdText && W && gx < W) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
 				o[sx] = p;
 			}
@@ -1899,7 +1913,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 #define IN_MENU(sx, sy) ((sx) >= mx0 && (sx) < mx1 && (sy) >= 48 && (sy) < my1)
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
 	BOOL big = (v.bottom - v.top) >= lh * 2;
-	if (g_btLayer && !big) {
+	if (btOn && !big) {
 		for (int sy = 48; sy < lh; sy++) {
 			int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
 			const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
@@ -1941,7 +1955,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				o1[2 * x + 1] = mix4(p, row[r], dn[x], dn[r]);
 			}
 		}
-		if (g_btLayer) {
+		if (btOn) {
 			for (int sy = 48; sy < lh; sy++) {
 				int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
 				const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
@@ -2120,16 +2134,6 @@ static BOOL present(void)
 		palDumped = TRUE;
 	}
 
-	// Entering a battle the game shows a frame before the battlefield is drawn into it: for a moment
-	// the field is black, then half drawn. While a battle has just started (3 s), a finished picture
-	// with much black in it (entry_dark) is not shown; the one on screen stays.
-	{
-		static BOOL wasBattle;
-		BOOL battle = *(int *)0x0057c8fc == 2 || *(BYTE *)0x004eac50 == 41; // screen 41 comes first
-		if (battle && !wasBattle) g_battleEntered = GetTickCount();
-		wasBattle = battle;
-		g_battleEntry = battle && GetTickCount() - g_battleEntered < 3000;
-	}
 	if (battle_zoom_on()) return present_battle(pal, palSame);
 
 	RECT v, c;
