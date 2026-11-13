@@ -3390,6 +3390,33 @@ static void __cdecl h_msg_a(void) { draw_msg(o_msg_a); }
 static void __cdecl h_msg_b(void) { draw_msg(o_msg_b); }
 static void __cdecl h_msg_c(void) { draw_msg(o_msg_c); }
 
+// The yes/no box ("Autocalc battle?", "Exit the game?"): FUN_0040e6f2(text, x, y, answer) keeps x, y
+// in DAT_0052af90/98; the box (FUN_0040ccfa, drawn every frame by FUN_004ba26e) and its two buttons
+// (drawn and hit-tested by FUN_004ba26e/FUN_004ba9c8 from those) all start there. Every caller asks
+// for 160,160, which sits right of centre on the wide map and the zoomed-out battlefield: there x
+// is moved so the box (x - 16 .. x + 208) is centred over what the player sees.
+typedef void (__cdecl *yesno_open_t)(int, int, int, int);
+static yesno_open_t o_yesno_open;
+static draw_msg_t o_yesno_draw;
+static BOOL g_yesnoWide;
+static void __cdecl h_yesno_open(int text, int x, int y, int answer)
+{
+	g_yesnoWide = FALSE;
+	if (g_off && x == 160 && county_map_on() && (battle_zoom_on() || *(int *)0x0057c8fc != 2)) {
+		int centre = battle_zoom_on() ? PANEL_X - battle_map_w() / 2 : (PANEL_X - g_extra) / 2;
+		x = (centre - 96) & ~1;
+		g_yesnoWide = TRUE;
+	}
+	o_yesno_open(text, x, y, answer);
+}
+static void __cdecl h_yesno_draw(void)
+{
+	BOOL wide = g_yesnoWide && *(int *)0x0052af90 != 160;
+	g_drawingLeft = wide;
+	o_yesno_draw();
+	g_drawingLeft = FALSE;
+}
+
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
 // picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
 // the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
@@ -3926,6 +3953,8 @@ static void install_wide(void)
 	hook_code((BYTE *)0x0047309e, kMsgPrologueA, sizeof kMsgPrologueA, h_msg_a, &o_msg_a);
 	hook_code((BYTE *)0x00475e07, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_b, &o_msg_b);
 	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
+	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
+	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
