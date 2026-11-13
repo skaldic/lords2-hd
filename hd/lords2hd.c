@@ -12,12 +12,18 @@
 // interpolation and stretches it into the game's window, which covers the monitor.
 // Mouse positions are converted back to 640x480 on their way into the game.
 
+#define COBJMACROS
 #include <windows.h>
 #include <ddraw.h>
+#include <dsound.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 #define GAME_W 640  // the width every screen was designed for
 #define GAME_H 480
@@ -94,12 +100,14 @@ static void draw_timed(int which, LARGE_INTEGER t0)
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
 // 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
 static BOOL g_remote;
+static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
 static volatile LONG g_shotWanted;
 #define WM_REMOTE (WM_APP + 0x100)
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
+static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -131,6 +139,9 @@ static void read_settings(void)
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
+	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
+	if (g_frameLimit < 0) g_frameLimit = 0;
+	logf_("frame limit: %d game frames a second%s", g_frameLimit, g_frameLimit ? "" : " (off: as fast as the CPU allows)");
 	g_cursorScale = GetPrivateProfileIntA("Display", "CursorScale", 50, g_iniPath);
 	if (g_cursorScale < 10) g_cursorScale = 10;
 	g_logLoads = GetPrivateProfileIntA("Debug", "LogLoads", 0, g_iniPath) != 0;
@@ -340,6 +351,7 @@ static DWORD *g_btLayer;
 static BYTE *g_btShadow, *g_btValid;
 static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
+static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
 #define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
 
 // Wider rooms. A painting with a file in lords2hd\wide (four ints: width, the columns where the wide
@@ -546,10 +558,24 @@ static void room_compose(const PALETTEENTRY *pal, int sw)
 static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 {
 	if (!g_hdScreens) return;
+	// Some screens load their picture again every frame (the skirmish score screen: 60 times a
+	// second). The same picture again changes nothing: reading its HD files each time (several MB)
+	// and freeing the buffers the presenter was showing broke that screen.
+	static char shownBase[64];
+	{
+		char b[64];
+		lstrcpynA(b, name, sizeof b);
+		char *d = strrchr(b, '.');
+		if (d) *d = 0;
+		CharLowerA(b);
+		if (rows == GAME_H && g_hdPic.on && !strcmp(b, shownBase) && !memcmp(pic, g_hdPic.shadow, GAME_W * GAME_H)) return;
+		lstrcpynA(shownBase, b, sizeof shownBase);
+	}
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
 	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H); // a new screen: nothing stamped on it yet
+	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H) return;
 	char base[64], path[MAX_PATH];
@@ -792,10 +818,32 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
 }
 
+// The game redraws the whole county map every frame, mostly the same tiles and sprites in the same
+// places. During a map redraw (h_redraw_map) the stamps are only listed; afterwards, if the list is
+// the one of the last redraw and nothing else has written the HD layers since (g_layerGen), the
+// layers already hold this picture and the stamping is skipped; otherwise the list is stamped in
+// order, which ends the same as stamping each piece as it is drawn (each stamp checks the pixels the
+// frame holds at the end). Stamping every frame took 2 ms of the redraw's 2.1.
+typedef struct { const BYTE *buf; int index, x, y, sprite; } stamp_call;
+#define MAX_STAMPS 16384
+static stamp_call *g_stampCur, *g_stampPrev;
+static int g_stampN, g_stampPrevN = -1;
+static BOOL g_stampRec, g_stampOverflow;
+static LONG g_stampPrevGen = -1;
+static int g_stampSkipped, g_stampDone; // Timing=1
+static BOOL stamp_record(const BYTE *buf, int index, int x, int y, int sprite)
+{
+	if (!g_stampRec) { g_layerGen++; return FALSE; }
+	if (g_stampN < MAX_STAMPS) g_stampCur[g_stampN++] = (stamp_call){ buf, index, x, y, sprite };
+	else g_stampOverflow = TRUE;
+	return TRUE;
+}
+
 // Stamps the tile just drawn: frame "index" of the file at "buf", at game position x, y.
 static void stamp_tile(const BYTE *buf, int index, int x, int y)
 {
 	if (!g_layer || !g_back || !buf || index < 0) return;
+	if (stamp_record(buf, index, x, y, 0)) return;
 	DWORD *px = NULL;
 	const BYTE *wave = NULL;
 	int frames = 0;
@@ -838,7 +886,7 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 // the screen now holds is stamped into the layer. A wrong guess of position only fails the check.
 #define MAX_SPRITE_SETS 64
 // pal: the palette the 2x art was made with (lords2hd\sprites\<file>.pal, else Base01.256), 6-bit.
-static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; } g_spriteSets[MAX_SPRITE_SETS];
+static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[32]; } g_spriteSets[MAX_SPRITE_SETS];
 
 static void read_palette(const char *path, BYTE *pal)
 {
@@ -850,6 +898,8 @@ static void read_palette(const char *path, BYTE *pal)
 static void sprites_loaded(const char *name, const void *buffer)
 {
 	if (!g_hdTiles) return;
+	for (int i = 0; i < MAX_SPRITE_SETS; i++) // the same file into the same buffer again: already have it
+		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, name)) return;
 	int slot = -1;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
 		if (g_spriteSets[i].buf == buffer) {
@@ -874,6 +924,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 	if (data && fread(data, 1, bytes, f) == (size_t)bytes) {
 		g_spriteSets[slot].buf = buffer;
 		g_spriteSets[slot].data = data;
+		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
 		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
 		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 		read_palette(path, g_spriteSets[slot].pal);
@@ -885,6 +936,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
+	if (stamp_record(buf, index, x, y, 1)) return;
 	if (battle_zoom_on() && !g_btLayer) {
 		g_btLayer = malloc(g_frameW * g_frameH * 4 * 4);
 		g_btShadow = calloc(g_frameW, g_frameH);
@@ -1014,6 +1066,7 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 {
 	o_mini_paint(player, x, y, mode);
 	if (!g_miniHD || !g_sprLayer || !g_back || !g_layer) return; // g_layer: g_tilePal is loaded
+	g_layerGen++;
 	// The map's own palette, not the screen's: coming back from another screen the screen is still
 	// faded to black when the minimap is drawn, and its colours would be baked in black.
 	DWORD pal[256];
@@ -1089,6 +1142,7 @@ static BYTE *g_sprShadowS, *g_sprValidS;
 
 static void forget_tiles(void)
 {
+	g_layerGen++;
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
@@ -1159,6 +1213,346 @@ static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 			if (!sv[x] || fr[x] != ss[x]) continue;
 			o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
 			o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
+		}
+	}
+}
+
+// Videos at the size of the game's discs. GOG ships the event clips (cart, jail, hang, axmen, pillage,
+// win_game) at 296x184; the disc versions players put in the game folder (the "SMK_HIGH" pack) are
+// 500x312, and the game draws them at the small clip's fixed place, so they spilled out of their frame.
+// Such a clip is decoded into its own buffer; the game's frame gets it shrunk to 296x184 in its place,
+// and the screen shows the full frame smoothly scaled over that area (video_overlay).
+#define VID_SLOT_W 296
+#define VID_SLOT_H 184
+static struct {
+	void *smk;                  // the clip being played at a larger size than its slot
+	int w, h, fx, fy, pitch;    // its size; where its slot is in the frame, and the frame pitch
+	BYTE *dest;                 // where the game asked for it (frame buffer + its x, y)
+	BYTE *buf;                  // the decoded frame, w x h palette indices
+	BYTE *pub, shadow[VID_SLOT_W * VID_SLOT_H]; // as of the last frame shown; what went into the slot
+	volatile LONG on;
+} g_vid;
+
+typedef void *(__stdcall *smk_open_t)(const char *, DWORD, DWORD);
+typedef DWORD (__stdcall *smk_tobuf_t)(void *, DWORD, DWORD, DWORD, DWORD, void *, DWORD);
+typedef DWORD (__stdcall *smk_frame_t)(void *);
+typedef void (__stdcall *smk_close_t)(void *);
+static smk_open_t o_SmackOpen;
+static smk_tobuf_t o_SmackToBuffer;
+static smk_frame_t o_SmackDoFrame;
+static smk_close_t o_SmackClose;
+
+static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
+{
+	void *s = o_SmackOpen(name, flags, extra);
+	if (s) {
+		int w = *(int *)((BYTE *)s + 4), h = *(int *)((BYTE *)s + 8);
+		logf_("video %s: %dx%d, %d frames, flags %08lx", (const char *)name, w, h, *(int *)((BYTE *)s + 12), (unsigned long)flags);
+		if (w == 500 && h == 312) { // the disc version of a 296x184 event clip
+			BYTE *b = realloc(g_vid.buf, w * h), *p = realloc(g_vid.pub, w * h);
+			if (b && p) {
+				g_vid.buf = b; g_vid.pub = p;
+				g_vid.smk = s; g_vid.w = w; g_vid.h = h;
+				memset(b, 0, w * h);
+			}
+			else { g_vid.buf = b; g_vid.pub = p; }
+		}
+	}
+	return s;
+}
+
+static DWORD __stdcall h_SmackToBuffer(void *s, DWORD x, DWORD y, DWORD pitch, DWORD height, void *buf, DWORD flags)
+{
+	if (!s || s != g_vid.smk) return o_SmackToBuffer(s, x, y, pitch, height, buf, flags);
+	g_vid.dest = (BYTE *)buf + y * pitch + x;
+	g_vid.pitch = (int)pitch;
+	g_vid.fx = g_back && (BYTE *)buf >= g_back->bits ? (int)(((BYTE *)buf - g_back->bits) % pitch) + (int)x : (int)x;
+	g_vid.fy = (int)y;
+	return o_SmackToBuffer(s, 0, 0, g_vid.w, g_vid.h, g_vid.buf, flags);
+}
+
+static DWORD __stdcall h_SmackDoFrame(void *s)
+{
+	DWORD r = o_SmackDoFrame(s);
+	if (s && s == g_vid.smk && g_vid.dest) {
+		for (int oy = 0; oy < VID_SLOT_H; oy++) {
+			const BYTE *src = g_vid.buf + (oy * g_vid.h / VID_SLOT_H) * g_vid.w;
+			BYTE *d = g_vid.dest + oy * g_vid.pitch, *sh = g_vid.shadow + oy * VID_SLOT_W;
+			for (int ox = 0; ox < VID_SLOT_W; ox++) d[ox] = sh[ox] = src[ox * g_vid.w / VID_SLOT_W];
+		}
+		EnterCriticalSection(&g_lock);
+		memcpy(g_vid.pub, g_vid.buf, g_vid.w * g_vid.h);
+		LeaveCriticalSection(&g_lock);
+		InterlockedExchange(&g_vid.on, 1);
+	}
+	return r;
+}
+
+static void __stdcall h_SmackClose(void *s)
+{
+	if (s && s == g_vid.smk) {
+		g_vid.smk = NULL;
+		g_vid.dest = NULL;
+		InterlockedExchange(&g_vid.on, 0);
+	}
+	o_SmackClose(s);
+}
+
+// ---- Better music --------------------------------------------------------------------------------
+// The game streams its music (Battle1-5, Scroll1-5, Setup, Setup2, SETUP3) on DirectSound stream 0:
+// FUN_00426534 opens the file through FUN_004b92e0 -> mmioOpenA, with the name copied to
+// 0x522b60 + stream * 16. If lords2hd\music\<name> exists, that file is opened instead, in any PCM
+// format (the remastered soundtrack: 44.1 kHz 16-bit). The game creates each stream's sound buffer
+// once, in the format of the first file it plays, and reuses it; so when the next file's format
+// differs, the old buffer is released here and the game makes a new one (FUN_004263ad has already
+// stopped the stream and its timer before it opens the file).
+#define STREAM_NAMES 0x00522b60
+#define STREAM_BUFS ((IDirectSoundBuffer **)0x00522b80)
+typedef HMMIO (WINAPI *mmioOpenA_t)(LPSTR, LPMMIOINFO, DWORD);
+static mmioOpenA_t o_mmioOpenA;
+
+static BOOL wav_format(const char *path, WAVEFORMATEX *wf)
+{
+	HMMIO h = o_mmioOpenA((LPSTR)path, NULL, MMIO_READ);
+	if (!h) return FALSE;
+	MMCKINFO riff = {0}, ck = {0};
+	BOOL ok = FALSE;
+	memset(wf, 0, sizeof *wf);
+	if (mmioDescend(h, &riff, NULL, 0) == 0 && riff.ckid == FOURCC_RIFF && riff.fccType == mmioFOURCC('W', 'A', 'V', 'E')) {
+		ck.ckid = mmioFOURCC('f', 'm', 't', ' ');
+		if (mmioDescend(h, &ck, &riff, MMIO_FINDCHUNK) == 0 && ck.cksize >= 16)
+			ok = mmioRead(h, (HPSTR)wf, 16) == 16;
+	}
+	mmioClose(h, 0);
+	return ok;
+}
+
+static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
+{
+	DWORD a = (DWORD)name;
+	if (!name || a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) return o_mmioOpenA(name, info, flags);
+	int n = (a - STREAM_NAMES) / 16;
+	char alt[MAX_PATH];
+	const char *base = strrchr(name, '\\');
+	base = base ? base + 1 : name;
+	snprintf(alt, sizeof alt, "%s\\lords2hd\\music\\%s", g_gameDir, base);
+	BOOL replaced = GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES;
+	const char *path = replaced ? alt : name;
+	WAVEFORMATEX want, have = {0};
+	if (wav_format(path, &want)) {
+		IDirectSoundBuffer *b = STREAM_BUFS[n];
+		DWORD got = 0;
+		if (b && (IDirectSoundBuffer_GetFormat(b, &have, sizeof have, &got) != DS_OK ||
+				have.nSamplesPerSec != want.nSamplesPerSec || have.wBitsPerSample != want.wBitsPerSample ||
+				have.nChannels != want.nChannels)) {
+			IDirectSoundBuffer_Stop(b);
+			IDirectSoundBuffer_Release(b);
+			STREAM_BUFS[n] = NULL;
+			logf_("music: stream %d buffer was %lu Hz %u-bit %u ch, rebuilt for the next file", n,
+				have.nSamplesPerSec, have.wBitsPerSample, have.nChannels);
+		}
+		logf_("music: %s%s (%lu Hz, %u-bit, %u ch; stream timer %d ms x %d)", replaced ? "lords2hd\\music\\" : "", base,
+			want.nSamplesPerSec, want.wBitsPerSample, want.nChannels, *(int *)0x004d4758, *(int *)0x004d475c);
+	}
+	HMMIO h = replaced ? o_mmioOpenA(alt, info, flags) : NULL;
+	if (!h) h = o_mmioOpenA(name, info, flags);
+	return h;
+}
+
+// Players get the remastered soundtrack as MP3s with names like "07. Scroll 1 (1996, Remastered).mp3".
+// Dropped into lords2hd\music, they are turned into the WAVs above on a low-priority thread at start,
+// by Windows' own decoder (Media Foundation, loaded by hand so the DLL still loads where it's missing).
+// Each file is matched to a track by its name; files already converted are skipped.
+static const char *music_track(const char *file)
+{
+	char s[MAX_PATH];
+	int i = 0;
+	for (; file[i] && i < MAX_PATH - 1; i++) s[i] = (char)tolower((unsigned char)file[i]);
+	s[i] = 0;
+	static const struct { const char *word; const char *out[6]; } kinds[] = {
+		{ "battle", { NULL, "battle1.wav", "battle2.wav", "battle3.wav", "battle4.wav", "battle5.wav" } },
+		{ "scroll", { NULL, "scroll1.wav", "scroll2.wav", "scroll3.wav", "scroll4.wav", "scroll5.wav" } },
+		// the remaster has no Setup2; its "Siege Pack Setup 2" is the game's SETUP3 (same length, 1:57)
+		{ "setup",  { "setup.wav", NULL, "setup3.wav", "setup3.wav", NULL, NULL } },
+	};
+	for (int k = 0; k < 3; k++) {
+		const char *p = strstr(s, kinds[k].word);
+		if (!p) continue;
+		p += strlen(kinds[k].word);
+		while (*p == ' ' || *p == '_' || *p == '-') p++;
+		int d = (*p >= '1' && *p <= '5' && !(p[1] >= '0' && p[1] <= '9')) ? *p - '0' : 0;
+		return kinds[k].out[d];
+	}
+	return NULL;
+}
+
+typedef HRESULT (WINAPI *MFStartup_t)(ULONG, DWORD);
+typedef HRESULT (WINAPI *MFShutdown_t)(void);
+typedef HRESULT (WINAPI *MFCreateMediaType_t)(IMFMediaType **);
+typedef HRESULT (WINAPI *MFCreateSourceReaderFromURL_t)(LPCWSTR, IMFAttributes *, IMFSourceReader **);
+
+static BOOL music_decode(MFCreateSourceReaderFromURL_t open, MFCreateMediaType_t newtype, const char *src, const char *dst)
+{
+	WCHAR wsrc[MAX_PATH];
+	MultiByteToWideChar(CP_ACP, 0, src, -1, wsrc, MAX_PATH);
+	IMFSourceReader *r = NULL;
+	IMFMediaType *t = NULL, *got = NULL;
+	FILE *f = NULL;
+	BOOL ok = FALSE;
+	DWORD stream = (DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM;
+	UINT32 rate = 0, ch = 0, bits = 0, bytes = 0;
+	char tmp[MAX_PATH];
+	snprintf(tmp, sizeof tmp, "%s.part", dst);
+	if (FAILED(open(wsrc, NULL, &r))) goto done;
+	IMFSourceReader_SetStreamSelection(r, (DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
+	IMFSourceReader_SetStreamSelection(r, stream, TRUE);
+	if (FAILED(newtype(&t))) goto done;
+	IMFMediaType_SetGUID(t, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+	IMFMediaType_SetGUID(t, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+	IMFMediaType_SetUINT32(t, &MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+	if (FAILED(IMFSourceReader_SetCurrentMediaType(r, stream, NULL, t))) goto done;
+	if (FAILED(IMFSourceReader_GetCurrentMediaType(r, stream, &got))) goto done;
+	IMFMediaType_GetUINT32(got, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate);
+	IMFMediaType_GetUINT32(got, &MF_MT_AUDIO_NUM_CHANNELS, &ch);
+	IMFMediaType_GetUINT32(got, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits);
+	if (!rate || !ch || bits != 16) goto done;
+	f = fopen(tmp, "wb");
+	if (!f) goto done;
+	BYTE hdr[44] = {0};
+	fwrite(hdr, 1, 44, f);
+	for (;;) {
+		DWORD flags = 0;
+		IMFSample *smp = NULL;
+		if (FAILED(IMFSourceReader_ReadSample(r, stream, 0, NULL, &flags, NULL, &smp))) break;
+		if (smp) {
+			IMFMediaBuffer *mb = NULL;
+			if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &mb))) {
+				BYTE *p; DWORD n = 0;
+				if (SUCCEEDED(IMFMediaBuffer_Lock(mb, &p, NULL, &n))) {
+					fwrite(p, 1, n, f);
+					bytes += n;
+					IMFMediaBuffer_Unlock(mb);
+				}
+				IMFMediaBuffer_Release(mb);
+			}
+			IMFSample_Release(smp);
+		}
+		if (flags & MF_SOURCE_READERF_ENDOFSTREAM) { ok = bytes > 0; break; }
+		if (flags & MF_SOURCE_READERF_ERROR) break;
+	}
+	// RIFF header: PCM, rate, channels, 16-bit
+	UINT32 align = ch * 2, v;
+	memcpy(hdr, "RIFF", 4); v = 36 + bytes; memcpy(hdr + 4, &v, 4);
+	memcpy(hdr + 8, "WAVEfmt ", 8); v = 16; memcpy(hdr + 16, &v, 4);
+	hdr[20] = 1; hdr[22] = (BYTE)ch; memcpy(hdr + 24, &rate, 4);
+	v = rate * align; memcpy(hdr + 28, &v, 4); hdr[32] = (BYTE)align; hdr[34] = 16;
+	memcpy(hdr + 36, "data", 4); memcpy(hdr + 40, &bytes, 4);
+	fseek(f, 0, SEEK_SET);
+	fwrite(hdr, 1, 44, f);
+done:
+	if (f) fclose(f);
+	if (got) IMFMediaType_Release(got);
+	if (t) IMFMediaType_Release(t);
+	if (r) IMFSourceReader_Release(r);
+	if (ok) ok = MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING);
+	if (!ok) DeleteFileA(tmp);
+	logf_("music: %s %s -> %s (%u Hz, %u ch, %.0f s)", ok ? "converted" : "could not convert", strrchr(src, '\\') + 1,
+		strrchr(dst, '\\') + 1, rate, ch, (rate && ch) ? bytes / (double)(rate * ch * 2) : 0.0);
+	return ok;
+}
+
+static DWORD WINAPI music_convert_thread(void *arg)
+{
+	(void)arg;
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+	char dir[MAX_PATH], pat[MAX_PATH];
+	snprintf(dir, sizeof dir, "%s\\lords2hd\\music", g_gameDir);
+	snprintf(pat, sizeof pat, "%s\\*", dir);
+	WIN32_FIND_DATAA fd;
+	HANDLE fh = FindFirstFileA(pat, &fd);
+	if (fh == INVALID_HANDLE_VALUE) return 0;
+	HMODULE plat = NULL, rw = NULL;
+	MFStartup_t start = NULL; MFShutdown_t stop = NULL; MFCreateMediaType_t newtype = NULL;
+	MFCreateSourceReaderFromURL_t open = NULL;
+	BOOL com = FALSE, mf = FALSE;
+	do {
+		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+		const char *ext = strrchr(fd.cFileName, '.');
+		if (!ext || !lstrcmpiA(ext, ".wav") || !lstrcmpiA(ext, ".part")) continue;
+		if (lstrcmpiA(ext, ".mp3") && lstrcmpiA(ext, ".flac") && lstrcmpiA(ext, ".m4a") && lstrcmpiA(ext, ".wma")) continue;
+		const char *track = music_track(fd.cFileName);
+		if (!track) { logf_("music: %s is not one of the game's tracks, left alone", fd.cFileName); continue; }
+		char src[MAX_PATH], dst[MAX_PATH];
+		snprintf(src, sizeof src, "%s\\%s", dir, fd.cFileName);
+		snprintf(dst, sizeof dst, "%s\\%s", dir, track);
+		WIN32_FILE_ATTRIBUTE_DATA a;
+		if (GetFileAttributesExA(dst, GetFileExInfoStandard, &a) && CompareFileTime(&a.ftLastWriteTime, &fd.ftLastWriteTime) >= 0)
+			continue; // converted before
+		if (!open) {
+			if (!com) com = SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED));
+			plat = LoadLibraryA("mfplat.dll");
+			rw = LoadLibraryA("mfreadwrite.dll");
+			if (plat && rw) {
+				start = (MFStartup_t)GetProcAddress(plat, "MFStartup");
+				stop = (MFShutdown_t)GetProcAddress(plat, "MFShutdown");
+				newtype = (MFCreateMediaType_t)GetProcAddress(plat, "MFCreateMediaType");
+				open = (MFCreateSourceReaderFromURL_t)GetProcAddress(rw, "MFCreateSourceReaderFromURL");
+			}
+			if (!start || !stop || !newtype || !open || FAILED(start(MF_VERSION, MFSTARTUP_LITE))) {
+				logf_("music: Windows Media Foundation is not available here, so MP3s can't be converted (WAVs still work)");
+				open = NULL;
+				break;
+			}
+			mf = TRUE;
+		}
+		music_decode(open, newtype, src, dst);
+	} while (FindNextFileA(fh, &fd));
+	FindClose(fh);
+	if (mf) stop();
+	if (com) CoUninitialize();
+	return 0;
+}
+
+static void music_status(void)
+{
+	IDirectSoundBuffer *b = STREAM_BUFS[0];
+	DWORD st = 0, play = 0, write = 0, got = 0;
+	WAVEFORMATEX wf = {0};
+	if (!b) { logf_("music status: no stream buffer"); return; }
+	IDirectSoundBuffer_GetStatus(b, &st);
+	IDirectSoundBuffer_GetCurrentPosition(b, &play, &write);
+	IDirectSoundBuffer_GetFormat(b, &wf, sizeof wf, &got);
+	logf_("music status: %s, %lu Hz %u-bit, play cursor %lu, file %s", (st & DSBSTATUS_PLAYING) ? "playing" : "stopped",
+		wf.nSamplesPerSec, wf.wBitsPerSample, play, (char *)STREAM_NAMES);
+}
+
+// The large clip over its slot in the doubled picture, wherever the slot still shows its last frame.
+static void video_overlay(const PALETTEENTRY *pal, int sx, int sw)
+{
+	if (!g_vid.on || !g_vid.pub) return;
+	int X0 = 2 * (g_vid.fx - sx), Y0 = 2 * g_vid.fy, W2 = 2 * VID_SLOT_W, H2 = 2 * VID_SLOT_H;
+	if (g_vid.fx < sx || g_vid.fx + VID_SLOT_W > sx + sw || g_vid.fy < 0 || g_vid.fy + VID_SLOT_H > GAME_H) return;
+	for (int Y = 0; Y < H2; Y++) {
+		int oy = Y / 2;
+		const BYTE *fr = g_frame8 + (g_vid.fy + oy) * sw + (g_vid.fx - sx), *sh = g_vid.shadow + oy * VID_SLOT_W;
+		DWORD *o = g_frame2x + (Y0 + Y) * (2 * sw) + X0;
+		// source row (bilinear): the centre of output row Y in the clip's rows
+		double v = (Y + 0.5) * g_vid.h / H2 - 0.5;
+		int y0 = v < 0 ? 0 : (int)v, y1 = y0 + 1 < g_vid.h ? y0 + 1 : y0;
+		int fyw = (int)((v - y0) * 256); if (fyw < 0) fyw = 0;
+		const BYTE *r0 = g_vid.pub + y0 * g_vid.w, *r1 = g_vid.pub + y1 * g_vid.w;
+		for (int Xo = 0; Xo < W2; Xo++) {
+			int ox = Xo / 2;
+			if (fr[ox] != sh[ox]) continue; // something is drawn over the clip here
+			double u = (Xo + 0.5) * g_vid.w / W2 - 0.5;
+			int x0 = u < 0 ? 0 : (int)u, x1 = x0 + 1 < g_vid.w ? x0 + 1 : x0;
+			int fxw = (int)((u - x0) * 256); if (fxw < 0) fxw = 0;
+			const PALETTEENTRY *a = &pal[r0[x0]], *b = &pal[r0[x1]], *c = &pal[r1[x0]], *d = &pal[r1[x1]];
+			int wa = (256 - fxw) * (256 - fyw), wb = fxw * (256 - fyw), wc = (256 - fxw) * fyw, wd = fxw * fyw;
+			int R = (a->peRed * wa + b->peRed * wb + c->peRed * wc + d->peRed * wd) >> 16;
+			int G = (a->peGreen * wa + b->peGreen * wb + c->peGreen * wc + d->peGreen * wd) >> 16;
+			int B = (a->peBlue * wa + b->peBlue * wb + c->peBlue * wc + d->peBlue * wd) >> 16;
+			o[Xo] = (R << 16) | (G << 8) | B;
 		}
 	}
 }
@@ -1531,8 +1925,55 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 }
 
 // Remote mode's screenshot: the picture about to be shown (BGRX, w x h, top-down) as a BMP.
+// Remote message 9 (wParam = n): keep the next n frames shown, at half size, each with its time in ms
+// since the request, then write them as lords2hd-burst-NN-<ms>.bmp. Shows what a player sees frame by
+// frame after a click (late HD art, flicker).
+#define BURST_MAX 60
+static volatile LONG g_burstWant, g_burstFlush; // message 10: write what was kept so far
+static int g_burstN;
+static LARGE_INTEGER g_burstT0;
+static struct { DWORD *px; int w, h; double ms; } g_burst[BURST_MAX];
+
+static void burst_frame(const DWORD *px, int w, int h)
+{
+	if (!g_burstWant) return;
+	if (g_burstFlush) { InterlockedExchange(&g_burstFlush, 0); goto write; }
+	LARGE_INTEGER t, f;
+	QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
+	int i = g_burstN, hw = w / 2, hh = h / 2;
+	g_burst[i].px = malloc((size_t)hw * hh * 4);
+	if (g_burst[i].px) {
+		for (int y = 0; y < hh; y++)
+			for (int x = 0; x < hw; x++) g_burst[i].px[y * hw + x] = px[(y * 2) * w + x * 2];
+		g_burst[i].w = hw; g_burst[i].h = hh;
+		g_burst[i].ms = (t.QuadPart - g_burstT0.QuadPart) * 1000.0 / f.QuadPart;
+		g_burstN++;
+	}
+	if (g_burstN < g_burstWant && g_burstN < BURST_MAX) return;
+write:
+	for (int k = 0; k < g_burstN; k++) {
+		char path[MAX_PATH];
+		snprintf(path, sizeof path, "%s\\lords2hd-burst-%02d-%05.0f.bmp", g_gameDir, k, g_burst[k].ms);
+		FILE *o = fopen(path, "wb");
+		if (o) {
+			int bw = g_burst[k].w, bh = g_burst[k].h;
+			BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + bw * bh * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+			BITMAPINFOHEADER ih = { sizeof ih, bw, -bh, 1, 32, BI_RGB };
+			fwrite(&fh, sizeof fh, 1, o); fwrite(&ih, sizeof ih, 1, o);
+			fwrite(g_burst[k].px, 4, (size_t)bw * bh, o);
+			fclose(o);
+		}
+		free(g_burst[k].px);
+		g_burst[k].px = NULL;
+	}
+	logf_("burst: %d frames written", g_burstN);
+	g_burstN = 0;
+	InterlockedExchange(&g_burstWant, 0);
+}
+
 static void shot_save(const DWORD *px, int w, int h)
 {
+	burst_frame(px, w, h);
 	if (!InterlockedExchange(&g_shotWanted, 0)) return;
 	char path[MAX_PATH], tmp[MAX_PATH];
 	snprintf(path, sizeof path, "%s\\lords2hd-shot.bmp", g_gameDir);
@@ -1643,6 +2084,7 @@ static BOOL present(void)
 		tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
 		EnterCriticalSection(&g_lock);
+		video_overlay(pal, sx, sw);
 		room = room && g_room.on && g_hdPic.on;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
@@ -1712,7 +2154,9 @@ static DWORD WINAPI presenter(void *unused)
 			logf_("timing: %d presents in 5 s, %.1f ms average, %.1f ms worst; %d unchanged frames skipped",
 				presents, presents ? busy / presents : 0.0, worst, skipped);
 			for (int i = 0; i < 2; i++) if (g_draw[i].n) {
-				logf_("timing: %d %s redraws, %.1f ms average, %.1f ms worst", g_draw[i].n, i ? "battlefield" : "map", g_draw[i].ms / g_draw[i].n, g_draw[i].worst);
+				logf_("timing: %d %s redraws, %.2f ms average, %.1f ms worst%s", g_draw[i].n, i ? "battlefield" : "map", g_draw[i].ms / g_draw[i].n, g_draw[i].worst,
+					i ? "" : g_stampSkipped + g_stampDone ? " (HD stamping skipped as unchanged in some)" : "");
+				if (!i) { logf_("timing: map HD stamping: %d redraws unchanged (skipped), %d stamped", g_stampSkipped, g_stampDone); g_stampSkipped = g_stampDone = 0; }
 				g_draw[i].n = 0; g_draw[i].ms = g_draw[i].worst = 0;
 			}
 			since = t1;
@@ -2281,9 +2725,49 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
 	if (n == 0x10) {
+		music_status(); // sound is muted in remote mode: the log says whether the music stream is playing
+		logf_("view: map column %d, first x %d", *(int *)0x005651b4, *(int *)0x0052afdc);
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+		return 0;
+	}
+	if (n == 9) { // keep the next wParam frames shown (burst_frame)
+		if (!g_burstWant) {
+			g_burstN = 0;
+			QueryPerformanceCounter(&g_burstT0);
+			InterlockedExchange(&g_burstWant, (LONG)min(wp, BURST_MAX));
+		}
+		return 0;
+	}
+	if (n == 10) {
+		if (g_burstWant) {
+			InterlockedExchange(&g_burstFlush, 1);
+			InterlockedExchange(&g_forcePresent, 1);
+			mark_dirty();
+		}
+		return 0;
+	}
+	if (n == 11) { // testing: the end-of-battle scroll and its video over a running battle (screen 43)
+		g_battleEndKeep = wp == 1;
+		*(BYTE *)0x004eac50 = 0x2b;
+		*(int *)0x005533d0 = 1;
+		((void (__cdecl *)(void))0x00423241)();
+		((BOOL (__cdecl *)(const char *, int, int, int, int))0x0042d91b)("bat_win1.smk", 0x27, 0x49, 0, 0x2b);
+		mark_dirty();
+		return 0;
+	}
+	if (n == 8) { // play a video now (testing): wParam = index in the table, at the place the game uses
+		static const struct { const char *name; int x, y; } v[] = {
+			{ "hang.smk", 25, 81 }, { "jail.smk", 25, 81 }, { "axmen.smk", 25, 81 }, { "cart_kgt.smk", 25, 81 },
+			{ "win_game.smk", 25, 81 }, { "intro.smk", 0x27, 0x49 }, { "credits.smk", 0, 0 },
+			{ "castle1.smk", 0x9e, 0x14 }, { "bat_win1.smk", 0x27, 0x49 }, { "imptitle.smk", 0x50, 0x50 },
+		};
+		if (wp < sizeof v / sizeof v[0]) {
+			static char name[16];
+			lstrcpynA(name, v[wp].name, sizeof name);
+			((BOOL (__cdecl *)(const char *, int, int, int, int))0x0042d91b)(name, v[wp].x, v[wp].y, 0, *(BYTE *)0x004eac50);
+		}
 		return 0;
 	}
 	if (n == 7) { // hold the mouse at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 = let go
@@ -2568,9 +3052,14 @@ static BOOL hook_import(const char *dll, const char *name, void *hook, void *ori
 		IMAGE_THUNK_DATA *names = (IMAGE_THUNK_DATA *)(base + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk));
 		IMAGE_THUNK_DATA *slots = (IMAGE_THUNK_DATA *)(base + d->FirstThunk);
 		for (; names->u1.AddressOfData; names++, slots++) {
-			if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
-			IMAGE_IMPORT_BY_NAME *imp = (IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData);
-			if (strcmp((char *)imp->Name, name) != 0) continue;
+			// "#23": an import by number (smackw32.dll's are all by number)
+			if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) {
+				if (name[0] != '#' || IMAGE_ORDINAL(names->u1.Ordinal) != (WORD)atoi(name + 1)) continue;
+			}
+			else {
+				IMAGE_IMPORT_BY_NAME *imp = (IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData);
+				if (strcmp((char *)imp->Name, name) != 0) continue;
+			}
 			DWORD old;
 			VirtualProtect(&slots->u1.Function, sizeof(void *), PAGE_READWRITE, &old);
 			*(void **)orig = (void *)slots->u1.Function;
@@ -2867,6 +3356,165 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 		return;
 	}
 	o_framed_panel(x, y, nx, ny);
+}
+
+// Message scrolls over the county map (tutorial pages, events, reports) are placed for the 4:3
+// map, centred over game x 0..PANEL_X. On the wide map they move left by half the extra columns,
+// to the middle of the map the player sees. Three functions draw them (FUN_0047309e, FUN_00475e07,
+// FUN_00476488); each sets the scroll's x (DAT_00553060) from a constant and draws everything from
+// it, and the close arrow's click spot follows (FUN_0040d1bc keeps it). The constants, and the
+// x of the button tables some scrolls use for drawing and clicks (FUN_0040cfd2 / FUN_0040da1e),
+// are rewritten before each draw for the current layout: shifted on the wide county map, as
+// shipped anywhere else (a battle, the 4:3 screen). Scrolls that show a video keep their place.
+static const DWORD kScrollXSites[] = { // movl $imm, 0x553060: the imm's address
+	0x47313b, 0x4732fb, 0x4734c5, 0x47372c, 0x473bbe, 0x473eb9, 0x474051, 0x4741f8, 0x474212,
+	0x4744e7, 0x47473d, 0x474a4e, 0x474e23, 0x4753b0, 0x4755cd, 0x4755fa, 0x475e9a, 0x4764e7,
+};
+static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 0x4ddb50 }; // 2 buttons of 16 bytes, x first
+static LONG g_scrollXOrig[sizeof kScrollXSites / sizeof kScrollXSites[0]];
+static short g_scrollBtnOrig[sizeof kScrollButtons / sizeof kScrollButtons[0]][2];
+static int g_scrollShift, g_scrollReady;
+
+static void scroll_shift(int s)
+{
+	if (!g_scrollReady) {
+		for (int i = 0; i < (int)(sizeof kScrollXSites / sizeof kScrollXSites[0]); i++) {
+			BYTE *p = (BYTE *)kScrollXSites[i];
+			if (p[0] != 0xC7 || p[1] != 0x05 || *(DWORD *)(p + 2) != 0x553060) { logf_("message scrolls: unexpected code at %p, left in place", p); g_scrollReady = -1; return; }
+			g_scrollXOrig[i] = *(LONG *)(p + 6);
+			DWORD old;
+			VirtualProtect(p + 6, 4, PAGE_EXECUTE_READWRITE, &old);
+		}
+		for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++) {
+			DWORD old;
+			VirtualProtect((void *)kScrollButtons[i], 32, PAGE_READWRITE, &old);
+			for (int b = 0; b < 2; b++) g_scrollBtnOrig[i][b] = *(short *)(kScrollButtons[i] + 16 * b);
+		}
+		g_scrollReady = 1;
+	}
+	if (g_scrollReady < 0 || s == g_scrollShift) return;
+	for (int i = 0; i < (int)(sizeof kScrollXSites / sizeof kScrollXSites[0]); i++)
+		*(LONG *)(kScrollXSites[i] + 6) = g_scrollXOrig[i] - s;
+	for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++)
+		for (int b = 0; b < 2; b++) *(short *)(kScrollButtons[i] + 16 * b) = (short)(g_scrollBtnOrig[i][b] - s);
+	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+	g_scrollShift = s;
+}
+
+typedef void (__cdecl *draw_msg_t)(void);
+static draw_msg_t o_msg_a, o_msg_b, o_msg_c;
+static BOOL county_map_on(void);
+static void draw_msg(draw_msg_t orig)
+{
+	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2;
+	scroll_shift(wide ? g_extra / 2 : 0);
+	g_drawingLeft = wide;
+	orig();
+	g_drawingLeft = FALSE;
+}
+static void __cdecl h_msg_a(void) { draw_msg(o_msg_a); }
+static void __cdecl h_msg_b(void) { draw_msg(o_msg_b); }
+static void __cdecl h_msg_c(void) { draw_msg(o_msg_c); }
+
+// The yes/no box ("Autocalc battle?", "Exit the game?"): FUN_0040e6f2(text, x, y, answer) keeps x, y
+// in DAT_0052af90/98; the box (FUN_0040ccfa, drawn every frame by FUN_004ba26e) and its two buttons
+// (drawn and hit-tested by FUN_004ba26e/FUN_004ba9c8 from those) all start there. Every caller asks
+// for 160,160, which sits right of centre on the wide map and the zoomed-out battlefield: there x
+// is moved so the box (x - 16 .. x + 208) is centred over what the player sees.
+typedef void (__cdecl *yesno_open_t)(int, int, int, int);
+static yesno_open_t o_yesno_open;
+static draw_msg_t o_yesno_draw;
+static BOOL g_yesnoWide;
+static void __cdecl h_yesno_open(int text, int x, int y, int answer)
+{
+	g_yesnoWide = FALSE;
+	if (g_off && x == 160 && county_map_on() && (battle_zoom_on() || *(int *)0x0057c8fc != 2)) {
+		int centre = battle_zoom_on() ? PANEL_X - battle_map_w() / 2 : (PANEL_X - g_extra) / 2;
+		x = (centre - 96) & ~1;
+		g_yesnoWide = TRUE;
+	}
+	o_yesno_open(text, x, y, answer);
+}
+static void __cdecl h_yesno_draw(void)
+{
+	BOOL wide = g_yesnoWide && *(int *)0x0052af90 != 160;
+	g_drawingLeft = wide;
+	o_yesno_draw();
+	g_drawingLeft = FALSE;
+}
+
+// The end of a battle (screen 43): FUN_00423241 draws a scroll with the result, the video's frame
+// and a close arrow, all at fixed x (the scroll 16 .. 464, centred over the 4:3 battlefield), and
+// FUN_00477dfc starts the result video (bat_winN.smk) at 39,73. In the zoomed-out battle both move
+// left by the same amount, to the middle of the battlefield the player sees. Most of the x values
+// are single signed bytes in the code, too small for the move, so FUN_00423241 is done here in
+// full: the same calls with x shifted. The close arrow's click spot follows (FUN_0040d1bc).
+static int battle_end_shift(void) { return battle_zoom_on() && !g_battleEndKeep ? 240 - (PANEL_X - battle_map_w() / 2) : 0; }
+static void frame_box(int x, int y, int w, int h);
+typedef void (__cdecl *battle_end_draw_t)(void);
+static battle_end_draw_t o_battle_end_draw;
+static void __cdecl h_battle_end_draw(void)
+{
+	void (__cdecl *prepare)(void) = (void *)0x004b1de0, (__cdecl *redraw)(void) = (void *)0x0045240a;
+	void (__cdecl *video_frame_on)(void) = (void *)0x0047703a, (__cdecl *video_prepare)(void) = (void *)0x004b1310;
+	void (__cdecl *scroll)(int, int, int, int) = (void *)0x004093e0;
+	void (__cdecl *arrow)(int, int, int) = (void *)0x0040d1bc;
+	void (__cdecl *line)(int, int, int, int, void *, int) = (void *)0x00402d37;
+	void (__cdecl *para)(int, int, int, int, int, int, int, int, void *, int) = (void *)0x0040328e;
+	void (__cdecl *box)(int, int, int, int) = (void *)0x00403deb;
+	void *title = (void *)0x005b2fa0, *body = (void *)0x005af8f0;
+	int s = battle_end_shift(), result = *(int *)0x00553fb8;
+	prepare();
+	*(int *)0x004eb260 = 2;
+	*(int *)0x004e65f8 = 1;
+	redraw();
+	g_drawingLeft = s != 0;
+	if (*(int *)0x005533d0 == 0) {
+		scroll(0x10 - s, 0x90, 0x1c, 10);
+		arrow(0x1a0 - s, 0x100, 0);
+		line(0x52, 0xc, 0x30 - s, 0xa8, title, 0x3f);
+		para(0x52, 0xd, 0x30 - s, 0xe0, 0x180, 100, 0, 0, body, 0x3f);
+	}
+	else if (*(int *)0x0053f248 == 0) {
+		scroll(0x10 - s, 0x90, 0x1c, 10);
+		arrow(0x1a0 - s, 0x100, 0);
+		line(0x52, result * 2, 0x30 - s, 0xa8, title, 0x3f);
+		para(0x52, result * 2 + 1, 0x30 - s, 0xe0, 0x180, 100, 0, 0, body, 0x3f);
+	}
+	else {
+		video_frame_on();
+		video_prepare();
+		scroll(0x10 - s, 0x30, 0x1c, 0x16);
+		if (0x27 - s >= 1) box(0x27 - s, 0x48, 0x192, 0xc2);
+		else frame_box(0x27 - s, 0x48, 0x192, 0xc2);
+		arrow(0x1a0 - s, 0x160, 0);
+		line(0x52, result * 2, 0x30 - s, 0x138, title, 0x3f);
+		para(0x52, result * 2 + 1, 0x30 - s, 0x158, 0x180, 100, 0x20 - s, 0x1a0, body, 0x3f);
+	}
+	g_drawingLeft = FALSE;
+}
+// FUN_00403deb's frame (top and right lines colour 0x10, bottom and left 0x1f) for an x left of 0,
+// which it clamps to 0 while keeping the width (the frame landed at 0 .. 401, apart from the video).
+static void frame_px(int x, int y, BYTE colour)
+{
+	if (y >= 0 && y < GAME_H && x + g_back->org >= 0 && x + g_back->org < g_back->w)
+		g_back->bits[y * g_back->pitch + g_back->org + x] = colour;
+}
+static void frame_box(int x, int y, int w, int h)
+{
+	if (!g_back) return;
+	int x1 = x + w - 1, y1 = y + h - 1;
+	for (int c = x; c <= x1; c++) frame_px(c, y, 0x10);   // top
+	for (int r = y; r <= y1; r++) frame_px(x1, r, 0x10);  // right
+	for (int c = x; c <= x1; c++) frame_px(c, y1, 0x1f);  // bottom
+	for (int r = y; r <= y1; r++) frame_px(x, r, 0x1f);   // left
+}
+typedef BOOL (__cdecl *play_video_t)(const char *, int, int, int, int);
+static play_video_t o_play_video;
+static BOOL __cdecl h_play_video(const char *name, int x, int y, int mode, int next)
+{
+	if (x == 0x27 && y == 0x49 && SCREEN_ID == 0x2b) x -= battle_end_shift(); // the result video, in its frame
+	return o_play_video(name, x, y, mode, next);
 }
 
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
@@ -3261,13 +3909,37 @@ static void __cdecl h_redraw_map(void)
 		return;
 	}
 	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+	if (!g_stampCur) {
+		g_stampCur = malloc(MAX_STAMPS * sizeof(stamp_call));
+		g_stampPrev = malloc(MAX_STAMPS * sizeof(stamp_call));
+	}
+	BOOL rec = g_stampCur && g_stampPrev;
+	if (rec) { g_stampN = 0; g_stampOverflow = FALSE; g_stampRec = TRUE; }
 	o_redraw_map();
+	if (rec) {
+		g_stampRec = FALSE;
+		BOOL same = !g_stampOverflow && g_stampN == g_stampPrevN && g_layerGen == g_stampPrevGen &&
+			memcmp(g_stampCur, g_stampPrev, g_stampN * sizeof(stamp_call)) == 0;
+		if (same) g_stampSkipped++;
+		else {
+			for (int i = 0; i < g_stampN; i++) {
+				const stamp_call *s = &g_stampCur[i];
+				if (s->sprite) stamp_sprite(s->buf, s->index, s->x, s->y);
+				else stamp_tile(s->buf, s->index, s->x, s->y);
+			}
+			g_stampDone++;
+			stamp_call *swap = g_stampPrev; g_stampPrev = g_stampCur; g_stampCur = swap;
+			g_stampPrevN = g_stampOverflow ? -1 : g_stampN;
+		}
+		g_stampPrevGen = g_layerGen;
+	}
 	end_wide_view();
 	if (g_timing) draw_timed(0, t0);
 	// The kingdom overview runs out of map columns before the screen's left edge: the strip left
 	// is filled with the land 4 columns to its right (the map repeats every column), HD layer too.
 	int strip = g_extra - g_view.k * MAP_STEP - g_view.firstX, shift = 4 * MAP_STEP;
 	if (MAP_ZOOM == 2 && strip > 0 && strip <= shift) {
+		g_layerGen++;
 		int x0 = g_back->org - g_extra;
 		for (int y = 24; y < bottom; y++) {
 			BYTE *row = g_back->bits + y * g_back->pitch + x0;
@@ -3376,6 +4048,16 @@ static void install_wide(void)
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
+	static const BYTE kMsgPrologueA[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 }; // push ebp; mov ebp,esp; sub esp,24h
+	static const BYTE kMsgPrologueB[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	hook_code((BYTE *)0x0047309e, kMsgPrologueA, sizeof kMsgPrologueA, h_msg_a, &o_msg_a);
+	hook_code((BYTE *)0x00475e07, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_b, &o_msg_b);
+	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
+	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
+	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
+	static const BYTE kEndPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
+	hook_code((BYTE *)0x00423241, kEndPrologue, sizeof kEndPrologue, h_battle_end_draw, &o_battle_end_draw);
+	hook_code((BYTE *)0x0042d91b, kBlockPrologue, sizeof kBlockPrologue, h_play_video, &o_play_video);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
@@ -3404,8 +4086,117 @@ static void __cdecl h_show_frame(int force)
 	if (*(void **)0x004eabd0) o_show_frame(force);
 }
 
+// Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
+// (FUN_0040e8bb) at once, so the game redraws its map thousands of times a second and keeps a CPU
+// core busy. Each frame is spaced to at least 1/FrameLimit s here: the screen is shown at most once
+// per display refresh anyway, and the game times its animations and scrolling by the clock (the
+// waits below keep those clocks exact).
+typedef char (__cdecl *game_frame_t)(void);
+static game_frame_t o_game_frame;
+static char __cdecl h_game_frame(void)
+{
+	static LARGE_INTEGER next, freq;
+	static BOOL fine;
+	if (g_timing) { // how often each gate below opened, to compare with FrameLimit=0
+		static const DWORD addr[5] = { 0x004e5b0c, 0x004e5b14, 0x004e5b10, 0x004e59f0, 0x004e59ec };
+		static DWORD prev[5], t0; static int opened[5];
+		DWORD t = GetTickCount();
+		if (!t0) t0 = t;
+		for (int i = 0; i < 5; i++) { DWORD v = *(DWORD *)addr[i]; if (v != prev[i]) { opened[i]++; prev[i] = v; } }
+		if (t - t0 >= 5000) {
+			logf_("timing: gates opened in 5 s: steps %d, scroll %d, animation %d, screen 35 %d, elapsed %d",
+				opened[0], opened[1], opened[2], opened[3], opened[4]);
+			memset(opened, 0, sizeof opened);
+			t0 = t;
+		}
+	}
+	if (g_frameLimit > 0) {
+		if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+		if (!fine) { timeBeginPeriod(1); fine = TRUE; } // Sleep to the millisecond
+		LARGE_INTEGER now;
+		QueryPerformanceCounter(&now);
+		LONGLONG period = freq.QuadPart / g_frameLimit;
+		// The game does its timed work behind gates of one kind: act once N ms have passed since the
+		// last time, then count again from the frame that acted. A frame that comes late makes every
+		// later one late too (battles ran at 60 logic steps a second instead of 82, scrolling 20%
+		// slower), so the wait also ends the moment the next gate opens:
+		//   logic steps (FUN_004bb978): 10 * (10 - game speed / 10) + 2 ms, last time DAT_004e5b0c
+		//   map scrolling (FUN_004bbbe3): 12 * (10 - scroll speed / 10) + 2 ms (2 more steps on
+		//     screen 16), DAT_004e5b14
+		//   animation tick (FUN_004bbc80) and screen 35's effect (FUN_004b0e03): 20 ms, DAT_004e5b10 /
+		//     DAT_004e59f0
+		//   elapsed time for the frame (FUN_004b20ed): 30 ms, DAT_004e59ec
+		// A gate long overdue isn't in use (paused, no scrolling, another screen): it is left out.
+		int periodMs = 1000 / g_frameLimit;
+		DWORD gateLast[5] = { *(DWORD *)0x004e5b0c, *(DWORD *)0x004e5b14, *(DWORD *)0x004e5b10, *(DWORD *)0x004e59f0, *(DWORD *)0x004e59ec };
+		int gateWait[5] = { -1, -1, 20, 20, 30 };
+		int slow = (100 - *(int *)0x0053f230) / 10;
+		if (slow >= 0 && slow < 10 && (slow != 0 || *(int *)0x00553030 == 0)) gateWait[0] = slow * 10 + 2;
+		int scroll = (100 - *(int *)0x0053f234) / 10;
+		if (scroll >= 0 && scroll < 10) gateWait[1] = (scroll + (SCREEN_ID == 0x10 ? 2 : 0)) * 12 + 2;
+		DWORD t = timeGetTime();
+		for (int i = 0; i < 5; i++)
+			if (gateWait[i] >= 0 && (int)(t - gateLast[i]) > 2 * gateWait[i] + periodMs + 2) gateWait[i] = -1;
+		// A frame slot that comes less than a frame period before a gate opens would only show the
+		// same picture again: then the wait runs to the gate (in battle and on the map frames come
+		// with the logic steps, about 82 a second; 120 where nothing is timed).
+		if (next.QuadPart) {
+			for (;;) {
+				QueryPerformanceCounter(&now);
+				t = timeGetTime();
+				int stepIn = INT_MAX;
+				for (int i = 0; i < 5; i++)
+					if (gateWait[i] >= 0) stepIn = min(stepIn, (int)(gateLast[i] + gateWait[i] - t));
+				if (stepIn <= 0) break;
+				int frameIn = (int)((next.QuadPart - now.QuadPart) * 1000 / freq.QuadPart);
+				if (stepIn != INT_MAX && stepIn - frameIn < periodMs) frameIn = INT_MAX; // the step is close: wait for it
+				else if (now.QuadPart >= next.QuadPart) break;
+				int ms = min(stepIn, frameIn) - 1;
+				Sleep(ms > 0 ? ms : 0);
+			}
+		}
+		// the next slot is a frame period after this frame, whatever woke it
+		next.QuadPart = now.QuadPart + period;
+	}
+	return o_game_frame();
+}
+
+// Timing=1: how many logic steps the game runs a second (FUN_004bb978 works them out from the
+// clock each frame), to check the frame limit leaves the game's own speed alone.
+typedef int (__cdecl *logic_steps_t)(void);
+static logic_steps_t o_logic_steps;
+static int __cdecl h_logic_steps(void)
+{
+	int n = o_logic_steps();
+	static DWORD t0; static int steps, frames;
+	DWORD now = GetTickCount();
+	if (!t0) t0 = now;
+	steps += n > 0 ? n : 0; frames++;
+	if (now - t0 >= 5000) {
+		logf_("timing: %d logic steps in %.1f s over %d frames (battle %d, screen %d)", steps, (now - t0) / 1000.0, frames,
+			*(int *)0x0057c8fc == 2, *(BYTE *)0x004eac50);
+		t0 = now; steps = frames = 0;
+	}
+	return n;
+}
+
 static void install(void)
 {
+	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
+	if (g_timing) hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
+	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
+		hook_code((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue, h_game_frame, &o_game_frame);
+	hook_import("smackw32.DLL", "#14", h_SmackOpen, &o_SmackOpen);
+	hook_import("smackw32.DLL", "#23", h_SmackToBuffer, &o_SmackToBuffer);
+	hook_import("smackw32.DLL", "#19", h_SmackDoFrame, &o_SmackDoFrame);
+	hook_import("smackw32.DLL", "#18", h_SmackClose, &o_SmackClose);
+	hook_import("WINMM.dll", "mmioOpenA", h_mmioOpenA, &o_mmioOpenA);
+	char musicDir[MAX_PATH];
+	snprintf(musicDir, sizeof musicDir, "%s\\lords2hd\\music", g_gameDir);
+	if (GetFileAttributesA(musicDir) != INVALID_FILE_ATTRIBUTES) {
+		HANDLE t = CreateThread(NULL, 0, music_convert_thread, NULL, 0, NULL);
+		if (t) CloseHandle(t);
+	}
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
 	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);

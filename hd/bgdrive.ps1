@@ -38,6 +38,19 @@ foreach ($step in $Steps) {
         'rclick' { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 5 0 $l; Start-Sleep -Milliseconds 80; Post 6 0 $l; Start-Sleep -Milliseconds 60 }
         'down'   { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 2 0 $l; Start-Sleep -Milliseconds 80 }
         'up'     { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 3 0 $l; Start-Sleep -Milliseconds 60 }
+        'burst'  { Get-ChildItem $game -Filter "lords2hd-burst-*.bmp" | Remove-Item; Post 9 ([int]$arg) 0 }   # keep the next n frames shown
+        'getburst' {   # end the burst, save it as shots\<name>\NN-<ms>.png
+            $log = Join-Path $game "lords2hd.log"; $done = @(Select-String -Path $log -Pattern "burst: \d+ frames written").Count
+            Post 10 0 0; $t = 0; while (@(Select-String -Path $log -Pattern "burst: \d+ frames written").Count -le $done -and $t -lt 100) { Start-Sleep -Milliseconds 100; $t++ }
+            Start-Sleep -Milliseconds 300
+            $dir = Join-Path $shots $arg; New-Item -ItemType Directory -Force $dir | Out-Null
+            Get-ChildItem $game -Filter "lords2hd-burst-*.bmp" | ForEach-Object {
+                $b = [Drawing.Bitmap]::FromFile($_.FullName); $b.Save((Join-Path $dir ($_.BaseName.Substring(15) + ".png")), [Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); Remove-Item $_.FullName
+            }
+            "burst saved to shots\$arg"
+        }
+        'video'  { Post 8 ([int]$arg) 0 }   # play video n of the DLL's test table (hang, jail, axmen, cart, win_game, intro, credits, castle1, bat_win1, imptitle)
+        'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
         'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
         'key'    {
             if ($keys.ContainsKey($arg)) { Post 4 $keys[$arg] 0 }
