@@ -108,6 +108,7 @@ static volatile int g_menuX = -10000, g_menuY, g_menuH = 12 * 16;
 #define MENU_H g_menuH
 static BOOL menu_doubled(void) { return *(BYTE *)0x004eac50 == 0x32 && *(int *)0x00522cb4 != 0 && g_menuX > -10000; }
 static BOOL entry_dark(const DWORD *px, int w, int h, int w1);
+static void __cdecl h_msg_a(void);
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
 static volatile LONG g_shotWanted;
@@ -2879,6 +2880,16 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+	if (n == 12) { // testing: the captured-county scroll and its video (FUN_0047309e, type 13)
+		*(int *)0x005440a4 = 0xd;
+		*(int *)0x0057c954 = 2000;
+		*(int *)0x0053e910 = (int)wp ? (int)wp : 0x72;
+		*(int *)0x0055ce54 = 0;
+		*(BYTE *)0x004eac50 = 0x27;
+		h_msg_a();
+		mark_dirty();
+		return 0;
+	}
 	if (n == 11) { // testing: the end-of-battle scroll and its video over a running battle (screen 43)
 		g_battleEndKeep = wp == 1;
 		*(BYTE *)0x004eac50 = 0x2b;
@@ -3512,6 +3523,43 @@ static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 
 static LONG g_scrollXOrig[sizeof kScrollXSites / sizeof kScrollXSites[0]];
 static short g_scrollBtnOrig[sizeof kScrollButtons / sizeof kScrollButtons[0]][2];
 static int g_scrollShift, g_scrollReady;
+// The three scrolls that show a video (a captured county: cap_cty at 40,105; event clips at 25,81
+// and 89,105) are drawn from x values written into the code as push operands, mostly single
+// signed bytes. They move with the others when every value still fits (s <= 136: monitors up to
+// about 16:9); otherwise these three stay where the game puts them, whole.
+static const struct { DWORD addr; BYTE size; short orig; } kVideoScrollX[] = {
+	{ 0x474cc9, 1, 0x10 }, { 0x474cdf, 1, 0x27 }, { 0x474cf0, 4, 0x1a0 }, { 0x474d0b, 1, 0x10 }, { 0x474d43, 1, 0x30 },
+	{ 0x474f8b, 1, 0x08 }, { 0x474fa1, 1, 0x18 }, { 0x474fb2, 4, 0x1f8 }, { 0x474fdd, 1, 0x08 }, { 0x475012, 1, 0x08 }, { 0x47504e, 1, 0x18 },
+	{ 0x475070, 1, 0x10 }, { 0x475086, 1, 0x58 }, { 0x475097, 4, 0x1a0 }, { 0x4750c2, 1, 0x10 }, { 0x4750f7, 1, 0x10 }, { 0x47512a, 1, 0x10 }, { 0x475156, 1, 0x30 },
+};
+static int g_videoScrollShift, g_videoScrollReady;
+static void video_scroll_shift(int s)
+{
+	int n = sizeof kVideoScrollX / sizeof kVideoScrollX[0];
+	if (!g_videoScrollReady) {
+		g_videoScrollReady = 1;
+		for (int i = 0; i < n; i++) {
+			BYTE *p = (BYTE *)kVideoScrollX[i].addr;
+			LONG v = kVideoScrollX[i].size == 1 ? (signed char)p[0] : *(LONG *)p;
+			if (p[-1] != (kVideoScrollX[i].size == 1 ? 0x6a : 0x68) || v != kVideoScrollX[i].orig) {
+				logf_("video scrolls: unexpected code at %p, left in place", p);
+				g_videoScrollReady = -1;
+				return;
+			}
+		}
+		for (int i = 0; i < n; i++) { DWORD old; VirtualProtect((void *)kVideoScrollX[i].addr, 4, PAGE_EXECUTE_READWRITE, &old); }
+	}
+	if (g_videoScrollReady < 0) return;
+	if (s > 136) s = 0; // a push byte holds -128..127: the smallest value (8) would not fit
+	if (s == g_videoScrollShift) return;
+	for (int i = 0; i < n; i++) {
+		BYTE *p = (BYTE *)kVideoScrollX[i].addr;
+		if (kVideoScrollX[i].size == 1) p[0] = (BYTE)(signed char)(kVideoScrollX[i].orig - s);
+		else *(LONG *)p = kVideoScrollX[i].orig - s;
+	}
+	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+	g_videoScrollShift = s;
+}
 
 static void scroll_shift(int s)
 {
@@ -3549,6 +3597,7 @@ static void draw_msg(draw_msg_t orig)
 	// stays lined up with that window, which keeps its own place. 0x4f0350 = the screen under it.
 	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2 && *(int *)0x004f0350 == 0;
 	scroll_shift(wide ? g_extra / 2 : 0);
+	video_scroll_shift(wide ? g_extra / 2 : 0);
 	g_drawingLeft = wide;
 	orig();
 	g_drawingLeft = FALSE;
@@ -3688,11 +3737,22 @@ static void frame_box(int x, int y, int w, int h)
 	for (int c = x; c <= x1; c++) frame_px(c, y1, 0x1f);  // bottom
 	for (int r = y; r <= y1; r++) frame_px(x, r, 0x1f);   // left
 }
+// FUN_00403deb(x, y, w, h), a sunken frame: it clamps x to 0 and keeps the width. While a moved
+// scroll or box is drawn (g_drawingLeft) a frame starting left of 0 is drawn where it belongs.
+typedef void (__cdecl *frame_t)(int, int, int, int);
+static frame_t o_frame;
+static void __cdecl h_frame(int x, int y, int w, int h)
+{
+	if (g_drawingLeft && x < 1) frame_box(x, y, w, h);
+	else o_frame(x, y, w, h);
+}
 typedef BOOL (__cdecl *play_video_t)(const char *, int, int, int, int);
 static play_video_t o_play_video;
 static BOOL __cdecl h_play_video(const char *name, int x, int y, int mode, int next)
 {
 	if (x == 0x27 && y == 0x49 && SCREEN_ID == 0x2b) x -= battle_end_shift(); // the result video, in its frame
+	// a message scroll's video, in its moved frame (video_scroll_shift)
+	else if (g_videoScrollShift && ((x == 25 && y == 81) || (x == 89 && y == 105) || (x == 0x28 && y == 0x69))) x -= g_videoScrollShift;
 	return o_play_video(name, x, y, mode, next);
 }
 
@@ -4268,6 +4328,7 @@ static void install_wide(void)
 	static const BYTE kEndPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00423241, kEndPrologue, sizeof kEndPrologue, h_battle_end_draw, &o_battle_end_draw);
 	hook_code((BYTE *)0x0042d91b, kBlockPrologue, sizeof kBlockPrologue, h_play_video, &o_play_video);
+	hook_code((BYTE *)0x00403deb, kBlockPrologue, sizeof kBlockPrologue, h_frame, &o_frame);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
