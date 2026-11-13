@@ -115,6 +115,7 @@ static volatile LONG g_shotWanted;
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
+static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
@@ -147,6 +148,7 @@ static void read_settings(void)
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
+	g_tutorialOnce = GetPrivateProfileIntA("Display", "TutorialOnce", 1, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
 	logf_("frame limit: %d game frames a second%s", g_frameLimit, g_frameLimit ? "" : " (off: as fast as the CPU allows)");
@@ -3541,7 +3543,9 @@ static draw_msg_t o_msg_a, o_msg_b, o_msg_c;
 static BOOL county_map_on(void);
 static void draw_msg(draw_msg_t orig)
 {
-	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2;
+	// Only over the map itself: a scroll opened from a window on the map (the Town Center: screen 2)
+	// stays lined up with that window, which keeps its own place. 0x4f0350 = the screen under it.
+	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2 && *(int *)0x004f0350 == 0;
 	scroll_shift(wide ? g_extra / 2 : 0);
 	g_drawingLeft = wide;
 	orig();
@@ -3688,6 +3692,25 @@ static BOOL __cdecl h_play_video(const char *name, int x, int y, int mode, int n
 {
 	if (x == 0x27 && y == 0x49 && SCREEN_ID == 0x2b) x -= battle_end_shift(); // the result video, in its frame
 	return o_play_video(name, x, y, mode, next);
+}
+
+// The tutorial scrolls (Game Objectives, Getting started, ...: message ids 200..218) are shown by
+// FUN_00476da9(id), which marks each as seen in 0x4f0298 + id - in memory only, so every start and
+// every loaded game showed them all again. [Display] TutorialOnce=1 (default) keeps the ids shown
+// in lords2hd.ini ([Tutorial] Seen, a bit per id) and marks those as seen without showing them.
+typedef void (__cdecl *tutorial_t)(int);
+static tutorial_t o_tutorial;
+static void __cdecl h_tutorial(int id)
+{
+	if (g_tutorialOnce && id >= 200 && id < 232) {
+		char v[32];
+		GetPrivateProfileStringA("Tutorial", "Seen", "0", v, sizeof v, g_iniPath);
+		DWORD seen = strtoul(v, NULL, 16), bit = 1u << (id - 200);
+		if (seen & bit) { ((BYTE *)0x004f0298)[id] = 1; return; }
+		snprintf(v, sizeof v, "%lx", (unsigned long)(seen | bit));
+		WritePrivateProfileStringA("Tutorial", "Seen", v, g_iniPath);
+	}
+	o_tutorial(id);
 }
 
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
@@ -4228,6 +4251,8 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
 	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
 	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
+	static const BYTE kTutorialPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
+	hook_code((BYTE *)0x00476da9, kTutorialPrologue, sizeof kTutorialPrologue, h_tutorial, &o_tutorial);
 	static const BYTE kEndPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00423241, kEndPrologue, sizeof kEndPrologue, h_battle_end_draw, &o_battle_end_draw);
 	hook_code((BYTE *)0x0042d91b, kBlockPrologue, sizeof kBlockPrologue, h_play_video, &o_play_video);
