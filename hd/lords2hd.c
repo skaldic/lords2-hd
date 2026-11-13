@@ -1163,6 +1163,118 @@ static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 	}
 }
 
+// Videos at the size of the game's discs. GOG ships the event clips (cart, jail, hang, axmen, pillage,
+// win_game) at 296x184; the disc versions players put in the game folder (the "SMK_HIGH" pack) are
+// 500x312, and the game draws them at the small clip's fixed place, so they spilled out of their frame.
+// Such a clip is decoded into its own buffer; the game's frame gets it shrunk to 296x184 in its place,
+// and the screen shows the full frame smoothly scaled over that area (video_overlay).
+#define VID_SLOT_W 296
+#define VID_SLOT_H 184
+static struct {
+	void *smk;                  // the clip being played at a larger size than its slot
+	int w, h, fx, fy, pitch;    // its size; where its slot is in the frame, and the frame pitch
+	BYTE *dest;                 // where the game asked for it (frame buffer + its x, y)
+	BYTE *buf;                  // the decoded frame, w x h palette indices
+	BYTE *pub, shadow[VID_SLOT_W * VID_SLOT_H]; // as of the last frame shown; what went into the slot
+	volatile LONG on;
+} g_vid;
+
+typedef void *(__stdcall *smk_open_t)(const char *, DWORD, DWORD);
+typedef DWORD (__stdcall *smk_tobuf_t)(void *, DWORD, DWORD, DWORD, DWORD, void *, DWORD);
+typedef DWORD (__stdcall *smk_frame_t)(void *);
+typedef void (__stdcall *smk_close_t)(void *);
+static smk_open_t o_SmackOpen;
+static smk_tobuf_t o_SmackToBuffer;
+static smk_frame_t o_SmackDoFrame;
+static smk_close_t o_SmackClose;
+
+static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
+{
+	void *s = o_SmackOpen(name, flags, extra);
+	if (s) {
+		int w = *(int *)((BYTE *)s + 4), h = *(int *)((BYTE *)s + 8);
+		logf_("video %s: %dx%d, %d frames, flags %08lx", (const char *)name, w, h, *(int *)((BYTE *)s + 12), (unsigned long)flags);
+		if (w == 500 && h == 312) { // the disc version of a 296x184 event clip
+			BYTE *b = realloc(g_vid.buf, w * h), *p = realloc(g_vid.pub, w * h);
+			if (b && p) {
+				g_vid.buf = b; g_vid.pub = p;
+				g_vid.smk = s; g_vid.w = w; g_vid.h = h;
+				memset(b, 0, w * h);
+			}
+			else { g_vid.buf = b; g_vid.pub = p; }
+		}
+	}
+	return s;
+}
+
+static DWORD __stdcall h_SmackToBuffer(void *s, DWORD x, DWORD y, DWORD pitch, DWORD height, void *buf, DWORD flags)
+{
+	if (!s || s != g_vid.smk) return o_SmackToBuffer(s, x, y, pitch, height, buf, flags);
+	g_vid.dest = (BYTE *)buf + y * pitch + x;
+	g_vid.pitch = (int)pitch;
+	g_vid.fx = g_back && (BYTE *)buf >= g_back->bits ? (int)(((BYTE *)buf - g_back->bits) % pitch) + (int)x : (int)x;
+	g_vid.fy = (int)y;
+	return o_SmackToBuffer(s, 0, 0, g_vid.w, g_vid.h, g_vid.buf, flags);
+}
+
+static DWORD __stdcall h_SmackDoFrame(void *s)
+{
+	DWORD r = o_SmackDoFrame(s);
+	if (s && s == g_vid.smk && g_vid.dest) {
+		for (int oy = 0; oy < VID_SLOT_H; oy++) {
+			const BYTE *src = g_vid.buf + (oy * g_vid.h / VID_SLOT_H) * g_vid.w;
+			BYTE *d = g_vid.dest + oy * g_vid.pitch, *sh = g_vid.shadow + oy * VID_SLOT_W;
+			for (int ox = 0; ox < VID_SLOT_W; ox++) d[ox] = sh[ox] = src[ox * g_vid.w / VID_SLOT_W];
+		}
+		EnterCriticalSection(&g_lock);
+		memcpy(g_vid.pub, g_vid.buf, g_vid.w * g_vid.h);
+		LeaveCriticalSection(&g_lock);
+		InterlockedExchange(&g_vid.on, 1);
+	}
+	return r;
+}
+
+static void __stdcall h_SmackClose(void *s)
+{
+	if (s && s == g_vid.smk) {
+		g_vid.smk = NULL;
+		g_vid.dest = NULL;
+		InterlockedExchange(&g_vid.on, 0);
+	}
+	o_SmackClose(s);
+}
+
+// The large clip over its slot in the doubled picture, wherever the slot still shows its last frame.
+static void video_overlay(const PALETTEENTRY *pal, int sx, int sw)
+{
+	if (!g_vid.on || !g_vid.pub) return;
+	int X0 = 2 * (g_vid.fx - sx), Y0 = 2 * g_vid.fy, W2 = 2 * VID_SLOT_W, H2 = 2 * VID_SLOT_H;
+	if (g_vid.fx < sx || g_vid.fx + VID_SLOT_W > sx + sw || g_vid.fy < 0 || g_vid.fy + VID_SLOT_H > GAME_H) return;
+	for (int Y = 0; Y < H2; Y++) {
+		int oy = Y / 2;
+		const BYTE *fr = g_frame8 + (g_vid.fy + oy) * sw + (g_vid.fx - sx), *sh = g_vid.shadow + oy * VID_SLOT_W;
+		DWORD *o = g_frame2x + (Y0 + Y) * (2 * sw) + X0;
+		// source row (bilinear): the centre of output row Y in the clip's rows
+		double v = (Y + 0.5) * g_vid.h / H2 - 0.5;
+		int y0 = v < 0 ? 0 : (int)v, y1 = y0 + 1 < g_vid.h ? y0 + 1 : y0;
+		int fyw = (int)((v - y0) * 256); if (fyw < 0) fyw = 0;
+		const BYTE *r0 = g_vid.pub + y0 * g_vid.w, *r1 = g_vid.pub + y1 * g_vid.w;
+		for (int Xo = 0; Xo < W2; Xo++) {
+			int ox = Xo / 2;
+			if (fr[ox] != sh[ox]) continue; // something is drawn over the clip here
+			double u = (Xo + 0.5) * g_vid.w / W2 - 0.5;
+			int x0 = u < 0 ? 0 : (int)u, x1 = x0 + 1 < g_vid.w ? x0 + 1 : x0;
+			int fxw = (int)((u - x0) * 256); if (fxw < 0) fxw = 0;
+			const PALETTEENTRY *a = &pal[r0[x0]], *b = &pal[r0[x1]], *c = &pal[r1[x0]], *d = &pal[r1[x1]];
+			int wa = (256 - fxw) * (256 - fyw), wb = fxw * (256 - fyw), wc = (256 - fxw) * fyw, wd = fxw * fyw;
+			int R = (a->peRed * wa + b->peRed * wb + c->peRed * wc + d->peRed * wd) >> 16;
+			int G = (a->peGreen * wa + b->peGreen * wb + c->peGreen * wc + d->peGreen * wd) >> 16;
+			int B = (a->peBlue * wa + b->peBlue * wb + c->peBlue * wc + d->peBlue * wd) >> 16;
+			o[Xo] = (R << 16) | (G << 8) | B;
+		}
+	}
+}
+
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
 static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
@@ -1643,6 +1755,7 @@ static BOOL present(void)
 		tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
 		EnterCriticalSection(&g_lock);
+		video_overlay(pal, sx, sw);
 		room = room && g_room.on && g_hdPic.on;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
@@ -2286,6 +2399,19 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		mark_dirty();
 		return 0;
 	}
+	if (n == 8) { // play a video now (testing): wParam = index in the table, at the place the game uses
+		static const struct { const char *name; int x, y; } v[] = {
+			{ "hang.smk", 25, 81 }, { "jail.smk", 25, 81 }, { "axmen.smk", 25, 81 }, { "cart_kgt.smk", 25, 81 },
+			{ "win_game.smk", 25, 81 }, { "intro.smk", 0x27, 0x49 }, { "credits.smk", 0, 0 },
+			{ "castle1.smk", 0x9e, 0x14 }, { "bat_win1.smk", 0x27, 0x49 }, { "imptitle.smk", 0x50, 0x50 },
+		};
+		if (wp < sizeof v / sizeof v[0]) {
+			static char name[16];
+			lstrcpynA(name, v[wp].name, sizeof name);
+			((BOOL (__cdecl *)(const char *, int, int, int, int))0x0042d91b)(name, v[wp].x, v[wp].y, 0, *(BYTE *)0x004eac50);
+		}
+		return 0;
+	}
 	if (n == 7) { // hold the mouse at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 = let go
 		g_fakeEdge = (int)wp;
 		return 0;
@@ -2568,9 +2694,14 @@ static BOOL hook_import(const char *dll, const char *name, void *hook, void *ori
 		IMAGE_THUNK_DATA *names = (IMAGE_THUNK_DATA *)(base + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk));
 		IMAGE_THUNK_DATA *slots = (IMAGE_THUNK_DATA *)(base + d->FirstThunk);
 		for (; names->u1.AddressOfData; names++, slots++) {
-			if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
-			IMAGE_IMPORT_BY_NAME *imp = (IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData);
-			if (strcmp((char *)imp->Name, name) != 0) continue;
+			// "#23": an import by number (smackw32.dll's are all by number)
+			if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) {
+				if (name[0] != '#' || IMAGE_ORDINAL(names->u1.Ordinal) != (WORD)atoi(name + 1)) continue;
+			}
+			else {
+				IMAGE_IMPORT_BY_NAME *imp = (IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData);
+				if (strcmp((char *)imp->Name, name) != 0) continue;
+			}
 			DWORD old;
 			VirtualProtect(&slots->u1.Function, sizeof(void *), PAGE_READWRITE, &old);
 			*(void **)orig = (void *)slots->u1.Function;
@@ -3406,6 +3537,10 @@ static void __cdecl h_show_frame(int force)
 
 static void install(void)
 {
+	hook_import("smackw32.DLL", "#14", h_SmackOpen, &o_SmackOpen);
+	hook_import("smackw32.DLL", "#23", h_SmackToBuffer, &o_SmackToBuffer);
+	hook_import("smackw32.DLL", "#19", h_SmackDoFrame, &o_SmackDoFrame);
+	hook_import("smackw32.DLL", "#18", h_SmackClose, &o_SmackClose);
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
 	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);

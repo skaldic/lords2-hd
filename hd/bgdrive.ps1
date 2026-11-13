@@ -38,6 +38,7 @@ foreach ($step in $Steps) {
         'rclick' { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 5 0 $l; Start-Sleep -Milliseconds 80; Post 6 0 $l; Start-Sleep -Milliseconds 60 }
         'down'   { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 2 0 $l; Start-Sleep -Milliseconds 80 }
         'up'     { $l = XY $arg; Post 1 0 $l; Start-Sleep -Milliseconds 120; Post 3 0 $l; Start-Sleep -Milliseconds 60 }
+        'video'  { Post 8 ([int]$arg) 0 }   # play video n of the DLL's test table (hang, jail, axmen, cart, win_game, intro, credits, castle1, bat_win1, imptitle)
         'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
         'key'    {
             if ($keys.ContainsKey($arg)) { Post 4 $keys[$arg] 0 }
