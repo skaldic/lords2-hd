@@ -23,6 +23,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 #define GAME_W 640  // the width every screen was designed for
 #define GAME_H 480
@@ -3903,32 +3904,101 @@ static void __cdecl h_show_frame(int force)
 // Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
 // (FUN_0040e8bb) at once, so the game redraws its map thousands of times a second and keeps a CPU
 // core busy. Each frame is spaced to at least 1/FrameLimit s here: the screen is shown at most once
-// per display refresh anyway, and the game times its animations and scrolling by the clock.
+// per display refresh anyway, and the game times its animations and scrolling by the clock (the
+// waits below keep those clocks exact).
 typedef char (__cdecl *game_frame_t)(void);
 static game_frame_t o_game_frame;
 static char __cdecl h_game_frame(void)
 {
 	static LARGE_INTEGER next, freq;
 	static BOOL fine;
+	if (g_timing) { // how often each gate below opened, to compare with FrameLimit=0
+		static const DWORD addr[5] = { 0x004e5b0c, 0x004e5b14, 0x004e5b10, 0x004e59f0, 0x004e59ec };
+		static DWORD prev[5], t0; static int opened[5];
+		DWORD t = GetTickCount();
+		if (!t0) t0 = t;
+		for (int i = 0; i < 5; i++) { DWORD v = *(DWORD *)addr[i]; if (v != prev[i]) { opened[i]++; prev[i] = v; } }
+		if (t - t0 >= 5000) {
+			logf_("timing: gates opened in 5 s: steps %d, scroll %d, animation %d, screen 35 %d, elapsed %d",
+				opened[0], opened[1], opened[2], opened[3], opened[4]);
+			memset(opened, 0, sizeof opened);
+			t0 = t;
+		}
+	}
 	if (g_frameLimit > 0) {
 		if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
 		if (!fine) { timeBeginPeriod(1); fine = TRUE; } // Sleep to the millisecond
 		LARGE_INTEGER now;
 		QueryPerformanceCounter(&now);
 		LONGLONG period = freq.QuadPart / g_frameLimit;
-		if (next.QuadPart && now.QuadPart < next.QuadPart) {
-			DWORD ms = (DWORD)((next.QuadPart - now.QuadPart) * 1000 / freq.QuadPart);
-			if (ms) Sleep(ms);
-			while (QueryPerformanceCounter(&now), now.QuadPart < next.QuadPart) Sleep(0);
+		// The game does its timed work behind gates of one kind: act once N ms have passed since the
+		// last time, then count again from the frame that acted. A frame that comes late makes every
+		// later one late too (battles ran at 60 logic steps a second instead of 82, scrolling 20%
+		// slower), so the wait also ends the moment the next gate opens:
+		//   logic steps (FUN_004bb978): 10 * (10 - game speed / 10) + 2 ms, last time DAT_004e5b0c
+		//   map scrolling (FUN_004bbbe3): 12 * (10 - scroll speed / 10) + 2 ms (2 more steps on
+		//     screen 16), DAT_004e5b14
+		//   animation tick (FUN_004bbc80) and screen 35's effect (FUN_004b0e03): 20 ms, DAT_004e5b10 /
+		//     DAT_004e59f0
+		//   elapsed time for the frame (FUN_004b20ed): 30 ms, DAT_004e59ec
+		// A gate long overdue isn't in use (paused, no scrolling, another screen): it is left out.
+		int periodMs = 1000 / g_frameLimit;
+		DWORD gateLast[5] = { *(DWORD *)0x004e5b0c, *(DWORD *)0x004e5b14, *(DWORD *)0x004e5b10, *(DWORD *)0x004e59f0, *(DWORD *)0x004e59ec };
+		int gateWait[5] = { -1, -1, 20, 20, 30 };
+		int slow = (100 - *(int *)0x0053f230) / 10;
+		if (slow >= 0 && slow < 10 && (slow != 0 || *(int *)0x00553030 == 0)) gateWait[0] = slow * 10 + 2;
+		int scroll = (100 - *(int *)0x0053f234) / 10;
+		if (scroll >= 0 && scroll < 10) gateWait[1] = (scroll + (SCREEN_ID == 0x10 ? 2 : 0)) * 12 + 2;
+		DWORD t = timeGetTime();
+		for (int i = 0; i < 5; i++)
+			if (gateWait[i] >= 0 && (int)(t - gateLast[i]) > 2 * gateWait[i] + periodMs + 2) gateWait[i] = -1;
+		// A frame slot that comes less than a frame period before a gate opens would only show the
+		// same picture again: then the wait runs to the gate (in battle and on the map frames come
+		// with the logic steps, about 82 a second; 120 where nothing is timed).
+		if (next.QuadPart) {
+			for (;;) {
+				QueryPerformanceCounter(&now);
+				t = timeGetTime();
+				int stepIn = INT_MAX;
+				for (int i = 0; i < 5; i++)
+					if (gateWait[i] >= 0) stepIn = min(stepIn, (int)(gateLast[i] + gateWait[i] - t));
+				if (stepIn <= 0) break;
+				int frameIn = (int)((next.QuadPart - now.QuadPart) * 1000 / freq.QuadPart);
+				if (stepIn != INT_MAX && stepIn - frameIn < periodMs) frameIn = INT_MAX; // the step is close: wait for it
+				else if (now.QuadPart >= next.QuadPart) break;
+				int ms = min(stepIn, frameIn) - 1;
+				Sleep(ms > 0 ? ms : 0);
+			}
 		}
-		// a frame that ran long (a turn being worked out) doesn't make the next ones hurry
-		next.QuadPart = (now.QuadPart - next.QuadPart > period ? now.QuadPart : next.QuadPart) + period;
+		// the next slot is a frame period after this frame, whatever woke it
+		next.QuadPart = now.QuadPart + period;
 	}
 	return o_game_frame();
 }
 
+// Timing=1: how many logic steps the game runs a second (FUN_004bb978 works them out from the
+// clock each frame), to check the frame limit leaves the game's own speed alone.
+typedef int (__cdecl *logic_steps_t)(void);
+static logic_steps_t o_logic_steps;
+static int __cdecl h_logic_steps(void)
+{
+	int n = o_logic_steps();
+	static DWORD t0; static int steps, frames;
+	DWORD now = GetTickCount();
+	if (!t0) t0 = now;
+	steps += n > 0 ? n : 0; frames++;
+	if (now - t0 >= 5000) {
+		logf_("timing: %d logic steps in %.1f s over %d frames (battle %d, screen %d)", steps, (now - t0) / 1000.0, frames,
+			*(int *)0x0057c8fc == 2, *(BYTE *)0x004eac50);
+		t0 = now; steps = frames = 0;
+	}
+	return n;
+}
+
 static void install(void)
 {
+	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
+	if (g_timing) hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
 	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
 		hook_code((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue, h_game_frame, &o_game_frame);
 	hook_import("smackw32.DLL", "#14", h_SmackOpen, &o_SmackOpen);
