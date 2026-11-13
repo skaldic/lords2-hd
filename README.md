@@ -4,7 +4,7 @@ An unofficial fan patch for the GOG version of **Lords of the Realm II**. It mak
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **1.1.0**.
+Current version: **1.1.1**.
 
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
@@ -26,6 +26,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Foam rolling in along the coast on the county map
 - Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
+- Tutorial scrolls shown once, not every time a game is started or loaded
 - Leaves the CPU mostly idle: the original game redraws thousands of times a second; the patch runs
   it at 120 frames a second with the game's own speed unchanged
 - Plays the disc-quality videos and the remastered soundtrack if you add them (below)
@@ -33,7 +34,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 
 ## Install
 
-Download `Lords2-HD-1.1.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.1.1.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and unzip it into the game's folder, the one holding `Lords2.exe`. Start the game as usual. To
 remove the patch, delete `ddraw.dll`, `lords2hd.ini`, `lords2hd.log` and the `lords2hd` folder.
 
@@ -41,8 +42,8 @@ The patch is a `ddraw.dll` the game loads by itself. If the game folder already 
 from another wrapper, this one replaces it. The download is about 450 MB and unpacks to about
 900 MB of art.
 
-Updating from 1.0.0: unzip the new zip over the old one, or replace only `ddraw.dll` with the one
-attached to the release (the art has not changed).
+Updating from an earlier version: unzip the new zip over the old one (1.1.1 has new sea and ground
+tiles, so the DLL alone is not enough).
 
 ## Better videos and music (optional)
 
