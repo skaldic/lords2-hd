@@ -1805,6 +1805,22 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	EnterCriticalSection(&g_lock);
 	memcpy(copy, g_primary->bits, pitch * fh);
 	LeaveCriticalSection(&g_lock);
+	// Entering a battle the game shows its frame before the battlefield is drawn into it: for a
+	// moment the field is black, then half drawn. Until it is filled in (3 s at most) the picture
+	// on screen stays as it was.
+	static DWORD lastCall, entered;
+	DWORD now = GetTickCount();
+	if (now - lastCall > 500) entered = now;
+	lastCall = now;
+	if (now - entered < 3000) {
+		int black = 0, n = 0;
+		for (int y = 40; y < GAME_H; y += 8) {
+			const BYTE *row = copy + y * pitch + g_off + PANEL_X - mapW;
+			for (int x = 0; x < mapW; x += 8, n++) { BYTE i = row[x]; black += pal[i].peRed + pal[i].peGreen + pal[i].peBlue < 16; }
+		}
+		if (g_remote) logf_("battle entry: %d of %d samples dark at %lu ms", black, n, now - entered);
+		if (black * 20 > n) return FALSE; // more than 5% black
+	}
 	RECT v, c;
 	view_rect(&v);
 	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
