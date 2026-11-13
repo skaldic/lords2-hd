@@ -3507,7 +3507,8 @@ static const DWORD kScrollXSites[] = { // movl $imm, 0x553060: the imm's address
 	0x47313b, 0x4732fb, 0x4734c5, 0x47372c, 0x473bbe, 0x473eb9, 0x474051, 0x4741f8, 0x474212,
 	0x4744e7, 0x47473d, 0x474a4e, 0x474e23, 0x4753b0, 0x4755cd, 0x4755fa, 0x475e9a, 0x4764e7,
 };
-static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 0x4ddb50 }; // 2 buttons of 16 bytes, x first
+static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 0x4ddb50 }; // 2 buttons of 24 bytes: x, y, picture, size, ...
+#define BTN_FIELD(i, b) ((short *)(kScrollButtons[i] + 24 * (b))) // button b's x
 static LONG g_scrollXOrig[sizeof kScrollXSites / sizeof kScrollXSites[0]];
 static short g_scrollBtnOrig[sizeof kScrollButtons / sizeof kScrollButtons[0]][2];
 static int g_scrollShift, g_scrollReady;
@@ -3524,8 +3525,8 @@ static void scroll_shift(int s)
 		}
 		for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++) {
 			DWORD old;
-			VirtualProtect((void *)kScrollButtons[i], 32, PAGE_READWRITE, &old);
-			for (int b = 0; b < 2; b++) g_scrollBtnOrig[i][b] = *(short *)(kScrollButtons[i] + 16 * b);
+			VirtualProtect((void *)kScrollButtons[i], 48, PAGE_READWRITE, &old);
+			for (int b = 0; b < 2; b++) g_scrollBtnOrig[i][b] = *BTN_FIELD(i, b);
 		}
 		g_scrollReady = 1;
 	}
@@ -3533,7 +3534,8 @@ static void scroll_shift(int s)
 	for (int i = 0; i < (int)(sizeof kScrollXSites / sizeof kScrollXSites[0]); i++)
 		*(LONG *)(kScrollXSites[i] + 6) = g_scrollXOrig[i] - s;
 	for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++)
-		for (int b = 0; b < 2; b++) *(short *)(kScrollButtons[i] + 16 * b) = (short)(g_scrollBtnOrig[i][b] - s);
+		for (int b = 0; b < 2; b++) *BTN_FIELD(i, b) = (short)(g_scrollBtnOrig[i][b] - s);
+	logf_("message scrolls moved %d left; first table's buttons at x %d and %d", s, *BTN_FIELD(0, 0), *BTN_FIELD(0, 1));
 	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
 	g_scrollShift = s;
 }
