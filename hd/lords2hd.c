@@ -3297,6 +3297,64 @@ static void __cdecl h_framed_panel(int x, int y, int nx, int ny)
 	o_framed_panel(x, y, nx, ny);
 }
 
+// Message scrolls over the county map (tutorial pages, events, reports) are placed for the 4:3
+// map, centred over game x 0..PANEL_X. On the wide map they move left by half the extra columns,
+// to the middle of the map the player sees. Three functions draw them (FUN_0047309e, FUN_00475e07,
+// FUN_00476488); each sets the scroll's x (DAT_00553060) from a constant and draws everything from
+// it, and the close arrow's click spot follows (FUN_0040d1bc keeps it). The constants, and the
+// x of the button tables some scrolls use for drawing and clicks (FUN_0040cfd2 / FUN_0040da1e),
+// are rewritten before each draw for the current layout: shifted on the wide county map, as
+// shipped anywhere else (a battle, the 4:3 screen). Scrolls that show a video keep their place.
+static const DWORD kScrollXSites[] = { // movl $imm, 0x553060: the imm's address
+	0x47313b, 0x4732fb, 0x4734c5, 0x47372c, 0x473bbe, 0x473eb9, 0x474051, 0x4741f8, 0x474212,
+	0x4744e7, 0x47473d, 0x474a4e, 0x474e23, 0x4753b0, 0x4755cd, 0x4755fa, 0x475e9a, 0x4764e7,
+};
+static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 0x4ddb50 }; // 2 buttons of 16 bytes, x first
+static LONG g_scrollXOrig[sizeof kScrollXSites / sizeof kScrollXSites[0]];
+static short g_scrollBtnOrig[sizeof kScrollButtons / sizeof kScrollButtons[0]][2];
+static int g_scrollShift, g_scrollReady;
+
+static void scroll_shift(int s)
+{
+	if (!g_scrollReady) {
+		for (int i = 0; i < (int)(sizeof kScrollXSites / sizeof kScrollXSites[0]); i++) {
+			BYTE *p = (BYTE *)kScrollXSites[i];
+			if (p[0] != 0xC7 || p[1] != 0x05 || *(DWORD *)(p + 2) != 0x553060) { logf_("message scrolls: unexpected code at %p, left in place", p); g_scrollReady = -1; return; }
+			g_scrollXOrig[i] = *(LONG *)(p + 6);
+			DWORD old;
+			VirtualProtect(p + 6, 4, PAGE_EXECUTE_READWRITE, &old);
+		}
+		for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++) {
+			DWORD old;
+			VirtualProtect((void *)kScrollButtons[i], 32, PAGE_READWRITE, &old);
+			for (int b = 0; b < 2; b++) g_scrollBtnOrig[i][b] = *(short *)(kScrollButtons[i] + 16 * b);
+		}
+		g_scrollReady = 1;
+	}
+	if (g_scrollReady < 0 || s == g_scrollShift) return;
+	for (int i = 0; i < (int)(sizeof kScrollXSites / sizeof kScrollXSites[0]); i++)
+		*(LONG *)(kScrollXSites[i] + 6) = g_scrollXOrig[i] - s;
+	for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++)
+		for (int b = 0; b < 2; b++) *(short *)(kScrollButtons[i] + 16 * b) = (short)(g_scrollBtnOrig[i][b] - s);
+	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+	g_scrollShift = s;
+}
+
+typedef void (__cdecl *draw_msg_t)(void);
+static draw_msg_t o_msg_a, o_msg_b, o_msg_c;
+static BOOL county_map_on(void);
+static void draw_msg(draw_msg_t orig)
+{
+	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2;
+	scroll_shift(wide ? g_extra / 2 : 0);
+	g_drawingLeft = wide;
+	orig();
+	g_drawingLeft = FALSE;
+}
+static void __cdecl h_msg_a(void) { draw_msg(o_msg_a); }
+static void __cdecl h_msg_b(void) { draw_msg(o_msg_b); }
+static void __cdecl h_msg_c(void) { draw_msg(o_msg_c); }
+
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
 // picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
 // the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
@@ -3804,6 +3862,11 @@ static void install_wide(void)
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
+	static const BYTE kMsgPrologueA[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 }; // push ebp; mov ebp,esp; sub esp,24h
+	static const BYTE kMsgPrologueB[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	hook_code((BYTE *)0x0047309e, kMsgPrologueA, sizeof kMsgPrologueA, h_msg_a, &o_msg_a);
+	hook_code((BYTE *)0x00475e07, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_b, &o_msg_b);
+	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
