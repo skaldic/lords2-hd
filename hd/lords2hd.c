@@ -100,6 +100,13 @@ static void draw_timed(int which, LARGE_INTEGER t0)
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
 // 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
 static BOOL g_remote;
+// An open drop-down menu in the zoomed-out battle (screen 50): the game draws it at battlefield
+// scale at g_menuX, g_menuY (h_menu_open); it is shown doubled from that corner, like the top bar
+// its title is in, 13 x 12 cells of 16 (the panel FUN_0040c725 draws and refreshes).
+static volatile int g_menuX = -10000, g_menuY, g_menuH = 12 * 16;
+#define MENU_W (12 * 16)
+#define MENU_H g_menuH
+static BOOL menu_doubled(void) { return *(BYTE *)0x004eac50 == 0x32 && *(int *)0x00522cb4 != 0 && g_menuX > -10000; }
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
 static volatile LONG g_shotWanted;
@@ -1862,6 +1869,28 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			}
 		}
 	}
+	// An open drop-down: doubled from its corner like the bar above it (it covers its 1:1 self).
+	int mx0 = 0, mx1 = 0, my1 = 0; // its doubled rectangle in this picture, rows 48 .. my1
+	if (menu_doubled()) {
+		int lx = g_menuX, fy0 = max(24, g_menuY), fy1 = g_menuY + MENU_H;
+		mx0 = lx - (PANEL_X - mapW); mx1 = min(mapW, mx0 + 2 * MENU_W); my1 = min(lh, 48 + 2 * (fy1 - fy0));
+		int W = g_back ? g_back->w : 0;
+		for (int sy = 48; sy < my1; sy++) {
+			int gy = fy0 + (sy - 48) / 2;
+			DWORD *o = pic + sy * lw;
+			for (int sx = max(0, mx0); sx < mx1; sx++) {
+				int gx = g_off + lx + (sx - mx0) / 2;
+				if (gx < 0 || gx >= pitch) continue;
+				BYTE v8 = copy[gy * pitch + gx];
+				DWORD p = g_lut[v8];
+				int q = (sy & 1) * 2 + ((sx - mx0) & 1);
+				if (g_btLayer && gx < g_frameW) { int f = gy * g_frameW + gx; if (btV[f] && btS[f] == v8) p = btL[f * 4 + q]; }
+				if (g_txt && g_hdText && W && gx < W) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
+				o[sx] = p;
+			}
+		}
+	}
+#define IN_MENU(sx, sy) ((sx) >= mx0 && (sx) < mx1 && (sy) >= 48 && (sy) < my1)
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
 	BOOL big = (v.bottom - v.top) >= lh * 2;
 	if (g_btLayer && !big) {
@@ -1871,7 +1900,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			DWORD *o = pic + sy * lw;
 			for (int sx = 0; sx < mapW; sx++) {
 				int f = f0 + sx;
-				if (!btV[f] || row[sx] != btS[f]) continue;
+				if (!btV[f] || row[sx] != btS[f] || IN_MENU(sx, sy)) continue;
 				const DWORD *h = btL + f * 4;
 				DWORD rb = (h[0] & 0xff00ff) + (h[1] & 0xff00ff) + (h[2] & 0xff00ff) + (h[3] & 0xff00ff);
 				DWORD gg = (h[0] & 0xff00) + (h[1] & 0xff00) + (h[2] & 0xff00) + (h[3] & 0xff00);
@@ -1913,7 +1942,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				DWORD *o0 = pic2 + 2 * sy * 2 * lw, *o1 = o0 + 2 * lw;
 				for (int sx = 0; sx < mapW; sx++) {
 					int f = f0 + sx;
-					if (!btV[f] || row[sx] != btS[f]) continue;
+					if (!btV[f] || row[sx] != btS[f] || IN_MENU(sx, sy)) continue;
 					const DWORD *h = btL + f * 4;
 					o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
 					o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
@@ -2713,7 +2742,11 @@ static void client_to_game(int *x, int *y)
 		// The zoomed-out battle's picture: top bar and side panel doubled, battlefield 1:1.
 		int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
 		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
-		if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
+		int mx0 = g_menuX - (PANEL_X - mapW), fy0 = max(24, g_menuY);
+		if (menu_doubled() && sy >= 48 && sx >= mx0 && sx < mx0 + 2 * MENU_W && sy < 48 + 2 * (g_menuY + MENU_H - fy0)) {
+			*x = g_menuX + (sx - mx0) / 2; *y = fy0 + (sy - 48) / 2; // over the doubled drop-down
+		}
+		else if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
 		else if (sx >= mapW) { *x = PANEL_X + (sx - mapW) / 2; *y = 24 + (sy - 48) / 2; }
 		else { *x = PANEL_X - mapW + sx; *y = 24 + sy - 48; }
 		return;
@@ -3316,7 +3349,13 @@ static void __cdecl h_menu_open(void)
 	short *title = *(short **)0x00522cac;
 	short saved = title ? title[0] : 0;
 	BOOL zoomed = title && battle_zoom_on();
-	if (zoomed) title[0] = (short)menu_list_x(saved);
+	if (zoomed) {
+		title[0] = (short)menu_list_x(saved);
+		g_menuX = title[0];
+		g_menuY = title[2] + 0x12;
+		g_menuH = ((title[6] * 21) / 16 + 2) * 16; // FUN_0040c725's panel: 12 cells wide, rows for the items
+	}
+	else g_menuX = -10000;
 	g_drawingLeft = wide;
 	o_menu_open();
 	g_drawingLeft = FALSE;
