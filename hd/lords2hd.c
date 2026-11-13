@@ -14,6 +14,7 @@
 
 #include <windows.h>
 #include <ddraw.h>
+#include <dsound.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -1244,6 +1245,80 @@ static void __stdcall h_SmackClose(void *s)
 	o_SmackClose(s);
 }
 
+// ---- Better music --------------------------------------------------------------------------------
+// The game streams its music (Battle1-5, Scroll1-5, Setup, Setup2, SETUP3) on DirectSound stream 0:
+// FUN_00426534 opens the file through FUN_004b92e0 -> mmioOpenA, with the name copied to
+// 0x522b60 + stream * 16. If lords2hd\music\<name> exists, that file is opened instead, in any PCM
+// format (the remastered soundtrack: 44.1 kHz 16-bit). The game creates each stream's sound buffer
+// once, in the format of the first file it plays, and reuses it; so when the next file's format
+// differs, the old buffer is released here and the game makes a new one (FUN_004263ad has already
+// stopped the stream and its timer before it opens the file).
+#define STREAM_NAMES 0x00522b60
+#define STREAM_BUFS ((IDirectSoundBuffer **)0x00522b80)
+typedef HMMIO (WINAPI *mmioOpenA_t)(LPSTR, LPMMIOINFO, DWORD);
+static mmioOpenA_t o_mmioOpenA;
+
+static BOOL wav_format(const char *path, WAVEFORMATEX *wf)
+{
+	HMMIO h = o_mmioOpenA((LPSTR)path, NULL, MMIO_READ);
+	if (!h) return FALSE;
+	MMCKINFO riff = {0}, ck = {0};
+	BOOL ok = FALSE;
+	memset(wf, 0, sizeof *wf);
+	if (mmioDescend(h, &riff, NULL, 0) == 0 && riff.ckid == FOURCC_RIFF && riff.fccType == mmioFOURCC('W', 'A', 'V', 'E')) {
+		ck.ckid = mmioFOURCC('f', 'm', 't', ' ');
+		if (mmioDescend(h, &ck, &riff, MMIO_FINDCHUNK) == 0 && ck.cksize >= 16)
+			ok = mmioRead(h, (HPSTR)wf, 16) == 16;
+	}
+	mmioClose(h, 0);
+	return ok;
+}
+
+static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
+{
+	DWORD a = (DWORD)name;
+	if (!name || a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) return o_mmioOpenA(name, info, flags);
+	int n = (a - STREAM_NAMES) / 16;
+	char alt[MAX_PATH];
+	const char *base = strrchr(name, '\\');
+	base = base ? base + 1 : name;
+	snprintf(alt, sizeof alt, "%s\\lords2hd\\music\\%s", g_gameDir, base);
+	BOOL replaced = GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES;
+	const char *path = replaced ? alt : name;
+	WAVEFORMATEX want, have = {0};
+	if (wav_format(path, &want)) {
+		IDirectSoundBuffer *b = STREAM_BUFS[n];
+		DWORD got = 0;
+		if (b && (IDirectSoundBuffer_GetFormat(b, &have, sizeof have, &got) != DS_OK ||
+				have.nSamplesPerSec != want.nSamplesPerSec || have.wBitsPerSample != want.wBitsPerSample ||
+				have.nChannels != want.nChannels)) {
+			IDirectSoundBuffer_Stop(b);
+			IDirectSoundBuffer_Release(b);
+			STREAM_BUFS[n] = NULL;
+			logf_("music: stream %d buffer was %lu Hz %u-bit %u ch, rebuilt for the next file", n,
+				have.nSamplesPerSec, have.wBitsPerSample, have.nChannels);
+		}
+		logf_("music: %s%s (%lu Hz, %u-bit, %u ch; stream timer %d ms x %d)", replaced ? "lords2hd\\music\\" : "", base,
+			want.nSamplesPerSec, want.wBitsPerSample, want.nChannels, *(int *)0x004d4758, *(int *)0x004d475c);
+	}
+	HMMIO h = replaced ? o_mmioOpenA(alt, info, flags) : NULL;
+	if (!h) h = o_mmioOpenA(name, info, flags);
+	return h;
+}
+
+static void music_status(void)
+{
+	IDirectSoundBuffer *b = STREAM_BUFS[0];
+	DWORD st = 0, play = 0, write = 0, got = 0;
+	WAVEFORMATEX wf = {0};
+	if (!b) { logf_("music status: no stream buffer"); return; }
+	IDirectSoundBuffer_GetStatus(b, &st);
+	IDirectSoundBuffer_GetCurrentPosition(b, &play, &write);
+	IDirectSoundBuffer_GetFormat(b, &wf, sizeof wf, &got);
+	logf_("music status: %s, %lu Hz %u-bit, play cursor %lu, file %s", (st & DSBSTATUS_PLAYING) ? "playing" : "stopped",
+		wf.nSamplesPerSec, wf.wBitsPerSample, play, (char *)STREAM_NAMES);
+}
+
 // The large clip over its slot in the doubled picture, wherever the slot still shows its last frame.
 static void video_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
@@ -2394,6 +2469,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
 	if (n == 0x10) {
+		music_status(); // sound is muted in remote mode: the log says whether the music stream is playing
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
@@ -3541,6 +3617,7 @@ static void install(void)
 	hook_import("smackw32.DLL", "#23", h_SmackToBuffer, &o_SmackToBuffer);
 	hook_import("smackw32.DLL", "#19", h_SmackDoFrame, &o_SmackDoFrame);
 	hook_import("smackw32.DLL", "#18", h_SmackClose, &o_SmackClose);
+	hook_import("WINMM.dll", "mmioOpenA", h_mmioOpenA, &o_mmioOpenA);
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
 	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);
