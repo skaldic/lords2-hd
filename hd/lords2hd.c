@@ -1876,8 +1876,55 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 }
 
 // Remote mode's screenshot: the picture about to be shown (BGRX, w x h, top-down) as a BMP.
+// Remote message 9 (wParam = n): keep the next n frames shown, at half size, each with its time in ms
+// since the request, then write them as lords2hd-burst-NN-<ms>.bmp. Shows what a player sees frame by
+// frame after a click (late HD art, flicker).
+#define BURST_MAX 60
+static volatile LONG g_burstWant, g_burstFlush; // message 10: write what was kept so far
+static int g_burstN;
+static LARGE_INTEGER g_burstT0;
+static struct { DWORD *px; int w, h; double ms; } g_burst[BURST_MAX];
+
+static void burst_frame(const DWORD *px, int w, int h)
+{
+	if (!g_burstWant) return;
+	if (g_burstFlush) { InterlockedExchange(&g_burstFlush, 0); goto write; }
+	LARGE_INTEGER t, f;
+	QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
+	int i = g_burstN, hw = w / 2, hh = h / 2;
+	g_burst[i].px = malloc((size_t)hw * hh * 4);
+	if (g_burst[i].px) {
+		for (int y = 0; y < hh; y++)
+			for (int x = 0; x < hw; x++) g_burst[i].px[y * hw + x] = px[(y * 2) * w + x * 2];
+		g_burst[i].w = hw; g_burst[i].h = hh;
+		g_burst[i].ms = (t.QuadPart - g_burstT0.QuadPart) * 1000.0 / f.QuadPart;
+		g_burstN++;
+	}
+	if (g_burstN < g_burstWant && g_burstN < BURST_MAX) return;
+write:
+	for (int k = 0; k < g_burstN; k++) {
+		char path[MAX_PATH];
+		snprintf(path, sizeof path, "%s\\lords2hd-burst-%02d-%05.0f.bmp", g_gameDir, k, g_burst[k].ms);
+		FILE *o = fopen(path, "wb");
+		if (o) {
+			int bw = g_burst[k].w, bh = g_burst[k].h;
+			BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + bw * bh * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+			BITMAPINFOHEADER ih = { sizeof ih, bw, -bh, 1, 32, BI_RGB };
+			fwrite(&fh, sizeof fh, 1, o); fwrite(&ih, sizeof ih, 1, o);
+			fwrite(g_burst[k].px, 4, (size_t)bw * bh, o);
+			fclose(o);
+		}
+		free(g_burst[k].px);
+		g_burst[k].px = NULL;
+	}
+	logf_("burst: %d frames written", g_burstN);
+	g_burstN = 0;
+	InterlockedExchange(&g_burstWant, 0);
+}
+
 static void shot_save(const DWORD *px, int w, int h)
 {
+	burst_frame(px, w, h);
 	if (!InterlockedExchange(&g_shotWanted, 0)) return;
 	char path[MAX_PATH], tmp[MAX_PATH];
 	snprintf(path, sizeof path, "%s\\lords2hd-shot.bmp", g_gameDir);
@@ -2631,6 +2678,22 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+		return 0;
+	}
+	if (n == 9) { // keep the next wParam frames shown (burst_frame)
+		if (!g_burstWant) {
+			g_burstN = 0;
+			QueryPerformanceCounter(&g_burstT0);
+			InterlockedExchange(&g_burstWant, (LONG)min(wp, BURST_MAX));
+		}
+		return 0;
+	}
+	if (n == 10) {
+		if (g_burstWant) {
+			InterlockedExchange(&g_burstFlush, 1);
+			InterlockedExchange(&g_forcePresent, 1);
+			mark_dirty();
+		}
 		return 0;
 	}
 	if (n == 8) { // play a video now (testing): wParam = index in the table, at the place the game uses
