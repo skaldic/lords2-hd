@@ -1,4 +1,4 @@
-Lords of the Realm II HD 1.0.0: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 1.1.0: an unofficial fan patch for the GOG version of the game.
 You need your own copy of the game.
 
 INSTALL
@@ -15,7 +15,16 @@ WHAT IT DOES
 - Full-screen paintings (merchant, armoury, castle builder, menus) widened to fill the screen
 - Double-detail paintings, ground, buildings, troops, minimap, panels and lettering
 - Foam rolling in along the coast on the county map
+- Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
+- Leaves the CPU mostly idle (the game runs at 120 frames a second, its own speed unchanged)
+
+BETTER VIDEOS AND MUSIC (optional, not included)
+- Videos: copy the SMK_HIGH videos (GOG forum, Lords of the Realm II SMK_HIGH patch thread) over
+  the ones in the game's videos folder. The larger event clips then fit their frame.
+- Music: put the MP3s of the composer's 2020 remastered soundtrack, with their release names
+  (for example "07. Scroll 1 (1996, Remastered).mp3"), in lords2hd\music. The patch converts them
+  at the next start and the game plays them instead of its own tracks.
 
 SETTINGS (lords2hd.ini)
 Enabled=0       the stock game
@@ -24,6 +33,7 @@ Wide=0          4:3 instead of widescreen
 BattleZoom=0    battles at normal size
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
 CursorScale=50  cursor size in percent
+FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
 
 ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.

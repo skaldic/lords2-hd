@@ -25,6 +25,12 @@ foreach ($dir in 'screens', 'wide', 'tiles', 'sprites') {
     New-Item -ItemType Directory -Force "$stage\lords2hd\$dir" | Out-Null
     Copy-Item "$src\*.bin", "$src\*.pal" "$stage\lords2hd\$dir" -ErrorAction SilentlyContinue
 }
+New-Item -ItemType Directory -Force "$stage\lords2hd\music" | Out-Null
+Set-Content "$stage\lords2hd\music\put the remastered MP3s here.txt" @'
+Put the MP3s of the composer's 2020 remastered soundtrack here, with their release names
+(for example "07. Scroll 1 (1996, Remastered).mp3"). At the next start the patch converts them
+to WAV and the game plays them instead of its own tracks. Delete the files to go back.
+'@ -Encoding ascii
 Remove-Item $zip -ErrorAction SilentlyContinue
 [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
 "{0} ({1:N0} MB)" -f $zip, ((Get-Item $zip).Length / 1MB)

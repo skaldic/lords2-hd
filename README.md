@@ -4,7 +4,7 @@ An unofficial fan patch for the GOG version of **Lords of the Realm II**. It mak
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **1.0.0**.
+Current version: **1.1.0**.
 
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
@@ -24,18 +24,42 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Battles can zoom out to show four times the field
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels and lettering
 - Foam rolling in along the coast on the county map
+- Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
+- Leaves the CPU mostly idle: the original game redraws thousands of times a second; the patch runs
+  it at 120 frames a second with the game's own speed unchanged
+- Plays the disc-quality videos and the remastered soundtrack if you add them (below)
 - Every feature can be switched off in `lords2hd.ini`
 
 ## Install
 
-Download `Lords2-HD-1.0.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.1.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and unzip it into the game's folder, the one holding `Lords2.exe`. Start the game as usual. To
 remove the patch, delete `ddraw.dll`, `lords2hd.ini`, `lords2hd.log` and the `lords2hd` folder.
 
 The patch is a `ddraw.dll` the game loads by itself. If the game folder already holds a `ddraw.dll`
 from another wrapper, this one replaces it. The download is about 450 MB and unpacks to about
 900 MB of art.
+
+Updating from 1.0.0: unzip the new zip over the old one, or replace only `ddraw.dll` with the one
+attached to the release (the art has not changed).
+
+## Better videos and music (optional)
+
+These are not part of the download; the patch uses them when you add them.
+
+- **Videos:** the original discs held sharper, full-height videos than the GOG version. A fan made
+  them available in the
+  [SMK_HIGH thread on the GOG forum](https://www.gog.com/forum/lords_of_the_realm_lords_of_magic_series/lords_of_the_realm_ii_gog_smk_high_patch_official_higher_quality_videos).
+  Copy its `.smk` files over the ones in the game's `videos` folder (keep a backup). The larger event
+  clips (the hanging, the jail, the merchant cart) then fit their frame and show their full detail.
+- **Music:** in 2020 the composer, Keith Zizza, released a remastered version of the soundtrack. Put
+  its MP3 files, as named in that release (for example `07. Scroll 1 (1996, Remastered).mp3`), in a
+  folder `lords2hd\music` inside the game's folder. At the next start the patch converts them to
+  WAV in the background and the game plays them instead of its own 11 kHz tracks. "Siege Pack Setup
+  2" is used for the game's third setup tune; the intro, credits, trailer and win tracks are not
+  used (the game plays those sounds from its videos). WAV files named like the game's own
+  (`Battle1.wav`, `Scroll3.wav`, ...) work too.
 
 ## Settings
 
