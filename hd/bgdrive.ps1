@@ -16,8 +16,11 @@ $shots = Join-Path $PSScriptRoot "shots"
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace BG -Name M -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);'
 $info = Join-Path $game "lords2hd-remote.txt"
+# Only the copy of the game in this folder is ever closed: another copy may be the player's own game.
+$exe = (Join-Path $game "Lords2.exe")
+function Stop-ThisGame { Get-Process Lords2 -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $exe) } | Stop-Process -Force }
 if ($Start) {
-    Get-Process Lords2 -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-ThisGame
     Remove-Item $info -ErrorAction SilentlyContinue
     Start-Process (Join-Path $game "Lords2.exe") -WorkingDirectory $game
     $t = 0; while (-not (Test-Path $info) -and $t -lt 200) { Start-Sleep -Milliseconds 100; $t++ }
@@ -69,4 +72,4 @@ foreach ($step in $Steps) {
         default  { "unknown step '$step'" }
     }
 }
-if ($Stop) { Get-Process Lords2 -ErrorAction SilentlyContinue | Stop-Process -Force }
+if ($Stop) { Stop-ThisGame }

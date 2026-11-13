@@ -1244,7 +1244,20 @@ static smk_close_t o_SmackClose;
 
 static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 {
+	// The GOG videos are stored interlaced (header flag 2: half the rows, played on every other
+	// line, the lines between left black). Opened with SMACKYDOUBLE (0x200000) Smacker draws each
+	// row twice instead: same size and place, no black lines.
+	BOOL doubled = FALSE;
+	if (name && !(flags & 0x1000) && !(flags & 0x300000)) { // a file name, no Y mode asked for
+		FILE *f = fopen(name, "rb");
+		DWORD head[6];
+		if (f) {
+			if (fread(head, 4, 6, f) == 6 && (head[0] & 0xffffff) == 0x4b4d53 && (head[5] & 2)) { flags |= 0x200000; doubled = TRUE; }
+			fclose(f);
+		}
+	}
 	void *s = o_SmackOpen(name, flags, extra);
+	if (s && doubled) logf_("video %s: interlaced, shown line-doubled", name);
 	if (s) {
 		int w = *(int *)((BYTE *)s + 4), h = *(int *)((BYTE *)s + 8);
 		logf_("video %s: %dx%d, %d frames, flags %08lx", (const char *)name, w, h, *(int *)((BYTE *)s + 12), (unsigned long)flags);
