@@ -787,6 +787,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		if (!g_tileSets[i].buf && slot < 0) slot = i;
 	}
 	if (slot < 0) return;
+	g_layerGen++; // this buffer's art changes (a battle's ground replaces the county's, and back)
 	if (g_tileSets[slot].px) {
 		free(g_tileSets[slot].px);
 		free(g_tileSets[slot].wave);
@@ -822,6 +823,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		FILE *p = fopen(pal, "rb");
 		if (p) { if (fread(g_tilePal, 1, 768, p) != 768) memset(g_tilePal, 0, 768); fclose(p); }
 	}
+	g_layerGen++; // new art for these tiles: the next map redraw stamps again, even if it looks the same
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
 }
 
@@ -932,6 +934,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 		g_spriteSets[slot].buf = buffer;
 		g_spriteSets[slot].data = data;
 		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
+		g_layerGen++;
 		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
 		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 		read_palette(path, g_spriteSets[slot].pal);
