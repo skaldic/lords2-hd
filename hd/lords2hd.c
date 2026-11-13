@@ -2115,6 +2115,70 @@ static BOOL entry_dark(const DWORD *px, int w, int h, int w1)
 	if (g_remote) logf_("half-drawn frame held (%d of %d field samples black)", black, n);
 	return now - since < 500;
 }
+// Windows over the wide map (the Town Center and its info scrolls, the boxes a click on the map
+// opens) sit where the 4:3 screen had them, right of the middle. Their positions are written all
+// through the game's code, clicks and drags included, so they are moved here instead, in the
+// picture: when such a window opens, the last picture of the map alone is kept (g_snap*); while it
+// is up, the part of the frame that differs from that map - the window - is shown shifted to the
+// middle of the map the player sees, and the map from before fills the place it left. Clicks on
+// the moved window are mapped back (win_click); the game never knows.
+static BYTE g_snap8[MAX_W * GAME_H];
+static DWORD g_snap2x[MAX_W * 2 * GAME_H * 2];
+static int g_snapW;              // width of the snapshot in frame columns, 0 = none
+static BYTE g_snapPend8[MAX_W * GAME_H]; // the map as the game just redrew it under a new window
+static int g_snapPendW;
+static volatile LONG g_snapPending;
+static volatile LONG g_winShift; // the window's shift to the left in game pixels (0 = none)
+static volatile LONG g_winX0, g_winX1, g_winY0, g_winY1; // its place in the game, before the shift
+static BOOL window_screen(int screen)
+{
+	if (screen == 39 || screen == 57) return *(int *)0x004f0350 != 0; // a scroll over a window, not over the map
+	return screen == 2 || screen == 4 || screen == 5 || screen == 6 || screen == 15;
+}
+// Called with the frame composed (g_frame8 / g_frame2x, sw columns from game x sx - g_off).
+static void window_shift(int screen, int sx, int sw)
+{
+	InterlockedExchange(&g_winShift, 0);
+	if (!g_snapW || g_snapW != sw || !window_screen(screen)) return;
+	int x0g = g_off - sx, x1g = x0g + PANEL_X; // frame columns of game x 0 and PANEL_X
+	if (x0g < 0 || x1g > sw) return;
+	static int colN[MAX_W], rowN[GAME_H];
+	memset(colN, 0, sizeof colN); memset(rowN, 0, sizeof rowN);
+	for (int y = 24; y < GAME_H; y++) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		for (int x = x0g; x < x1g; x++) if (a[x] != b[x]) { colN[x]++; rowN[y]++; }
+	}
+	int bx0 = -1, bx1 = -1, by0 = -1, by1 = -1;
+	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
+	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
+	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
+	// the window's middle onto the middle of the map on screen (frame columns 0 .. x1g)
+	int s = (bx0 + bx1) / 2 - x1g / 2;
+	s = min(s, bx0); // never past the left edge
+	if (s <= 2) return;
+	int w = bx1 - bx0, W2 = 2 * sw;
+	static DWORD row[MAX_W * 2];
+	for (int y = by0; y < by1; y++)
+		for (int r = 0; r < 2; r++) {
+			DWORD *o = g_frame2x + (2 * y + r) * W2;
+			const DWORD *m = g_snap2x + (2 * y + r) * W2;
+			memcpy(row, o + 2 * bx0, w * 2 * sizeof(DWORD));             // the window
+			memcpy(o + 2 * bx0, m + 2 * bx0, w * 2 * sizeof(DWORD));     // the map where it was
+			memcpy(o + 2 * (bx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
+		}
+	g_winX0 = bx0 - x0g; g_winX1 = bx1 - x0g; g_winY0 = by0; g_winY1 = by1;
+	InterlockedExchange(&g_winShift, s);
+}
+// A click on the picture at game x, y: over the moved window it is the window's own place; over
+// the map shown where the window was, a spot just outside the window.
+static void win_click(int *x, int *y)
+{
+	int s = g_winShift;
+	if (!s || *y < g_winY0 || *y >= g_winY1) return;
+	if (*x >= g_winX0 - s && *x < g_winX1 - s) *x += s;
+	else if (*x >= g_winX1 - s && *x < g_winX1) *x = g_winX1 + 1 < PANEL_X ? g_winX1 + 1 : g_winX0 - s - 1;
+}
+
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
 // the screen on every pass of its loop, paused or not.
 static BOOL present(void)
@@ -2130,6 +2194,13 @@ static BOOL present(void)
 	int screen = *(BYTE *)0x004eac50, mode = *(int *)0x0052af94;
 	if (screen != lastScreen || mode != lastMode) {
 		logf_("screen %d, mode %d", screen, mode);
+		// A window opens over the map: keep the last picture of the map alone (window_shift).
+		if (lastScreen == 0 && window_screen(screen) && g_wideScreen && g_showW > 0) {
+			memcpy(g_snap8, g_shown8, g_showW * GAME_H);
+			memcpy(g_snap2x, g_frame2x, (size_t)g_showW * 2 * GAME_H * 2 * sizeof(DWORD));
+			g_snapW = g_showW;
+		}
+		else if (screen == 0 || !county_map_on()) g_snapW = 0;
 		lastScreen = screen;
 		lastMode = mode;
 	}
@@ -2203,6 +2274,22 @@ static BOOL present(void)
 	int vw = v.right - v.left, vh = v.bottom - v.top;
 	if (g_scale == SCALE_SMOOTH) {
 		for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
+		// A window just opened over the map: compose the map as the game redrew it underneath
+		// (g_snapPend8, kept by h_redraw_map) into g_snap2x first, HD layers and all.
+		if (InterlockedExchange(&g_snapPending, 0) && g_wideScreen && g_snapPendW == sw) {
+			static BYTE keep[MAX_W * GAME_H];
+			memcpy(keep, g_frame8, sw * GAME_H);
+			memcpy(g_frame8, g_snapPend8, sw * GAME_H);
+			for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
+			double_frame(sw);
+			screen_sprites(pal, sx, sw);
+			tile_overlay(pal, sx, sw);
+			text_overlay(sx, sw);
+			memcpy(g_snap8, g_frame8, sw * GAME_H);
+			memcpy(g_snap2x, g_frame2x, (size_t)sw * 2 * GAME_H * 2 * sizeof(DWORD));
+			g_snapW = sw;
+			memcpy(g_frame8, keep, sw * GAME_H);
+		}
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
 		double_frame(sw);
 		if (sw == GAME_W) hd_overlay(pal);
@@ -2211,6 +2298,7 @@ static BOOL present(void)
 		text_overlay(sx, sw);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
+		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
@@ -2849,6 +2937,7 @@ static void client_to_game(int *x, int *y)
 	}
 	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
 	*y = max(0, min(GAME_H - 1, gy));
+	win_click(x, y);
 }
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
@@ -2923,8 +3012,11 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	static const UINT mouse[] = { 0, WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, 0, WM_RBUTTONDOWN, WM_RBUTTONUP };
 	static WPARAM buttons;
 	if (n < 1 || n > 6 || !mouse[n]) return 0;
-	g_fake.x = (short)LOWORD(lp);
-	g_fake.y = (short)HIWORD(lp);
+	int fx = (short)LOWORD(lp), fy = (short)HIWORD(lp);
+	win_click(&fx, &fy); // the driver aims at the picture, like a player
+	g_fake.x = fx;
+	g_fake.y = fy;
+	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
 	if (n == 2) buttons |= MK_LBUTTON; else if (n == 3) buttons &= ~MK_LBUTTON;
 	if (n == 5) buttons |= MK_RBUTTON; else if (n == 6) buttons &= ~MK_RBUTTON;
 	return CallWindowProcA(g_gameProc, hwnd, mouse[n], buttons, lp);
@@ -4220,6 +4312,14 @@ static void __cdecl h_redraw_map(void)
 				memcpy(o, o + 2 * shift, strip * 2 * sizeof(DWORD));
 			}
 		}
+	}
+	// A window opening over the map redraws the map first (the Town Center recentres it): keep
+	// that map, before the window is drawn over it, for window_shift.
+	if (window_screen(SCREEN_ID) && g_showW > 0 && g_showX >= 0 && g_showX + g_showW <= g_back->w) {
+		for (int y = 0; y < GAME_H; y++)
+			memcpy(g_snapPend8 + y * g_showW, g_back->bits + y * g_back->pitch + g_showX, g_showW);
+		g_snapPendW = g_showW;
+		InterlockedExchange(&g_snapPending, 1);
 	}
 }
 
