@@ -350,6 +350,7 @@ static DWORD *g_btLayer;
 static BYTE *g_btShadow, *g_btValid;
 static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
+static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
 #define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
 
 // Wider rooms. A painting with a file in lords2hd\wide (four ints: width, the columns where the wide
@@ -560,6 +561,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
 	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H); // a new screen: nothing stamped on it yet
+	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H) return;
 	char base[64], path[MAX_PATH];
@@ -802,10 +804,32 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
 }
 
+// The game redraws the whole county map every frame, mostly the same tiles and sprites in the same
+// places. During a map redraw (h_redraw_map) the stamps are only listed; afterwards, if the list is
+// the one of the last redraw and nothing else has written the HD layers since (g_layerGen), the
+// layers already hold this picture and the stamping is skipped; otherwise the list is stamped in
+// order, which ends the same as stamping each piece as it is drawn (each stamp checks the pixels the
+// frame holds at the end). Stamping every frame took 2 ms of the redraw's 2.1.
+typedef struct { const BYTE *buf; int index, x, y, sprite; } stamp_call;
+#define MAX_STAMPS 16384
+static stamp_call *g_stampCur, *g_stampPrev;
+static int g_stampN, g_stampPrevN = -1;
+static BOOL g_stampRec, g_stampOverflow;
+static LONG g_stampPrevGen = -1;
+static int g_stampSkipped, g_stampDone; // Timing=1
+static BOOL stamp_record(const BYTE *buf, int index, int x, int y, int sprite)
+{
+	if (!g_stampRec) { g_layerGen++; return FALSE; }
+	if (g_stampN < MAX_STAMPS) g_stampCur[g_stampN++] = (stamp_call){ buf, index, x, y, sprite };
+	else g_stampOverflow = TRUE;
+	return TRUE;
+}
+
 // Stamps the tile just drawn: frame "index" of the file at "buf", at game position x, y.
 static void stamp_tile(const BYTE *buf, int index, int x, int y)
 {
 	if (!g_layer || !g_back || !buf || index < 0) return;
+	if (stamp_record(buf, index, x, y, 0)) return;
 	DWORD *px = NULL;
 	const BYTE *wave = NULL;
 	int frames = 0;
@@ -895,6 +919,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
+	if (stamp_record(buf, index, x, y, 1)) return;
 	if (battle_zoom_on() && !g_btLayer) {
 		g_btLayer = malloc(g_frameW * g_frameH * 4 * 4);
 		g_btShadow = calloc(g_frameW, g_frameH);
@@ -1024,6 +1049,7 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 {
 	o_mini_paint(player, x, y, mode);
 	if (!g_miniHD || !g_sprLayer || !g_back || !g_layer) return; // g_layer: g_tilePal is loaded
+	g_layerGen++;
 	// The map's own palette, not the screen's: coming back from another screen the screen is still
 	// faded to black when the minimap is drawn, and its colours would be baked in black.
 	DWORD pal[256];
@@ -1099,6 +1125,7 @@ static BYTE *g_sprShadowS, *g_sprValidS;
 
 static void forget_tiles(void)
 {
+	g_layerGen++;
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
@@ -2110,7 +2137,9 @@ static DWORD WINAPI presenter(void *unused)
 			logf_("timing: %d presents in 5 s, %.1f ms average, %.1f ms worst; %d unchanged frames skipped",
 				presents, presents ? busy / presents : 0.0, worst, skipped);
 			for (int i = 0; i < 2; i++) if (g_draw[i].n) {
-				logf_("timing: %d %s redraws, %.1f ms average, %.1f ms worst", g_draw[i].n, i ? "battlefield" : "map", g_draw[i].ms / g_draw[i].n, g_draw[i].worst);
+				logf_("timing: %d %s redraws, %.2f ms average, %.1f ms worst%s", g_draw[i].n, i ? "battlefield" : "map", g_draw[i].ms / g_draw[i].n, g_draw[i].worst,
+					i ? "" : g_stampSkipped + g_stampDone ? " (HD stamping skipped as unchanged in some)" : "");
+				if (!i) { logf_("timing: map HD stamping: %d redraws unchanged (skipped), %d stamped", g_stampSkipped, g_stampDone); g_stampSkipped = g_stampDone = 0; }
 				g_draw[i].n = 0; g_draw[i].ms = g_draw[i].worst = 0;
 			}
 			since = t1;
@@ -3753,13 +3782,37 @@ static void __cdecl h_redraw_map(void)
 		return;
 	}
 	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+	if (!g_stampCur) {
+		g_stampCur = malloc(MAX_STAMPS * sizeof(stamp_call));
+		g_stampPrev = malloc(MAX_STAMPS * sizeof(stamp_call));
+	}
+	BOOL rec = g_stampCur && g_stampPrev;
+	if (rec) { g_stampN = 0; g_stampOverflow = FALSE; g_stampRec = TRUE; }
 	o_redraw_map();
+	if (rec) {
+		g_stampRec = FALSE;
+		BOOL same = !g_stampOverflow && g_stampN == g_stampPrevN && g_layerGen == g_stampPrevGen &&
+			memcmp(g_stampCur, g_stampPrev, g_stampN * sizeof(stamp_call)) == 0;
+		if (same) g_stampSkipped++;
+		else {
+			for (int i = 0; i < g_stampN; i++) {
+				const stamp_call *s = &g_stampCur[i];
+				if (s->sprite) stamp_sprite(s->buf, s->index, s->x, s->y);
+				else stamp_tile(s->buf, s->index, s->x, s->y);
+			}
+			g_stampDone++;
+			stamp_call *swap = g_stampPrev; g_stampPrev = g_stampCur; g_stampCur = swap;
+			g_stampPrevN = g_stampOverflow ? -1 : g_stampN;
+		}
+		g_stampPrevGen = g_layerGen;
+	}
 	end_wide_view();
 	if (g_timing) draw_timed(0, t0);
 	// The kingdom overview runs out of map columns before the screen's left edge: the strip left
 	// is filled with the land 4 columns to its right (the map repeats every column), HD layer too.
 	int strip = g_extra - g_view.k * MAP_STEP - g_view.firstX, shift = 4 * MAP_STEP;
 	if (MAP_ZOOM == 2 && strip > 0 && strip <= shift) {
+		g_layerGen++;
 		int x0 = g_back->org - g_extra;
 		for (int y = 24; y < bottom; y++) {
 			BYTE *row = g_back->bits + y * g_back->pitch + x0;
