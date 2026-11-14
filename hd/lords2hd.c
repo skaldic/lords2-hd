@@ -2036,7 +2036,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
-	"Shore waves", "Frame limit", "Tutorial scrolls", "Widescreen", "Battle zoom-out" };
+	"Shore waves", "Frame limit", "Tutorial scrolls", "Widescreen *", "Battle zoom-out *" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -2092,7 +2092,7 @@ static void menu_click(int x, int y)
 static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 {
 	int fh = max(16, vh / 34), pad = fh, rowH = fh * 3 / 2, labelW = fh * 10, valueW = fh * 12;
-	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (M_COUNT + 3);
+	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (M_COUNT + 4);
 	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
 	HBRUSH paper = CreateSolidBrush(RGB(222, 196, 140)), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(RGB(244, 226, 180));
 	RECT r = { bx - fh / 4, by - fh / 4, bx + bw + fh / 4, by + bh + fh / 4 };
@@ -2127,7 +2127,9 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	}
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
-	RECT f = { bx, by + bh - pad - rowH, bx + bw, by + bh - pad / 2 };
+	RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
+	DrawTextA(dc, "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
 	DrawTextA(dc, "Click or Enter to change   -   F8 or Esc to close   -   saved in lords2hd.ini", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	SelectObject(dc, old);
 	DeleteObject(title); DeleteObject(font); DeleteObject(small);
