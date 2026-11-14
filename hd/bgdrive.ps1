@@ -16,8 +16,11 @@ $shots = Join-Path $PSScriptRoot "shots"
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace BG -Name M -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);'
 $info = Join-Path $game "lords2hd-remote.txt"
+# Only the copy of the game in this folder is ever closed: another copy may be the player's own game.
+$exe = (Join-Path $game "Lords2.exe")
+function Stop-ThisGame { Get-Process Lords2 -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $exe) } | Stop-Process -Force }
 if ($Start) {
-    Get-Process Lords2 -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-ThisGame
     Remove-Item $info -ErrorAction SilentlyContinue
     Start-Process (Join-Path $game "Lords2.exe") -WorkingDirectory $game
     $t = 0; while (-not (Test-Path $info) -and $t -lt 200) { Start-Sleep -Milliseconds 100; $t++ }
@@ -50,6 +53,7 @@ foreach ($step in $Steps) {
             "burst saved to shots\$arg"
         }
         'video'  { Post 8 ([int]$arg) 0 }   # play video n of the DLL's test table (hang, jail, axmen, cart, win_game, intro, credits, castle1, bat_win1, imptitle)
+        'capscroll' { Post 12 ([int]$arg) 0 }   # testing: the captured-county scroll with its video
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
         'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
         'key'    {
@@ -69,4 +73,4 @@ foreach ($step in $Steps) {
         default  { "unknown step '$step'" }
     }
 }
-if ($Stop) { Get-Process Lords2 -ErrorAction SilentlyContinue | Stop-Process -Force }
+if ($Stop) { Stop-ThisGame }

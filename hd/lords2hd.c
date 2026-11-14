@@ -100,6 +100,15 @@ static void draw_timed(int which, LARGE_INTEGER t0)
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
 // 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
 static BOOL g_remote;
+// An open drop-down menu in the zoomed-out battle (screen 50): the game draws it at battlefield
+// scale at g_menuX, g_menuY (h_menu_open); it is shown doubled from that corner, like the top bar
+// its title is in, 13 x 12 cells of 16 (the panel FUN_0040c725 draws and refreshes).
+static volatile int g_menuX = -10000, g_menuY, g_menuH = 12 * 16;
+#define MENU_W (12 * 16)
+#define MENU_H g_menuH
+static BOOL menu_doubled(void) { return *(BYTE *)0x004eac50 == 0x32 && *(int *)0x00522cb4 != 0 && g_menuX > -10000; }
+static BOOL entry_dark(const DWORD *px, int w, int h, int w1);
+static void __cdecl h_msg_a(void);
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
 static volatile LONG g_shotWanted;
@@ -107,6 +116,7 @@ static volatile LONG g_shotWanted;
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
+static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
@@ -139,6 +149,7 @@ static void read_settings(void)
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
+	g_tutorialOnce = GetPrivateProfileIntA("Display", "TutorialOnce", 1, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
 	logf_("frame limit: %d game frames a second%s", g_frameLimit, g_frameLimit ? "" : " (off: as fast as the CPU allows)");
@@ -780,6 +791,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		if (!g_tileSets[i].buf && slot < 0) slot = i;
 	}
 	if (slot < 0) return;
+	g_layerGen++; // this buffer's art changes (a battle's ground replaces the county's, and back)
 	if (g_tileSets[slot].px) {
 		free(g_tileSets[slot].px);
 		free(g_tileSets[slot].wave);
@@ -815,6 +827,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		FILE *p = fopen(pal, "rb");
 		if (p) { if (fread(g_tilePal, 1, 768, p) != 768) memset(g_tilePal, 0, 768); fclose(p); }
 	}
+	g_layerGen++; // new art for these tiles: the next map redraw stamps again, even if it looks the same
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
 }
 
@@ -839,6 +852,10 @@ static BOOL stamp_record(const BYTE *buf, int index, int x, int y, int sprite)
 	return TRUE;
 }
 
+static DWORD *g_layerS;
+static BYTE *g_layerShadowS, *g_layerValidS, *g_waveDS;
+static BYTE g_layerDirty[GAME_H];
+static void tile_dirty(int y0, int y1);
 // Stamps the tile just drawn: frame "index" of the file at "buf", at game position x, y.
 static void stamp_tile(const BYTE *buf, int index, int x, int y)
 {
@@ -856,6 +873,7 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 	const BYTE *src = buf + *(const int *)(rec + 2);
 	const DWORD *hd = px + index * (TILE_W * 2 * TILE_H * 2);
 	int W = g_back->w;
+	tile_dirty(y, y + TILE_H);
 	for (int r = 0; r < TILE_H; r++) {
 		int k = r < TILE_H / 2 ? r : TILE_H - 1 - r;
 		int w = 2 + 4 * k, x0 = (TILE_W - w) / 2;
@@ -925,6 +943,7 @@ static void sprites_loaded(const char *name, const void *buffer)
 		g_spriteSets[slot].buf = buffer;
 		g_spriteSets[slot].data = data;
 		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
+		g_layerGen++;
 		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
 		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 		read_palette(path, g_spriteSets[slot].pal);
@@ -938,10 +957,19 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
 	if (stamp_record(buf, index, x, y, 1)) return;
 	if (battle_zoom_on() && !g_btLayer) {
-		g_btLayer = malloc(g_frameW * g_frameH * 4 * 4);
-		g_btShadow = calloc(g_frameW, g_frameH);
-		g_btValid = calloc(g_frameW, g_frameH);
+		// The presenter thread reads these as soon as g_btLayer is set: it is set last, and only
+		// when all three exist (it once saw the layer before the table and read through null).
+		DWORD *layer = malloc(g_frameW * g_frameH * 4 * 4);
+		BYTE *shadow = calloc(g_frameW, g_frameH), *valid = calloc(g_frameW, g_frameH);
+		if (layer && shadow && valid) {
+			g_btShadow = shadow;
+			g_btValid = valid;
+			MemoryBarrier();
+			g_btLayer = layer;
+		}
+		else { free(layer); free(shadow); free(valid); }
 	}
+	if (battle_zoom_on() && !g_btLayer) return;
 	const BYTE *data = NULL, *setPal = NULL;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++)
 		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
@@ -1144,6 +1172,7 @@ static void forget_tiles(void)
 {
 	g_layerGen++;
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
+	tile_dirty(0, GAME_H);
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
 		int keep = g_off + PANEL_X;
@@ -1244,7 +1273,20 @@ static smk_close_t o_SmackClose;
 
 static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 {
+	// The GOG videos are stored interlaced (header flag 2: half the rows, played on every other
+	// line, the lines between left black). Opened with SMACKYDOUBLE (0x200000) Smacker draws each
+	// row twice instead: same size and place, no black lines.
+	BOOL doubled = FALSE;
+	if (name && !(flags & 0x1000) && !(flags & 0x300000)) { // a file name, no Y mode asked for
+		FILE *f = fopen(name, "rb");
+		DWORD head[6];
+		if (f) {
+			if (fread(head, 4, 6, f) == 6 && (head[0] & 0xffffff) == 0x4b4d53 && (head[5] & 2)) { flags |= 0x200000; doubled = TRUE; }
+			fclose(f);
+		}
+	}
 	void *s = o_SmackOpen(name, flags, extra);
+	if (s && doubled) logf_("video %s: interlaced, shown line-doubled", name);
 	if (s) {
 		int w = *(int *)((BYTE *)s + 4), h = *(int *)((BYTE *)s + 8);
 		logf_("video %s: %dx%d, %d frames, flags %08lx", (const char *)name, w, h, *(int *)((BYTE *)s + 12), (unsigned long)flags);
@@ -1558,6 +1600,12 @@ static void video_overlay(const PALETTEENTRY *pal, int sx, int sw)
 }
 
 // Over the doubled picture (sw wide, starting at frame column sx), the ground the layer still owns.
+// the tile layer as of the frame on screen (tile_publish); the live one until the first copy
+#define TL_ON (g_layerS != NULL)
+#define TL_L (TL_ON ? g_layerS : g_layer)
+#define TL_S (TL_ON ? g_layerShadowS : g_layerShadow)
+#define TL_V (TL_ON ? g_layerValidS : g_layerValid)
+#define TL_W (TL_ON && g_waveDS ? g_waveDS : g_waveD)
 static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
 	int zoom = *(int *)0x0057cb18, gameMode = *(int *)0x0052af94;
@@ -1573,8 +1621,8 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 			pal[i].peBlue >> 2 == g_tilePal[i * 3 + 2];
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * sw;
-		const BYTE *sh = g_layerShadow + y * MAX_W + sx, *va = g_layerValid + y * MAX_W + sx;
-		const DWORD *h0 = g_layer + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
+		const BYTE *sh = TL_S + y * MAX_W + sx, *va = TL_V + y * MAX_W + sx;
+		const DWORD *h0 = TL_L + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
 		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
@@ -1592,7 +1640,7 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
 				if (g_shoreWaves && zoom == 0 && g_waveD) {
 					int X = 2 * (x + sx), Y = 2 * y;
-					const BYTE *w0 = g_waveD + Y * (2 * MAX_W) + X, *w1 = w0 + 2 * MAX_W;
+					const BYTE *w0 = TL_W + Y * (2 * MAX_W) + X, *w1 = w0 + 2 * MAX_W;
 					if (w0[0] | w0[1] | w1[0] | w1[1]) {
 						waved = TRUE;
 						if (w0[0]) wave_px(&o0[2 * x], w0[0], X, Y, waveT);
@@ -1631,10 +1679,13 @@ static void spr_publish(int y0, int y1)
 {
 	if (!g_sprLayer) return;
 	if (!g_sprLayerS) {
-		g_sprLayerS = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
-		g_sprShadowS = malloc((size_t)MAX_W * GAME_H);
-		g_sprValidS = calloc(MAX_W, GAME_H);
-		if (!g_sprLayerS || !g_sprShadowS || !g_sprValidS) { free(g_sprLayerS); g_sprLayerS = NULL; return; }
+		// the presenter reads the tables as soon as the layer pointer is set: it is set last
+		DWORD *l = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+		BYTE *s = calloc(MAX_W, GAME_H), *v = calloc(MAX_W, GAME_H);
+		if (!l || !s || !v) { free(l); free(s); free(v); return; }
+		g_sprShadowS = s; g_sprValidS = v;
+		MemoryBarrier();
+		g_sprLayerS = l;
 	}
 	y0 = max(0, y0); y1 = min(GAME_H, y1);
 	if (y1 <= y0) return;
@@ -1644,14 +1695,46 @@ static void spr_publish(int y0, int y1)
 	memcpy(g_sprValidS + (size_t)y0 * MAX_W, g_sprValid + (size_t)y0 * MAX_W, n);
 }
 
+// The ground tile layer as of the frame on screen, like the sprites (spr_publish). It was shown
+// live: while the game redraws the next frame (a scroll moves every tile; a full redraw clears the
+// layer first and stamps it at the end) the frame on screen and the layer disagreed, and the map
+// showed its 1x pixels for a frame. Only rows written since their last copy are copied.
+static void tile_dirty(int y0, int y1)
+{
+	for (int y = max(0, y0); y < min(GAME_H, y1); y++) g_layerDirty[y] = 1;
+}
+static void tile_publish(int y0, int y1)
+{
+	if (!g_layer || !g_layerShadow || !g_layerValid) return;
+	if (!g_layerS) {
+		DWORD *l = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+		BYTE *s = calloc(MAX_W, GAME_H), *v = calloc(MAX_W, GAME_H), *w = g_waveD ? calloc(MAX_W * 2, GAME_H * 2) : NULL;
+		if (!l || !s || !v || (g_waveD && !w)) { free(l); free(s); free(v); free(w); return; }
+		g_layerShadowS = s; g_layerValidS = v; g_waveDS = w;
+		MemoryBarrier();
+		g_layerS = l;
+		tile_dirty(0, GAME_H);
+	}
+	for (int y = max(0, y0); y < min(GAME_H, y1); y++) {
+		if (!g_layerDirty[y]) continue;
+		g_layerDirty[y] = 0;
+		memcpy(g_layerS + (size_t)y * 4 * MAX_W, g_layer + (size_t)y * 4 * MAX_W, (size_t)MAX_W * 16);
+		memcpy(g_layerShadowS + (size_t)y * MAX_W, g_layerShadow + (size_t)y * MAX_W, MAX_W);
+		memcpy(g_layerValidS + (size_t)y * MAX_W, g_layerValid + (size_t)y * MAX_W, MAX_W);
+		if (g_waveDS) memcpy(g_waveDS + (size_t)y * 4 * MAX_W, g_waveD + (size_t)y * 4 * MAX_W, (size_t)MAX_W * 4);
+	}
+}
+
 static void bt_publish(int y0, int y1)
 {
 	if (!g_btLayer || !battle_zoom_on()) return;
 	if (!g_btLayerS) {
-		g_btLayerS = malloc(g_frameW * g_frameH * 4 * 4);
-		g_btShadowS = malloc(g_frameW * g_frameH);
-		g_btValidS = calloc(g_frameW, g_frameH);
-		if (!g_btLayerS || !g_btShadowS || !g_btValidS) { free(g_btLayerS); g_btLayerS = NULL; return; }
+		DWORD *l = malloc(g_frameW * g_frameH * 4 * 4); // (set last, as in spr_publish)
+		BYTE *s = calloc(g_frameW, g_frameH), *v = calloc(g_frameW, g_frameH);
+		if (!l || !s || !v) { free(l); free(s); free(v); return; }
+		g_btShadowS = s; g_btValidS = v;
+		MemoryBarrier();
+		g_btLayerS = l;
 	}
 	y0 = max(0, y0); y1 = min(g_frameH, y1);
 	if (y1 <= y0) return;
@@ -1666,10 +1749,11 @@ static void text_publish(int y0, int y1)
 	if (!g_txt || !g_back) return;
 	int W = g_back->w, H = g_back->h;
 	if (!g_txtS) {
-		g_txtS = malloc(W * H * 4);
-		g_txtShadowS = malloc(W * H);
-		g_txtValidS = calloc(W, H);
-		if (!g_txtS || !g_txtShadowS || !g_txtValidS) return;
+		BYTE *l = malloc(W * H * 4), *s = calloc(W, H), *v = calloc(W, H); // (set last, as in spr_publish)
+		if (!l || !s || !v) { free(l); free(s); free(v); return; }
+		g_txtShadowS = s; g_txtValidS = v;
+		MemoryBarrier();
+		g_txtS = l;
 	}
 	y0 = max(0, y0); y1 = min(H, y1);
 	if (y1 <= y0) return;
@@ -1795,6 +1879,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
 	const DWORD *btL = g_btLayerS ? g_btLayerS : g_btLayer;
 	const BYTE *btS = g_btLayerS ? g_btShadowS : g_btShadow, *btV = g_btLayerS ? g_btValidS : g_btValid;
+	BOOL btOn = btL && btS && btV; // all three, or the HD battle layer is left out of this picture
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
 	const BYTE *frame = copy + g_off; // the game's x = 0
 	for (int sy = 48; sy < lh; sy++) {
@@ -1836,7 +1921,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		}
 	}
 	// HD sprites in the doubled top bar and side panel: already at 2x there.
-	if (g_btLayer) {
+	if (btOn) {
 		for (int sy = 0; sy < lh; sy++) {
 			DWORD *o = pic + sy * lw;
 			int from = sy < 48 ? 0 : mapW;
@@ -1849,16 +1934,38 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			}
 		}
 	}
+	// An open drop-down: doubled from its corner like the bar above it (it covers its 1:1 self).
+	int mx0 = 0, mx1 = 0, my1 = 0; // its doubled rectangle in this picture, rows 48 .. my1
+	if (menu_doubled()) {
+		int lx = g_menuX, fy0 = max(24, g_menuY), fy1 = g_menuY + MENU_H;
+		mx0 = lx - (PANEL_X - mapW); mx1 = min(mapW, mx0 + 2 * MENU_W); my1 = min(lh, 48 + 2 * (fy1 - fy0));
+		int W = g_back ? g_back->w : 0;
+		for (int sy = 48; sy < my1; sy++) {
+			int gy = fy0 + (sy - 48) / 2;
+			DWORD *o = pic + sy * lw;
+			for (int sx = max(0, mx0); sx < mx1; sx++) {
+				int gx = g_off + lx + (sx - mx0) / 2;
+				if (gx < 0 || gx >= pitch) continue;
+				BYTE v8 = copy[gy * pitch + gx];
+				DWORD p = g_lut[v8];
+				int q = (sy & 1) * 2 + ((sx - mx0) & 1);
+				if (btOn && gx < g_frameW) { int f = gy * g_frameW + gx; if (btV[f] && btS[f] == v8) p = btL[f * 4 + q]; }
+				if (g_txt && g_hdText && W && gx < W) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
+				o[sx] = p;
+			}
+		}
+	}
+#define IN_MENU(sx, sy) ((sx) >= mx0 && (sx) < mx1 && (sy) >= 48 && (sy) < my1)
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
 	BOOL big = (v.bottom - v.top) >= lh * 2;
-	if (g_btLayer && !big) {
+	if (btOn && !big) {
 		for (int sy = 48; sy < lh; sy++) {
 			int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
 			const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
 			DWORD *o = pic + sy * lw;
 			for (int sx = 0; sx < mapW; sx++) {
 				int f = f0 + sx;
-				if (!btV[f] || row[sx] != btS[f]) continue;
+				if (!btV[f] || row[sx] != btS[f] || IN_MENU(sx, sy)) continue;
 				const DWORD *h = btL + f * 4;
 				DWORD rb = (h[0] & 0xff00ff) + (h[1] & 0xff00ff) + (h[2] & 0xff00ff) + (h[3] & 0xff00ff);
 				DWORD gg = (h[0] & 0xff00) + (h[1] & 0xff00) + (h[2] & 0xff00) + (h[3] & 0xff00);
@@ -1893,14 +2000,14 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 				o1[2 * x + 1] = mix4(p, row[r], dn[x], dn[r]);
 			}
 		}
-		if (g_btLayer) {
+		if (btOn) {
 			for (int sy = 48; sy < lh; sy++) {
 				int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
 				const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
 				DWORD *o0 = pic2 + 2 * sy * 2 * lw, *o1 = o0 + 2 * lw;
 				for (int sx = 0; sx < mapW; sx++) {
 					int f = f0 + sx;
-					if (!btV[f] || row[sx] != btS[f]) continue;
+					if (!btV[f] || row[sx] != btS[f] || IN_MENU(sx, sy)) continue;
 					const DWORD *h = btL + f * 4;
 					o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
 					o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
@@ -1916,6 +2023,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		SetStretchBltMode(dc, HALFTONE);
 		SetBrushOrgEx(dc, 0, 0, NULL);
 	}
+	if (entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
@@ -1989,6 +2097,88 @@ static void shot_save(const DWORD *px, int w, int h)
 	MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
 }
 
+// A frame caught half drawn: the top bar is there but much of the field below it is still black
+// (entering a battle the game shows its frame before the battlefield is drawn into it). Such a
+// picture is held back for up to half a second; a fade, which darkens the bar too, never is.
+static BOOL entry_dark(const DWORD *px, int w, int h, int w1)
+{
+	static DWORD since;
+	int bar = 0, nb = 0, black = 0, n = 0;
+	for (int x = 8; x < w; x += 16, nb++) bar += (px[(h / 40) * w + x] & 0xf0f0f0) != 0;
+	for (int y = h / 10; y < h; y += 16)
+		for (int x = 0; x < w1; x += 16, n++) black += (px[y * w + x] & 0xf0f0f0) == 0;
+	BOOL hold = nb && bar * 10 > nb * 6 && n && black * 4 > n; // bar 60% drawn (letters are dark), field 25% black
+	DWORD now = GetTickCount();
+	if (g_remote && n && black * 4 > n) logf_("dark frame: bar %d/%d field %d/%d (%dx%d)", bar, nb, black, n, w, h);
+	if (!hold) { since = 0; return FALSE; }
+	if (!since) since = now;
+	if (g_remote) logf_("half-drawn frame held (%d of %d field samples black)", black, n);
+	return now - since < 500;
+}
+// Windows over the wide map (the Town Center and its info scrolls, the boxes a click on the map
+// opens) sit where the 4:3 screen had them, right of the middle. Their positions are written all
+// through the game's code, clicks and drags included, so they are moved here instead, in the
+// picture: when such a window opens, the last picture of the map alone is kept (g_snap*); while it
+// is up, the part of the frame that differs from that map - the window - is shown shifted to the
+// middle of the map the player sees, and the map from before fills the place it left. Clicks on
+// the moved window are mapped back (win_click); the game never knows.
+static BYTE g_snap8[MAX_W * GAME_H];
+static DWORD g_snap2x[MAX_W * 2 * GAME_H * 2];
+static int g_snapW;              // width of the snapshot in frame columns, 0 = none
+static BYTE g_snapPend8[MAX_W * GAME_H]; // the map as the game just redrew it under a new window
+static int g_snapPendW;
+static volatile LONG g_snapPending;
+static volatile LONG g_winShift; // the window's shift to the left in game pixels (0 = none)
+static volatile LONG g_winX0, g_winX1, g_winY0, g_winY1; // its place in the game, before the shift
+static BOOL window_screen(int screen)
+{
+	if (screen == 39 || screen == 57) return *(int *)0x004f0350 != 0; // a scroll over a window, not over the map
+	return screen == 2 || screen == 4 || screen == 5 || screen == 6 || screen == 15;
+}
+// Called with the frame composed (g_frame8 / g_frame2x, sw columns from game x sx - g_off).
+static void window_shift(int screen, int sx, int sw)
+{
+	InterlockedExchange(&g_winShift, 0);
+	if (!g_snapW || g_snapW != sw || !window_screen(screen)) return;
+	int x0g = g_off - sx, x1g = x0g + PANEL_X; // frame columns of game x 0 and PANEL_X
+	if (x0g < 0 || x1g > sw) return;
+	static int colN[MAX_W], rowN[GAME_H];
+	memset(colN, 0, sizeof colN); memset(rowN, 0, sizeof rowN);
+	for (int y = 24; y < GAME_H; y++) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		for (int x = x0g; x < x1g; x++) if (a[x] != b[x]) { colN[x]++; rowN[y]++; }
+	}
+	int bx0 = -1, bx1 = -1, by0 = -1, by1 = -1;
+	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
+	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
+	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
+	// the window's middle onto the middle of the map on screen (frame columns 0 .. x1g)
+	int s = (bx0 + bx1) / 2 - x1g / 2;
+	s = min(s, bx0); // never past the left edge
+	if (s <= 2) return;
+	int w = bx1 - bx0, W2 = 2 * sw;
+	static DWORD row[MAX_W * 2];
+	for (int y = by0; y < by1; y++)
+		for (int r = 0; r < 2; r++) {
+			DWORD *o = g_frame2x + (2 * y + r) * W2;
+			const DWORD *m = g_snap2x + (2 * y + r) * W2;
+			memcpy(row, o + 2 * bx0, w * 2 * sizeof(DWORD));             // the window
+			memcpy(o + 2 * bx0, m + 2 * bx0, w * 2 * sizeof(DWORD));     // the map where it was
+			memcpy(o + 2 * (bx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
+		}
+	g_winX0 = bx0 - x0g; g_winX1 = bx1 - x0g; g_winY0 = by0; g_winY1 = by1;
+	InterlockedExchange(&g_winShift, s);
+}
+// A click on the picture at game x, y: over the moved window it is the window's own place; over
+// the map shown where the window was, a spot just outside the window.
+static void win_click(int *x, int *y)
+{
+	int s = g_winShift;
+	if (!s || *y < g_winY0 || *y >= g_winY1) return;
+	if (*x >= g_winX0 - s && *x < g_winX1 - s) *x += s;
+	else if (*x >= g_winX1 - s && *x < g_winX1) *x = g_winX1 + 1 < PANEL_X ? g_winX1 + 1 : g_winX0 - s - 1;
+}
+
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
 // the screen on every pass of its loop, paused or not.
 static BOOL present(void)
@@ -2004,6 +2194,13 @@ static BOOL present(void)
 	int screen = *(BYTE *)0x004eac50, mode = *(int *)0x0052af94;
 	if (screen != lastScreen || mode != lastMode) {
 		logf_("screen %d, mode %d", screen, mode);
+		// A window opens over the map: keep the last picture of the map alone (window_shift).
+		if (lastScreen == 0 && window_screen(screen) && g_wideScreen && g_showW > 0) {
+			memcpy(g_snap8, g_shown8, g_showW * GAME_H);
+			memcpy(g_snap2x, g_frame2x, (size_t)g_showW * 2 * GAME_H * 2 * sizeof(DWORD));
+			g_snapW = g_showW;
+		}
+		else if (screen == 0 || !county_map_on()) g_snapW = 0;
 		lastScreen = screen;
 		lastMode = mode;
 	}
@@ -2077,6 +2274,22 @@ static BOOL present(void)
 	int vw = v.right - v.left, vh = v.bottom - v.top;
 	if (g_scale == SCALE_SMOOTH) {
 		for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
+		// A window just opened over the map: compose the map as the game redrew it underneath
+		// (g_snapPend8, kept by h_redraw_map) into g_snap2x first, HD layers and all.
+		if (InterlockedExchange(&g_snapPending, 0) && g_wideScreen && g_snapPendW == sw) {
+			static BYTE keep[MAX_W * GAME_H];
+			memcpy(keep, g_frame8, sw * GAME_H);
+			memcpy(g_frame8, g_snapPend8, sw * GAME_H);
+			for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
+			double_frame(sw);
+			screen_sprites(pal, sx, sw);
+			tile_overlay(pal, sx, sw);
+			text_overlay(sx, sw);
+			memcpy(g_snap8, g_frame8, sw * GAME_H);
+			memcpy(g_snap2x, g_frame2x, (size_t)sw * 2 * GAME_H * 2 * sizeof(DWORD));
+			g_snapW = sw;
+			memcpy(g_frame8, keep, sw * GAME_H);
+		}
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
 		double_frame(sw);
 		if (sw == GAME_W) hd_overlay(pal);
@@ -2085,6 +2298,7 @@ static BOOL present(void)
 		text_overlay(sx, sw);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
+		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
@@ -2098,6 +2312,7 @@ static BOOL present(void)
 		bi.h.biWidth = dw;
 		bi.h.biHeight = -GAME_H * 2;
 		bi.h.biBitCount = 32;
+		if (entry_dark(room ? g_room.out : g_frame2x, dw, GAME_H * 2, dw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; } // retried until drawn or shown
 		shot_save(room ? g_room.out : g_frame2x, dw, GAME_H * 2);
 		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, dw, GAME_H * 2, room ? g_room.out : g_frame2x,
 			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
@@ -2350,6 +2565,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 		text_publish(dy, dy + h);
 		bt_publish(dy, dy + h);
 		spr_publish(dy, dy + h);
+		tile_publish(dy, dy + h);
 	}
 }
 
@@ -2700,7 +2916,11 @@ static void client_to_game(int *x, int *y)
 		// The zoomed-out battle's picture: top bar and side panel doubled, battlefield 1:1.
 		int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
 		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
-		if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
+		int mx0 = g_menuX - (PANEL_X - mapW), fy0 = max(24, g_menuY);
+		if (menu_doubled() && sy >= 48 && sx >= mx0 && sx < mx0 + 2 * MENU_W && sy < 48 + 2 * (g_menuY + MENU_H - fy0)) {
+			*x = g_menuX + (sx - mx0) / 2; *y = fy0 + (sy - 48) / 2; // over the doubled drop-down
+		}
+		else if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
 		else if (sx >= mapW) { *x = PANEL_X + (sx - mapW) / 2; *y = 24 + (sy - 48) / 2; }
 		else { *x = PANEL_X - mapW + sx; *y = 24 + sy - 48; }
 		return;
@@ -2717,6 +2937,7 @@ static void client_to_game(int *x, int *y)
 	}
 	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
 	*y = max(0, min(GAME_H - 1, gy));
+	win_click(x, y);
 }
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
@@ -2726,7 +2947,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	int n = msg - WM_REMOTE;
 	if (n == 0x10) {
 		music_status(); // sound is muted in remote mode: the log says whether the music stream is playing
-		logf_("view: map column %d, first x %d", *(int *)0x005651b4, *(int *)0x0052afdc);
+		logf_("view: map column %d, first x %d, selected county %d", *(int *)0x005651b4, *(int *)0x0052afdc, *(int *)0x0057c93c);
 		InterlockedExchange(&g_shotWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
@@ -2746,6 +2967,16 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			InterlockedExchange(&g_forcePresent, 1);
 			mark_dirty();
 		}
+		return 0;
+	}
+	if (n == 12) { // testing: the captured-county scroll and its video (FUN_0047309e, type 13)
+		*(int *)0x005440a4 = 0xd;
+		*(int *)0x0057c954 = 2000;
+		*(int *)0x0053e910 = (int)wp ? (int)wp : 0x72;
+		*(int *)0x0055ce54 = 0;
+		*(BYTE *)0x004eac50 = 0x27;
+		h_msg_a();
+		mark_dirty();
 		return 0;
 	}
 	if (n == 11) { // testing: the end-of-battle scroll and its video over a running battle (screen 43)
@@ -2781,8 +3012,11 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	static const UINT mouse[] = { 0, WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, 0, WM_RBUTTONDOWN, WM_RBUTTONUP };
 	static WPARAM buttons;
 	if (n < 1 || n > 6 || !mouse[n]) return 0;
-	g_fake.x = (short)LOWORD(lp);
-	g_fake.y = (short)HIWORD(lp);
+	int fx = (short)LOWORD(lp), fy = (short)HIWORD(lp);
+	win_click(&fx, &fy); // the driver aims at the picture, like a player
+	g_fake.x = fx;
+	g_fake.y = fy;
+	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
 	if (n == 2) buttons |= MK_LBUTTON; else if (n == 3) buttons &= ~MK_LBUTTON;
 	if (n == 5) buttons |= MK_RBUTTON; else if (n == 6) buttons &= ~MK_RBUTTON;
 	return CallWindowProcA(g_gameProc, hwnd, mouse[n], buttons, lp);
@@ -3303,7 +3537,13 @@ static void __cdecl h_menu_open(void)
 	short *title = *(short **)0x00522cac;
 	short saved = title ? title[0] : 0;
 	BOOL zoomed = title && battle_zoom_on();
-	if (zoomed) title[0] = (short)menu_list_x(saved);
+	if (zoomed) {
+		title[0] = (short)menu_list_x(saved);
+		g_menuX = title[0];
+		g_menuY = title[2] + 0x12;
+		g_menuH = ((title[6] * 21) / 16 + 2) * 16; // FUN_0040c725's panel: 12 cells wide, rows for the items
+	}
+	else g_menuX = -10000;
 	g_drawingLeft = wide;
 	o_menu_open();
 	g_drawingLeft = FALSE;
@@ -3370,10 +3610,48 @@ static const DWORD kScrollXSites[] = { // movl $imm, 0x553060: the imm's address
 	0x47313b, 0x4732fb, 0x4734c5, 0x47372c, 0x473bbe, 0x473eb9, 0x474051, 0x4741f8, 0x474212,
 	0x4744e7, 0x47473d, 0x474a4e, 0x474e23, 0x4753b0, 0x4755cd, 0x4755fa, 0x475e9a, 0x4764e7,
 };
-static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 0x4ddb50 }; // 2 buttons of 16 bytes, x first
+static const DWORD kScrollButtons[] = { 0x4dda90, 0x4ddac0, 0x4ddaf0, 0x4ddb20, 0x4ddb50 }; // 2 buttons of 24 bytes: x, y, picture, size, ...
+#define BTN_FIELD(i, b) ((short *)(kScrollButtons[i] + 24 * (b))) // button b's x
 static LONG g_scrollXOrig[sizeof kScrollXSites / sizeof kScrollXSites[0]];
 static short g_scrollBtnOrig[sizeof kScrollButtons / sizeof kScrollButtons[0]][2];
 static int g_scrollShift, g_scrollReady;
+// The three scrolls that show a video (a captured county: cap_cty at 40,105; event clips at 25,81
+// and 89,105) are drawn from x values written into the code as push operands, mostly single
+// signed bytes. They move with the others when every value still fits (s <= 136: monitors up to
+// about 16:9); otherwise these three stay where the game puts them, whole.
+static const struct { DWORD addr; BYTE size; short orig; } kVideoScrollX[] = {
+	{ 0x474cc9, 1, 0x10 }, { 0x474cdf, 1, 0x27 }, { 0x474cf0, 4, 0x1a0 }, { 0x474d0b, 1, 0x10 }, { 0x474d43, 1, 0x30 },
+	{ 0x474f8b, 1, 0x08 }, { 0x474fa1, 1, 0x18 }, { 0x474fb2, 4, 0x1f8 }, { 0x474fdd, 1, 0x08 }, { 0x475012, 1, 0x08 }, { 0x47504e, 1, 0x18 },
+	{ 0x475070, 1, 0x10 }, { 0x475086, 1, 0x58 }, { 0x475097, 4, 0x1a0 }, { 0x4750c2, 1, 0x10 }, { 0x4750f7, 1, 0x10 }, { 0x47512a, 1, 0x10 }, { 0x475156, 1, 0x30 },
+};
+static int g_videoScrollShift, g_videoScrollReady;
+static void video_scroll_shift(int s)
+{
+	int n = sizeof kVideoScrollX / sizeof kVideoScrollX[0];
+	if (!g_videoScrollReady) {
+		g_videoScrollReady = 1;
+		for (int i = 0; i < n; i++) {
+			BYTE *p = (BYTE *)kVideoScrollX[i].addr;
+			LONG v = kVideoScrollX[i].size == 1 ? (signed char)p[0] : *(LONG *)p;
+			if (p[-1] != (kVideoScrollX[i].size == 1 ? 0x6a : 0x68) || v != kVideoScrollX[i].orig) {
+				logf_("video scrolls: unexpected code at %p, left in place", p);
+				g_videoScrollReady = -1;
+				return;
+			}
+		}
+		for (int i = 0; i < n; i++) { DWORD old; VirtualProtect((void *)kVideoScrollX[i].addr, 4, PAGE_EXECUTE_READWRITE, &old); }
+	}
+	if (g_videoScrollReady < 0) return;
+	if (s > 136) s = 0; // a push byte holds -128..127: the smallest value (8) would not fit
+	if (s == g_videoScrollShift) return;
+	for (int i = 0; i < n; i++) {
+		BYTE *p = (BYTE *)kVideoScrollX[i].addr;
+		if (kVideoScrollX[i].size == 1) p[0] = (BYTE)(signed char)(kVideoScrollX[i].orig - s);
+		else *(LONG *)p = kVideoScrollX[i].orig - s;
+	}
+	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+	g_videoScrollShift = s;
+}
 
 static void scroll_shift(int s)
 {
@@ -3387,8 +3665,8 @@ static void scroll_shift(int s)
 		}
 		for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++) {
 			DWORD old;
-			VirtualProtect((void *)kScrollButtons[i], 32, PAGE_READWRITE, &old);
-			for (int b = 0; b < 2; b++) g_scrollBtnOrig[i][b] = *(short *)(kScrollButtons[i] + 16 * b);
+			VirtualProtect((void *)kScrollButtons[i], 48, PAGE_READWRITE, &old);
+			for (int b = 0; b < 2; b++) g_scrollBtnOrig[i][b] = *BTN_FIELD(i, b);
 		}
 		g_scrollReady = 1;
 	}
@@ -3396,7 +3674,8 @@ static void scroll_shift(int s)
 	for (int i = 0; i < (int)(sizeof kScrollXSites / sizeof kScrollXSites[0]); i++)
 		*(LONG *)(kScrollXSites[i] + 6) = g_scrollXOrig[i] - s;
 	for (int i = 0; i < (int)(sizeof kScrollButtons / sizeof kScrollButtons[0]); i++)
-		for (int b = 0; b < 2; b++) *(short *)(kScrollButtons[i] + 16 * b) = (short)(g_scrollBtnOrig[i][b] - s);
+		for (int b = 0; b < 2; b++) *BTN_FIELD(i, b) = (short)(g_scrollBtnOrig[i][b] - s);
+	logf_("message scrolls moved %d left; first table's buttons at x %d and %d", s, *BTN_FIELD(0, 0), *BTN_FIELD(0, 1));
 	FlushInstructionCache(GetCurrentProcess(), NULL, 0);
 	g_scrollShift = s;
 }
@@ -3406,8 +3685,11 @@ static draw_msg_t o_msg_a, o_msg_b, o_msg_c;
 static BOOL county_map_on(void);
 static void draw_msg(draw_msg_t orig)
 {
-	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2;
+	// Only over the map itself: a scroll opened from a window on the map (the Town Center: screen 2)
+	// stays lined up with that window, which keeps its own place. 0x4f0350 = the screen under it.
+	BOOL wide = g_off && county_map_on() && *(int *)0x0057c8fc != 2 && *(int *)0x004f0350 == 0;
 	scroll_shift(wide ? g_extra / 2 : 0);
+	video_scroll_shift(wide ? g_extra / 2 : 0);
 	g_drawingLeft = wide;
 	orig();
 	g_drawingLeft = FALSE;
@@ -3441,6 +3723,44 @@ static void __cdecl h_yesno_draw(void)
 	g_drawingLeft = wide;
 	o_yesno_draw();
 	g_drawingLeft = FALSE;
+}
+
+// The game draws the yes/no box once, when it opens (and on some refreshes). If the screen behind
+// is redrawn afterwards - closing the drop-down menu the question came from redraws the map where
+// the menu was - part of the box is gone and stays gone ("torn"). While the box is up (screen 30)
+// its pixels are checked after every game frame and it is drawn again when anything changed them.
+#define YN_W (14 * 16)
+#define YN_H (8 * 16)
+static BYTE g_ynSnap[YN_W * YN_H];
+static int g_ynHave, g_ynX, g_ynY;
+static BOOL yn_region(BOOL save)
+{
+	if (!g_back) return FALSE;
+	int x0 = *(int *)0x0052af90 - 16, y0 = *(int *)0x0052af98 - 16;
+	BOOL same = TRUE;
+	for (int r = 0; r < YN_H; r++) {
+		int y = y0 + r;
+		if (y < 0 || y >= GAME_H) continue;
+		for (int c = 0; c < YN_W; c++) {
+			int x = g_back->org + x0 + c;
+			if (x < 0 || x >= g_back->w) continue;
+			BYTE *p = g_back->bits + y * g_back->pitch + x;
+			if (save) g_ynSnap[r * YN_W + c] = *p;
+			else if (g_ynSnap[r * YN_W + c] != *p) { same = FALSE; r = YN_H; break; }
+		}
+	}
+	return same;
+}
+static void yesno_keep(void)
+{
+	if (*(BYTE *)0x004eac50 != 0x1e || !g_back) { g_ynHave = 0; return; }
+	int x = *(int *)0x0052af90, y = *(int *)0x0052af98;
+	if (g_ynHave && x == g_ynX && y == g_ynY && yn_region(FALSE)) return;
+	h_yesno_draw();                                                                       // FUN_0040ccfa
+	((void (__cdecl *)(int, int, short *, int))0x0040cfd2)(x, y, (short *)0x004dd310, 2); // its two buttons
+	((void (__cdecl *)(void))0x0045240a)();                                               // to the screen
+	yn_region(TRUE);
+	g_ynHave = 1; g_ynX = x; g_ynY = y;
 }
 
 // The end of a battle (screen 43): FUN_00423241 draws a scroll with the result, the video's frame
@@ -3509,12 +3829,42 @@ static void frame_box(int x, int y, int w, int h)
 	for (int c = x; c <= x1; c++) frame_px(c, y1, 0x1f);  // bottom
 	for (int r = y; r <= y1; r++) frame_px(x, r, 0x1f);   // left
 }
+// FUN_00403deb(x, y, w, h), a sunken frame: it clamps x to 0 and keeps the width. While a moved
+// scroll or box is drawn (g_drawingLeft) a frame starting left of 0 is drawn where it belongs.
+typedef void (__cdecl *frame_t)(int, int, int, int);
+static frame_t o_frame;
+static void __cdecl h_frame(int x, int y, int w, int h)
+{
+	if (g_drawingLeft && x < 1) frame_box(x, y, w, h);
+	else o_frame(x, y, w, h);
+}
 typedef BOOL (__cdecl *play_video_t)(const char *, int, int, int, int);
 static play_video_t o_play_video;
 static BOOL __cdecl h_play_video(const char *name, int x, int y, int mode, int next)
 {
 	if (x == 0x27 && y == 0x49 && SCREEN_ID == 0x2b) x -= battle_end_shift(); // the result video, in its frame
+	// a message scroll's video, in its moved frame (video_scroll_shift)
+	else if (g_videoScrollShift && ((x == 25 && y == 81) || (x == 89 && y == 105) || (x == 0x28 && y == 0x69))) x -= g_videoScrollShift;
 	return o_play_video(name, x, y, mode, next);
+}
+
+// The tutorial scrolls (Game Objectives, Getting started, ...: message ids 200..218) are shown by
+// FUN_00476da9(id), which marks each as seen in 0x4f0298 + id - in memory only, so every start and
+// every loaded game showed them all again. [Display] TutorialOnce=1 (default) keeps the ids shown
+// in lords2hd.ini ([Tutorial] Seen, a bit per id) and marks those as seen without showing them.
+typedef void (__cdecl *tutorial_t)(int);
+static tutorial_t o_tutorial;
+static void __cdecl h_tutorial(int id)
+{
+	if (g_tutorialOnce && id >= 200 && id < 232) {
+		char v[32];
+		GetPrivateProfileStringA("Tutorial", "Seen", "0", v, sizeof v, g_iniPath);
+		DWORD seen = strtoul(v, NULL, 16), bit = 1u << (id - 200);
+		if (seen & bit) { ((BYTE *)0x004f0298)[id] = 1; return; }
+		snprintf(v, sizeof v, "%lx", (unsigned long)(seen | bit));
+		WritePrivateProfileStringA("Tutorial", "Seen", v, g_iniPath);
+	}
+	o_tutorial(id);
 }
 
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
@@ -3640,10 +3990,9 @@ typedef int (__cdecl *pick_cell_t)(int);
 static pick_cell_t o_pick_cell;
 static int __cdecl h_pick_cell(int arg)
 {
-	if (!begin_wide_view()) return o_pick_cell(arg);
-	int r = o_pick_cell(arg);
-	end_wide_view();
-	PICKED_COL -= g_view.k;
+	int r;
+	if (begin_wide_view()) { r = o_pick_cell(arg); end_wide_view(); PICKED_COL -= g_view.k; }
+	else r = o_pick_cell(arg);
 	return r;
 }
 
@@ -3652,10 +4001,19 @@ static int __cdecl h_pick_cell(int arg)
 typedef void (__cdecl *cell_t)(int);
 static cell_t o_cell_ground, o_cell_special, o_cell_special2;
 #define TILE_FRAME (*(int *)0x005c9288)
+static BOOL g_wideRedraw; // inside a widened map redraw (h_redraw_map)
 static void __cdecl h_cell_ground(int mode)
 {
 	int x = BLOCK_X, y = BLOCK_Y;
 	o_cell_ground(mode);
+	// After a redraw the game makes the county with the most cells on screen the current one
+	// (FUN_004050f6, counts in 0x52f020 added after each mode-0 cell). The spare columns are not
+	// counted, so the choice is the 4:3 screen's: they made a neighbouring county current - its
+	// name in the panel, its Town Center opened from the clicked county's town.
+	if (g_wideRedraw && mode == 0 && x < g_view.firstX) {
+		int county = *(BYTE *)0x0057d384;
+		((int *)0x0052f020)[county] -= (*(BYTE *)0x0057d374 & 0x40) ? 5 : 1;
+	}
 	BOOL overview = MAP_ZOOM == 2;
 	if (MAP_ZOOM != 0 && !overview) return;
 	BYTE flags = ((BYTE *)0x00522f92)[*(int *)0x00567954];
@@ -3915,7 +4273,9 @@ static void __cdecl h_redraw_map(void)
 	}
 	BOOL rec = g_stampCur && g_stampPrev;
 	if (rec) { g_stampN = 0; g_stampOverflow = FALSE; g_stampRec = TRUE; }
+	g_wideRedraw = TRUE;
 	o_redraw_map();
+	g_wideRedraw = FALSE;
 	if (rec) {
 		g_stampRec = FALSE;
 		BOOL same = !g_stampOverflow && g_stampN == g_stampPrevN && g_layerGen == g_stampPrevGen &&
@@ -3952,6 +4312,14 @@ static void __cdecl h_redraw_map(void)
 				memcpy(o, o + 2 * shift, strip * 2 * sizeof(DWORD));
 			}
 		}
+	}
+	// A window opening over the map redraws the map first (the Town Center recentres it): keep
+	// that map, before the window is drawn over it, for window_shift.
+	if (window_screen(SCREEN_ID) && g_showW > 0 && g_showX >= 0 && g_showX + g_showW <= g_back->w) {
+		for (int y = 0; y < GAME_H; y++)
+			memcpy(g_snapPend8 + y * g_showW, g_back->bits + y * g_back->pitch + g_showX, g_showW);
+		g_snapPendW = g_showW;
+		InterlockedExchange(&g_snapPending, 1);
 	}
 }
 
@@ -4055,9 +4423,12 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
 	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
 	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
+	static const BYTE kTutorialPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
+	hook_code((BYTE *)0x00476da9, kTutorialPrologue, sizeof kTutorialPrologue, h_tutorial, &o_tutorial);
 	static const BYTE kEndPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00423241, kEndPrologue, sizeof kEndPrologue, h_battle_end_draw, &o_battle_end_draw);
 	hook_code((BYTE *)0x0042d91b, kBlockPrologue, sizeof kBlockPrologue, h_play_video, &o_play_video);
+	hook_code((BYTE *)0x00403deb, kBlockPrologue, sizeof kBlockPrologue, h_frame, &o_frame);
 	hook_code((BYTE *)0x00403fdd, kBlockPrologue, sizeof kBlockPrologue, h_bar_outline, &o_bar_outline);
 	static const BYTE kTitlesPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x0040c5b0, kTitlesPrologue, sizeof kTitlesPrologue, h_menu_titles, &o_menu_titles);
@@ -4158,7 +4529,9 @@ static char __cdecl h_game_frame(void)
 		// the next slot is a frame period after this frame, whatever woke it
 		next.QuadPart = now.QuadPart + period;
 	}
-	return o_game_frame();
+	char r = o_game_frame();
+	yesno_keep();
+	return r;
 }
 
 // Timing=1: how many logic steps the game runs a second (FUN_004bb978 works them out from the

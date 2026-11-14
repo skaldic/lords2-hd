@@ -1,4 +1,4 @@
-Lords of the Realm II HD 1.1.0: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 1.1.1: an unofficial fan patch for the GOG version of the game.
 You need your own copy of the game.
 
 INSTALL
@@ -34,6 +34,7 @@ BattleZoom=0    battles at normal size
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
 CursorScale=50  cursor size in percent
 FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
+TutorialOnce=0  show the tutorial scrolls every time, as the original (default: once each)
 
 ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.
