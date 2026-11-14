@@ -4070,6 +4070,23 @@ static draw_msg_t o_yesno_draw;
 static BOOL g_yesnoWide;
 static void __cdecl h_yesno_open(int text, int x, int y, int answer)
 {
+	// Old-game bug: Esc while "Exit the game?" is up opens it again, and the box then remembers its
+	// own screen (30) as the one to go back to (0x57c90c): "No" keeps returning to it, the game is
+	// stuck behind the box. A second open while one is up answers "No" instead, as the thumbs-down
+	// (the right one of the box's two buttons, table 0x4dd310: 24-byte entries, x first, action at +8).
+	if (*(BYTE *)0x004eac50 == 0x1e) {
+		const BYTE *t = (const BYTE *)0x004dd310;
+		const BYTE *no = *(const short *)(t + 24) > *(const short *)t ? t + 24 : t;
+		void (__cdecl *act)(void) = *(void (**)(void))(no + 8);
+		logf_("yes/no box: opened again while up, answered No");
+		if (act) {
+			*(int *)0x0059154c = *(const int *)(no + 16);
+			*(int *)0x00591550 = *(const int *)(no + 20);
+			*(int *)0x00591558 = 0;
+			act();
+		}
+		return;
+	}
 	g_yesnoWide = FALSE;
 	if (g_off && x == 160 && county_map_on() && (battle_zoom_on() || *(int *)0x0057c8fc != 2)) {
 		int centre = battle_zoom_on() ? PANEL_X - battle_map_w() / 2 : (PANEL_X - g_extra) / 2;
