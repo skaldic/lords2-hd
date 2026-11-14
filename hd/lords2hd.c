@@ -2499,7 +2499,8 @@ static volatile LONG g_winX0, g_winX1, g_winY0, g_winY1; // its place in the gam
 static BOOL window_screen(int screen)
 {
 	if (screen == 39 || screen == 57) return *(int *)0x004f0350 != 0; // a scroll over a window, not over the map
-	return screen == 2 || screen == 4 || screen == 5 || screen == 6 || screen == 15;
+	return screen == 2 || screen == 4 || screen == 5 || screen == 6 || screen == 15 ||
+		screen == 11 || screen == 26; // diplomacy, and the letter it writes
 }
 // Called with the frame composed (g_frame8 / g_frame2x, sw columns from game x sx - g_off).
 static void window_shift(int screen, int sx, int sw)
@@ -4364,8 +4365,17 @@ static void __cdecl h_edit_text(char *text, int max, int a, int b)
 	for (int i = 0; g_letters && i < 4; i++) {
 		if ((DWORD)text != field[i]) continue;
 		if (text[0] && strcmp(text, g_letterLast[i])) break; // the player's own text
-		const char *pick;
-		do pick = sets[i][(GetTickCount() / 7 + rand()) % counts[i]]; while (counts[i] > 1 && !strcmp(pick, g_letterLast[i]));
+		// dealt like a deck: every letter once, in a new shuffled order each round, and a round
+		// never starts with the letter just used
+		static int deck[4][16], left[4];
+		if (!left[i]) {
+			int n = counts[i];
+			for (int k = 0; k < n; k++) deck[i][k] = k;
+			for (int k = n - 1; k > 0; k--) { int j = rand() % (k + 1), t = deck[i][k]; deck[i][k] = deck[i][j]; deck[i][j] = t; }
+			if (n > 1 && !strcmp(sets[i][deck[i][n - 1]], g_letterLast[i])) { int t = deck[i][n - 1]; deck[i][n - 1] = deck[i][0]; deck[i][0] = t; }
+			left[i] = n;
+		}
+		const char *pick = sets[i][deck[i][--left[i]]];
 		lstrcpynA(text, pick, min(max, 200));
 		lstrcpynA(g_letterLast[i], text, sizeof g_letterLast[i]);
 		break;
