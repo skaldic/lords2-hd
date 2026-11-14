@@ -118,6 +118,10 @@ static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
+static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
+static volatile LONG g_wasd;
+static int wasd_bit(WPARAM vk);
+static BOOL wasd_screen(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr)
 static volatile LONG g_menuOpen; // the settings panel (F8) is up
 static BOOL menu_key(int vk);
@@ -154,6 +158,7 @@ static void read_settings(void)
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
 	g_tutorialOnce = GetPrivateProfileIntA("Display", "TutorialOnce", 1, g_iniPath) != 0;
+	g_wasdOn = GetPrivateProfileIntA("Display", "WASD", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
 	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
 	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
@@ -2042,7 +2047,7 @@ static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loade
 static RECT g_menuRow[16], g_menuBox;                 // in window coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WIDE, M_ZOOM, M_COUNT };
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_WIDE, M_ZOOM, M_COUNT };
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -2054,12 +2059,13 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_WAVES: snprintf(v, n, "%s", g_shoreWaves ? "On" : "Off"); break;
 	case M_LIMIT: snprintf(v, n, "%s", g_frameLimit ? "120 a second" : "Off (as the original)"); break;
 	case M_TUTORIAL: snprintf(v, n, "%s", g_tutorialOnce ? "Once" : "Every time"); break;
+	case M_WASD: snprintf(v, n, "%s", g_wasdOn ? "On" : "Off"); break;
 	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
 	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
-	"Shore waves", "Frame limit", "Tutorial scrolls", "Widescreen *", "Battle zoom-out *" };
+	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", "Widescreen *", "Battle zoom-out *" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -2075,6 +2081,7 @@ static void menu_change(int i)
 	case M_WAVES: g_shoreWaves = !g_shoreWaves; ini_set("Display", "ShoreWaves", g_shoreWaves); break;
 	case M_LIMIT: g_frameLimit = g_frameLimit ? 0 : 120; ini_set("Display", "FrameLimit", g_frameLimit); break;
 	case M_TUTORIAL: g_tutorialOnce = !g_tutorialOnce; ini_set("Display", "TutorialOnce", g_tutorialOnce); break;
+	case M_WASD: g_wasdOn = !g_wasdOn; ini_set("Display", "WASD", g_wasdOn); break;
 	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
 	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
 	}
@@ -3332,6 +3339,10 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+	if (n == 15) { // testing: WASD keys held (wParam = bits as g_wasd)
+		InterlockedExchange(&g_wasd, (LONG)wp);
+		return 0;
+	}
 	if (n == 14) { // testing: save the next picture as on screen (lords2hd-shotview.bmp)
 		InterlockedExchange(&g_shotViewWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
@@ -3423,6 +3434,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	// The settings panel: F8 opens it; while open, keys and the mouse are its own.
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && menu_key((int)wp)) return 0;
+	// WASD: held keys scroll (wasd_edges); their letters are not typed on the map or battlefield
+	if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && wasd_bit(wp)) {
+		if (msg == WM_KEYDOWN) InterlockedOr(&g_wasd, wasd_bit(wp)); else InterlockedAnd(&g_wasd, ~wasd_bit(wp));
+		if (wasd_screen()) return 0;
+	}
+	if (msg == WM_CHAR && wasd_screen() && wasd_bit((WPARAM)toupper((int)wp))) return 0;
+	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) InterlockedExchange(&g_wasd, 0);
 	if (g_menuOpen) {
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
@@ -3463,6 +3481,21 @@ static HCURSOR (WINAPI *o_SetCursor)(HCURSOR);
 // the edge of the picture, and everything in between stays clear of them.
 #define SCROLL_EDGE_W (*(int *)0x004e65a0)
 
+// WASD scrolls the map and the battlefield ([Display] WASD=1): while a key is held the game is told
+// the cursor sits at that screen edge, so it scrolls exactly as with the mouse (its own speed,
+// diagonals, battles). Only on the county map (screen 0) and the battlefield (41), where nothing
+// is typed; the keys are tracked from the window's own key messages (and the test driver).
+static volatile LONG g_wasd;      // 1 left, 2 right, 4 up, 8 down
+static BOOL g_wasdOn = TRUE;
+static BOOL wasd_screen(void) { BYTE s = *(BYTE *)0x004eac50; return g_wasdOn && !g_menuOpen && *(int *)0x0052af94 == 3 && (s == 0 || s == 41); }
+static int wasd_bit(WPARAM vk) { return vk == 'A' ? 1 : vk == 'D' ? 2 : vk == 'W' ? 4 : vk == 'S' ? 8 : 0; }
+static void wasd_edges(POINT *p, int right, int bottom)
+{
+	int k = g_wasd;
+	if (!k || !wasd_screen()) return;
+	if (k & 1) p->x = 0; else if (k & 2) p->x = right;
+	if (k & 4) p->y = 0; else if (k & 8) p->y = bottom;
+}
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
@@ -3473,6 +3506,7 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		if (g_fakeEdge & 2) p->x = right;
 		if (g_fakeEdge & 4) p->y = 0;
 		if (g_fakeEdge & 8) p->y = bottom;
+		wasd_edges(p, right, bottom);
 		return TRUE;
 	}
 	if (!o_GetCursorPos(p)) return FALSE;
@@ -3496,6 +3530,7 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		}
 		p->x = x;
 		p->y = y;
+		if (g_off) wasd_edges(p, max(2, SCROLL_EDGE_W - 1), max(2, *(int *)0x004ea838 - 1));
 	}
 	return TRUE;
 }
