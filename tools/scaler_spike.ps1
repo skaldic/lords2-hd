@@ -79,6 +79,7 @@ $panels += ,@('FSR-style (Lanczos + RCAS)', [Sc]::Save($fsr, $Size * $Scale, $Si
 if ($InHD) {
     $bh = [Drawing.Bitmap]::FromFile((Resolve-Path $InHD)); $hw = 0; $hh = 0; $hd = [Sc]::Load($bh, [ref]$hw, [ref]$hh); $bh.Dispose()
     $panels += ,@('AI art (the patch now)', [Sc]::Save([Sc]::Resize($hd, $hw, $hh, $X * 2, $Y * 2, $Size * 2, $Size * 2, $Scale / 2, 2), $Size * $Scale, $Size * $Scale))
+    $panels += ,@('AI art + Catmull-Rom', [Sc]::Save([Sc]::Resize($hd, $hw, $hh, $X * 2, $Y * 2, $Size * 2, $Size * 2, $Scale / 2, 0), $Size * $Scale, $Size * $Scale))
 }
 $ps = $Size * $Scale; $cols = 3; $rows = [Math]::Ceiling($panels.Count / $cols)
 $o = New-Object Drawing.Bitmap ($cols * ($ps + 8)), ($rows * ($ps + 40))
