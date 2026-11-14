@@ -9,6 +9,8 @@ Current version: **1.2.0**.
 **New in 1.2.0: press F8 in the game** for the settings panel. Switch the AI art on or off, choose
 sharp (Catmull-Rom) or soft upscaling, and more: most changes show at once and are saved for next time.
 
+![The F8 settings panel](https://github.com/skaldic/lords2-hd/releases/latest/download/f8.jpg)
+
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
 | | |
