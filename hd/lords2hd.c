@@ -111,13 +111,17 @@ static BOOL entry_dark(const DWORD *px, int w, int h, int w1);
 static void __cdecl h_msg_a(void);
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
-static volatile LONG g_shotWanted;
+static volatile LONG g_shotWanted, g_shot1xWanted;
 #define WM_REMOTE (WM_APP + 0x100)
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
+static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr)
+static volatile LONG g_menuOpen; // the settings panel (F8) is up
+static BOOL menu_key(int vk);
+static void menu_click(int x, int y);
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -150,6 +154,9 @@ static void read_settings(void)
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
 	g_tutorialOnce = GetPrivateProfileIntA("Display", "TutorialOnce", 1, g_iniPath) != 0;
+	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
+	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
+	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
 	logf_("frame limit: %d game frames a second%s", g_frameLimit, g_frameLimit ? "" : " (off: as fast as the CPU allows)");
@@ -331,10 +338,165 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 	return ((rb >> 4) & 0xff00ff) | ((g >> 4) & 0x00ff00);
 }
 
+// ---- Catmull-Rom resampling ([Display] Upscale=catmullrom, the default) --------------------------
+// A sharper alternative to bilinear doubling and GDI's stretch, for the 2x step (1x frame -> 2x frame
+// the HD art is stamped into) and the final step (2x frame -> the window). Separable: a horizontal
+// pass into 16-bit rows (value * 64), then a vertical pass in SSE2 (pmulhw with Q10 weights gives the
+// value back). The output is cut into bands of 32 rows; worker threads and the caller take bands in
+// turn, each with its own strip of horizontal rows, so memory stays small at 5K.
+#include <emmintrin.h>
+#define CR_MAXTAPS 12
+typedef struct { int n, taps; int *idx; short *w; } cr_axis; // per output index: taps source indexes and weights
+static int g_upscaleCR = 1;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1)
+static double cr_k(double t) { t = fabs(t); return t < 1 ? 1.5 * t * t * t - 2.5 * t * t + 1 : t < 2 ? -0.5 * t * t * t + 2.5 * t * t - 4 * t + 2 : 0; }
+// weights for src length sn -> dst length dn, fixed point "one" (256 or 1024)
+static BOOL cr_axis_make(cr_axis *a, int sn, int dn, int one)
+{
+	double s = (double)dn / sn, k = s < 1 ? s : 1; // shrinking: the kernel widens
+	int taps = s < 1 ? (int)ceil(4 / s) : 4;
+	if (taps > CR_MAXTAPS) taps = CR_MAXTAPS;
+	taps = (taps + 1) & ~1; // even, for the paired SSE2 horizontal pass (an extra tap weighs 0)
+	free(a->idx); free(a->w);
+	a->idx = malloc(sizeof(int) * dn * taps);
+	a->w = malloc(sizeof(short) * dn * taps);
+	if (!a->idx || !a->w) return FALSE;
+	a->n = dn; a->taps = taps;
+	for (int o = 0; o < dn; o++) {
+		double c = (o + 0.5) / s - 0.5;
+		int first = (int)floor(c) - taps / 2 + 1;
+		double wt[CR_MAXTAPS], sum = 0;
+		for (int t = 0; t < taps; t++) { wt[t] = cr_k((c - (first + t)) * k); sum += wt[t]; }
+		int isum = 0, big = 0;
+		for (int t = 0; t < taps; t++) {
+			int i = first + t;
+			a->idx[o * taps + t] = i < 0 ? 0 : i >= sn ? sn - 1 : i;
+			int w = (int)floor(wt[t] / sum * one + 0.5);
+			a->w[o * taps + t] = (short)w;
+			isum += w;
+			if (abs(w) > abs(a->w[o * taps + big])) big = t;
+		}
+		a->w[o * taps + big] += (short)(one - isum); // exactly "one" in total
+	}
+	return TRUE;
+}
+static struct {
+	const DWORD *src; int sw, sh, sstride; DWORD *dst; int dw, dh, dstride;
+	cr_axis hx, vy; int hsw, hdw, vsh, vdh;    // the tables, kept while the sizes stay
+	volatile LONG next; int bands;
+	HANDLE go[16], idle[16]; int threads;
+	short *strip[17]; int stripRows;           // per worker (and the caller) a strip of horizontal rows
+} g_cr;
+#define CR_BAND 32
+// one source row -> 16-bit row of dw pixels (value * 64). Taps in pairs: the two pixels' channels
+// interleaved as 16-bit and pmaddwd'ed with the two weights gives four 32-bit sums at once.
+__attribute__((target("sse2")))
+static void cr_hrow(const DWORD *s, short *o)
+{
+	int taps = g_cr.hx.taps;
+	const __m128i zero = _mm_setzero_si128();
+	for (int x = 0; x < g_cr.dw; x++) {
+		const int *ix = g_cr.hx.idx + x * taps; const short *w = g_cr.hx.w + x * taps;
+		__m128i acc = zero;
+		for (int t = 0; t < taps; t += 2) {
+			__m128i a = _mm_unpacklo_epi8(_mm_cvtsi32_si128((int)s[ix[t]]), zero);     // a0 a1 a2 a3 (16-bit)
+			__m128i b = _mm_unpacklo_epi8(_mm_cvtsi32_si128((int)s[ix[t + 1]]), zero); // b0 b1 b2 b3
+			__m128i ab = _mm_unpacklo_epi16(a, b);                                      // a0 b0 a1 b1 a2 b2 a3 b3
+			__m128i wt = _mm_set1_epi32((int)(unsigned short)w[t] | ((int)w[t + 1] << 16));
+			acc = _mm_add_epi32(acc, _mm_madd_epi16(ab, wt));
+		}
+		acc = _mm_srai_epi32(acc, 2);
+		_mm_storel_epi64((__m128i *)(o + 4 * x), _mm_packs_epi32(acc, acc));
+	}
+}
+__attribute__((target("sse2")))
+static void cr_band(int band, short *strip)
+{
+	int y0 = band * CR_BAND, y1 = min(g_cr.dh, y0 + CR_BAND), taps = g_cr.vy.taps;
+	int r0 = g_cr.vy.idx[y0 * taps], r1 = g_cr.vy.idx[(y1 - 1) * taps + taps - 1]; // source rows this band needs
+	int dw = g_cr.dw;
+	for (int r = r0; r <= r1; r++) cr_hrow(g_cr.src + (size_t)r * g_cr.sstride, strip + (size_t)(r - r0) * dw * 4);
+	const __m128i bias = _mm_set1_epi16(2);
+	for (int y = y0; y < y1; y++) {
+		const int *iy = g_cr.vy.idx + y * taps; const short *w = g_cr.vy.w + y * taps;
+		DWORD *out = g_cr.dst + (size_t)y * g_cr.dstride;
+		int x = 0;
+		for (; x + 4 <= dw; x += 4) {
+			__m128i a0 = bias, a1 = bias;
+			for (int t = 0; t < taps; t++) {
+				const short *row = strip + (size_t)(iy[t] - r0) * dw * 4 + 4 * x;
+				__m128i wt = _mm_set1_epi16(w[t]);
+				a0 = _mm_add_epi16(a0, _mm_mulhi_epi16(_mm_loadu_si128((const __m128i *)row), wt));
+				a1 = _mm_add_epi16(a1, _mm_mulhi_epi16(_mm_loadu_si128((const __m128i *)(row + 8)), wt));
+			}
+			_mm_storeu_si128((__m128i *)(out + x), _mm_packus_epi16(a0, a1));
+		}
+		for (; x < dw; x++) {
+			int c[3] = { 2, 2, 2 };
+			for (int t = 0; t < taps; t++) { const short *p = strip + (size_t)(iy[t] - r0) * dw * 4 + 4 * x; for (int k = 0; k < 3; k++) c[k] += (p[k] * w[t]) >> 16; }
+			for (int k = 0; k < 3; k++) c[k] = c[k] < 0 ? 0 : c[k] > 255 ? 255 : c[k];
+			out[x] = c[0] | (c[1] << 8) | (c[2] << 16);
+		}
+	}
+}
+static void cr_work(int me)
+{
+	for (;;) {
+		LONG b = InterlockedIncrement(&g_cr.next) - 1;
+		if (b >= g_cr.bands) return;
+		cr_band(b, g_cr.strip[me]);
+	}
+}
+static DWORD WINAPI cr_thread(void *arg)
+{
+	int me = (int)(INT_PTR)arg;
+	for (;;) {
+		WaitForSingleObject(g_cr.go[me], INFINITE);
+		cr_work(me);
+		SetEvent(g_cr.idle[me]);
+	}
+	return 0;
+}
+// src (sw x sh, stride sstride pixels) -> dst (dw x dh, stride dstride), BGRX
+static BOOL resize_cr(const DWORD *src, int sw, int sh, int sstride, DWORD *dst, int dw, int dh, int dstride)
+{
+	if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return FALSE;
+	if (!g_cr.threads) {
+		SYSTEM_INFO si; GetSystemInfo(&si);
+		int n = (int)si.dwNumberOfProcessors - 1;
+		n = n < 0 ? 0 : n > 15 ? 15 : n;
+		for (int i = 0; i < n; i++) {
+			g_cr.go[i] = CreateEventA(NULL, FALSE, FALSE, NULL);
+			g_cr.idle[i] = CreateEventA(NULL, FALSE, FALSE, NULL);
+			HANDLE t = CreateThread(NULL, 0, cr_thread, (void *)(INT_PTR)i, 0, NULL);
+			if (t) CloseHandle(t);
+		}
+		g_cr.threads = n + 1; // the caller works too, with the last strip
+		logf_("Catmull-Rom scaling on %d threads", g_cr.threads);
+	}
+	if (g_cr.hsw != sw || g_cr.hdw != dw) { if (!cr_axis_make(&g_cr.hx, sw, dw, 256)) return FALSE; g_cr.hsw = sw; g_cr.hdw = dw; }
+	if (g_cr.vsh != sh || g_cr.vdh != dh) { if (!cr_axis_make(&g_cr.vy, sh, dh, 1024)) return FALSE; g_cr.vsh = sh; g_cr.vdh = dh; }
+	int rows = (int)ceil(CR_BAND * (double)sh / dh) + g_cr.vy.taps + 2;
+	if (rows * dw > g_cr.stripRows) {
+		for (int i = 0; i < g_cr.threads; i++) { free(g_cr.strip[i]); g_cr.strip[i] = malloc((size_t)rows * dw * 8); if (!g_cr.strip[i]) { g_cr.stripRows = 0; return FALSE; } }
+		g_cr.stripRows = rows * dw;
+	}
+	g_cr.src = src; g_cr.sw = sw; g_cr.sh = sh; g_cr.sstride = sstride;
+	g_cr.dst = dst; g_cr.dw = dw; g_cr.dh = dh; g_cr.dstride = dstride;
+	g_cr.bands = (dh + CR_BAND - 1) / CR_BAND;
+	g_cr.next = 0;
+	int helpers = g_cr.threads - 1;
+	for (int i = 0; i < helpers; i++) SetEvent(g_cr.go[i]);
+	cr_work(g_cr.threads - 1);
+	if (helpers) WaitForMultipleObjects(helpers, g_cr.idle, TRUE, INFINITE);
+	return TRUE;
+}
+
 // Doubles the frame with bilinear interpolation: each output pixel sits a quarter of a source
-// pixel from its nearest source pixel, so it is 9:3:3:1 of the four closest.
+// pixel from its nearest source pixel, so it is 9:3:3:1 of the four closest. With Catmull-Rom on,
+// the same doubling with its weights (sharper, no blocks).
 static void double_frame(int w)
 {
+	if (g_upscaleCR && resize_cr(g_frame32, w, GAME_H, w, g_frame2x, 2 * w, 2 * GAME_H, 2 * w)) return;
 	for (int y = 0; y < GAME_H; y++) {
 		const DWORD *row = g_frame32 + y * w;
 		const DWORD *up = g_frame32 + (y > 0 ? y - 1 : y) * w;
@@ -1372,13 +1534,36 @@ static BOOL wav_format(const char *path, WAVEFORMATEX *wf)
 static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 {
 	DWORD a = (DWORD)name;
-	if (!name || a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) return o_mmioOpenA(name, info, flags);
-	int n = (a - STREAM_NAMES) / 16;
+	if (!name) return o_mmioOpenA(name, info, flags);
 	char alt[MAX_PATH];
 	const char *base = strrchr(name, '\\');
 	base = base ? base + 1 : name;
+	// Any other sound (dialogue, unit voices, effects: FUN_004b984f loads them whole, in their own
+	// format) from lords2hd\sound when a file of that name is there - e.g. Lords2Resounded's
+	// restored speech, without overwriting the game's files.
+	if (a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) {
+		const char *dot = strrchr(base, '.');
+		if (dot && !lstrcmpiA(dot, ".wav") && g_logLoads) logf_("sound opened: %s", base);
+		if (dot && !lstrcmpiA(dot, ".wav")) {
+			snprintf(alt, sizeof alt, "%s\\lords2hd\\sound\\%s", g_gameDir, base);
+			if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
+				HMMIO h = o_mmioOpenA(alt, info, flags);
+				if (h) {
+					static char last[32];
+					if (lstrcmpiA(last, base)) { logf_("sound: lords2hd\\sound\\%s", base); lstrcpynA(last, base, sizeof last); }
+					return h;
+				}
+			}
+		}
+		return o_mmioOpenA(name, info, flags);
+	}
+	int n = (a - STREAM_NAMES) / 16;
 	snprintf(alt, sizeof alt, "%s\\lords2hd\\music\\%s", g_gameDir, base);
 	BOOL replaced = GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES;
+	if (!replaced) { // music from the sound folder too: one folder for a Lords2Resounded output
+		snprintf(alt, sizeof alt, "%s\\lords2hd\\sound\\%s", g_gameDir, base);
+		replaced = GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES;
+	}
 	const char *path = replaced ? alt : name;
 	WAVEFORMATEX want, have = {0};
 	if (wav_format(path, &want)) {
@@ -1849,6 +2034,181 @@ static void text_overlay(int sx, int sw)
 static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
 static BYTE g_shown8[MAX_W * GAME_H];
 
+// ---- The settings panel (F8) ----------------------------------------------------------------------
+// Drawn by the patch over the picture; keys and clicks go to it while it is open, not to the game.
+// Changes apply at once where they can and are written to lords2hd.ini.
+static int g_menuSel;
+static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
+static RECT g_menuRow[16], g_menuBox;                 // in window coordinates, as last drawn
+static int g_menuRows;
+static BOOL g_wantWideSet, g_battleZoomSet;
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WIDE, M_ZOOM, M_COUNT };
+static void menu_value(int i, char *v, int n, BOOL *restart)
+{
+	*restart = FALSE;
+	switch (i) {
+	case M_UPSCALE: snprintf(v, n, "%s", g_upscaleCR ? "Catmull-Rom (sharp)" : "Bilinear (soft)"); break;
+	case M_SCREENS: snprintf(v, n, "%s", g_showScreens ? "On" : "Off"); *restart = g_showScreens && !g_hdScreens; break;
+	case M_TILES: snprintf(v, n, "%s", g_showTiles ? "On" : "Off"); *restart = g_showTiles && !g_hdTiles; break;
+	case M_TEXT: snprintf(v, n, "%s", g_hdText ? "On" : "Off"); break;
+	case M_WAVES: snprintf(v, n, "%s", g_shoreWaves ? "On" : "Off"); break;
+	case M_LIMIT: snprintf(v, n, "%s", g_frameLimit ? "120 a second" : "Off (as the original)"); break;
+	case M_TUTORIAL: snprintf(v, n, "%s", g_tutorialOnce ? "Once" : "Every time"); break;
+	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
+	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
+	}
+}
+static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
+	"Shore waves", "Frame limit", "Tutorial scrolls", "Widescreen *", "Battle zoom-out *" };
+static void ini_set(const char *sec, const char *key, int v)
+{
+	char s[16]; snprintf(s, sizeof s, "%d", v);
+	WritePrivateProfileStringA(sec, key, s, g_iniPath);
+}
+static void menu_change(int i)
+{
+	switch (i) {
+	case M_UPSCALE: g_upscaleCR = !g_upscaleCR; WritePrivateProfileStringA("Display", "Upscale", g_upscaleCR ? "catmullrom" : "bilinear", g_iniPath); break;
+	case M_SCREENS: g_showScreens = !g_showScreens; ini_set("Display", "HDScreens", g_showScreens); break;
+	case M_TILES: g_showTiles = !g_showTiles; ini_set("Display", "HDTiles", g_showTiles); break;
+	case M_TEXT: g_hdText = !g_hdText; ini_set("Display", "SharpText", g_hdText); break;
+	case M_WAVES: g_shoreWaves = !g_shoreWaves; ini_set("Display", "ShoreWaves", g_shoreWaves); break;
+	case M_LIMIT: g_frameLimit = g_frameLimit ? 0 : 120; ini_set("Display", "FrameLimit", g_frameLimit); break;
+	case M_TUTORIAL: g_tutorialOnce = !g_tutorialOnce; ini_set("Display", "TutorialOnce", g_tutorialOnce); break;
+	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
+	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
+	}
+	logf_("settings panel: %s changed", kMenuLabel[i]);
+}
+static void menu_redraw(void) { InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
+static void menu_toggle(void)
+{
+	if (!g_menuOpen) {
+		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+		g_battleZoomSet = GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
+	}
+	InterlockedExchange(&g_menuOpen, !g_menuOpen);
+	menu_redraw();
+}
+// A key while the panel is open (or F8 to open it). TRUE: it was the panel's.
+static BOOL menu_key(int vk)
+{
+	if (vk == VK_F8) { menu_toggle(); return TRUE; }
+	if (!g_menuOpen) return FALSE;
+	switch (vk) {
+	case VK_ESCAPE: menu_toggle(); break;
+	case VK_UP: g_menuSel = (g_menuSel + M_COUNT - 1) % M_COUNT; break;
+	case VK_DOWN: g_menuSel = (g_menuSel + 1) % M_COUNT; break;
+	case VK_RETURN: case VK_SPACE: case VK_LEFT: case VK_RIGHT: menu_change(g_menuSel); break;
+	}
+	menu_redraw();
+	return TRUE;
+}
+// A click in window coordinates while the panel is open.
+static void menu_click(int x, int y)
+{
+	POINT p = { x, y };
+	for (int i = 0; i < g_menuRows; i++) if (PtInRect(&g_menuRow[i], p)) { g_menuSel = i; menu_change(i); menu_redraw(); return; }
+	if (!PtInRect(&g_menuBox, p)) menu_toggle(); // outside closes it
+}
+// The panel, onto a DC holding the picture (vw x vh), at window offset ox, oy.
+static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
+{
+	int fh = max(16, vh / 34), pad = fh, rowH = fh * 3 / 2, labelW = fh * 10, valueW = fh * 12;
+	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (M_COUNT + 4);
+	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
+	HBRUSH paper = CreateSolidBrush(RGB(222, 196, 140)), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(RGB(244, 226, 180));
+	RECT r = { bx - fh / 4, by - fh / 4, bx + bw + fh / 4, by + bh + fh / 4 };
+	FillRect(dc, &r, edge);
+	r = (RECT){ bx, by, bx + bw, by + bh };
+	FillRect(dc, &r, paper);
+	SetRect(&g_menuBox, ox + r.left, oy + r.top, ox + r.right, oy + r.bottom);
+	HFONT title = CreateFontA(fh * 3 / 2, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
+	HFONT font = CreateFontA(fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
+	HFONT small = CreateFontA(fh * 4 / 5, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
+	HGDIOBJ old = SelectObject(dc, title);
+	SetBkMode(dc, TRANSPARENT);
+	SetTextColor(dc, RGB(120, 20, 10));
+	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
+	DrawTextA(dc, "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	SelectObject(dc, font);
+	g_menuRows = M_COUNT;
+	for (int i = 0; i < M_COUNT; i++) {
+		int y = by + pad + rowH * (i + 1) + rowH / 2;
+		RECT row = { bx + pad / 2, y, bx + bw - pad / 2, y + rowH };
+		if (i == g_menuSel) FillRect(dc, &row, hi);
+		SetRect(&g_menuRow[i], ox + row.left, oy + row.top, ox + row.right, oy + row.bottom);
+		char v[64]; BOOL restart;
+		menu_value(i, v, sizeof v, &restart);
+		SetTextColor(dc, RGB(40, 24, 10));
+		RECT a = { bx + pad, y, bx + pad + labelW, y + rowH };
+		DrawTextA(dc, kMenuLabel[i], -1, &a, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		if (restart) strncat(v, "  (restart)", sizeof v - strlen(v) - 1);
+		SetTextColor(dc, restart ? RGB(150, 60, 20) : RGB(20, 60, 20));
+		RECT b = { bx + pad + labelW, y, bx + bw - pad, y + rowH };
+		DrawTextA(dc, v, -1, &b, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	}
+	SelectObject(dc, small);
+	SetTextColor(dc, RGB(80, 56, 30));
+	RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
+	DrawTextA(dc, "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
+	DrawTextA(dc, "Click or Enter to change   -   F8 or Esc to close   -   saved in lords2hd.ini", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	SelectObject(dc, old);
+	DeleteObject(title); DeleteObject(font); DeleteObject(small);
+	DeleteObject(paper); DeleteObject(edge); DeleteObject(hi);
+}
+
+// The picture onto the window: src (sw x sh, BGRX) stretched to the view v. Catmull-Rom into a
+// window-sized buffer, or GDI with gdiMode (HALFTONE / COLORONCOLOR) as before; the settings panel
+// on top when open. The buffer is a DIB section, so GDI can draw the panel straight into it.
+static HDC g_outDC;
+static HBITMAP g_outBmp;
+static DWORD *g_outBits;
+static int g_outW, g_outH;
+static volatile LONG g_shotViewWanted;
+static void put_picture(HDC dc, const RECT *v, const DWORD *src, int sw, int sh, int gdiMode)
+{
+	int vw = v->right - v->left, vh = v->bottom - v->top;
+	BITMAPINFOHEADER bi = { sizeof bi, sw, -sh, 1, 32, BI_RGB };
+	BOOL cr = g_upscaleCR, menu = g_menuOpen, shot = g_shotViewWanted;
+	if (!cr && !menu && !shot) {
+		SetStretchBltMode(dc, gdiMode);
+		if (gdiMode == HALFTONE) SetBrushOrgEx(dc, 0, 0, NULL);
+		StretchDIBits(dc, v->left, v->top, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+		return;
+	}
+	if (!g_outDC || g_outW != vw || g_outH != vh) {
+		if (g_outDC) { DeleteDC(g_outDC); DeleteObject(g_outBmp); g_outDC = NULL; }
+		BITMAPINFOHEADER ob = { sizeof ob, vw, -vh, 1, 32, BI_RGB };
+		g_outBmp = CreateDIBSection(dc, (BITMAPINFO *)&ob, DIB_RGB_COLORS, (void **)&g_outBits, NULL, 0);
+		if (!g_outBmp) { StretchDIBits(dc, v->left, v->top, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY); return; }
+		g_outDC = CreateCompatibleDC(dc);
+		SelectObject(g_outDC, g_outBmp);
+		g_outW = vw; g_outH = vh;
+	}
+	GdiFlush();
+	if (!cr || !resize_cr(src, sw, sh, sw, g_outBits, vw, vh, vw)) {
+		SetStretchBltMode(g_outDC, gdiMode);
+		if (gdiMode == HALFTONE) SetBrushOrgEx(g_outDC, 0, 0, NULL);
+		StretchDIBits(g_outDC, 0, 0, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+	}
+	if (menu) menu_draw(g_outDC, vw, vh, v->left, v->top);
+	GdiFlush();
+	if (shot && InterlockedExchange(&g_shotViewWanted, 0)) { // testing: the picture as on screen
+		char path[MAX_PATH];
+		snprintf(path, sizeof path, "%s\\lords2hd-shotview.bmp", g_gameDir);
+		FILE *f = fopen(path, "wb");
+		if (f) {
+			BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + vw * vh * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+			BITMAPINFOHEADER ih = { sizeof ih, vw, -vh, 1, 32, BI_RGB };
+			fwrite(&fh, sizeof fh, 1, f); fwrite(&ih, sizeof ih, 1, f); fwrite(g_outBits, 4, (size_t)vw * vh, f);
+			fclose(f);
+		}
+	}
+	BitBlt(dc, v->left, v->top, vw, vh, g_outDC, 0, 0, SRCCOPY);
+}
+
 // The zoomed-out battle's picture, twice the size of the normal one: the battlefield 1:1 from the
 // frame's tall area, the side panel and the top bar doubled. Above 2x on screen it is smoothed
 // once more; below (1080p is 1.125x) GDI's smooth mode does the rest.
@@ -1879,7 +2239,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
 	const DWORD *btL = g_btLayerS ? g_btLayerS : g_btLayer;
 	const BYTE *btS = g_btLayerS ? g_btShadowS : g_btShadow, *btV = g_btLayerS ? g_btValidS : g_btValid;
-	BOOL btOn = btL && btS && btV; // all three, or the HD battle layer is left out of this picture
+	BOOL btOn = btL && btS && btV && g_showTiles; // all three, or the HD battle layer is left out of this picture
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
 	const BYTE *frame = copy + g_off; // the game's x = 0
 	for (int sy = 48; sy < lh; sy++) {
@@ -1984,10 +2344,12 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	bi.biPlanes = 1;
 	bi.biBitCount = 32;
 	bi.biCompression = BI_RGB;
-	int vw = v.right - v.left, vh = v.bottom - v.top;
+	int vh = v.bottom - v.top;
 	const DWORD *src = pic;
 	int sw = lw, sh = lh;
 	if (vh >= lh * 2) {
+		// (the doubling stays bilinear even with Catmull-Rom: at 3392x1920 two Catmull-Rom passes
+		// took 25-44 ms a picture; the final stretch is Catmull-Rom)
 		for (int y = 0; y < lh; y++) {
 			const DWORD *row = pic + y * lw, *up = pic + (y > 0 ? y - 1 : y) * lw, *dn = pic + (y < lh - 1 ? y + 1 : y) * lw;
 			DWORD *o0 = pic2 + 2 * y * 2 * lw, *o1 = o0 + 2 * lw;
@@ -2017,17 +2379,12 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		src = pic2;
 		sw = lw * 2;
 		sh = lh * 2;
-		SetStretchBltMode(dc, COLORONCOLOR);
-	}
-	else {
-		SetStretchBltMode(dc, HALFTONE);
-		SetBrushOrgEx(dc, 0, 0, NULL);
 	}
 	if (entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
-	StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+	put_picture(dc, &v, src, sw, sh, src == pic2 ? COLORONCOLOR : HALFTONE);
 	ReleaseDC(g_hwnd, dc);
 	return TRUE;
 }
@@ -2212,7 +2569,7 @@ static BOOL present(void)
 	g_showW = g_wideScreen ? GAME_W + g_extra : GAME_W;
 	int sx = g_showX, sw = g_showW;
 	// A wider room takes the frame, built from the game's 640 columns.
-	BOOL room = g_room.on && g_hdPic.on && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
+	BOOL room = g_room.on && g_hdPic.on && g_showScreens && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
 	if (room && !g_hdPic.seen) {
 		// The painting's first frame on screen goes wide at once (waiting for hd_overlay to have
 		// seen it showed one narrow frame: a flicker on every painted screen).
@@ -2291,31 +2648,37 @@ static BOOL present(void)
 			memcpy(g_frame8, keep, sw * GAME_H);
 		}
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
+		if (InterlockedExchange(&g_shot1xWanted, 0)) { // testing: the game's own frame, 1x, no HD art
+			char path[MAX_PATH];
+			snprintf(path, sizeof path, "%s\\lords2hd-shot1x.bmp", g_gameDir);
+			FILE *f = fopen(path, "wb");
+			if (f) {
+				BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + sw * GAME_H * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+				BITMAPINFOHEADER ih = { sizeof ih, sw, -GAME_H, 1, 32, BI_RGB };
+				fwrite(&fh, sizeof fh, 1, f); fwrite(&ih, sizeof ih, 1, f);
+				fwrite(g_frame32, 4, (size_t)sw * GAME_H, f);
+				fclose(f);
+			}
+		}
 		double_frame(sw);
-		if (sw == GAME_W) hd_overlay(pal);
-		screen_sprites(pal, sx, sw);
-		tile_overlay(pal, sx, sw);
+		if (sw == GAME_W && g_showScreens) hd_overlay(pal);
+		if (g_showTiles) screen_sprites(pal, sx, sw);
+		if (g_showTiles) tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
-		room = room && g_room.on && g_hdPic.on;
+		room = room && g_room.on && g_hdPic.on && g_showScreens;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
 		// Below 4x, as at 1080p (2.25x), a plain stretch of the 2x frame drops rows and columns
 		// unevenly: use GDI's smooth mode, affordable at those sizes. Larger stays fast.
-		if (vh < GAME_H * 4 && vh != GAME_H * 2) {
-			SetStretchBltMode(dc, HALFTONE);
-			SetBrushOrgEx(dc, 0, 0, NULL);
-		}
+		// (With Catmull-Rom on, put_picture does its own resampling at every size.)
+		int gdiMode = vh < GAME_H * 4 && vh != GAME_H * 2 ? HALFTONE : COLORONCOLOR;
 		int dw = room ? roomW * 2 : sw * 2;
-		bi.h.biWidth = dw;
-		bi.h.biHeight = -GAME_H * 2;
-		bi.h.biBitCount = 32;
 		if (entry_dark(room ? g_room.out : g_frame2x, dw, GAME_H * 2, dw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; } // retried until drawn or shown
 		shot_save(room ? g_room.out : g_frame2x, dw, GAME_H * 2);
-		StretchDIBits(dc, v.left, v.top, vw, vh, 0, 0, dw, GAME_H * 2, room ? g_room.out : g_frame2x,
-			(BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+		put_picture(dc, &v, room ? g_room.out : g_frame2x, dw, GAME_H * 2, gdiMode);
 	}
 	else {
 		for (int i = 0; i < 256; i++) {
@@ -2969,6 +3332,18 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+	if (n == 14) { // testing: save the next picture as on screen (lords2hd-shotview.bmp)
+		InterlockedExchange(&g_shotViewWanted, 1);
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+		return 0;
+	}
+	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
+		InterlockedExchange(&g_shot1xWanted, 1);
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+		return 0;
+	}
 	if (n == 12) { // testing: the captured-county scroll and its video (FUN_0047309e, type 13)
 		*(int *)0x005440a4 = 0xd;
 		*(int *)0x0057c954 = 2000;
@@ -3006,6 +3381,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 	}
 	if (n == 4) {
+		if (menu_key((int)wp)) return 0;
 		CallWindowProcA(g_gameProc, hwnd, WM_KEYDOWN, wp, 1);
 		return CallWindowProcA(g_gameProc, hwnd, WM_KEYUP, wp, 0xC0000001);
 	}
@@ -3044,6 +3420,15 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (msg == WM_ACTIVATEAPP) wp = TRUE;            // the game would pause, thinking it is in the background
 		if (msg == WM_ACTIVATE) wp = WA_ACTIVE;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) return 0; // only the driver's mouse
+	}
+	// The settings panel: F8 opens it; while open, keys and the mouse are its own.
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && menu_key((int)wp)) return 0;
+	if (g_menuOpen) {
+		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
+		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
+			if (msg == WM_LBUTTONDOWN) menu_click((short)LOWORD(lp), (short)HIWORD(lp));
+			return 0;
+		}
 	}
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
@@ -3091,6 +3476,7 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		return TRUE;
 	}
 	if (!o_GetCursorPos(p)) return FALSE;
+	if (g_menuOpen) { p->x = GAME_W / 3; p->y = GAME_H / 2; return TRUE; } // the map must not scroll under the panel
 	if (g_hwnd) {
 		ScreenToClient(g_hwnd, p);
 		RECT v;
@@ -3709,6 +4095,23 @@ static draw_msg_t o_yesno_draw;
 static BOOL g_yesnoWide;
 static void __cdecl h_yesno_open(int text, int x, int y, int answer)
 {
+	// Old-game bug: Esc while "Exit the game?" is up opens it again, and the box then remembers its
+	// own screen (30) as the one to go back to (0x57c90c): "No" keeps returning to it, the game is
+	// stuck behind the box. A second open while one is up answers "No" instead, as the thumbs-down
+	// (the right one of the box's two buttons, table 0x4dd310: 24-byte entries, x first, action at +8).
+	if (*(BYTE *)0x004eac50 == 0x1e) {
+		const BYTE *t = (const BYTE *)0x004dd310;
+		const BYTE *no = *(const short *)(t + 24) > *(const short *)t ? t + 24 : t;
+		void (__cdecl *act)(void) = *(void (**)(void))(no + 8);
+		logf_("yes/no box: opened again while up, answered No");
+		if (act) {
+			*(int *)0x0059154c = *(const int *)(no + 16);
+			*(int *)0x00591550 = *(const int *)(no + 20);
+			*(int *)0x00591558 = 0;
+			act();
+		}
+		return;
+	}
 	g_yesnoWide = FALSE;
 	if (g_off && x == 160 && county_map_on() && (battle_zoom_on() || *(int *)0x0057c8fc != 2)) {
 		int centre = battle_zoom_on() ? PANEL_X - battle_map_w() / 2 : (PANEL_X - g_extra) / 2;
@@ -4540,7 +4943,11 @@ typedef int (__cdecl *logic_steps_t)(void);
 static logic_steps_t o_logic_steps;
 static int __cdecl h_logic_steps(void)
 {
+	// Old-game habit: "Exit the game?" (screen 30) does not pause a battle (its entry in the
+	// pause table 0x4e31b0 is 0): the armies fight on behind the question. No steps while it is up.
+	if (*(BYTE *)0x004eac50 == 0x1e && *(int *)0x0057c8fc == 2) return 0;
 	int n = o_logic_steps();
+	if (!g_timing) return n;
 	static DWORD t0; static int steps, frames;
 	DWORD now = GetTickCount();
 	if (!t0) t0 = now;
@@ -4556,7 +4963,7 @@ static int __cdecl h_logic_steps(void)
 static void install(void)
 {
 	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
-	if (g_timing) hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
+	hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
 	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
 		hook_code((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue, h_game_frame, &o_game_frame);
 	hook_import("smackw32.DLL", "#14", h_SmackOpen, &o_SmackOpen);

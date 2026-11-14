@@ -29,7 +29,7 @@ $view = [IntPtr][long]((Get-Content $info -ErrorAction Stop) -split ' ')[0]
 $base = 0x8100   # WM_REMOTE in lords2hd.c
 function Post([int]$n, [long]$w, [long]$l) { [void][BG.M]::PostMessage($view, $base + $n, [IntPtr]$w, [IntPtr]$l) }
 function XY([string]$a) { $x, $y = $a -split ','; return ([long][int]$y -shl 16) -bor ([int]$x -band 0xffff) }
-$keys = @{ '{ESC}' = 0x1b; '{ENTER}' = 0x0d; '{LEFT}' = 0x25; '{UP}' = 0x26; '{RIGHT}' = 0x27; '{DOWN}' = 0x28; '{TAB}' = 0x09; '{BACKSPACE}' = 0x08; '{SPACE}' = 0x20 }
+$keys = @{ '{ESC}' = 0x1b; '{ENTER}' = 0x0d; '{LEFT}' = 0x25; '{UP}' = 0x26; '{RIGHT}' = 0x27; '{DOWN}' = 0x28; '{TAB}' = 0x09; '{BACKSPACE}' = 0x08; '{SPACE}' = 0x20; '{F8}' = 0x77 }
 New-Item -ItemType Directory -Force $shots | Out-Null
 foreach ($step in $Steps) {
     if (-not [BG.M]::IsWindow($view)) { "the game's window is gone (step '$step')"; break }
@@ -53,6 +53,20 @@ foreach ($step in $Steps) {
             "burst saved to shots\$arg"
         }
         'video'  { Post 8 ([int]$arg) 0 }   # play video n of the DLL's test table (hang, jail, axmen, cart, win_game, intro, credits, castle1, bat_win1, imptitle)
+        'shot1x' {   # the game's own frame at 1x (no HD art, no scaling) as shots\<name>.png
+            $f = Join-Path $game "lords2hd-shot1x.bmp"; Remove-Item $f -ErrorAction SilentlyContinue
+            Post 13 0 0
+            $t = 0; while (-not (Test-Path $f) -and $t -lt 50) { Start-Sleep -Milliseconds 100; $t++ }
+            Start-Sleep -Milliseconds 200
+            if (Test-Path $f) { $b = [Drawing.Bitmap]::FromFile($f); $b.Save((Join-Path $shots "$arg.png"), [Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); Remove-Item $f; "saved $arg.png" } else { "no frame for $arg" }
+        }
+        'shotview' {   # the picture as it goes to the screen (window size, settings panel included) as shots\<name>.png
+            $f = Join-Path $game "lords2hd-shotview.bmp"; Remove-Item $f -ErrorAction SilentlyContinue
+            Post 14 0 0
+            $t = 0; while (-not (Test-Path $f) -and $t -lt 80) { Start-Sleep -Milliseconds 100; $t++ }
+            Start-Sleep -Milliseconds 500
+            if (Test-Path $f) { $b = [Drawing.Bitmap]::FromFile($f); $b.Save((Join-Path $shots "$arg.png"), [Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); Remove-Item $f; "saved $arg.png" } else { "no frame for $arg" }
+        }
         'capscroll' { Post 12 ([int]$arg) 0 }   # testing: the captured-county scroll with its video
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
         'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
