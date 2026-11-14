@@ -4,7 +4,10 @@ An unofficial fan patch for the GOG version of **Lords of the Realm II**. It mak
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **1.1.1**.
+Current version: **1.2.0**.
+
+**New in 1.2.0: press F8 in the game** for the settings panel. Switch the AI art on or off, choose
+sharp (Catmull-Rom) or soft upscaling, and more: most changes show at once and are saved for next time.
 
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
@@ -23,6 +26,8 @@ The screenshots are hosted on the release: this repository holds no game art.
   widened
 - Battles can zoom out to show four times the field
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels and lettering
+- Sharp Catmull-Rom upscaling, with the AI art or without it (the original art, scaled cleanly)
+- An in-game settings panel on F8
 - Foam rolling in along the coast on the county map
 - Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
@@ -30,11 +35,11 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Leaves the CPU mostly idle: the original game redraws thousands of times a second; the patch runs
   it at 120 frames a second with the game's own speed unchanged
 - Plays the disc-quality videos and the remastered soundtrack if you add them (below)
-- Every feature can be switched off in `lords2hd.ini`
+- Every feature can be switched off, in the F8 panel or in `lords2hd.ini`
 
 ## Install
 
-Download `Lords2-HD-1.1.1.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.2.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and unzip it into the game's folder, the one holding `Lords2.exe`. Start the game as usual. To
 remove the patch, delete `ddraw.dll`, `lords2hd.ini`, `lords2hd.log` and the `lords2hd` folder.
 
@@ -42,8 +47,8 @@ The patch is a `ddraw.dll` the game loads by itself. If the game folder already 
 from another wrapper, this one replaces it. The download is about 450 MB and unpacks to about
 900 MB of art.
 
-Updating from an earlier version: unzip the new zip over the old one (1.1.1 has new sea and ground
-tiles, so the DLL alone is not enough).
+Updating from 1.1.1: replacing `ddraw.dll` with the one attached to the release is enough (the art
+has not changed). From an older version, unzip the new zip over it.
 
 ## Better videos and music (optional)
 
@@ -64,8 +69,10 @@ These are not part of the download; the patch uses them when you add them.
 
 ## Settings
 
-All in `lords2hd.ini`, next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt) lists them and is also the
-readme inside the zip.
+Press **F8** in the game: a panel lists the settings; click a line (or use the arrow keys and Enter)
+to change it. Most changes apply at once; those marked * (widescreen, battle zoom-out) after a
+restart. Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt)
+lists all its keys and is also the readme inside the zip.
 
 ## Requirements
 

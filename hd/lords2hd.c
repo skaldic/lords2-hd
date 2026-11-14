@@ -2344,7 +2344,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	bi.biPlanes = 1;
 	bi.biBitCount = 32;
 	bi.biCompression = BI_RGB;
-	int vw = v.right - v.left, vh = v.bottom - v.top;
+	int vh = v.bottom - v.top;
 	const DWORD *src = pic;
 	int sw = lw, sh = lh;
 	if (vh >= lh * 2) {

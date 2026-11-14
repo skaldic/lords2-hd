@@ -1,4 +1,4 @@
-Lords of the Realm II HD 1.1.1: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 1.2.0: an unofficial fan patch for the GOG version of the game.
 You need your own copy of the game.
 
 INSTALL
