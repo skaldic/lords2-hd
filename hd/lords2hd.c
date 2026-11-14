@@ -1534,13 +1534,36 @@ static BOOL wav_format(const char *path, WAVEFORMATEX *wf)
 static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 {
 	DWORD a = (DWORD)name;
-	if (!name || a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) return o_mmioOpenA(name, info, flags);
-	int n = (a - STREAM_NAMES) / 16;
+	if (!name) return o_mmioOpenA(name, info, flags);
 	char alt[MAX_PATH];
 	const char *base = strrchr(name, '\\');
 	base = base ? base + 1 : name;
+	// Any other sound (dialogue, unit voices, effects: FUN_004b984f loads them whole, in their own
+	// format) from lords2hd\sound when a file of that name is there - e.g. Lords2Resounded's
+	// restored speech, without overwriting the game's files.
+	if (a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) {
+		const char *dot = strrchr(base, '.');
+		if (dot && !lstrcmpiA(dot, ".wav") && g_logLoads) logf_("sound opened: %s", base);
+		if (dot && !lstrcmpiA(dot, ".wav")) {
+			snprintf(alt, sizeof alt, "%s\\lords2hd\\sound\\%s", g_gameDir, base);
+			if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
+				HMMIO h = o_mmioOpenA(alt, info, flags);
+				if (h) {
+					static char last[32];
+					if (lstrcmpiA(last, base)) { logf_("sound: lords2hd\\sound\\%s", base); lstrcpynA(last, base, sizeof last); }
+					return h;
+				}
+			}
+		}
+		return o_mmioOpenA(name, info, flags);
+	}
+	int n = (a - STREAM_NAMES) / 16;
 	snprintf(alt, sizeof alt, "%s\\lords2hd\\music\\%s", g_gameDir, base);
 	BOOL replaced = GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES;
+	if (!replaced) { // music from the sound folder too: one folder for a Lords2Resounded output
+		snprintf(alt, sizeof alt, "%s\\lords2hd\\sound\\%s", g_gameDir, base);
+		replaced = GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES;
+	}
 	const char *path = replaced ? alt : name;
 	WAVEFORMATEX want, have = {0};
 	if (wav_format(path, &want)) {
