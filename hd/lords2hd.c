@@ -4943,7 +4943,11 @@ typedef int (__cdecl *logic_steps_t)(void);
 static logic_steps_t o_logic_steps;
 static int __cdecl h_logic_steps(void)
 {
+	// Old-game habit: "Exit the game?" (screen 30) does not pause a battle (its entry in the
+	// pause table 0x4e31b0 is 0): the armies fight on behind the question. No steps while it is up.
+	if (*(BYTE *)0x004eac50 == 0x1e && *(int *)0x0057c8fc == 2) return 0;
 	int n = o_logic_steps();
+	if (!g_timing) return n;
 	static DWORD t0; static int steps, frames;
 	DWORD now = GetTickCount();
 	if (!t0) t0 = now;
@@ -4959,7 +4963,7 @@ static int __cdecl h_logic_steps(void)
 static void install(void)
 {
 	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
-	if (g_timing) hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
+	hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
 	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
 		hook_code((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue, h_game_frame, &o_game_frame);
 	hook_import("smackw32.DLL", "#14", h_SmackOpen, &o_SmackOpen);
