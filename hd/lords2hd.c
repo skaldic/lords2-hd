@@ -119,6 +119,7 @@ static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves 
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
+static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
@@ -159,6 +160,7 @@ static void read_settings(void)
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
 	g_tutorialOnce = GetPrivateProfileIntA("Display", "TutorialOnce", 1, g_iniPath) != 0;
 	g_wasdOn = GetPrivateProfileIntA("Display", "WASD", 1, g_iniPath) != 0;
+	g_letters = GetPrivateProfileIntA("Display", "Letters", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
 	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
 	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
@@ -4305,6 +4307,72 @@ static void __cdecl h_tutorial(int id)
 	o_tutorial(id);
 }
 
+// Diplomatic letters. The text of the compliment, insult and alliance letters is an editable field
+// kept in the options (lords2.inf, 0x53f2b8 / 0x53f380 / 0x53f448 / 0x53f510, 200 characters
+// each); the game fills it with its default only when there is no options file, so once a field
+// was cleared every later letter was blank. FUN_00402009(text, max, ...) copies a field into the
+// editor when the letter opens: an empty field, or one still holding a letter put there by the
+// patch, gets a new one at random from these ([Display] Letters=1). Text the player typed stays.
+static const char *const kLetterCompliment[] = {
+	"My lord, word of your wise rule has reached even our distant halls. Your people speak of you with warmth, and so, I confess, do I.",
+	"Your fields are green and your granaries full. Such good husbandry deserves praise, and you shall have mine.",
+	"I have heard that your soldiers are the best drilled in all the land. A realm is lucky to have so able a master.",
+	"Your generosity to your people is the talk of every tavern from here to the sea. Long may your house prosper.",
+	"It is rare to find a ruler both just and bold. I count myself fortunate to call you neighbour.",
+	"The bards sing of your victories, my lord, and for once I believe every word of it.",
+	"Your castle is the envy of the realm, and your hospitality, I am told, is finer still. My compliments.",
+	"Few nobles keep their word in these troubled times. You have kept yours, and I shall not forget it.",
+	"Your taxes are fair, your markets busy and your roads safe. A finer example of rule I have yet to see.",
+	"May your harvests be plentiful and your enemies few. You have my highest regard, my lord.",
+};
+static const char *const kLetterInsult[] = {
+	"Your castle is a heap of stones that a goat could storm. I have seen pigsties better defended.",
+	"They say your soldiers run at the sight of their own shadows. I look forward to testing the rumour.",
+	"Your people starve while you feast. Mark me well: one day they will open your gates to me.",
+	"I have met turnips with more wit than your counsellors, and more courage than your knights.",
+	"Your banner is so faded that my men mistook it for a dishrag. It suits you well.",
+	"Enjoy your little county while you can. My army grows, and it is hungry for your land.",
+	"Your grandfather was a cattle thief, your father a coward, and you have outdone them both.",
+	"I would challenge you to single combat, but I hear you have not left your bedchamber in a year.",
+	"The crown will never sit on a head as empty as yours. Go back to counting your sheep.",
+	"Your taxes would shame a highwayman. Small wonder your peasants flee to my lands.",
+};
+static const char *const kLetterAlliance[] = {
+	"Dark times are upon the land, my lord. Let us stand together, and let our enemies break upon our shields.",
+	"Our borders touch and our foes are the same. An alliance would serve us both. What say you?",
+	"Alone we are reeds in the wind; together we are an oak. Join me, and let us share the spoils of peace.",
+	"I offer you my friendship and my sword. Accept them, and no rival will dare to march on either of us.",
+	"Let there be peace between our houses, and let our armies march as one against those who would take the crown.",
+	"A wise ruler chooses his friends before the battle, not after. I choose you, my lord.",
+};
+static const char *const kLetterEndAlliance[] = {
+	"Our paths must part, my lord. I thank you for your loyalty, but our pact has run its course.",
+	"Times have changed, and so must our arrangements. From this day our alliance is at an end.",
+	"I release you from our pact. Remember our friendship kindly, as I shall, until the crown decides between us.",
+	"Our alliance served us both well, but I now walk my own road. Farewell, and may we meet again as friends.",
+	"The winds have turned, my lord. Our pact is ended; let each of us now look to his own lands.",
+};
+static BOOL g_letters = TRUE;
+static char g_letterLast[4][200]; // the letter last put into each field
+typedef void (__cdecl *edit_text_t)(char *, int, int, int);
+static edit_text_t o_edit_text;
+static void __cdecl h_edit_text(char *text, int max, int a, int b)
+{
+	static const DWORD field[4] = { 0x0053f2b8, 0x0053f380, 0x0053f448, 0x0053f510 };
+	static const char *const *const sets[4] = { kLetterCompliment, kLetterInsult, kLetterAlliance, kLetterEndAlliance };
+	static const int counts[4] = { 10, 10, 6, 5 };
+	for (int i = 0; g_letters && i < 4; i++) {
+		if ((DWORD)text != field[i]) continue;
+		if (text[0] && strcmp(text, g_letterLast[i])) break; // the player's own text
+		const char *pick;
+		do pick = sets[i][(GetTickCount() / 7 + rand()) % counts[i]]; while (counts[i] > 1 && !strcmp(pick, g_letterLast[i]));
+		lstrcpynA(text, pick, min(max, 200));
+		lstrcpynA(g_letterLast[i], text, sizeof g_letterLast[i]);
+		break;
+	}
+	o_edit_text(text, max, a, b);
+}
+
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
 // picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
 // the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
@@ -4863,6 +4931,8 @@ static void install_wide(void)
 	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
 	static const BYTE kTutorialPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00476da9, kTutorialPrologue, sizeof kTutorialPrologue, h_tutorial, &o_tutorial);
+	hook_code((BYTE *)0x00402009, kTutorialPrologue, sizeof kTutorialPrologue, h_edit_text, &o_edit_text); // same prologue
+	srand(GetTickCount());
 	static const BYTE kEndPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00423241, kEndPrologue, sizeof kEndPrologue, h_battle_end_draw, &o_battle_end_draw);
 	hook_code((BYTE *)0x0042d91b, kBlockPrologue, sizeof kBlockPrologue, h_play_video, &o_play_video);
