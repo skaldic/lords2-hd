@@ -111,7 +111,7 @@ static BOOL entry_dark(const DWORD *px, int w, int h, int w1);
 static void __cdecl h_msg_a(void);
 static BOOL g_battleEndKeep;     // testing (remote message 11 with wParam 1): the battle-end scroll where the game puts it
 static POINT g_fake;                // the pretend mouse, in game coordinates
-static volatile LONG g_shotWanted;
+static volatile LONG g_shotWanted, g_shot1xWanted;
 #define WM_REMOTE (WM_APP + 0x100)
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
@@ -2291,6 +2291,18 @@ static BOOL present(void)
 			memcpy(g_frame8, keep, sw * GAME_H);
 		}
 		for (int i = 0; i < sw * GAME_H; i++) g_frame32[i] = g_lut[g_frame8[i]];
+		if (InterlockedExchange(&g_shot1xWanted, 0)) { // testing: the game's own frame, 1x, no HD art
+			char path[MAX_PATH];
+			snprintf(path, sizeof path, "%s\\lords2hd-shot1x.bmp", g_gameDir);
+			FILE *f = fopen(path, "wb");
+			if (f) {
+				BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + sw * GAME_H * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+				BITMAPINFOHEADER ih = { sizeof ih, sw, -GAME_H, 1, 32, BI_RGB };
+				fwrite(&fh, sizeof fh, 1, f); fwrite(&ih, sizeof ih, 1, f);
+				fwrite(g_frame32, 4, (size_t)sw * GAME_H, f);
+				fclose(f);
+			}
+		}
 		double_frame(sw);
 		if (sw == GAME_W) hd_overlay(pal);
 		screen_sprites(pal, sx, sw);
@@ -2967,6 +2979,12 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			InterlockedExchange(&g_forcePresent, 1);
 			mark_dirty();
 		}
+		return 0;
+	}
+	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
+		InterlockedExchange(&g_shot1xWanted, 1);
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
 		return 0;
 	}
 	if (n == 12) { // testing: the captured-county scroll and its video (FUN_0047309e, type 13)

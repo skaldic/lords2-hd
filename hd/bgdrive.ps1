@@ -53,6 +53,13 @@ foreach ($step in $Steps) {
             "burst saved to shots\$arg"
         }
         'video'  { Post 8 ([int]$arg) 0 }   # play video n of the DLL's test table (hang, jail, axmen, cart, win_game, intro, credits, castle1, bat_win1, imptitle)
+        'shot1x' {   # the game's own frame at 1x (no HD art, no scaling) as shots\<name>.png
+            $f = Join-Path $game "lords2hd-shot1x.bmp"; Remove-Item $f -ErrorAction SilentlyContinue
+            Post 13 0 0
+            $t = 0; while (-not (Test-Path $f) -and $t -lt 50) { Start-Sleep -Milliseconds 100; $t++ }
+            Start-Sleep -Milliseconds 200
+            if (Test-Path $f) { $b = [Drawing.Bitmap]::FromFile($f); $b.Save((Join-Path $shots "$arg.png"), [Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); Remove-Item $f; "saved $arg.png" } else { "no frame for $arg" }
+        }
         'capscroll' { Post 12 ([int]$arg) 0 }   # testing: the captured-county scroll with its video
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
         'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
