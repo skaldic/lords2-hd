@@ -26,12 +26,15 @@ BETTER VIDEOS AND MUSIC (optional, not included)
   (for example "07. Scroll 1 (1996, Remastered).mp3"), in lords2hd\music. The patch converts them
   at the next start and the game plays them instead of its own tracks.
 
-SETTINGS (lords2hd.ini)
+SETTINGS
+Press F8 in the game for the settings panel: most changes apply at once and are saved.
+Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
 Wide=0          4:3 instead of widescreen
 BattleZoom=0    battles at normal size
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
+Upscale=bilinear  the softer scaling of earlier versions (default: catmullrom, sharper)
 CursorScale=50  cursor size in percent
 FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
 TutorialOnce=0  show the tutorial scrolls every time, as the original (default: once each)
