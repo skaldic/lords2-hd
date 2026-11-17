@@ -12,13 +12,16 @@ settings on **F10** as one of the game's scrolls.
 
 [Watch the 40-second video of what's new](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.3.0.mp4)
 
+![The F10 settings](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg)
+
+![A diplomatic letter, with one of the new texts](https://github.com/skaldic/lords2-hd/releases/latest/download/letter.jpg)
+
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
 | | |
 |---|---|
-| ![The army scroll](https://github.com/skaldic/lords2-hd/releases/latest/download/army.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/latest/download/overview.jpg) |
-| ![Armoury](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg) | ![Castle builder](https://github.com/skaldic/lords2-hd/releases/latest/download/castle.jpg) |
-| ![Battle, zoomed out](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![The F10 settings](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg) |
+| ![Merchant](https://github.com/skaldic/lords2-hd/releases/latest/download/merchant.jpg) | ![Armoury](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg) |
+| ![Battle](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/latest/download/overview.jpg) |
 
 The screenshots are hosted on the release: this repository holds no game art.
 
