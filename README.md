@@ -12,14 +12,13 @@ settings on **F10** as one of the game's scrolls.
 
 [Watch the 40-second video of what's new](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.3.0.mp4)
 
-![The F10 settings panel](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg)
-
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
 | | |
 |---|---|
-| ![Merchant](https://github.com/skaldic/lords2-hd/releases/latest/download/merchant.jpg) | ![Armoury](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg) |
-| ![Battle](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/latest/download/overview.jpg) |
+| ![The army scroll](https://github.com/skaldic/lords2-hd/releases/latest/download/army.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/latest/download/overview.jpg) |
+| ![Armoury](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg) | ![Castle builder](https://github.com/skaldic/lords2-hd/releases/latest/download/castle.jpg) |
+| ![Battle, zoomed out](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![The F10 settings](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg) |
 
 The screenshots are hosted on the release: this repository holds no game art.
 
@@ -68,19 +67,31 @@ The videos come with the patch; the hi-fi music you add yourself (it is the comp
 - **Videos:** now part of the download: the disc-quality videos, sharper and full-height (the GOG
   version's are interlaced), play from `lords2hd.pak`. The larger event clips (the hanging, the jail,
   the merchant cart) fit their frame and show their full detail.
-- **Music (hi-fi):** the composer, Keith Zizza, has published the original recordings of the
-  soundtrack, far clearer than the game's 11 kHz tracks. Two ways to hear them in the game:
-  - **The MP3s** of the 2020 "Remastered" release: put them, named as in that release (for example
-    `07. Scroll 1 (1996, Remastered).mp3`), in a folder `lords2hd\music` inside the game's folder.
-    At the next start the patch converts them in the background and cuts each one as
-    [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) edits the soundtrack, at the
-    same points as the game's own loop, so the tracks loop seamlessly instead of fading out.
-    "Siege Pack Setup 2" is the game's third setup tune; the intro, credits, trailer and win tracks
-    are not used (the game plays those from its videos).
-  - **Lords2Resounded's own output:** run its tool, which fetches the composer's uploads and edits
-    them, and copy the WAVs it makes (`Battle1.wav`, `Scroll3.wav`, ...) into `lords2hd\music`.
-    The patch plays them as they are.
+- **Music:** the composer, Keith Zizza, has published the original recordings of the soundtrack,
+  far clearer than the game's 11 kHz tracks. They are his, so they are not in the download, but
+  adding them takes a minute.
 
+### Adding the hi-fi music
+
+**With the MP3s** of the 2020 "Lords of the Realm II (Remastered)" release:
+
+1. Get the MP3s of that release (the composer's own, for example from his Bandcamp or YouTube).
+2. In the game's folder (the one holding `Lords2.exe`), open `lords2hd\music`. The installer makes
+   it; otherwise create it.
+3. Put the MP3s in, keeping their names (for example `07. Scroll 1 (1996, Remastered).mp3`).
+4. Start the game. The patch converts them in the background, about a minute the first time,
+   and cuts each one at the same points as
+   [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) does, so the tracks loop seamlessly
+   instead of fading out. From the next track on, the game plays them.
+
+"Siege Pack Setup 2" is the game's third setup tune. The intro, credits, trailer and win tracks are
+not used (the game plays those from its videos). To go back to the game's own music, delete the
+files in `lords2hd\music`.
+
+**With Lords2Resounded:** run [its tool](https://github.com/gqzomer/Lords2Resounded) on a copy of the
+game's sound files; it fetches the composer's recordings and edits them for seamless loops. Copy the
+music WAVs it makes (`Battle1.wav`, `Scroll3.wav`, ...) into `lords2hd\music`; the patch plays them
+as they are.
 ## Settings
 
 Press **F10** in the game: a scroll lists the settings on two tabs, Display and Quality of life (Tab
@@ -103,6 +114,15 @@ like the original (the greatest-nobles battlement, the menu stone), the original
 repeated instead. The voices are the game's own recordings, restored with
 [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) with its author's permission. The
 videos are the game's own disc versions, unchanged. See [NOTICE.md](NOTICE.md).
+
+## Thanks
+
+- **[Lords2Resounded](https://github.com/gqzomer/Lords2Resounded)** by gqzomer: the restored dialogue
+  and unit voices in this release were made with its pipeline (LavaSR and DPDFNet), used with its
+  author's permission, and its hand-picked loop points make the hi-fi music loop seamlessly. Go give
+  it a star.
+- The member of the GOG community who shared the disc-quality videos in the SMK_HIGH thread.
+- Keith Zizza, for publishing the original recordings of his soundtrack.
 
 ## Building it yourself
 

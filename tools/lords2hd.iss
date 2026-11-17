@@ -48,6 +48,10 @@ Source: "..\dist\stage\lords2hd\*"; DestDir: "{app}\lords2hd"; Flags: ignorevers
 Type: files; Name: "{app}\lords2hd.log"
 Type: files; Name: "{app}\lords2hd.ini"
 Type: files; Name: "{app}\lords2hd-remote.txt"
+Type: files; Name: "{app}\lords2hd-muted.txt"
+; the folders, if nothing of the player's own is left in them (MP3s and music they added stay)
+Type: dirifempty; Name: "{app}\lords2hd\music"
+Type: dirifempty; Name: "{app}\lords2hd"
 
 [Code]
 // The game's folder: GOG's registry key for Lords of the Realm II, else the Steam copy (app 397350, the
