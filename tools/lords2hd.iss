@@ -28,7 +28,7 @@ LicenseFile=..\dist\stage\lords2hd\LICENSE.md
 InfoBeforeFile=..\dist\stage\lords2hd\README.txt
 
 [Messages]
-SelectDirLabel3=Choose the folder of your Lords of the Realm II game (the one holding Lords2.exe). The patch is added to it; none of the game's files are changed.
+SelectDirLabel3=Choose the folder of your Lords of the Realm II game, GOG or Steam (the one holding Lords2.exe). The patch is added to it; none of the game's files are changed.
 
 [InstallDelete]
 ; the loose art of the zip releases (1.2 and before): the pack replaces it
@@ -50,7 +50,8 @@ Type: files; Name: "{app}\lords2hd.ini"
 Type: files; Name: "{app}\lords2hd-remote.txt"
 
 [Code]
-// The game's folder: GOG's registry key for Lords of the Realm II, else GOG's default folder.
+// The game's folder: GOG's registry key for Lords of the Realm II, else the Steam copy (app 397350, the
+// same exe as GOG's, one level down in English\Lords of the Realm II), else GOG's default folder.
 function GameDir(Param: String): String;
 var P: String;
 begin
@@ -58,10 +59,13 @@ begin
     Result := P
   else if RegQueryStringValue(HKLM32, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\1207663263_is1', 'InstallLocation', P) and FileExists(AddBackslash(P) + 'Lords2.exe') then
     Result := RemoveBackslash(P)
+  else if RegQueryStringValue(HKLM64, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 397350', 'InstallLocation', P) and FileExists(AddBackslash(P) + 'English\Lords of the Realm II\Lords2.exe') then
+    Result := AddBackslash(P) + 'English\Lords of the Realm II'
+  else if RegQueryStringValue(HKLM32, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 397350', 'InstallLocation', P) and FileExists(AddBackslash(P) + 'English\Lords of the Realm II\Lords2.exe') then
+    Result := AddBackslash(P) + 'English\Lords of the Realm II'
   else
     Result := ExpandConstant('{commonpf32}\GOG Galaxy\Games\Lords of the Realm II');
 end;
-
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;

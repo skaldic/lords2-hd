@@ -1958,6 +1958,15 @@ static void music_trim(const char *wav, const char *track)
 	hdr[20] = 1; hdr[22] = (BYTE)rch; memcpy(hdr + 24, &rrate, 4);
 	v = rrate * rch * 2; memcpy(hdr + 28, &v, 4); hdr[32] = (BYTE)(rch * 2); hdr[34] = 16;
 	memcpy(hdr + 36, "data", 4); memcpy(hdr + 40, &bytes, 4);
+	{ // 3 ms fades at both ends: the cut falls on the music, and a jump there clicks as it starts or loops
+		short *s0 = (short *)(rd + from); DWORD n0 = (to - from) / frame, nb = (bTo - bFrom) / frame, ramp = rrate * 3 / 1000;
+		short *last = nb ? (short *)(rd + bFrom) : s0; DWORD nl = nb ? nb : n0;
+		for (DWORD i = 0; i < ramp && i < n0 && i < nl; i++)
+			for (int c = 0; c < rch; c++) {
+				s0[i * rch + c] = (short)(s0[i * rch + c] * (double)i / ramp);
+				last[(nl - 1 - i) * rch + c] = (short)(last[(nl - 1 - i) * rch + c] * (double)i / ramp);
+			}
+	}
 	BOOL ok = fwrite(hdr, 1, 44, f) == 44 && fwrite(rd + from, 1, to - from, f) == to - from &&
 		(bTo == bFrom || fwrite(rd + bFrom, 1, bTo - bFrom, f) == bTo - bFrom);
 	fclose(f);

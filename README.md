@@ -67,13 +67,20 @@ These are not part of the download (they are not ours to give); the patch uses t
   [SMK_HIGH thread on the GOG forum](https://www.gog.com/forum/lords_of_the_realm_lords_of_magic_series/lords_of_the_realm_ii_gog_smk_high_patch_official_higher_quality_videos).
   Copy its `.smk` files over the ones in the game's `videos` folder (keep a backup). The larger event
   clips (the hanging, the jail, the merchant cart) then fit their frame and show their full detail.
-- **Music:** in 2020 the composer, Keith Zizza, released a remastered version of the soundtrack. Put
-  its MP3 files, as named in that release (for example `07. Scroll 1 (1996, Remastered).mp3`), in a
-  folder `lords2hd\music` inside the game's folder. At the next start the patch converts them to
-  WAV in the background and the game plays them instead of its own 11 kHz tracks. "Siege Pack Setup
-  2" is used for the game's third setup tune; the intro, credits, trailer and win tracks are not
-  used (the game plays those sounds from its videos). WAV files named like the game's own
-  (`Battle1.wav`, `Scroll3.wav`, ...) work too.
+- **Music (hi-fi):** the composer, Keith Zizza, has published the original recordings of the
+  soundtrack, far clearer than the game's 11 kHz tracks. Two ways to hear them in the game:
+  - **The MP3s** of the 2020 "Remastered" release: put them, named as in that release (for example
+    `07. Scroll 1 (1996, Remastered).mp3`), in a folder `lords2hd\music` inside the game's folder.
+    At the next start the patch converts them in the background and cuts each one as
+    [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) edits the soundtrack, at the
+    same points as the game's own loop, so the tracks loop seamlessly instead of fading out.
+    "Siege Pack Setup 2" is the game's third setup tune; the intro, credits, trailer and win tracks
+    are not used (the game plays those from its videos).
+  - **Lords2Resounded's own output:** run its tool, which fetches the composer's uploads and edits
+    them, and copy the WAVs it makes (`Battle1.wav`, `Scroll3.wav`, ...) into `lords2hd\music`.
+    The patch plays them as they are.
+
+  The music is not part of the download: it is the composer's, not ours to give.
 
 ## Settings
 
