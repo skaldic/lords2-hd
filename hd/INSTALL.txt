@@ -48,6 +48,7 @@ WASD=0          W, A, S, D do not scroll the map
 CycleKeys=0     , and . (and the < > buttons) do not jump through your counties and armies
 ArmyPanel=0     no army scroll beside the side panel while one of your armies is selected
 Letters=0       diplomatic letters start empty, as the original (default: a fresh letter each time)
+Resounded=0     the game's own voices instead of the ones restored by Lords2Resounded
 
 ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.

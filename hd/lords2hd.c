@@ -121,6 +121,7 @@ static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no l
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
 static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
 static BOOL g_armyPanel; // [Display] ArmyPanel: the selected army's scroll (army_panel_keep)
+static BOOL g_resounded; // [Display] Resounded: the restored voices (Lords2Resounded) instead of the game's (h_mmioOpenA)
 static BOOL g_cycleOn;   // [Display] CycleKeys: , and . cycle counties and armies (cycle_key)
 static BOOL cycle_key(int dir);
 static int army_cell(int id);
@@ -172,6 +173,7 @@ static void read_settings(void)
 	g_letters = GetPrivateProfileIntA("Display", "Letters", 1, g_iniPath) != 0;
 	g_cycleOn = GetPrivateProfileIntA("Display", "CycleKeys", 1, g_iniPath) != 0;
 	g_armyPanel = GetPrivateProfileIntA("Display", "ArmyPanel", 1, g_iniPath) != 0;
+	g_resounded = GetPrivateProfileIntA("Display", "Resounded", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
 	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
 	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
@@ -1682,7 +1684,7 @@ static HMMIO pak_sound(const char *loosePath, const char *base, DWORD flags)
 	if (a < STREAM_NAMES || a >= STREAM_NAMES + 2 * 16) {
 		const char *dot = strrchr(base, '.');
 		if (dot && !lstrcmpiA(dot, ".wav") && g_logLoads) logf_("sound opened: %s", base);
-		if (dot && !lstrcmpiA(dot, ".wav")) {
+		if (dot && !lstrcmpiA(dot, ".wav") && g_resounded) { // Off: the game's own voices
 			snprintf(alt, sizeof alt, "%s\\lords2hd\\sound\\%s", g_gameDir, base);
 			if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
 				HMMIO h = o_mmioOpenA(alt, info, flags);
@@ -2266,16 +2268,16 @@ static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loade
 static RECT g_menuRow[16], g_menuTabRect[2], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_COUNT };
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_COUNT };
 #define MENU_TABS 2
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Quality of life" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_WIDE, M_ZOOM, -1 },
-	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, -1 },
+	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_ARMY || i == M_LETTERS; } // marked "new"
+static BOOL menu_new(int i) { (void)i; return FALSE; } // no line is marked "new" at present // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -2293,17 +2295,42 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
 	case M_ARMY: snprintf(v, n, "%s", g_armyPanel ? "On" : "Off"); break;
 	case M_LETTERS: snprintf(v, n, "%s", g_letters ? "On" : "Off"); break;
+	case M_RESOUND: snprintf(v, n, "%s", g_resounded ? "On" : "Off"); break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters" };
+	"Army panel", "Fresh letters", "Lords2Resounded" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
 	WritePrivateProfileStringA(sec, key, s, g_iniPath);
 }
-static void menu_change(int i)
+// Turning Lords2Resounded on or off says a maceman's "We'll enjoy this!": the restored line (loose or
+// from the pack) when on, the game's own when off, so the difference is heard at once.
+static void resound_sample(void)
+{
+	static const char kLine[] = "Mace_p2.wav";
+	static BYTE *mem;
+	char path[MAX_PATH];
+	if (g_remote) return; // muted while testing
+	PlaySoundA(NULL, NULL, 0);
+	if (g_resounded) {
+		snprintf(path, sizeof path, "%s\\lords2hd\\sound\\%s", g_gameDir, kLine);
+		if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) { PlaySoundA(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT); return; }
+		AFILE *f = afopen(path);
+		if (f) {
+			DWORD size = f->f ? 0 : f->size;
+			BYTE *buf = size ? malloc(size) : NULL;
+			BOOL ok = buf && afread(buf, 1, size, f) == size;
+			afclose(f);
+			if (ok) { free(mem); mem = buf; PlaySoundA((LPCSTR)mem, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT); return; }
+			free(buf);
+		}
+	}
+	snprintf(path, sizeof path, "%s\\%s", g_gameDir, kLine);
+	PlaySoundA(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+}static void menu_change(int i)
 {
 	switch (i) {
 	case M_UPSCALE: g_upscaleCR = !g_upscaleCR; WritePrivateProfileStringA("Display", "Upscale", g_upscaleCR ? "catmullrom" : "bilinear", g_iniPath); break;
@@ -2319,6 +2346,7 @@ static void menu_change(int i)
 	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
 	case M_ARMY: g_armyPanel = !g_armyPanel; ini_set("Display", "ArmyPanel", g_armyPanel); break;
 	case M_LETTERS: g_letters = !g_letters; ini_set("Display", "Letters", g_letters); break;
+	case M_RESOUND: g_resounded = !g_resounded; ini_set("Display", "Resounded", g_resounded); resound_sample(); break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
