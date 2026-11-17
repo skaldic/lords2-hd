@@ -1,14 +1,16 @@
 # Lords of the Realm II HD
 
-An unofficial fan patch for the GOG version of **Lords of the Realm II**. It makes the game fill a
-modern monitor and shows its art at double detail. You need your own copy of the game; the patch
+An unofficial fan patch for the GOG and Steam versions of **Lords of the Realm II**. It makes the
+game fill a modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
 Current version: **1.3.0**.
 
-**New in 1.3.0:** an installer, restored voices, an army scroll, WASD scrolling, `,` and `.` to jump
-between your counties and armies, fresh diplomatic letters, and the settings panel on **F10** as one
-of the game's scrolls.
+**New in 1.3.0:** an installer, restored voices, the disc-quality videos, an army scroll, WASD
+scrolling, `,` and `.` to jump between your counties and armies, fresh diplomatic letters, and the
+settings on **F10** as one of the game's scrolls.
+
+[Watch the 40-second video of what's new](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.3.0.mp4)
 
 ![The F10 settings panel](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg)
 
@@ -39,7 +41,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Foam rolling in along the coast on the county map
 - Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
-- Tutorial scrolls shown once, not every time a game is started or loaded
+- Tutorial scrolls off, shown once, or every time, as you choose
 - Leaves the CPU mostly idle: the original game redraws thousands of times a second; the patch runs
   it at 120 frames a second with the game's own speed unchanged
 - Plays the disc-quality videos (included), and the hi-fi soundtrack if you add it (below)
@@ -48,16 +50,17 @@ The screenshots are hosted on the release: this repository holds no game art.
 ## Install
 
 Download `Lords2-HD-1.3.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
-and run it. It finds the GOG game by itself (or asks for the folder holding `Lords2.exe`), adds the
-patch, and leaves the game's own files alone. Uninstall it from Windows' Apps list. Close the game
+and run it. It finds the GOG or Steam game by itself (or asks for the folder holding `Lords2.exe`),
+adds the patch, and leaves the game's own files alone. Uninstall it from Windows' Apps list. Close the game
 first. Windows may warn that the publisher is unknown: the installer is not code-signed.
 
 The patch is a `ddraw.dll` the game loads by itself, an ini with the settings, and `lords2hd.pak`,
-one file with the HD art and the restored voices. If the game folder already holds a `ddraw.dll`
+one file with the HD art, the restored voices and the videos. If the game folder already holds a `ddraw.dll`
 from another wrapper, this one replaces it. Updating from an older version: run the installer over
 it; your settings are kept and the loose art folders of the zip versions are removed.
 
 Rather unzip by hand? `Lords2-HD-1.3.0.zip` holds the same files: unzip it into the game's folder.
+
 ## Videos and music
 
 The videos come with the patch; the hi-fi music you add yourself (it is the composer's, not ours to give).
@@ -78,19 +81,19 @@ The videos come with the patch; the hi-fi music you add yourself (it is the comp
     them, and copy the WAVs it makes (`Battle1.wav`, `Scroll3.wav`, ...) into `lords2hd\music`.
     The patch plays them as they are.
 
-  The music is not part of the download: it is the composer's, not ours to give.
-
 ## Settings
 
 Press **F10** in the game: a scroll lists the settings on two tabs, Display and Quality of life (Tab
 switches them); click a line (or use the arrow keys and Enter) to change it, right-click to close.
-Most changes apply at once; those marked * (widescreen, battle zoom-out) after a restart. Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt)
-lists all its keys and is also the readme inside the zip.
+Most changes apply at once; those marked * (widescreen, battle zoom-out) after a restart.
+Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt) lists all
+its keys and is also the readme that comes with the patch.
 
 ## Requirements
 
-- The GOG version of Lords of the Realm II
+- The GOG or Steam version of Lords of the Realm II (they share the same game files)
 - Windows, and a screen of 720p (1280x720) or larger; it fills any size from there up
+
 ## About the art
 
 The HD art is the game's own art enlarged with an AI upscaler (Real-ESRGAN). The new left and right
@@ -98,8 +101,8 @@ parts of most widened paintings were painted by an AI image model (FLUX.1 Fill) 
 pictures; the original 4:3 picture is unchanged in the middle. Where a model's result did not look
 like the original (the greatest-nobles battlement, the menu stone), the original's own stonework is
 repeated instead. The voices are the game's own recordings, restored with
-[Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) with its author's permission. See
-[NOTICE.md](NOTICE.md).
+[Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) with its author's permission. The
+videos are the game's own disc versions, unchanged. See [NOTICE.md](NOTICE.md).
 
 ## Building it yourself
 
