@@ -123,6 +123,8 @@ static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_
 static BOOL g_cycleOn;   // [Display] CycleKeys: , and . cycle counties and armies (cycle_key)
 static BOOL cycle_key(int dir);
 static int army_cell(int id);
+static int cycle_button_at(int x, int y);
+static void cycle_buttons_draw(int sx, int sw);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
@@ -2697,6 +2699,7 @@ static BOOL present(void)
 		if (g_showTiles) screen_sprites(pal, sx, sw);
 		if (g_showTiles) tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
+		cycle_buttons_draw(sx, sw);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
@@ -3449,6 +3452,12 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	g_fake.x = fx;
 	g_fake.y = fy;
 	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
+	{
+		static BOOL btnDown;
+		int btn = cycle_button_at(fx, fy);
+		if (n == 2 && btn) { cycle_key(btn); btnDown = TRUE; InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return 0; }
+		if (n == 3 && btnDown) { btnDown = FALSE; return 0; }
+	}
 	if (n == 2) buttons |= MK_LBUTTON; else if (n == 3) buttons &= ~MK_LBUTTON;
 	if (n == 5) buttons |= MK_RBUTTON; else if (n == 6) buttons &= ~MK_RBUTTON;
 	return CallWindowProcA(g_gameProc, hwnd, mouse[n], buttons, lp);
@@ -3498,6 +3507,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
 		client_to_game(&x, &y);
+		// the < > buttons on the name plate: theirs, not the game's
+		static BOOL btnDown;
+		int btn = cycle_button_at(x, y);
+		if (msg == WM_LBUTTONDOWN && btn) { cycle_key(btn); btnDown = TRUE; InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return 0; }
+		if (msg == WM_LBUTTONUP && btnDown) { btnDown = FALSE; return 0; }
 		lp = MAKELPARAM(x, y);
 	}
 	else if (msg == WM_PAINT || msg == WM_SIZE || msg == WM_ACTIVATEAPP) {
@@ -3604,6 +3618,51 @@ static BOOL cycle_key(int dir)
 	}
 	logf_("cycle: %s %d", armies ? "army" : "county", list[k]);
 	return TRUE;
+}
+// Two arrow buttons on the side panel's name plate, either side of the county's name: clicking them
+// does what , and . do. Drawn into the 2x picture; their clicks never reach the game.
+static const RECT kCycleBtn[2] = { { 487, 162, 503, 180 }, { 615, 162, 631, 180 } }; // game coords: < and >
+// a county that is not the player's has its name lower on its plate (the grey sovereign-land one)
+static int cycle_btn_dy(void) { int c = *(int *)0x0057c93c; return c > 0 && c < 32 && ((BYTE *)0x0053f9b5)[c * 0x300] == *(int *)0x0057c8cc ? 0 : 16; }
+static BOOL cycle_buttons_on(void)
+{
+	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
+	BYTE s = *(BYTE *)0x004eac50;
+	if (s == 16) return TRUE;
+	int c = *(int *)0x0057c93c; // the name plate is up for the player's own county
+	return s == 0 && c > 0 && c < 32 && ((BYTE *)0x0053f9b5)[c * 0x300] == *(int *)0x0057c8cc;
+}
+static int cycle_button_at(int x, int y)
+{
+	if (!cycle_buttons_on()) return 0;
+	for (int b = 0; b < 2; b++) {
+		RECT r = kCycleBtn[b];
+		OffsetRect(&r, 0, cycle_btn_dy());
+		InflateRect(&r, 3, 3);
+		if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return b ? 1 : -1;
+	}
+	return 0;
+}
+// into the 2x frame (sw columns from game x sx - g_off)
+static void cycle_buttons_draw(int sx, int sw)
+{
+	if (!cycle_buttons_on()) return;
+	for (int b = 0; b < 2; b++) {
+		RECT r = kCycleBtn[b];
+		OffsetRect(&r, 0, cycle_btn_dy());
+		int X0 = 2 * (r.left + g_off - sx), Y0 = 2 * r.top, W = 2 * (r.right - r.left), H = 2 * (r.bottom - r.top);
+		if (X0 < 0 || X0 + W > 2 * sw) continue;
+		for (int y = 0; y < H; y++) {
+			// a triangle pointing out from the name: its width grows to the middle row
+			int half = H / 2, d = y < half ? y : H - 1 - y, len = d * W / half;
+			for (int x = 0; x < W; x++) {
+				int t = b ? x : W - 1 - x; // distance from the tip
+				if (t > len) continue;
+				BOOL edge = t >= len - 2 || d < 2;
+				g_frame2x[(Y0 + y) * 2 * sw + X0 + x] = edge ? 0x3a1e0c : 0x8a2a14; // dark brown edge, red body
+			}
+		}
+	}
 }
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
