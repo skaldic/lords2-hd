@@ -6195,8 +6195,56 @@ static void __cdecl h_chase(void)
 	o_chase();
 }
 
+// AI castle cap. A computer lord's building step (FUN_0049edc7(player)) starts a castle
+// (FUN_00436d02(county, kind)) in each of its counties that has none, is big enough and while
+// its count of castles under construction (player record +0x4d, 0x0057bf4d + player * 0x160) is
+// below its difficulty's limit. That count is only rebuilt at the end of the season (FUN_004508de),
+// so a start doesn't raise it and one pass starts a castle in every eligible county at once (the
+// Bishop's rash of royal castles). Each start made by that step now adds one to the count.
+static BOOL g_fixCastleCap;
+static int g_aiBuilding;   // the player whose building step is running, 0 = none
+typedef void (__cdecl *ai_build_t)(unsigned);
+typedef void (__cdecl *castle_start_t)(int, int);
+static ai_build_t o_ai_build;
+static castle_start_t o_castle_start;
+
+static int g_aiStarts;
+
+static void __cdecl h_ai_build(unsigned player)
+{
+	int before = player < 6 ? *(BYTE *)(0x0057bf4d + player * 0x160) : 0;
+	g_aiBuilding = player;
+	g_aiStarts = 0;
+	o_ai_build(player);
+	g_aiBuilding = 0;
+	static int logged;
+	if (g_aiStarts && logged < 10) {
+		int level = *(BYTE *)(0x0057bf07 + player * 0x160); // the limit table's row (1 and up)
+		logged++, logf_("AI player %u started %d castle(s); %d were building, limit %d", player, g_aiStarts, before,
+			level >= 1 ? *(int *)(0x004d8ae8 + (level * 3 - 3) * 0x50) : -1);
+	}
+}
+
+static void __cdecl h_castle_start(int county, int kind)
+{
+	o_castle_start(county, kind);
+	if (g_aiBuilding > 0 && g_aiBuilding < 6) {
+		g_aiStarts++;
+		BYTE *building = (BYTE *)(0x0057bf4d + g_aiBuilding * 0x160);
+		if (g_fixCastleCap && *building < 255) ++*building;
+	}
+}
+
 static void install_game_fixes(void)
 {
+	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
+	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
+	if ((!hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) ||
+		!hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start)))
+		g_fixCastleCap = FALSE;
+	logf_("castle cap fix %s", g_fixCastleCap ? "on" : "off");
+
 	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
 	static const BYTE kChasePrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
 	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
