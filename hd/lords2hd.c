@@ -2489,7 +2489,14 @@ static void resound_sample(void)
 	case M_TEXT: g_hdText = !g_hdText; ini_set("Display", "SharpText", g_hdText); break;
 	case M_WAVES: g_shoreWaves = !g_shoreWaves; ini_set("Display", "ShoreWaves", g_shoreWaves); break;
 	case M_LIMIT: g_frameLimit = g_frameLimit ? 0 : 120; ini_set("Display", "FrameLimit", g_frameLimit); break;
-	case M_TUTORIAL: g_tutorialOnce = !g_tutorialOnce; ini_set("Display", "TutorialOnce", g_tutorialOnce); break;
+	case M_TUTORIAL:
+		g_tutorialOnce = !g_tutorialOnce;
+		ini_set("Display", "TutorialOnce", g_tutorialOnce);
+		if (!g_tutorialOnce) { // Every time: shown again from now on - the game's marks for this session cleared too
+			memset((BYTE *)0x004f0298 + 200, 0, 32);
+			WritePrivateProfileStringA("Tutorial", "Seen", NULL, g_iniPath);
+		}
+		break;
 	case M_WASD: g_wasdOn = !g_wasdOn; ini_set("Display", "WASD", g_wasdOn); break;
 	case M_CYCLE: g_cycleOn = !g_cycleOn; ini_set("Display", "CycleKeys", g_cycleOn); break;
 	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
