@@ -7459,8 +7459,129 @@ static int __cdecl h_logic_steps(void)
 	return n;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Mop-Up fix. Mop-Up (FUN_0047a76d) marks each unit's group as hunting (DAT_0056654a, the flag the
+// AI's charge FUN_0048c8af also sets) and puts the unit in the chase state 8. The chase handler
+// FUN_00483e55 looks for a new enemy only when the unit has no target, and only afterwards checks
+// whether the target is dying (state 2); a unit whose target falls drops it and goes idle (state 5),
+// so after its first kill it stands still. For a hunting group the dying target is let go first, so
+// the handler's own search (FUN_004954dd: nearest live, non-siege enemy) picks the next one.
+// Figures: 80 slots of 0x1b0 bytes from index 1; side at 0x005544ac (0 = empty slot), state at
+// 0x005544b1, target slot at 0x005545f4, group at 0x005545f8; a group's hunting flag is
+// 0x0056654a + group * 0x34.
+#define FIG_B(i, addr) (*(BYTE *)((addr) + (i) * 0x1b0))
+#define FIG_CUR        (*(int *)0x0053e8f8)
+static BOOL g_fixMopUp;
+typedef void (__cdecl *chase_t)(void);
+static chase_t o_chase;
+
+static void __cdecl h_chase(void)
+{
+	int me = FIG_CUR;
+	if (g_fixMopUp && me > 0 && me < 0x51) {
+		int group = *(short *)(0x005545f8 + me * 0x1b0);
+		int target = FIG_B(me, 0x005545f4);
+		if (group >= 0 && *(BYTE *)(0x0056654a + group * 0x34) && target > 0 && target < 0x51 &&
+			FIG_B(target, 0x005544ac) && FIG_B(target, 0x005544b1) == 2) {
+			FIG_B(me, 0x005545f4) = 0;
+			static int logged;
+			if (logged < 5) logged++, logf_("Mop-Up fix: unit %d (side %d) let go of fallen target %d", me,
+				FIG_B(me, 0x005544ac), target);
+		}
+	}
+	o_chase();
+}
+
+// AI castle cap. A computer lord's building step (FUN_0049edc7(player)) starts a castle
+// (FUN_00436d02(county, kind)) in each of its counties that has none, is big enough and while
+// its count of castles under construction (player record +0x4d, 0x0057bf4d + player * 0x160) is
+// below its difficulty's limit. That count is only rebuilt at the end of the season (FUN_004508de),
+// so a start doesn't raise it and one pass starts a castle in every eligible county at once (the
+// Bishop's rash of royal castles). Each start made by that step now adds one to the count.
+static BOOL g_fixCastleCap;
+static int g_aiBuilding;   // the player whose building step is running, 0 = none
+typedef void (__cdecl *ai_build_t)(unsigned);
+typedef void (__cdecl *castle_start_t)(int, int);
+static ai_build_t o_ai_build;
+static castle_start_t o_castle_start;
+
+static int g_aiStarts;
+
+static void __cdecl h_ai_build(unsigned player)
+{
+	int before = player < 6 ? *(BYTE *)(0x0057bf4d + player * 0x160) : 0;
+	g_aiBuilding = player;
+	g_aiStarts = 0;
+	o_ai_build(player);
+	g_aiBuilding = 0;
+	static int logged;
+	if (g_aiStarts && logged < 10) {
+		int level = *(BYTE *)(0x0057bf07 + player * 0x160); // the limit table's row (1 and up)
+		logged++, logf_("AI player %u started %d castle(s); %d were building, limit %d", player, g_aiStarts, before,
+			level >= 1 ? *(int *)(0x004d8ae8 + (level * 3 - 3) * 0x50) : -1);
+	}
+}
+
+static void __cdecl h_castle_start(int county, int kind)
+{
+	o_castle_start(county, kind);
+	if (g_aiBuilding > 0 && g_aiBuilding < 6) {
+		g_aiStarts++;
+		BYTE *building = (BYTE *)(0x0057bf4d + g_aiBuilding * 0x160);
+		if (g_fixCastleCap && *building < 255) ++*building;
+	}
+}
+
+// Wheat fix. Each spring a county plants one grain pile (0x0053fbf4 + county * 0x300) and notes its
+// wheat fields twice: 0x0053fbb2 (kept as planted) and 0x0053fbb6 (kept in step with the pile).
+// Whenever a wheat field is lost (FUN_00469e5b, FUN_0046965a) the game takes that field's share
+// out of the pile and lowers 0x0053fbb6. Tending and harvesting (FUN_0044d15a, FUN_0044d1e5) then
+// scale the pile by FUN_0044d281: wheat fields now (0x0053fbb1) over 0x0053fbb2, as planted, so a
+// lost field is charged twice, and painting one more wheat field brings back grain it never
+// grew. Measured against 0x0053fbb6 instead, only a field taken without its share is counted.
+static BOOL g_fixWheat;
+typedef int (__cdecl *wheat_scale_t)(int, int);
+static wheat_scale_t o_wheat_scale;
+
+static int __cdecl h_wheat_scale(int county, int grain)
+{
+	if (!g_fixWheat) return o_wheat_scale(county, grain);
+	BYTE now = *(BYTE *)(0x0053fbb1 + county * 0x300), live = *(BYTE *)(0x0053fbb6 + county * 0x300);
+	int asWas = o_wheat_scale(county, grain);
+	if (now < live) grain = grain * (now * 100 / live) / 100; // the game's own percent steps (FUN_00404dc1, FUN_00404d6b)
+	static int logged, lastCounty, lastGrain;
+	if (grain != asWas && logged < 5 && (county != lastCounty || grain != lastGrain))
+		logged++, lastCounty = county, lastGrain = grain, logf_("wheat fix: county %d, %d wheat fields (%d as planted, %d with grain): %d grain counted, %d before",
+		county, now, *(BYTE *)(0x0053fbb2 + county * 0x300), live, grain, asWas);
+	return grain;
+}
+
+static void install_game_fixes(void)
+{
+	g_fixWheat = GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
+	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
+		g_fixWheat = FALSE;
+	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
+
+	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
+	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
+	if ((!hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) ||
+		!hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start)))
+		g_fixCastleCap = FALSE;
+	logf_("castle cap fix %s", g_fixCastleCap ? "on" : "off");
+
+	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
+	static const BYTE kChasePrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
+	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
+		g_fixMopUp = FALSE;
+	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
+}
+
 static void install(void)
 {
+	install_game_fixes();
 	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
 	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
