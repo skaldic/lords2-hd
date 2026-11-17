@@ -5276,6 +5276,10 @@ static void menu_scroll_draw(void)
 	const int ink = 0x3f, red = 0xf9; // the game's black and its red (the side panel's changed rations)
 	int x0 = g_msX, y0 = g_msY;
 	g_ownScroll = TRUE; // its HD art whatever the screen's palette (stamp_sprite)
+	// the lettering engraved as on the map: the game's text routine (FUN_00402637) shades it with
+	// slots 0x36 / 0x2c on screens 0x1c and 0x1f (the main menu), grey in the map's colours
+	BYTE savedScreen = *(BYTE *)0x004eac50;
+	if (savedScreen == 0x1c || savedScreen == 0x1f) *(BYTE *)0x004eac50 = 0;
 	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
 	ctext("Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
 	for (int k = 0; k < MENU_TABS; k++) { // the open tab red and underlined
@@ -5304,6 +5308,7 @@ static void menu_scroll_draw(void)
 	const char *keys = "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
+	*(BYTE *)0x004eac50 = savedScreen;
 	g_ownScroll = FALSE;
 }
 // before each flush (h_show_frame)
