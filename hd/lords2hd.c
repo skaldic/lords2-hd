@@ -5450,7 +5450,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	if (g_remote) {
 		if (msg > WM_REMOTE && msg <= WM_REMOTE + 0x20) return remote_message(hwnd, msg, wp, lp);
 		if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-		if (msg == WM_ACTIVATEAPP) wp = TRUE;            // the game would pause, thinking it is in the background
+		if (msg == WM_ACTIVATEAPP && lp != 0x4C32) wp = TRUE; // the game would pause, thinking it is in the background (0x4C32: a test's real one)
 		if (msg == WM_ACTIVATE) wp = WA_ACTIVE;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) return 0; // only the driver's mouse
 	}
@@ -7690,11 +7690,53 @@ static BOOL g_fixSiegeGarrison;
 typedef void (__cdecl *castle_enter_t)(unsigned, int);
 static castle_enter_t o_castle_enter;
 
+static BOOL county_besieged(int county)
+{
+	int garrison = *(int *)(0x0053fb6c + county * 0x300);
+	return garrison > 0 && garrison < 0x97 && *(BYTE *)(0x0052f24a + garrison * 0x1a4) != 0;
+}
+
+// The computer's garrison steps (reinforce FUN_0049f12f, pick a castle FUN_004a07f2, march there
+// FUN_004a6270) skip a county whose 0x0053fb72 is set, a flag the game never sets. For their length it
+// is set on besieged counties, so they neither raise troops for a castle they can't enter (with
+// room that never fills, a new army every turn) nor march there.
+static int g_inUpgrade; // the season's castle step (FUN_004508de): a finished upgrade's garrison is raised inside
+typedef int (__cdecl *county_step_t)(unsigned, int);
+static county_step_t o_ai_reinforce, o_ai_pick_castle, o_ai_march;
+typedef void (__cdecl *season_castles_t)(void);
+static season_castles_t o_season_castles;
+
+static int siege_marks(BYTE *saved)
+{
+	int n = *(int *)0x0056d5dc, marked = 0;
+	for (int c = 1; c <= n && c < 64; c++) {
+		saved[c] = *(BYTE *)(0x0053fb72 + c * 0x300);
+		if (county_besieged(c)) *(BYTE *)(0x0053fb72 + c * 0x300) = 1, marked++;
+	}
+	return marked;
+}
+static void siege_unmark(const BYTE *saved)
+{
+	int n = *(int *)0x0056d5dc;
+	for (int c = 1; c <= n && c < 64; c++) *(BYTE *)(0x0053fb72 + c * 0x300) = saved[c];
+}
+static int marked_call(county_step_t f, unsigned a, int b)
+{
+	if (!g_fixSiegeGarrison) return f(a, b);
+	BYTE saved[64];
+	int marked = siege_marks(saved), r = f(a, b);
+	if (marked) siege_unmark(saved);
+	return r;
+}
+static int __cdecl h_ai_reinforce(unsigned player, int unused) { return marked_call(o_ai_reinforce, player, unused); }
+static int __cdecl h_ai_pick_castle(unsigned player, int army) { return marked_call(o_ai_pick_castle, player, army); }
+static int __cdecl h_ai_march(unsigned army, int unused) { return marked_call(o_ai_march, army, unused); }
+static void __cdecl h_season_castles(void) { g_inUpgrade++; o_season_castles(); g_inUpgrade--; }
+
 static void __cdecl h_castle_enter(unsigned army, int county)
 {
-	if (g_fixSiegeGarrison && army > 0 && army < 0x97 && county > 0) {
-		int garrison = *(int *)(0x0053fb6c + county * 0x300);
-		if (garrison > 0 && garrison < 0x97 && (unsigned)garrison != army && *(BYTE *)(0x0052f24a + garrison * 0x1a4)) {
+	if (g_fixSiegeGarrison && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
+		if (county_besieged(county) && (unsigned)*(int *)(0x0053fb6c + county * 0x300) != army) {
 			*(BYTE *)(0x0052f200 + army * 0x1a4) = 1;   // as the full-castle branch leaves it
 			*(BYTE *)(0x0052f0ca + army * 0x1a4) = 2;
 			*(BYTE *)(0x0052f1fc + army * 0x1a4) = 0;
@@ -7710,7 +7752,13 @@ static void install_game_fixes(void)
 {
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
-	if (!hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter))
+	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
+		kStep18[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,n
+	if (!hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter) ||
+		!hook_code((BYTE *)0x004508de, kStep1C, sizeof kStep1C, h_season_castles, &o_season_castles) ||
+		!hook_code((BYTE *)0x0049f12f, kStep1C, sizeof kStep1C, h_ai_reinforce, &o_ai_reinforce) ||
+		!hook_code((BYTE *)0x004a07f2, kStep10, sizeof kStep10, h_ai_pick_castle, &o_ai_pick_castle) ||
+		!hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march))
 		g_fixSiegeGarrison = FALSE;
 	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
 	g_runBackground =GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
