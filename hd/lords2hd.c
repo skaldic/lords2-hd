@@ -4313,6 +4313,15 @@ static void __cdecl h_clip_x(int left, int right)
 	if (g_drawingLeft && left == 0) left = battle_zoom_on() ? PANEL_X - battle_map_w() : -g_extra;
 	o_clip_x(max(left, -g_off), right);
 }
+// FUN_0040477b(top, bottom), the same for rows: a scroll's tiles stop at row 480. The zoomed-out
+// battlefield is taller; the settings scroll in its middle reaches below that (g_drawingLow).
+static clip_x_t o_clip_y;
+static BOOL g_drawingLow;
+static void __cdecl h_clip_y(int top, int bottom)
+{
+	if (g_drawingLow && bottom == GAME_H && battle_zoom_on()) bottom = g_frameH;
+	o_clip_y(top, bottom);
+}
 
 // The county screen's two strips that end at the game's left edge are drawn longer to the left
 // when the map is wide: the top bar, mos_24blank(0, 0, 25, 1) in FUN_00419c78 - 24-pixel tiles -
@@ -4982,8 +4991,9 @@ static void menu_scroll_keep(void)
 	if (!g_msDrawn) ms_region(g_msUnder, 1); // what the game had there when it opened (later it may be the scroll itself)
 	g_msGen = g_menuGen;
 	g_drawingLeft = g_msX < 0; // left of the game's x = 0 (h_clip_x, h_frame)
+	g_drawingLow = g_msY + MS_H > GAME_H; // and below row 480 (h_clip_y)
 	menu_scroll_draw();
-	g_drawingLeft = FALSE;
+	g_drawingLeft = g_drawingLow = FALSE;
 	ms_region(g_msSnap, 1);
 	g_msDrawn = 1;
 	g_ovl[1].x = g_msX; g_ovl[1].y = g_msY; g_ovl[1].w = MS_W; g_ovl[1].h = MS_H; g_ovl[1].snap = g_msSnap;
@@ -5538,6 +5548,7 @@ static void install_wide(void)
 	static const BYTE kPickPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28 }; // push ebp; mov ebp,esp; sub esp,28h
 	hook_code((BYTE *)0x00429ba4, kPickPrologue, sizeof kPickPrologue, h_pick_cell, &o_pick_cell);
 	hook_code((BYTE *)0x0040464c, kBlockPrologue, sizeof kBlockPrologue, h_clip_x, &o_clip_x);
+	hook_code((BYTE *)0x0040477b, kBlockPrologue, sizeof kBlockPrologue, h_clip_y, &o_clip_y);
 	hook_code((BYTE *)0x004bc020, kBlockPrologue, sizeof kBlockPrologue, h_battle_view, &o_battle_view);
 	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
