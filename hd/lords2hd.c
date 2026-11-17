@@ -1182,7 +1182,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	int w = *(const WORD *)p, h = *(const WORD *)(p + 2);
 	const BYTE *idx = p + 4;
 	const DWORD *hd = (const DWORD *)(idx + w * h);
-	if (battle_zoom_on() && g_btLayer) {
+	if (battle_zoom_on() && g_btLayer && !g_ownScroll) { // (the settings scroll is not the battle's: its ground keeps its HD art)
 		for (int r = 0; r < h; r++) {
 			int fy = y + r;
 			if (fy < 0 || fy >= g_frameH) continue;
@@ -2236,7 +2236,7 @@ static BOOL menu_key(int vk)
 }
 // Where the panel is drawn as a game scroll (menu_scroll_keep): everywhere but in battles, which have
 // a drawing layer of their own; there it is the plain panel, drawn over the picture (menu_draw).
-static BOOL menu_as_scroll(void) { return !(*(int *)0x0052af94 == 3 && *(int *)0x0057c8fc != 0); } // all but battles (their own layer)
+static BOOL menu_as_scroll(void) { return TRUE; }
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
 static RECT g_menuRowW[16], g_menuTabRectW[2], g_menuBoxW; // the plain panel's, in window coordinates
 // A click while the panel is open: window and game coordinates.
@@ -4949,7 +4949,7 @@ static void menu_scroll_draw(void)
 	}
 	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + MS_H - 58, MS_W, small, ink);
 	const char *keys = "Click to change, right-click to close";
-	ctext(keys, x0, y0 + MS_H - 40, MS_W, width(keys, body) <= MS_W - 40 ? body : small, ink); // the keys apart, in the body lettering
+	ctext(keys, x0, y0 + MS_H - 40, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
 	g_ownScroll = FALSE;
 }
@@ -4973,11 +4973,17 @@ static void menu_scroll_keep(void)
 		int left = map && g_off ? -g_off : 0, right = map ? 0x1dc : GAME_W;
 		g_msX = max(0, min(GAME_W - MS_W, (left + right) / 2 - MS_W / 2));
 		g_msY = (GAME_H - MS_H) / 2;
+		if (battle_zoom_on()) { // the middle of the zoomed-out field, as the end-of-battle scroll (battle_end_shift)
+			g_msX = PANEL_X - battle_map_w() / 2 - MS_W / 2;
+			g_msY = GAME_H - MS_H / 2;
+		}
 	}
 	if (g_msDrawn && g_msGen == g_menuGen && ms_region(g_msSnap, 0)) return;
 	if (!g_msDrawn) ms_region(g_msUnder, 1); // what the game had there when it opened (later it may be the scroll itself)
 	g_msGen = g_menuGen;
+	g_drawingLeft = g_msX < 0; // left of the game's x = 0 (h_clip_x, h_frame)
 	menu_scroll_draw();
+	g_drawingLeft = FALSE;
 	ms_region(g_msSnap, 1);
 	g_msDrawn = 1;
 	g_ovl[1].x = g_msX; g_ovl[1].y = g_msY; g_ovl[1].w = MS_W; g_ovl[1].h = MS_H; g_ovl[1].snap = g_msSnap;
