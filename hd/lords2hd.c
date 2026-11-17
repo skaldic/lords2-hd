@@ -290,6 +290,9 @@ static int g_frameSteps;               // Timing=1: logic steps since the last f
 static volatile LONG g_presentCount;   // pictures shown (Timing=1)
 static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
 static volatile LONG g_copySeq;        // every copy to the screen (h_show_frame: did a forced call copy?)
+static volatile LONG g_copyPending;    // the game's last finished frame was not copied (pending_copy)
+static volatile double g_frameCopyT;   // when the game last copied a whole frame to the screen
+static int g_pendingCopies;            // Timing=1: copies made from the frame limiter's wait
 static void mark_dirty(void)
 {
 	InterlockedIncrement(&g_dirtyCount);
@@ -831,6 +834,30 @@ static void pace_change(void)
 	g_paceChg[i].t = perf_now(); g_paceChg[i].seq = s;
 	InterlockedIncrement(&g_paceChgN);
 }
+// Timing=1: both threads' events, for the late-refresh trace: T turn given, H changed frame finished,
+// C copied, K skipped (composing), N no turn, P copied from the wait
+static struct { double t; char k; LONG seq; } g_paceEv[PACE_RING];
+static volatile LONG g_paceEvN;
+static void pace_event(char k, LONG seq)
+{
+	if (!g_timing) return;
+	LONG n = InterlockedIncrement(&g_paceEvN) - 1;
+	int i = n % PACE_RING;
+	g_paceEv[i].t = perf_now(); g_paceEv[i].k = k; g_paceEv[i].seq = seq;
+}
+static void pace_trace(double from, double to, double base)
+{
+	char w[900]; int wl = 0; w[0] = 0;
+	LONG n = g_paceEvN;
+	for (int k = PACE_RING - 1; k >= 0; k--) {
+		if (k >= n) continue;
+		int i = (n - 1 - k) % PACE_RING;
+		if (g_paceEv[i].t < from || g_paceEv[i].t > to) continue;
+		wl += snprintf(w + wl, sizeof w - wl, " %+.1f%c%ld", g_paceEv[i].t - base, g_paceEv[i].k, (long)g_paceEv[i].seq);
+		if (wl > (int)sizeof w - 30) break;
+	}
+	logf_("pace:   events:%s", w);
+}
 static void pace_wake(int shown) // 0 read unchanged, 1 new picture shown, 2 a repeat
 {
 	int i = g_paceWakeN % PACE_RING;
@@ -881,7 +908,8 @@ static void pace_classify(void)
 		}
 		if (latest > shownSeq) {
 			nLate++;
-			if (details < 25) { // what happened in this refresh
+			static double firstT; if (!firstT) firstT = now;
+			if (details < 300 && now - firstT > 40000) { // what happened in this refresh (after the first 30 s: not the menus)
 				details++;
 				char w[400]; int wl = 0; w[0] = 0;
 				for (int k = PACE_RING - 1; k >= 0; k--) {
@@ -893,6 +921,7 @@ static void pace_classify(void)
 					if (wl > (int)sizeof w - 30) break;
 				}
 				logf_("pace: late refresh: change #%ld made %.1f ms before the previous refresh, shown #%ld; reads in it:%s", (long)latest, (V - period) - latestT, (long)shownSeq, w[0] ? w : " none");
+				pace_trace(V - 2 * period, V, V - period);
 			}
 		}
 		else nIdle++;
@@ -4550,6 +4579,7 @@ static BOOL present(void)
 #define REPEAT_LEAD 7    // ms before the refresh: no new frame by then, the last picture again
 // The wait for the next refresh after a picture: the display's vertical blank with the GPU path, the
 // compositor's next frame (DwmFlush) on the CPU path.
+static double g_lastVblank; // when the last refresh wait ended
 static void wait_refresh(HRESULT (WINAPI *dwm_flush)(void))
 {
 	double t = perf_now();
@@ -4561,6 +4591,7 @@ static void wait_refresh(HRESULT (WINAPI *dwm_flush)(void))
 		if (said != 2 && gpu_drawing()) { said = 2; logf_("refresh wait: the compositor (no vertical blank wait)"); }
 		if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
 	}
+	g_lastVblank = perf_now();
 	if (g_timing) { // in the pacing record: W, with how long the wait was
 		int i = g_paceWakeN % PACE_RING;
 		g_paceWake[i].t = perf_now(); g_paceWake[i].seq = g_paceReadSeq; g_paceWake[i].shown = 3; g_paceWake[i].present = perf_now() - t;
@@ -4610,7 +4641,7 @@ static DWORD WINAPI presenter(void *unused)
 			}
 			else { repeatPause = perf_now() + 250; dbgRepFail++; }
 			dbgB1++;
-			InterlockedExchange(&g_frameTaken, 1); // the game may copy its newest frame for the next refresh
+			InterlockedExchange(&g_frameTaken, 1); pace_event('T', 0); // the game may copy its newest frame for the next refresh
 			continue;
 		}
 		// The overlay's numbers kept fresh on a still screen: redrawn 4 times a second, not counted.
@@ -4620,6 +4651,23 @@ static DWORD WINAPI presenter(void *unused)
 		if (statsOnly) lastStats = nowMs;
 		if (bench || statsOnly) InterlockedExchange(&g_forcePresent, 1);
 		if (!dirty && !bench && !statsOnly && !g_dumpPalettes && !g_waveActive) continue; // DumpPalettes: lets a palette that stays put be logged
+		// A picture for the shore waves alone, while the game has a finished frame on its way (it copies it
+		// within 2 ms of being allowed, pending_copy): that frame is waited for, or it reached the screen a
+		// refresh late (a scrolling map).
+		// (the game may copy only after the refresh, and needs a few ms: up to 6 ms after it, the picture
+		// can still be drawn in time)
+		// (any wake counts: the game's small updates to the screen, the shore waves; what is waited for
+		// is a whole frame copied since the refresh, while one is waiting to be copied)
+		// (only while the game may copy: without its turn there is a copy on the screen surface not read yet,
+		// and waiting for another would wait for this presenter)
+		if (!bench && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank) {
+			for (;;) {
+				double wait = g_lastVblank + 6 - perf_now();
+				if (wait <= 0 || wait > 6 || g_frameCopyT >= g_lastVblank || !g_copyPending || !g_frameTaken) break;
+				WaitForSingleObject(g_dirtyEvent, (DWORD)(wait + 0.5));
+			}
+			if (InterlockedExchange(&g_dirty, 0)) dirty = TRUE;
+		}
 		// A new frame too late to be drawn before the coming refresh: that refresh gets the last
 		// picture again first (it would otherwise get nothing), and the new one goes to the next.
 		if (repeatCap && dirty) {
@@ -4663,7 +4711,7 @@ static DWORD WINAPI presenter(void *unused)
 		// The game may copy its next frame now (h_show_frame): after the refresh, so the copy taken
 		// is its newest, not one made just after the last picture and a refresh old by the time it
 		// is read (changed frames waited unseen behind it).
-		InterlockedExchange(&g_frameTaken, 1);
+		InterlockedExchange(&g_frameTaken, 1); pace_event('T', 0);
 		if (!shown && dirty) skipped++;
 		if (g_timing) pace_classify();
 		if (g_timing && (t1.QuadPart - since.QuadPart) > 5 * freq.QuadPart) {
@@ -5423,6 +5471,17 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static void remote_hide(HWND hwnd)
 {
+	// [Debug] RemoteVisible=1: the window stays on screen (a fullscreen window goes to the display
+	// without the compositor, as for a player: frame pacing can only be measured so), still taking its
+	// input from the driver only.
+	if (GetPrivateProfileIntA("Debug", "RemoteVisible", 0, g_iniPath)) {
+		logf_("remote testing mode: visible");
+		char path[MAX_PATH];
+		snprintf(path, sizeof path, "%s\\lords2hd-remote.txt", g_gameDir);
+		FILE *f = fopen(path, "w");
+		if (f) { fprintf(f, "%lu %lu\n", (unsigned long)(ULONG_PTR)hwnd, GetCurrentProcessId()); fclose(f); }
+		return;
+	}
 	HMODULE dwm = LoadLibraryA("dwmapi.dll");
 	HRESULT (WINAPI *set_attr)(HWND, DWORD, const void *, DWORD) = dwm ? (void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
 	BOOL cloak = TRUE;
@@ -7423,6 +7482,14 @@ static void __cdecl h_show_frame(int force)
 	// Forced only once the presenter has taken the last copy (g_frameTaken): the game draws ~140 frames
 	// a second, the screen shows 60, and each copy carries the HD layers' changed rows (a scroll
 	// changes them all), so copies nobody would see only slowed the game and held the presenter up.
+	if (g_timing && !IN_BATTLE_NOW() && g_back) { // elsewhere: the change count for the pacing check only
+		static DWORD lastHashM;
+		DWORD h = 2166136261u;
+		const DWORD *p = (const DWORD *)g_back->bits; int words = g_back->pitch * g_frameH / 4;
+		for (int i = 0; i < words; i++) h = (h ^ p[i]) * 16777619u;
+		if (h != lastHashM && *(int *)0x0050d09c > 0) pace_change(); // (only what the game has marked for the screen)
+		lastHashM = h;
+	}
 	if (g_timing && IN_BATTLE_NOW() && g_back) { // what makes a battle picture change: steps, animation ticks, scrolls
 		static DWORD lastHash, lastAnim, lastScroll, t0; static int n[3][2]; // [0 nothing, 1 step, 2 tick or scroll only][changed]
 		static int lastCol, lastRow, moves; static LONG lastPresents;
@@ -7430,7 +7497,7 @@ static void __cdecl h_show_frame(int force)
 		DWORD h = 2166136261u;
 		const DWORD *p = (const DWORD *)g_back->bits; int words = g_back->pitch * g_frameH / 4;
 		for (int i = 0; i < words; i++) h = (h ^ p[i]) * 16777619u; // every word: a change of one pixel counts
-		if (h != lastHash) pace_change();
+		if (h != lastHash && *(int *)0x0050d09c > 0) { pace_change(); pace_event('H', g_paceChangeSeq); } // (changes the game has not marked for the screen are never shown, even by the original)
 		DWORD anim = *(DWORD *)0x004e5b10, scroll = *(DWORD *)0x004e5b14;
 		int kind = g_frameSteps ? 1 : (anim != lastAnim || scroll != lastScroll) ? 2 : 0;
 		n[kind][h != lastHash]++;
@@ -7447,7 +7514,16 @@ static void __cdecl h_show_frame(int force)
 	}
 	// The presenter is building a picture from this frame's HD layers: an unforced copy now would only
 	// wait for it (g_composeLock), and nobody would see that frame; the next call copies.
-	if (!force && g_composing) return;
+	static int sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy; static double sfT; // Timing=1: why copies did or did not happen
+	if (g_timing) {
+		sfCalls++;
+		if (perf_now() - sfT > 1000) {
+			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies",
+				sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy, g_pendingCopies);
+			sfCalls = sfCompSkip = sfOurs = sfOursNoCopy = sfOther = sfOtherCopy = 0; g_pendingCopies = 0; sfT = perf_now();
+		}
+	}
+	if (!force && g_composing) { g_copyPending = 1; sfCompSkip++; pace_event('K', g_paceChangeSeq); return; }
 	BOOL ours = FALSE;
 	if (g_frameLimit > 0 && !force && InterlockedExchange(&g_frameTaken, 0)) force = ours = 1;
 	LONG seq = g_copySeq;
@@ -7464,6 +7540,30 @@ static void __cdecl h_show_frame(int force)
 	else o_show_frame(force);
 	// nothing was copied (nothing changed, or the game's own gate): the presenter's turn is kept
 	if (ours && g_copySeq == seq) InterlockedExchange(&g_frameTaken, 1);
+	if (ours) { sfOurs++; if (g_copySeq == seq) sfOursNoCopy++; } else { sfOther++; if (g_copySeq != seq) sfOtherCopy++; }
+	if (g_timing) {
+		pace_event(g_copySeq != seq ? 'C' : ours ? 'c' : 'N', g_paceChangeSeq);
+		static int gateLogs;
+		if (ours && g_copySeq == seq && *(int *)0x0050d09c > 0 && gateLogs < 30) { // marked for the screen, our turn, and still no copy: the copy routine's own gates
+			gateLogs++;
+			logf_("copy refused: marks %d, 4df28c %d, 56d650 %d, 553008 %d, eabe8 %d, 5651ac %d", *(int *)0x0050d09c, *(int *)0x004df28c, *(int *)0x0056d650, *(int *)0x00553008, *(int *)0x004eabe8, *(int *)0x005651ac);
+		}
+	}
+	g_copyPending = g_copySeq == seq && g_frameLimit > 0; // a finished frame not on the screen yet (pending_copy)
+	if (g_copySeq != seq) g_frameCopyT = perf_now();
+}
+// From the frame limiter's wait (h_game_frame): the last finished frame copied once the presenter
+// is ready for it. The game is between frames there, so its back buffer is complete.
+static void pending_copy(void)
+{
+	if (!g_copyPending || !g_frameTaken || g_composing || !*(void **)0x004eabd0) return;
+	if (!InterlockedExchange(&g_frameTaken, 0)) return;
+	g_copyPending = 0;
+	LONG seq = g_copySeq;
+	g_paceCopying = g_paceChangeSeq;
+	o_show_frame(1);
+	if (g_copySeq == seq) InterlockedExchange(&g_frameTaken, 1); // (nothing to copy after all)
+	else { g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq); }
 }
 
 // Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
@@ -7532,7 +7632,11 @@ static char __cdecl h_game_frame(void)
 				if (stepIn != INT_MAX && stepIn - frameIn < periodMs) frameIn = INT_MAX; // the step is close: wait for it
 				else if (now.QuadPart >= next.QuadPart) break;
 				int ms = min(stepIn, frameIn) - 1;
-				Sleep(ms > 0 ? ms : 0);
+				// In slices of 2 ms: a finished frame the presenter has not had (it was busy when the
+				// frame was made) goes to the screen as soon as the presenter is ready, not when the
+				// next logic step wakes the game (up to 12 ms later, one refresh late).
+				Sleep(ms > 2 ? 2 : ms > 0 ? ms : 0);
+				pending_copy();
 			}
 		}
 		// the next slot is a frame period after this frame, whatever woke it
