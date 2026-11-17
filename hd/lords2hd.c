@@ -688,44 +688,38 @@ static int room_col(int x, int y, int *art)
 }
 
 // ---- The art pack (lords2hd.pak) -----------------------------------------------------------------
-// The HD art ships as one file next to the game: a header, the files' bytes, and an index of their
-// names, offsets and sizes. The index is scrambled with a keystream and the files' bytes with a byte
-// table, so ordinary tools cannot open them, while the installer's compression still works on them.
-// It keeps casual copying out; it is not protection (the key is in this DLL). A loose file in
-// lords2hd\ is read first, so the art can still be replaced by hand. Made by tools\l2pak.c.
+// The HD art and the restored voices ship as one file next to the game: a header (magic, count, index
+// offset, version), the files' bytes one after another, and an index of their names, offsets and
+// sizes. Plain, not scrambled: a packer rewriting every byte of a thousand files looked like
+// ransomware to antivirus behaviour monitors. A loose file in lords2hd\ is read first, so the art can
+// still be replaced by hand. Made by tools\l2pak.c.
 #define PAK_MAGIC 0x50483243 // "C2HP"
+#define PAK_VERSION 2        // 1 was scrambled: ignored
 typedef struct { char name[48]; DWORD off, size; } PAK_ENTRY;
 static PAK_ENTRY *g_pak;
 static int g_pakN;
-static BYTE g_pakUn[256]; // the byte table, undone
 static char g_pakPath[MAX_PATH];
-static DWORD pak_key(DWORD *s) { DWORD x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *s = x; }
 static void pak_open(void)
 {
 	snprintf(g_pakPath, sizeof g_pakPath, "%s\\lords2hd.pak", g_gameDir);
 	HANDLE h = CreateFileA(g_pakPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 	if (h == INVALID_HANDLE_VALUE) return;
 	DWORD head[4], got = 0; // magic, count, index offset, version
-	if (ReadFile(h, head, sizeof head, &got, NULL) && got == sizeof head && head[0] == PAK_MAGIC && head[1] > 0 && head[1] < 100000) {
+	if (ReadFile(h, head, sizeof head, &got, NULL) && got == sizeof head && head[0] == PAK_MAGIC && head[3] == PAK_VERSION &&
+		head[1] > 0 && head[1] < 100000) {
 		PAK_ENTRY *e = malloc(head[1] * sizeof *e);
 		LONG hi = 0;
 		if (e && SetFilePointer(h, (LONG)head[2], &hi, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
 			ReadFile(h, e, head[1] * sizeof *e, &got, NULL) && got == head[1] * sizeof *e) {
-			DWORD s = 0x9e3779b9u ^ head[1];
-			for (DWORD i = 0; i < head[1] * sizeof *e / 4; i++) ((DWORD *)e)[i] ^= pak_key(&s);
-			BYTE fw[256];
-			s = 0x2545f491u;
-			for (int i = 0; i < 256; i++) fw[i] = (BYTE)i;
-			for (int i = 255; i > 0; i--) { int j = pak_key(&s) % (i + 1); BYTE t = fw[i]; fw[i] = fw[j]; fw[j] = t; }
-			for (int i = 0; i < 256; i++) g_pakUn[fw[i]] = (BYTE)i;
+			for (DWORD i = 0; i < head[1]; i++) e[i].name[sizeof e[i].name - 1] = 0;
 			g_pak = e; g_pakN = (int)head[1];
 			logf_("art pack: %d files", g_pakN);
 		}
 		else free(e);
 	}
+	else if (got == sizeof head && head[0] == PAK_MAGIC) logf_("art pack: version %lu, not %d: ignored (make it again with tools\\make_pak.ps1)", head[3], PAK_VERSION);
 	CloseHandle(h);
-}
-// A file of the art: loose, or from the pack (read on demand through its own handle).
+}// A file of the art: loose, or from the pack (read on demand through its own handle).
 struct AFILE { FILE *f; HANDLE h; DWORD base, size, pos; };
 static const PAK_ENTRY *pak_find(const char *path)
 {
@@ -762,7 +756,6 @@ static size_t afread(void *buf, size_t sz, size_t n, AFILE *a)
 	LONG hi = 0;
 	if (!want || SetFilePointer(a->h, (LONG)(a->base + a->pos), &hi, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(a->h, buf, want, &got, NULL)) return 0;
-	for (DWORD i = 0; i < got; i++) ((BYTE *)buf)[i] = g_pakUn[((BYTE *)buf)[i]];
 	a->pos += got;
 	return got / sz;
 }

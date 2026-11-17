@@ -1,7 +1,7 @@
 // Packs the HD art (<game>\lords2hd\screens, wide, tiles, sprites, and the restored voices in sound)
-// into lords2hd.pak, the one file the
-// DLL reads it from (see "The art pack" in hd/lords2hd.c for the format and what the scrambling is
-// and is not). Built and run by tools\make_pak.ps1:
+// into lords2hd.pak, the one file the DLL reads it from (see "The art pack" in hd/lords2hd.c for the
+// format: a header, the files one after another, and an index; plain, not scrambled).
+// Built and run by tools\make_pak.ps1:
 //   l2pak <lords2hd folder> <out.pak>
 #include <windows.h>
 #include <stdio.h>
@@ -9,22 +9,17 @@
 #include <ctype.h>
 
 #define PAK_MAGIC 0x50483243
+#define PAK_VERSION 2
 typedef struct { char name[48]; DWORD off, size; } PAK_ENTRY;
 static PAK_ENTRY entries[4096];
 static int count;
 
-static DWORD key(DWORD *s) { DWORD x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *s = x; }
-
 int main(int argc, char **argv)
 {
 	if (argc != 3) { fprintf(stderr, "usage: l2pak <lords2hd folder> <out.pak>\n"); return 2; }
-	BYTE fw[256];
-	DWORD s = 0x2545f491u;
-	for (int i = 0; i < 256; i++) fw[i] = (BYTE)i;
-	for (int i = 255; i > 0; i--) { int j = key(&s) % (i + 1); BYTE t = fw[i]; fw[i] = fw[j]; fw[j] = t; }
 	FILE *out = fopen(argv[2], "wb");
 	if (!out) { fprintf(stderr, "cannot write %s\n", argv[2]); return 1; }
-	DWORD head[4] = { PAK_MAGIC, 0, 0, 1 };
+	DWORD head[4] = { PAK_MAGIC, 0, 0, PAK_VERSION }; // magic, count, index offset, version
 	fwrite(head, sizeof head, 1, out);
 	static const char *dirs[] = { "screens", "wide", "tiles", "sprites", "sound" }; // sound: optional (restored voices)
 	static BYTE buf[1 << 20];
@@ -53,7 +48,6 @@ int main(int argc, char **argv)
 			e->off = (DWORD)pos;
 			size_t n;
 			while ((n = fread(buf, 1, sizeof buf, in)) > 0) {
-				for (size_t i = 0; i < n; i++) buf[i] = fw[buf[i]];
 				fwrite(buf, 1, n, out);
 				e->size += (DWORD)n;
 			}
@@ -64,8 +58,6 @@ int main(int argc, char **argv)
 		FindClose(h);
 	}
 	long long idx = _ftelli64(out);
-	s = 0x9e3779b9u ^ (DWORD)count;
-	for (int i = 0; i < count * (int)sizeof(PAK_ENTRY) / 4; i++) ((DWORD *)entries)[i] ^= key(&s);
 	fwrite(entries, sizeof(PAK_ENTRY), count, out);
 	head[1] = (DWORD)count; head[2] = (DWORD)idx;
 	fseek(out, 0, SEEK_SET);

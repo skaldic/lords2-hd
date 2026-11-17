@@ -10,9 +10,15 @@ New-Item -ItemType Directory -Force (Split-Path $Out -Parent) | Out-Null
 $tools = & "$PSScriptRoot\tools_dir.ps1"
 $cc = Get-ChildItem -Path $tools -Filter x86_64-w64-mingw32-clang.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue |
     Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+$target = @()
+if (-not $cc) { # the per-target wrapper missing: llvm-mingw's clang itself, told the target
+    $cc = Get-ChildItem -Path $tools -Filter "clang-*.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^clang-\d+\.exe$' } |
+        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+    $target = @('--target=x86_64-w64-mingw32', '-fuse-ld=lld')
+}
 if (-not $cc) { throw "x86_64-w64-mingw32-clang.exe not found (llvm-mingw, tools\tools_dir.ps1)" }
 $exe = Join-Path $env:TEMP "l2pak.exe"
-& $cc -O2 -Wall -o $exe "$PSScriptRoot\l2pak.c"
+& $cc @target -O2 -Wall -o $exe "$PSScriptRoot\l2pak.c"
 if ($LASTEXITCODE -ne 0) { throw "l2pak build failed" }
 & $exe (Join-Path $game "lords2hd") $Out
 if ($LASTEXITCODE -ne 0) { throw "packing failed" }
