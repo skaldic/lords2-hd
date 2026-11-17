@@ -124,6 +124,8 @@ static BOOL g_cycleOn;   // [Display] CycleKeys: , and . cycle counties and armi
 static BOOL cycle_key(int dir);
 static int army_cell(int id);
 static int cycle_button_at(int x, int y);
+static BOOL army_panel_at(int x, int y);
+static int g_apStyle, g_apSig;
 static void cycle_buttons_draw(int sx, int sw);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
@@ -3373,6 +3375,17 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		logf_("centre on object %d: cell %d", (int)wp, r);
 		return 0;
 	}
+	if (n == 19) { // testing: select army wParam, as a click on it does
+		*(int *)0x0052afbc = (int)wp;
+		((void (__cdecl *)(void))0x004371ce)();
+		logf_("select object %d: screen %d", (int)wp, *(BYTE *)0x004eac50);
+		return 0;
+	}
+	if (n == 20) { // testing: the army panel's frame kind
+		g_apStyle = (int)wp;
+		g_apSig = 2; // drawn again
+		return 0;
+	}
 	if (n == 17) { // testing: list the map objects (table 0x52f0b0, 0x1a4 each) and their cells
 		for (int i = 1; i <= 150; i++) {
 			const BYTE *o = (const BYTE *)0x0052f0b0 + i * 0x1a4;
@@ -3457,6 +3470,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		int btn = cycle_button_at(fx, fy);
 		if (n == 2 && btn) { cycle_key(btn); btnDown = TRUE; InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return 0; }
 		if (n == 3 && btnDown) { btnDown = FALSE; return 0; }
+		if (n != 1 && army_panel_at(fx, fy)) return 0;
 	}
 	if (n == 2) buttons |= MK_LBUTTON; else if (n == 3) buttons &= ~MK_LBUTTON;
 	if (n == 5) buttons |= MK_RBUTTON; else if (n == 6) buttons &= ~MK_RBUTTON;
@@ -3512,6 +3526,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		int btn = cycle_button_at(x, y);
 		if (msg == WM_LBUTTONDOWN && btn) { cycle_key(btn); btnDown = TRUE; InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return 0; }
 		if (msg == WM_LBUTTONUP && btnDown) { btnDown = FALSE; return 0; }
+		if (msg != WM_MOUSEMOVE && army_panel_at(x, y)) return 0;
 		lp = MAKELPARAM(x, y);
 	}
 	else if (msg == WM_PAINT || msg == WM_SIZE || msg == WM_ACTIVATEAPP) {
@@ -3619,37 +3634,47 @@ static BOOL cycle_key(int dir)
 	logf_("cycle: %s %d", armies ? "army" : "county", list[k]);
 	return TRUE;
 }
-// Two arrow buttons on the side panel's name plate, either side of the county's name: clicking them
-// does what , and . do. Drawn into the 2x picture; their clicks never reach the game.
+// Two arrow buttons on the side panel's name plate, either side of the county's name, or at the
+// foot of the army panel (army_panel_keep) when one of the player's armies is selected: clicking
+// them does what , and . do. Drawn into the 2x picture; their clicks never reach the game.
+#define AP_W (8 * 16)
+#define AP_H (15 * 16)
+#define AP_X (0x1dc - AP_W)
+#define AP_Y (GAME_H - AP_H)
+static int panel_army(void);
 static const RECT kCycleBtn[2] = { { 487, 162, 503, 180 }, { 615, 162, 631, 180 } }; // game coords: < and >
-// a county that is not the player's has its name lower on its plate (the grey sovereign-land one)
-static int cycle_btn_dy(void) { int c = *(int *)0x0057c93c; return c > 0 && c < 32 && ((BYTE *)0x0053f9b5)[c * 0x300] == *(int *)0x0057c8cc ? 0 : 16; }
-static BOOL cycle_buttons_on(void)
+static BOOL cycle_btn_rect(int b, RECT *r)
 {
 	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
 	BYTE s = *(BYTE *)0x004eac50;
-	if (s == 16) return TRUE;
+	if (s == 16) {
+		if (!panel_army()) return FALSE;
+		SetRect(r, b ? AP_X + AP_W - 24 : AP_X + 8, AP_Y + AP_H - 28, b ? AP_X + AP_W - 8 : AP_X + 24, AP_Y + AP_H - 10);
+		return TRUE;
+	}
 	int c = *(int *)0x0057c93c; // the name plate is up for the player's own county
-	return s == 0 && c > 0 && c < 32 && ((BYTE *)0x0053f9b5)[c * 0x300] == *(int *)0x0057c8cc;
+	if (s != 0 || c <= 0 || c >= 32 || ((BYTE *)0x0053f9b5)[c * 0x300] != *(int *)0x0057c8cc) return FALSE;
+	*r = kCycleBtn[b];
+	return TRUE;
 }
 static int cycle_button_at(int x, int y)
 {
-	if (!cycle_buttons_on()) return 0;
 	for (int b = 0; b < 2; b++) {
-		RECT r = kCycleBtn[b];
-		OffsetRect(&r, 0, cycle_btn_dy());
+		RECT r;
+		if (!cycle_btn_rect(b, &r)) return 0;
 		InflateRect(&r, 3, 3);
 		if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return b ? 1 : -1;
 	}
 	return 0;
 }
+// a click on the army panel elsewhere than its buttons does nothing (it must not send the army there)
+static BOOL army_panel_at(int x, int y) { return panel_army() && x >= AP_X && x < AP_X + AP_W && y >= AP_Y && y < AP_Y + AP_H; }
 // into the 2x frame (sw columns from game x sx - g_off)
 static void cycle_buttons_draw(int sx, int sw)
 {
-	if (!cycle_buttons_on()) return;
 	for (int b = 0; b < 2; b++) {
-		RECT r = kCycleBtn[b];
-		OffsetRect(&r, 0, cycle_btn_dy());
+		RECT r;
+		if (!cycle_btn_rect(b, &r)) return;
 		int X0 = 2 * (r.left + g_off - sx), Y0 = 2 * r.top, W = 2 * (r.right - r.left), H = 2 * (r.bottom - r.top);
 		if (X0 < 0 || X0 + W > 2 * sw) continue;
 		for (int y = 0; y < H; y++) {
@@ -3663,8 +3688,7 @@ static void cycle_buttons_draw(int sx, int sw)
 			}
 		}
 	}
-}
-static BOOL WINAPI h_GetCursorPos(POINT *p)
+}static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
 		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
@@ -4548,6 +4572,98 @@ static void __cdecl h_edit_text(char *text, int max, int a, int b)
 	o_edit_text(text, max, a, b);
 }
 
+// The army panel: while one of the player's armies is selected (screen 16) a narrow scroll stands
+// on the bottom of the map, left of the side panel's buttons, with the army's name, its troops one
+// kind a row and its total men, and the < > buttons under them. The game draws nothing there of its
+// own, so like the yes/no box (yesno_keep) it is drawn with the game's routines after every game
+// frame in which anything changed its pixels, and the HD art and lettering apply to it as to the
+// rest. Army fields: map object 0x52f0b0 + id*0x1a4 (as the army's info box, FUN_0041b19d).
+static BOOL g_armyPanel = TRUE;
+static int g_apStyle = 1; // the frame (FUN_00409934's kinds): 0 framed panel, 1 scroll, 2 ...
+static int panel_army(void)
+{
+	if (!g_armyPanel || *(BYTE *)0x004eac50 != 16 || *(int *)0x0052af94 != 3 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return 0;
+	int id = *(int *)0x0057c8c4;
+	if (id <= 0 || id > 150) return 0;
+	const BYTE *o = (const BYTE *)0x0052f0b0 + id * 0x1a4;
+	return o[8] == 1 && (signed char)o[0] == *(int *)0x0057c8cc ? id : 0;
+}
+// string idx of the game's text table (as FUN_00402d37 finds it)
+static const char *game_str(int table, int idx)
+{
+	BYTE *p = (BYTE *)0x00591580 + ((int (__cdecl *)(int))0x0040187a)(table);
+	if (p > (BYTE *)0x005aea40) return "";
+	for (; idx > 0; p++)
+		if (!*p && (p[-1] > 0x1f || !p[-1])) idx--;
+	while (*p && *p < 0x20) p++;
+	return (const char *)p;
+}
+static BYTE g_apSnap[AP_W * AP_H];
+static int g_apSig; // what is drawn (0 = nothing)
+static BOOL ap_region(BOOL save)
+{
+	if (!g_back) return FALSE;
+	for (int r = 0; r < AP_H; r++) {
+		BYTE *p = g_back->bits + (AP_Y + r) * g_back->pitch + g_back->org + AP_X;
+		if (save) memcpy(g_apSnap + r * AP_W, p, AP_W);
+		else if (memcmp(g_apSnap + r * AP_W, p, AP_W)) return FALSE;
+	}
+	return TRUE;
+}
+static void army_panel_draw(int id)
+{
+	typedef void (__cdecl *sprite_t)(int, int, int, int);
+	typedef void (__cdecl *text_t)(const char *, int, int, void *, int);
+	typedef void (__cdecl *ctext_t)(const char *, int, int, int, void *, int);
+	typedef void (__cdecl *num_t)(int, char, const char *, int, int, void *, int);
+	sprite_t icon = (sprite_t)0x0040a21a;
+	text_t text = (text_t)0x00402637;
+	ctext_t ctext = (ctext_t)0x004025d7;
+	num_t num = (num_t)0x00402f64;
+	void *big = (void *)0x005af8f0, *small = (void *)0x005c9a90;
+	int *adv = (int *)0x005cd404; // width of the text just drawn
+	const BYTE *o = (const BYTE *)0x0052f0b0 + id * 0x1a4;
+	int sheet = *(int *)0x005530c8;
+	static const DWORD frame[3] = { 0x00409397, 0x004093e0, 0x00409429 }; // framed panel, scroll, ...
+	((void (__cdecl *)(int, int, int, int))frame[g_apStyle % 3])(AP_X, AP_Y, AP_W / 16, AP_H / 16);
+	ctext(game_str((signed char)o[0] + 0x5d, o[0x14f]), AP_X + 2, AP_Y + 10, AP_W - 4, big, 0x3f);
+	for (int t = 0; t < 7; t++) { // a row a kind, mercenaries with their kind
+		int n = *(const short *)(o + 0x16c + t * 2) + (o[0x195] == t ? o[0x196] : 0), y = AP_Y + 30 + t * 24;
+		icon(sheet, 0x2f + t, AP_X + AP_W / 2 - 30, y);
+		num(n, ' ', "", AP_X + AP_W / 2 + 2, y + 4, small, 0x3f);
+	}
+	// total men between the < > buttons (cycle_btn_rect): the number and the game's "men"
+	char s[64], word[32];
+	const char *men = game_str(8, 0x49), *w = strrchr(men, ' ');
+	lstrcpynA(word, w ? w + 1 : men, sizeof word);
+	wsprintfA(s, "%d %s", *(const int *)(o + 0x168), word);
+	ctext(s, AP_X + 24, AP_Y + AP_H - 26, AP_W - 48, big, 0x3f);
+	(void)text; (void)adv;
+}
+static void __cdecl h_redraw_map(void);
+// Before the game shows its back buffer (h_show_frame): the game redraws the map under the panel
+// every frame, so the panel is drawn again whenever its pixels are not what it left there.
+static void army_panel_keep(void)
+{
+	int id = g_back ? panel_army() : 0;
+	if (!id) {
+		if (g_apSig) { // gone: the map back where it stood
+			g_apSig = 0;
+			BYTE s = *(BYTE *)0x004eac50;
+			if ((s == 0 || s == 16) && *(int *)0x0052af94 == 3 && *(int *)0x0057c8fc == 0) { h_redraw_map(); ((void (__cdecl *)(void))0x0045240a)(); }
+		}
+		return;
+	}
+	const BYTE *o = (const BYTE *)0x0052f0b0 + id * 0x1a4;
+	int sig = id * 131 + *(const int *)(o + 0x168) * 7 + o[0x196] * 3 + o[0x195];
+	for (int t = 0; t < 7; t++) sig = sig * 31 + *(const short *)(o + 0x16c + t * 2);
+	sig |= 1;
+	if (sig == g_apSig && ap_region(FALSE)) return;
+	army_panel_draw(id);
+	((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, GAME_H - 1); // to be shown
+	ap_region(TRUE);
+	g_apSig = sig;
+}
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
 // picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
 // the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
@@ -5138,7 +5254,9 @@ typedef void (__cdecl *show_frame_t)(int);
 static show_frame_t o_show_frame;
 static void __cdecl h_show_frame(int force)
 {
-	if (*(void **)0x004eabd0) o_show_frame(force);
+	if (!*(void **)0x004eabd0) return;
+	army_panel_keep();
+	o_show_frame(force);
 }
 
 // Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
