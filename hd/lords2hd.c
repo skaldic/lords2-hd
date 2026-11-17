@@ -1830,6 +1830,145 @@ done:
 	return ok;
 }
 
+// The remaster's tracks hold the game's own loop plus a little lead-in and, in places, a fade-out:
+// played as is they do not loop seamlessly. Each is cut to the game's own track (its 11 kHz WAV next
+// to the exe): where the game's first two seconds sit in it (searched in its first three) to where the
+// game's last two seconds end (searched near there). Same recordings, so the match is exact; the cut
+// WAV then plays and loops as the game's own. Done once: a WAV within 10 ms of the game's is left.
+// Lords2Resounded's edits of these recordings (github.com/gqzomer/Lords2Resounded): its cut points,
+// hand-picked so each track loops without the remaster's fade-out, given here in seconds from where
+// the game's own track starts in the recording (measured on its YouTube source), and for Battle 1 a
+// passage it appends to bridge the loop. So the same edit is made on a player's MP3 of them.
+static const struct { const char *track; double from, to, bridgeFrom, bridgeTo; } kMusicEdit[] = {
+	{ "battle1.wav", 0.0326, 139.0898, 3.6461, 6.0400 }, { "battle2.wav", -0.1374, 120.0259, 0, 0 },
+	{ "battle3.wav", 0.0026, 128.7591, 0, 0 }, { "battle4.wav", 0.0022, 122.5225, 0, 0 },
+	{ "battle5.wav", -0.0001, 123.4372, 0, 0 }, { "scroll1.wav", -0.1119, 172.4704, 0, 0 },
+	{ "scroll2.wav", -0.0970, 135.5192, 0, 0 }, { "scroll3.wav", 0.0037, 121.0690, 0, 0 },
+	{ "scroll4.wav", 0.0036, 119.0767, 0, 0 }, { "scroll5.wav", 0.0028, 128.0492, 0, 0 },
+	{ "setup.wav", 0.0033, 39.2855, 0, 0 }, { "setup3.wav", 0.0005, 108.5304, 0, 0 },
+};
+static int music_edit(const char *track) { for (int i = 0; i < (int)(sizeof kMusicEdit / sizeof *kMusicEdit); i++) if (!lstrcmpiA(kMusicEdit[i].track, track)) return i; return -1; }
+// A WAV not to convert or cut again: one the patch cut (a "<name>.cut" marker beside it, newer than
+// it), or one it did not make at all (not 44.1 kHz 16-bit, e.g. Lords2Resounded's own 48 kHz output).
+static BOOL music_is_cut(const char *wav, const char *track)
+{
+	(void)track;
+	FILE *f = fopen(wav, "rb");
+	if (!f) return FALSE;
+	BYTE h[36];
+	BOOL got = fread(h, 1, 36, f) == 36;
+	fclose(f);
+	DWORD rate = 0; WORD bits = 0;
+	if (got) { memcpy(&rate, h + 24, 4); memcpy(&bits, h + 34, 2); }
+	if (got && (rate != 44100 || bits != 16)) return TRUE; // not ours
+	char mark[MAX_PATH];
+	snprintf(mark, sizeof mark, "%s.cut", wav);
+	WIN32_FILE_ATTRIBUTE_DATA a, m;
+	return GetFileAttributesExA(wav, GetFileExInfoStandard, &a) && GetFileAttributesExA(mark, GetFileExInfoStandard, &m) &&
+		CompareFileTime(&m.ftLastWriteTime, &a.ftLastWriteTime) >= 0;
+}
+static BOOL wav_data(const char *path, BYTE **data, DWORD *bytes, WORD *ch, WORD *bits, DWORD *rate)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) return FALSE;
+	BYTE h[12];
+	BOOL ok = fread(h, 1, 12, f) == 12 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4), fmt = FALSE;
+	*data = NULL;
+	while (ok) {
+		BYTE c[8];
+		if (fread(c, 1, 8, f) != 8) { ok = FALSE; break; }
+		DWORD n; memcpy(&n, c + 4, 4);
+		if (!memcmp(c, "fmt ", 4)) {
+			BYTE w[16];
+			if (n < 16 || fread(w, 1, 16, f) != 16) { ok = FALSE; break; }
+			memcpy(ch, w + 2, 2); memcpy(rate, w + 4, 4); memcpy(bits, w + 14, 2);
+			fmt = TRUE;
+			fseek(f, (long)(n - 16 + (n & 1)), SEEK_CUR);
+		}
+		else if (!memcmp(c, "data", 4)) {
+			*data = malloc(n ? n : 1);
+			ok = fmt && *data && fread(*data, 1, n, f) == n;
+			*bytes = n;
+			break;
+		}
+		else fseek(f, (long)(n + (n & 1)), SEEK_CUR);
+	}
+	fclose(f);
+	if (!ok) { free(*data); *data = NULL; }
+	return ok;
+}
+// best place of needle (n samples) in hay[from .. to), by normalised correlation
+static int best_offset(const float *needle, int n, const float *hay, int from, int to, float *score)
+{
+	double nm = 0, nn = 0;
+	for (int i = 0; i < n; i++) nm += needle[i];
+	nm /= n;
+	float *nd = malloc(n * sizeof *nd);
+	if (!nd) return -1;
+	for (int i = 0; i < n; i++) { nd[i] = (float)(needle[i] - nm); nn += nd[i] * nd[i]; }
+	int best = -1; double bs = -2;
+	for (int o = from; o < to; o++) {
+		double s = 0, hs = 0, hh = 0;
+		const float *h = hay + o;
+		for (int i = 0; i < n; i++) { s += nd[i] * h[i]; hs += h[i]; hh += h[i] * h[i]; }
+		double var = hh - hs * hs / n, r = var > 0 && nn > 0 ? s / sqrt(var * nn) : 0;
+		if (r > bs) { bs = r; best = o; }
+	}
+	free(nd);
+	*score = (float)bs;
+	return best;
+}
+static void music_trim(const char *wav, const char *track)
+{
+	char ref[MAX_PATH];
+	snprintf(ref, sizeof ref, "%s\\%s", g_gameDir, track);
+	BYTE *gd = NULL, *rd = NULL; DWORD gb = 0, rb = 0, grate = 0, rrate = 0; WORD gch = 0, gbits = 0, rch = 0, rbits = 0;
+	if (!wav_data(ref, &gd, &gb, &gch, &gbits, &grate) || !wav_data(wav, &rd, &rb, &rch, &rbits, &rrate)) goto out;
+	if (gbits != 8 || grate != 11025 || !gch || rbits != 16 || rrate != 44100 || !rch) { logf_("music: %s not cut (formats %lu/%u, %lu/%u)", track, grate, gbits, rrate, rbits); goto out; }
+	int gn = (int)(gb / gch), rn = (int)(rb / (2 * rch)), qn = rn / 4; // game frames; remaster frames, and at 11025
+	int e = music_edit(track);
+	if (e < 0 || music_is_cut(wav, track)) goto out;
+	float *g = malloc(gn * sizeof *g), *q = malloc(qn * sizeof *q);
+	if (!g || !q) { free(g); free(q); goto out; }
+	for (int i = 0; i < gn; i++) { int s = 0; for (int c = 0; c < gch; c++) s += gd[i * gch + c] - 128; g[i] = (float)s / gch; }
+	const short *rs = (const short *)rd;
+	for (int i = 0; i < qn; i++) { int s = 0; for (int k = 0; k < 4; k++) for (int c = 0; c < rch; c++) s += rs[(i * 4 + k) * rch + c]; q[i] = (float)s / (4 * rch * 256); }
+	int W = 2 * 11025;
+	float sa = 0, st = 0;
+	int a = gn > W && qn > W ? best_offset(g, W, q, 0, min(3 * 11025, qn - W), &sa) : -1;
+	int exp = a + gn - W, t = a >= 0 ? best_offset(g + gn - W, W, q, max(0, exp - 11025 / 2), min(qn - W, exp + 11025 / 2), &st) : -1;
+	free(g); free(q);
+	if (a < 0 || t < 0 || sa < 0.5f || st < 0.5f) { logf_("music: %s not cut (no match: %.2f, %.2f)", track, sa, st); goto out; }
+	// Lords2Resounded's edit, placed by where the game's track starts in this recording (a)
+	double at = a / 11025.0;
+	DWORD frame = 2 * rch, total = rb / frame;
+#define AT(s) ((DWORD)max(0.0, min((double)total, (at + (s)) * rrate + 0.5)))
+	DWORD from = AT(max(kMusicEdit[e].from, 0.0)) * frame, to = AT(kMusicEdit[e].to) * frame; // (no lead-in: the game's track has none)
+	DWORD bFrom = kMusicEdit[e].bridgeTo > 0 ? AT(kMusicEdit[e].bridgeFrom) * frame : 0, bTo = kMusicEdit[e].bridgeTo > 0 ? AT(kMusicEdit[e].bridgeTo) * frame : 0;
+#undef AT
+	if (to <= from) goto out;
+	char tmp[MAX_PATH];
+	snprintf(tmp, sizeof tmp, "%s.part", wav);
+	FILE *f = fopen(tmp, "wb");
+	if (!f) goto out;
+	DWORD bytes = to - from + (bTo - bFrom), v;
+	BYTE hdr[44] = { 0 };
+	memcpy(hdr, "RIFF", 4); v = 36 + bytes; memcpy(hdr + 4, &v, 4);
+	memcpy(hdr + 8, "WAVEfmt ", 8); v = 16; memcpy(hdr + 16, &v, 4);
+	hdr[20] = 1; hdr[22] = (BYTE)rch; memcpy(hdr + 24, &rrate, 4);
+	v = rrate * rch * 2; memcpy(hdr + 28, &v, 4); hdr[32] = (BYTE)(rch * 2); hdr[34] = 16;
+	memcpy(hdr + 36, "data", 4); memcpy(hdr + 40, &bytes, 4);
+	BOOL ok = fwrite(hdr, 1, 44, f) == 44 && fwrite(rd + from, 1, to - from, f) == to - from &&
+		(bTo == bFrom || fwrite(rd + bFrom, 1, bTo - bFrom, f) == bTo - bFrom);
+	fclose(f);
+	if (ok) ok = MoveFileExA(tmp, wav, MOVEFILE_REPLACE_EXISTING);
+	if (!ok) DeleteFileA(tmp);
+	if (ok) { char mark[MAX_PATH]; snprintf(mark, sizeof mark, "%s.cut", wav); FILE *m = fopen(mark, "w"); if (m) { fputs("cut as Lords2Resounded's edit\n", m); fclose(m); } }
+	logf_("music: %s cut as Lords2Resounded's edit: the game's track at %.3f s, %.2f s long (match %.2f / %.2f)%s", track, a / 11025.0,
+		bytes / (double)(rrate * rch * 2), sa, st, ok ? "" : " - could not write");
+out:
+	free(gd); free(rd);
+}
 static DWORD WINAPI music_convert_thread(void *arg)
 {
 	(void)arg;
@@ -1855,8 +1994,9 @@ static DWORD WINAPI music_convert_thread(void *arg)
 		snprintf(src, sizeof src, "%s\\%s", dir, fd.cFileName);
 		snprintf(dst, sizeof dst, "%s\\%s", dir, track);
 		WIN32_FILE_ATTRIBUTE_DATA a;
-		if (GetFileAttributesExA(dst, GetFileExInfoStandard, &a) && CompareFileTime(&a.ftLastWriteTime, &fd.ftLastWriteTime) >= 0)
-			continue; // converted before
+		if (GetFileAttributesExA(dst, GetFileExInfoStandard, &a) && CompareFileTime(&a.ftLastWriteTime, &fd.ftLastWriteTime) >= 0 &&
+			(music_is_cut(dst, track) || music_edit(track) < 0))
+			continue; // converted and cut before (a WAV not cut yet is decoded again: an earlier cut lost the lead-in)
 		if (!open) {
 			if (!com) com = SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED));
 			plat = LoadLibraryA("mfplat.dll");
@@ -1874,7 +2014,7 @@ static DWORD WINAPI music_convert_thread(void *arg)
 			}
 			mf = TRUE;
 		}
-		music_decode(open, newtype, src, dst);
+		if (music_decode(open, newtype, src, dst)) music_trim(dst, track);
 	} while (FindNextFileA(fh, &fd));
 	FindClose(fh);
 	if (mf) stop();
