@@ -134,7 +134,7 @@ static BOOL wasd_screen(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr)
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL menu_key(int vk);
-static void menu_click(int x, int y);
+static void menu_click(int wx, int wy, int gx, int gy);
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
 static void logf_(const char *fmt, ...)
@@ -2057,7 +2057,7 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-static RECT g_menuRow[16], g_menuTabRect[2], g_menuBox; // in window coordinates, as last drawn
+static RECT g_menuRow[16], g_menuTabRect[2], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_COUNT };
@@ -2116,7 +2116,8 @@ static void menu_change(int i)
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
-static void menu_redraw(void) { InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
+static volatile LONG g_menuGen; // bumped at every change: the scroll is drawn again
+static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
 static void menu_toggle(void)
 {
 	if (!g_menuOpen) {
@@ -2143,16 +2144,24 @@ static BOOL menu_key(int vk)
 	menu_redraw();
 	return TRUE;
 }
-// A click in window coordinates while the panel is open.
-static void menu_click(int x, int y)
+// Where the panel is drawn as a game scroll (menu_scroll_keep): the county map, whose colours the
+// scroll is drawn in. Elsewhere it is the plain panel, drawn over the picture (menu_draw).
+static BOOL menu_as_scroll(void) { BYTE s = *(BYTE *)0x004eac50; return *(int *)0x0052af94 == 3 && *(int *)0x0057c8fc == 0 && (s == 0 || s == 16) && *(int *)0x0057cb18 != 2; }
+static int g_msDrawn; // the scroll is up (menu_scroll_keep)
+static RECT g_menuRowW[16], g_menuTabRectW[2], g_menuBoxW; // the plain panel's, in window coordinates
+// A click while the panel is open: window and game coordinates.
+static void menu_click(int wx, int wy, int gx, int gy)
 {
-	POINT p = { x, y };
-	for (int k = 0; k < MENU_TABS; k++) if (PtInRect(&g_menuTabRect[k], p)) { if (k != g_menuTab) menu_set_tab(k); menu_redraw(); return; }
+	BOOL sc = g_msDrawn;
+	POINT p = { sc ? gx : wx, sc ? gy : wy };
+	const RECT *tabs = sc ? g_menuTabRect : g_menuTabRectW, *rows = sc ? g_menuRow : g_menuRowW, *box = sc ? &g_menuBox : &g_menuBoxW;
+	for (int k = 0; k < MENU_TABS; k++) if (PtInRect(&tabs[k], p)) { if (k != g_menuTab) menu_set_tab(k); menu_redraw(); return; }
 	for (int i = 0; i < g_menuRows; i++)
-		if (PtInRect(&g_menuRow[i], p)) { g_menuSel = i; menu_change(kMenuTabItems[g_menuTab][i]); menu_redraw(); return; }
-	if (!PtInRect(&g_menuBox, p)) menu_toggle(); // outside closes it
+		if (PtInRect(&rows[i], p)) { g_menuSel = i; menu_change(kMenuTabItems[g_menuTab][i]); menu_redraw(); return; }
+	if (!PtInRect(box, p)) menu_toggle(); // outside closes it
 }
-// The panel, onto a DC holding the picture (vw x vh), at window offset ox, oy.
+// The plain panel, where the game's colours are not the county map's (menus, battles): onto a DC
+// holding the picture (vw x vh), at window offset ox, oy.
 static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 {
 	int fh = max(16, vh / 34), pad = fh, rowH = fh * 3 / 2, labelW = fh * 10, valueW = fh * 12;
@@ -2165,7 +2174,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	FillRect(dc, &r, edge);
 	r = (RECT){ bx, by, bx + bw, by + bh };
 	FillRect(dc, &r, paper);
-	SetRect(&g_menuBox, ox + r.left, oy + r.top, ox + r.right, oy + r.bottom);
+	SetRect(&g_menuBoxW, ox + r.left, oy + r.top, ox + r.right, oy + r.bottom);
 	HFONT title = CreateFontA(fh * 3 / 2, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
 	HFONT font = CreateFontA(fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
 	HFONT bold = CreateFontA(fh, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
@@ -2181,7 +2190,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	FillRect(dc, &ln, line);
 	for (int k = 0; k < MENU_TABS; k++) {
 		RECT tr = { tx0 + k * (tw + gap), ty, tx0 + k * (tw + gap) + tw, ty + th };
-		SetRect(&g_menuTabRect[k], ox + tr.left, oy + tr.top, ox + tr.right, oy + tr.bottom);
+		SetRect(&g_menuTabRectW[k], ox + tr.left, oy + tr.top, ox + tr.right, oy + tr.bottom);
 		if (k == g_menuTab) {
 			RECT o = { tr.left - lw, tr.top - lw, tr.right + lw, tr.bottom };
 			FillRect(dc, &o, line);
@@ -2206,7 +2215,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 		int y = ty + th + rowH / 2 + rowH * i;
 		RECT row = { bx + pad / 2, y, bx + bw - pad / 2, y + rowH };
 		if (i == g_menuSel) FillRect(dc, &row, hi);
-		SetRect(&g_menuRow[i], ox + row.left, oy + row.top, ox + row.right, oy + row.bottom);
+		SetRect(&g_menuRowW[i], ox + row.left, oy + row.top, ox + row.right, oy + row.bottom);
 		char v[64]; BOOL restart;
 		menu_value(item, v, sizeof v, &restart);
 		SelectObject(dc, font);
@@ -2235,6 +2244,8 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	DeleteObject(title); DeleteObject(font); DeleteObject(bold); DeleteObject(small);
 	DeleteObject(paper); DeleteObject(edge); DeleteObject(hi); DeleteObject(back); DeleteObject(line);
 }
+
+
 // The picture onto the window: src (sw x sh, BGRX) stretched to the view v. Catmull-Rom into a
 // window-sized buffer, or GDI with gdiMode (HALFTONE / COLORONCOLOR) as before; the settings panel
 // on top when open. The buffer is a DIB section, so GDI can draw the panel straight into it.
@@ -2269,7 +2280,7 @@ static void put_picture(HDC dc, const RECT *v, const DWORD *src, int sw, int sh,
 		if (gdiMode == HALFTONE) SetBrushOrgEx(g_outDC, 0, 0, NULL);
 		StretchDIBits(g_outDC, 0, 0, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
-	if (menu) menu_draw(g_outDC, vw, vh, v->left, v->top);
+	if (menu && !menu_as_scroll()) menu_draw(g_outDC, vw, vh, v->left, v->top);
 	GdiFlush();
 	if (shot && InterlockedExchange(&g_shotViewWanted, 0)) { // testing: the picture as on screen
 		char path[MAX_PATH];
@@ -3522,6 +3533,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	g_fake.x = fx;
 	g_fake.y = fy;
 	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
+	if (g_menuOpen) { if (n == 2) menu_click(-1, -1, fx, fy); return 0; } // the scroll only
 	{
 		static BOOL btnDown;
 		int btn = cycle_button_at(fx, fy);
@@ -3572,7 +3584,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	if (g_menuOpen) {
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
-			if (msg == WM_LBUTTONDOWN) menu_click((short)LOWORD(lp), (short)HIWORD(lp));
+			if (msg == WM_LBUTTONDOWN) { int mx = (short)LOWORD(lp), my = (short)HIWORD(lp); client_to_game(&mx, &my); menu_click((short)LOWORD(lp), (short)HIWORD(lp), mx, my); }
 			return 0;
 		}
 	}
@@ -4693,14 +4705,17 @@ static const char *game_str(int table, int idx)
 	while (*p && *p < 0x20) p++;
 	return (const char *)p;
 }
-static BYTE g_apSnap[AP_W * AP_H];
-static int g_apSig; // what is drawn (0 = nothing)
-static BOOL ap_region(BOOL save)
+static BYTE g_apSnap[AP_W * AP_H], g_apUnder[AP_W * AP_H];
+static int g_apSig; // what is drawn (2 = draw again)
+static BOOL g_apDrawn;
+static BOOL ap_region(int save) // 0 compare, 1 save, 2 keep what is under, 3 put it back
 {
 	if (!g_back) return FALSE;
 	for (int r = 0; r < AP_H; r++) {
 		BYTE *p = g_back->bits + (AP_Y + r) * g_back->pitch + g_back->org + AP_X;
-		if (save) memcpy(g_apSnap + r * AP_W, p, AP_W);
+		if (save == 1) memcpy(g_apSnap + r * AP_W, p, AP_W);
+		else if (save == 2) memcpy(g_apUnder + r * AP_W, p, AP_W);
+		else if (save == 3) memcpy(p, g_apUnder + r * AP_W, AP_W);
 		else if (memcmp(g_apSnap + r * AP_W, p, AP_W)) return FALSE;
 	}
 	return TRUE;
@@ -4755,25 +4770,117 @@ static void __cdecl h_redraw_map(void);
 // every frame, so the panel is drawn again whenever its pixels are not what it left there.
 static void army_panel_keep(void)
 {
+	if (g_menuOpen) return; // the settings scroll is over everything (menu_scroll_keep)
 	int id = g_back ? panel_army() : 0;
 	if (!id) {
-		if (g_apSig) { // gone: the map back where it stood
-			g_apSig = 0;
-			BYTE s = *(BYTE *)0x004eac50;
-			if ((s == 0 || s == 16) && *(int *)0x0052af94 == 3 && *(int *)0x0057c8fc == 0) { h_redraw_map(); ((void (__cdecl *)(void))0x0045240a)(); }
+		if (g_apDrawn) { // gone: what it covered back (the game draws the map on over it)
+			g_apDrawn = 0;
+			ap_region(3);
+			((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, AP_Y + AP_H - 1);
 		}
+		g_apSig = 0;
 		return;
 	}
 	const BYTE *o = (const BYTE *)0x0052f0b0 + id * 0x1a4;
 	int sig = id * 131 + *(const int *)(o + 0x168) * 7 + o[0x196] * 3 + o[0x195];
 	for (int t = 0; t < 7; t++) sig = sig * 31 + *(const short *)(o + 0x16c + t * 2);
 	sig |= 1;
-	if (sig == g_apSig && ap_region(FALSE)) return;
+	BOOL same = g_apDrawn && ap_region(0);
+	if (sig == g_apSig && same) return;
+	if (!same) ap_region(2); // what the game has there now
 	army_panel_draw(id);
-	((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, GAME_H - 1); // to be shown
-	ap_region(TRUE);
+	((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, AP_Y + AP_H - 1); // to be shown
+	ap_region(1);
+	g_apDrawn = 1;
 	g_apSig = sig;
 }
+
+// The settings panel (F10) as one of the game's scrolls: drawn with its own scroll frame and
+// lettering into its picture, like the army scroll, before every flush that would show the place
+// without it. What it covered is kept and put back when it closes.
+#define MS_W (24 * 16)
+#define MS_H (16 * 16)
+static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
+static int g_msX, g_msY, g_msGen = -1;
+static BOOL ms_region(BYTE *buf, int op) // 0 compare, 1 save, 2 put back
+{
+	for (int r = 0; r < MS_H; r++) {
+		BYTE *p = g_back->bits + (g_msY + r) * g_back->pitch + g_back->org + g_msX;
+		if (op == 1) memcpy(buf + r * MS_W, p, MS_W);
+		else if (op == 2) memcpy(p, buf + r * MS_W, MS_W);
+		else if (memcmp(buf + r * MS_W, p, MS_W)) return FALSE;
+	}
+	return TRUE;
+}
+static void menu_scroll_draw(void)
+{
+	typedef void (__cdecl *text_t)(const char *, int, int, void *, int);
+	typedef void (__cdecl *ctext_t)(const char *, int, int, int, void *, int);
+	typedef void (__cdecl *line_t)(int, int, int, int, int);
+	text_t text = (text_t)0x00402637;
+	ctext_t ctext = (ctext_t)0x004025d7;
+	line_t line = (line_t)0x00403a8f;
+	int (__cdecl *width)(const char *, void *) = (void *)0x004014f0;
+	void *title = (void *)0x005b2fa0, *body = (void *)0x005af8f0, *small = (void *)0x005c9a90;
+	const int ink = 0x3f, red = 0xf9; // the game's black and its red (the side panel's changed rations)
+	int x0 = g_msX, y0 = g_msY;
+	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
+	ctext("Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
+	for (int k = 0; k < MENU_TABS; k++) { // the open tab red and underlined
+		int cx = x0 + MS_W / 2 + (k ? 80 : -80), w = width(kMenuTab[k], body);
+		ctext(kMenuTab[k], cx - 75, y0 + 44, 150, body, k == g_menuTab ? red : ink);
+		if (k == g_menuTab) { line(cx - w / 2, y0 + 57, cx + w / 2, y0 + 57, red); line(cx - w / 2, y0 + 58, cx + w / 2, y0 + 58, red); }
+		SetRect(&g_menuTabRect[k], cx - 75, y0 + 42, cx + 75, y0 + 61);
+	}
+	line(x0 + 24, y0 + 64, x0 + MS_W - 24, y0 + 64, ink);
+	int n = menu_tab_count(g_menuTab);
+	if (g_menuSel >= n) g_menuSel = 0;
+	g_menuRows = n;
+	for (int i = 0; i < n; i++) {
+		int item = kMenuTabItems[g_menuTab][i], y = y0 + 74 + i * 15, c = i == g_menuSel ? red : ink;
+		char v[64]; BOOL restart;
+		menu_value(item, v, sizeof v, &restart);
+		if (restart) strncat(v, " (restart)", sizeof v - strlen(v) - 1);
+		if (i == g_menuSel) // a pointer before the chosen line
+			for (int k = 0; k < 4; k++) line(x0 + 22 + k, y + 4 - (3 - k), x0 + 22 + k, y + 4 + (3 - k), red);
+		text(kMenuLabel[item], x0 + 32, y, small, c); // the small lettering: the body's is too large for a list
+		text(v, x0 + 190, y, small, restart ? red : c);
+		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
+		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
+	}
+	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + MS_H - 48, MS_W, small, ink);
+	ctext("Tab: tabs  -  Enter or click: change  -  F10: close", x0, y0 + MS_H - 36, MS_W, small, ink);
+	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
+}
+// before each flush (h_show_frame)
+static void menu_scroll_keep(void)
+{
+	if (!g_back) return;
+	void (__cdecl *dirty)(int, int, int, int) = (void *)0x00452306;
+	if (!g_menuOpen || !menu_as_scroll()) {
+		if (g_msDrawn) { // closed, or the screen changed: what it covered back
+			g_msDrawn = 0;
+			ms_region(g_msUnder, 2);
+			dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);
+			g_apSig = 2; // the army scroll again
+		}
+		return;
+	}
+	if (!g_msDrawn) { // centred on the picture: over the map or battlefield left of the side panel
+		BOOL map = *(int *)0x0052af94 == 3;
+		int left = map && g_off ? -g_off : 0, right = map ? 0x1dc : GAME_W;
+		g_msX = max(0, min(GAME_W - MS_W, (left + right) / 2 - MS_W / 2));
+		g_msY = (GAME_H - MS_H) / 2;
+	}
+	if (g_msDrawn && g_msGen == g_menuGen && ms_region(g_msSnap, 0)) return;
+	if (!g_msDrawn || !ms_region(g_msSnap, 0)) ms_region(g_msUnder, 1); // what the game has there now
+	g_msGen = g_menuGen;
+	menu_scroll_draw();
+	ms_region(g_msSnap, 1);
+	g_msDrawn = 1;
+	dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);
+}
+
 // The county map's zoom (DAT_0057cb18): 0 and 1 scroll. The kingdom overview (2) is one fixed
 // picture of the kingdom - the game places it at column 14 and turns scrolling off - widened with
 // the map's own columns left of it (flat filler land the 4:3 screen shows a sliver of).
@@ -5366,6 +5473,7 @@ static void __cdecl h_show_frame(int force)
 {
 	if (!*(void **)0x004eabd0) return;
 	army_panel_keep();
+	menu_scroll_keep();
 	o_show_frame(force);
 }
 
