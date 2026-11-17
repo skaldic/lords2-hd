@@ -133,6 +133,7 @@ static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr)
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
+static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
 static BOOL menu_key(int vk);
 static void menu_click(int wx, int wy, int gx, int gy);
 
@@ -854,6 +855,9 @@ static volatile BOOL g_waveActive;
 static DWORD *g_sprLayer;
 static BYTE *g_sprShadow;
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
+static BOOL g_ownScroll; // the settings scroll is being drawn: its HD art is stamped whatever the palette
+static BYTE *g_txt, *g_txtShadow, *g_txtValid;     // the sharp letters' layer (text_overlay)
+static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;  // ... as of the frame on screen
 static BYTE g_tilePal[768];
 
 static BOOL wave_is_water(DWORD p)
@@ -1155,7 +1159,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	if (!data || index < 0 || index >= *(const int *)data || !g_back) return;
 	// Off the map a sprite may be drawn under another screen's palette than its art was made with
 	// (map portraits in the Armoury's scroll): then it stays as the game drew it.
-	if (!county_map_on() && !IN_BATTLE_NOW() && g_primary && g_primary->pal) {
+	if (!g_ownScroll && !county_map_on() && !IN_BATTLE_NOW() && g_primary && g_primary->pal) {
 		const PALETTEENTRY *e = g_primary->pal->e;
 		const BYTE *idx0 = data + ((const int *)data)[1 + index] + 4;
 		int w0 = *(const WORD *)(idx0 - 4), h0 = *(const WORD *)(idx0 - 2);
@@ -1861,11 +1865,9 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 // indices (so fades and palette changes still apply), over whatever was under it, which keeps the
 // game's three-pass engraved letters. A frame pixel shows from the layer while it still holds what
 // the letter left there.
-static BYTE *g_txt, *g_txtShadow, *g_txtValid;
 // The layer as of the frame on screen: the live one follows the game's back buffer, where a scroll
 // being redrawn has lost its letters for a moment while the screen still shows the finished frame
 // (all text blinked soft). Rows are copied over with the frame, under g_lock.
-static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;
 
 // The zoomed battle's HD layer as of the frame on screen, for the same reason as the letters: the
 // game redraws the ground under the troops in its back buffer (which forgets their HD blocks) and
@@ -2024,8 +2026,53 @@ static void text_stamp(const BYTE *src, int w, int h, int x, int y, int colour, 
 // its picture, where the game may draw over them (troops, flags) in the moment before a frame is
 // shown. So once a frame shows one intact, its finished HD pixels are kept and laid over every frame
 // after, above everything: on = up, gen = what it shows (a new gen is caught again).
-typedef struct { volatile LONG on, gen; int x, y, w, h; const BYTE *snap; DWORD *cache; int cacheW, cacheH; LONG cached; } SCROLL_OVL;
+typedef struct { volatile LONG on, gen, mapPal; int x, y, w, h; const BYTE *snap; DWORD *cache; int cacheW, cacheH; LONG cached; } SCROLL_OVL;
 static SCROLL_OVL g_ovl[2]; // 0 the army scroll, 1 the settings scroll
+// The settings scroll on a screen with its own palette (the main menu): its art and lettering are the
+// county map's, so its pixels are made here in the map's colours (Base01.256): the HD sprite pixels
+// (made in those colours already), the sharp letters' layer, and else the game's pixel doubled.
+static DWORD g_mapLut[256];
+static BOOL map_lut(void)
+{
+	static int have;
+	if (have) return have > 0;
+	BYTE pal[768];
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+	FILE *f = fopen(path, "rb");
+	have = f && fread(pal, 1, 768, f) == 768 ? 1 : -1;
+	if (f) fclose(f);
+	for (int i = 0; have > 0 && i < 256; i++)
+		g_mapLut[i] = (pal[i * 3] * 255 / 63 << 16) | (pal[i * 3 + 1] * 255 / 63 << 8) | pal[i * 3 + 2] * 255 / 63;
+	return have > 0;
+}
+static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
+{
+	if (!map_lut()) return;
+	int W = g_back->w;
+	const BYTE *tx = g_txtS ? g_txtS : g_txt, *tsh = g_txtS ? g_txtShadowS : g_txtShadow, *tv = g_txtS ? g_txtValidS : g_txtValid;
+	for (int r = 0; r < s->h; r++) {
+		int y = s->y + r;
+		const BYTE *fr = g_frame8 + y * sw + c0;
+		DWORD *o0 = s->cache + (2 * r) * (2 * s->w), *o1 = o0 + 2 * s->w;
+		for (int c = 0; c < s->w; c++) {
+			int x = c0 + c; // frame column
+			BOOL spr = g_sprLayer && SPR_V[y * MAX_W + sx + x] && fr[c] == SPR_S[y * MAX_W + sx + x];
+			if (spr) {
+				const DWORD *h0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * (sx + x), *h1 = h0 + 2 * MAX_W;
+				o0[2 * c] = h0[0]; o0[2 * c + 1] = h0[1]; o1[2 * c] = h1[0]; o1[2 * c + 1] = h1[1];
+				continue;
+			}
+			int f = y * W + sx + x;
+			if (tx && g_hdText && tv[f] && fr[c] == tsh[f]) {
+				const BYTE *q = tx + f * 4;
+				o0[2 * c] = g_mapLut[q[0]]; o0[2 * c + 1] = g_mapLut[q[1]]; o1[2 * c] = g_mapLut[q[2]]; o1[2 * c + 1] = g_mapLut[q[3]];
+				continue;
+			}
+			o0[2 * c] = o0[2 * c + 1] = o1[2 * c] = o1[2 * c + 1] = g_mapLut[fr[c]];
+		}
+	}
+}
 static void scroll_overlays(int sx, int sw)
 {
 	BOOL show[2] = { FALSE, FALSE };
@@ -2046,7 +2093,8 @@ static void scroll_overlays(int sx, int sw)
 				if (!s->cache) continue;
 				s->cacheW = s->w; s->cacheH = s->h;
 			}
-			for (int r = 0; r < 2 * s->h; r++)
+			if (s->mapPal) ovl_build_mappal(s, sx, sw, c0);
+			else for (int r = 0; r < 2 * s->h; r++)
 				memcpy(s->cache + r * 2 * s->w, g_frame2x + (2 * s->y + r) * (2 * sw) + 2 * c0, (size_t)s->w * 8);
 			s->cached = gen + 1;
 		}
@@ -2156,7 +2204,9 @@ static void menu_change(int i)
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
 static volatile LONG g_menuGen; // bumped at every change: the scroll is drawn again
-static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
+static void menu_scroll_keep(void);
+// at once, not at the game's next frame (the main menu shows few)
+static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); menu_scroll_keep(); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
 static void menu_toggle(void)
 {
 	if (!g_menuOpen) {
@@ -2164,6 +2214,7 @@ static void menu_toggle(void)
 		g_battleZoomSet = GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	}
 	InterlockedExchange(&g_menuOpen, !g_menuOpen);
+	if (g_menuOpen) InterlockedExchange(&g_ovl[0].on, 0); // the army scroll goes while the panel is up (army_panel_keep)
 	menu_redraw();
 }
 static void menu_set_tab(int tab) { g_menuTab = (tab + MENU_TABS) % MENU_TABS; g_menuSel = 0; }
@@ -2183,9 +2234,9 @@ static BOOL menu_key(int vk)
 	menu_redraw();
 	return TRUE;
 }
-// Where the panel is drawn as a game scroll (menu_scroll_keep): the county map, whose colours the
-// scroll is drawn in. Elsewhere it is the plain panel, drawn over the picture (menu_draw).
-static BOOL menu_as_scroll(void) { BYTE s = *(BYTE *)0x004eac50; return *(int *)0x0052af94 == 3 && *(int *)0x0057c8fc == 0 && (s == 0 || s == 16) && *(int *)0x0057cb18 != 2; }
+// Where the panel is drawn as a game scroll (menu_scroll_keep): everywhere but in battles, which have
+// a drawing layer of their own; there it is the plain panel, drawn over the picture (menu_draw).
+static BOOL menu_as_scroll(void) { return !(*(int *)0x0052af94 == 3 && *(int *)0x0057c8fc != 0); } // all but battles (their own layer)
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
 static RECT g_menuRowW[16], g_menuTabRectW[2], g_menuBoxW; // the plain panel's, in window coordinates
 // A click while the panel is open: window and game coordinates.
@@ -3573,7 +3624,8 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	g_fake.x = fx;
 	g_fake.y = fy;
 	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
-	if (g_menuOpen) { if (n == 2) menu_click(-1, -1, fx, fy); return 0; } // the scroll only
+	if (n == 6 && g_menuEatRUp) { g_menuEatRUp = FALSE; return 0; }
+	if (g_menuOpen) { if (n == 2) menu_click(-1, -1, fx, fy); if (n == 5) { menu_toggle(); g_menuEatRUp = TRUE; } return 0; } // the scroll only
 	{
 		static BOOL btnDown;
 		int btn = cycle_button_at(fx, fy);
@@ -3621,10 +3673,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) InterlockedExchange(&g_wasd, 0);
 	if (msg == WM_KEYDOWN && (wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD) && cycle_key(wp == VK_OEM_PERIOD ? 1 : -1)) return 0;
 	if (msg == WM_CHAR && (wp == ',' || wp == '.') && (*(BYTE *)0x004eac50 == 0 || *(BYTE *)0x004eac50 == 16) && *(int *)0x0052af94 == 3 && g_cycleOn) return 0;
+	if (msg == WM_RBUTTONUP && g_menuEatRUp) { g_menuEatRUp = FALSE; return 0; } // the release of the right-click that closed it
 	if (g_menuOpen) {
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
 			if (msg == WM_LBUTTONDOWN) { int mx = (short)LOWORD(lp), my = (short)HIWORD(lp); client_to_game(&mx, &my); menu_click((short)LOWORD(lp), (short)HIWORD(lp), mx, my); }
+			if (msg == WM_RBUTTONDOWN) { menu_toggle(); g_menuEatRUp = TRUE; } // a right-click closes it, as the game's own menus
 			return 0;
 		}
 	}
@@ -4868,6 +4922,7 @@ static void menu_scroll_draw(void)
 	void *title = (void *)0x005b2fa0, *body = (void *)0x005af8f0, *small = (void *)0x005c9a90;
 	const int ink = 0x3f, red = 0xf9; // the game's black and its red (the side panel's changed rations)
 	int x0 = g_msX, y0 = g_msY;
+	g_ownScroll = TRUE; // its HD art whatever the screen's palette (stamp_sprite)
 	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
 	ctext("Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
 	for (int k = 0; k < MENU_TABS; k++) { // the open tab red and underlined
@@ -4892,9 +4947,11 @@ static void menu_scroll_draw(void)
 		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
-	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + MS_H - 48, MS_W, small, ink);
-	ctext("Tab: tabs  -  Enter or click: change  -  F10: close", x0, y0 + MS_H - 36, MS_W, small, ink);
+	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + MS_H - 58, MS_W, small, ink);
+	const char *keys = "Click to change, right-click to close";
+	ctext(keys, x0, y0 + MS_H - 40, MS_W, width(keys, body) <= MS_W - 40 ? body : small, ink); // the keys apart, in the body lettering
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
+	g_ownScroll = FALSE;
 }
 // before each flush (h_show_frame)
 static void menu_scroll_keep(void)
@@ -4912,18 +4969,19 @@ static void menu_scroll_keep(void)
 		return;
 	}
 	if (!g_msDrawn) { // centred on the picture: over the map or battlefield left of the side panel
-		BOOL map = *(int *)0x0052af94 == 3;
+		BOOL map = county_map_on();
 		int left = map && g_off ? -g_off : 0, right = map ? 0x1dc : GAME_W;
 		g_msX = max(0, min(GAME_W - MS_W, (left + right) / 2 - MS_W / 2));
 		g_msY = (GAME_H - MS_H) / 2;
 	}
 	if (g_msDrawn && g_msGen == g_menuGen && ms_region(g_msSnap, 0)) return;
-	if (!g_msDrawn || !ms_region(g_msSnap, 0)) ms_region(g_msUnder, 1); // what the game has there now
+	if (!g_msDrawn) ms_region(g_msUnder, 1); // what the game had there when it opened (later it may be the scroll itself)
 	g_msGen = g_menuGen;
 	menu_scroll_draw();
 	ms_region(g_msSnap, 1);
 	g_msDrawn = 1;
 	g_ovl[1].x = g_msX; g_ovl[1].y = g_msY; g_ovl[1].w = MS_W; g_ovl[1].h = MS_H; g_ovl[1].snap = g_msSnap;
+	g_ovl[1].mapPal = 1; // always in the map's colours, the screen's palette whatever it is (ovl_build_mappal)
 	InterlockedExchange(&g_ovl[1].gen, g_menuGen);
 	InterlockedExchange(&g_ovl[1].on, 1);
 	dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);

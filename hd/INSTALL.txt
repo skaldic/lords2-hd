@@ -28,7 +28,7 @@ BETTER VIDEOS AND MUSIC (optional, not included)
 
 SETTINGS
 Press F10 in the game for the settings panel (two tabs: Display and Quality of life; Tab switches
-them): most changes apply at once and are saved. F8 is the game's own key again.
+them; a right-click closes it): most changes apply at once and are saved. F8 is the game's own key again.
 Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
