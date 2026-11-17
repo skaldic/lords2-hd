@@ -2020,6 +2020,45 @@ static void text_stamp(const BYTE *src, int w, int h, int x, int y, int colour, 
 #undef ON
 }
 
+// The patch's own scrolls (the army scroll, the settings scroll) are drawn by the game's routines into
+// its picture, where the game may draw over them (troops, flags) in the moment before a frame is
+// shown. So once a frame shows one intact, its finished HD pixels are kept and laid over every frame
+// after, above everything: on = up, gen = what it shows (a new gen is caught again).
+typedef struct { volatile LONG on, gen; int x, y, w, h; const BYTE *snap; DWORD *cache; int cacheW, cacheH; LONG cached; } SCROLL_OVL;
+static SCROLL_OVL g_ovl[2]; // 0 the army scroll, 1 the settings scroll
+static void scroll_overlays(int sx, int sw)
+{
+	BOOL show[2] = { FALSE, FALSE };
+	int col[2] = { 0, 0 };
+	for (int i = 0; i < 2; i++) { // first catch each from the frame as the game made it...
+		SCROLL_OVL *s = &g_ovl[i];
+		if (!s->on || !s->snap) continue;
+		int c0 = s->x + g_off - sx;
+		if (c0 < 0 || c0 + s->w > sw || s->y < 0 || s->y + s->h > GAME_H) continue;
+		LONG gen = s->gen;
+		BOOL whole = TRUE; // whole in this frame? Then caught again (so fades and palette changes reach it too)
+		for (int r = 0; r < s->h && whole; r++) whole = !memcmp(g_frame8 + (s->y + r) * sw + c0, s->snap + r * s->w, s->w);
+		if (!whole && s->cached != gen + 1) continue; // never seen whole: the game's own drawing stands
+		if (whole) {
+			if (!s->cache || s->cacheW < s->w || s->cacheH < s->h) {
+				free(s->cache);
+				s->cache = malloc((size_t)s->w * s->h * 16);
+				if (!s->cache) continue;
+				s->cacheW = s->w; s->cacheH = s->h;
+			}
+			for (int r = 0; r < 2 * s->h; r++)
+				memcpy(s->cache + r * 2 * s->w, g_frame2x + (2 * s->y + r) * (2 * sw) + 2 * c0, (size_t)s->w * 8);
+			s->cached = gen + 1;
+		}
+		show[i] = TRUE; col[i] = c0;
+	}
+	for (int i = 0; i < 2; i++) { // ... then lay them on, the settings scroll last
+		SCROLL_OVL *s = &g_ovl[i];
+		if (!show[i]) continue;
+		for (int r = 0; r < 2 * s->h; r++)
+			memcpy(g_frame2x + (2 * s->y + r) * (2 * sw) + 2 * col[i], s->cache + r * 2 * s->w, (size_t)s->w * 8);
+	}
+}
 static void text_overlay(int sx, int sw)
 {
 	if (!g_txt || !g_hdText) return;
@@ -2769,6 +2808,7 @@ static BOOL present(void)
 		if (g_showTiles) screen_sprites(pal, sx, sw);
 		if (g_showTiles) tile_overlay(pal, sx, sw);
 		text_overlay(sx, sw);
+		scroll_overlays(sx, sw);
 		cycle_buttons_draw(sx, sw);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
@@ -4775,6 +4815,7 @@ static void army_panel_keep(void)
 	if (!id) {
 		if (g_apDrawn) { // gone: what it covered back (the game draws the map on over it)
 			g_apDrawn = 0;
+			InterlockedExchange(&g_ovl[0].on, 0);
 			ap_region(3);
 			((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, AP_Y + AP_H - 1);
 		}
@@ -4792,6 +4833,9 @@ static void army_panel_keep(void)
 	((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, AP_Y + AP_H - 1); // to be shown
 	ap_region(1);
 	g_apDrawn = 1;
+	g_ovl[0].x = AP_X; g_ovl[0].y = AP_Y; g_ovl[0].w = AP_W; g_ovl[0].h = AP_H; g_ovl[0].snap = g_apSnap;
+	InterlockedExchange(&g_ovl[0].gen, sig);
+	InterlockedExchange(&g_ovl[0].on, 1);
 	g_apSig = sig;
 }
 
@@ -4860,6 +4904,7 @@ static void menu_scroll_keep(void)
 	if (!g_menuOpen || !menu_as_scroll()) {
 		if (g_msDrawn) { // closed, or the screen changed: what it covered back
 			g_msDrawn = 0;
+			InterlockedExchange(&g_ovl[1].on, 0);
 			ms_region(g_msUnder, 2);
 			dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);
 			g_apSig = 2; // the army scroll again
@@ -4878,6 +4923,9 @@ static void menu_scroll_keep(void)
 	menu_scroll_draw();
 	ms_region(g_msSnap, 1);
 	g_msDrawn = 1;
+	g_ovl[1].x = g_msX; g_ovl[1].y = g_msY; g_ovl[1].w = MS_W; g_ovl[1].h = MS_H; g_ovl[1].snap = g_msSnap;
+	InterlockedExchange(&g_ovl[1].gen, g_menuGen);
+	InterlockedExchange(&g_ovl[1].on, 1);
 	dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);
 }
 
