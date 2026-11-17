@@ -3731,10 +3731,18 @@ static BOOL army_panel_at(int x, int y) { return panel_army() && x >= AP_X && x 
 // The game reads the mouse for the map too (the path and cursor of a move): over the scroll it is
 // told the last place outside it, so hovering or tapping the scroll never aims the army.
 static int g_apOutX = 1, g_apOutY = 1;
+static BOOL g_apOver; // the mouse is over the scroll: the game's plain arrow is shown (h_SetCursor)
+static HCURSOR WINAPI h_SetCursor(HCURSOR cur);
 static void ap_mouse(LONG *x, LONG *y)
 {
-	if (army_panel_at(*x, *y)) { *x = g_apOutX; *y = g_apOutY; }
+	BOOL over = army_panel_at(*x, *y);
+	if (over) { *x = g_apOutX; *y = g_apOutY; }
 	else { g_apOutX = *x; g_apOutY = *y; }
+	if (over != g_apOver) { // the cursor changes as it crosses the scroll's edge, not at the next move
+		g_apOver = over;
+		HCURSOR c = *(HCURSOR *)0x004ea514; // the game's current one (FUN_004b1cf3)
+		if (c) h_SetCursor(c);
+	}
 }
 // how many of the player's armies stand on the map (counted at most 4 times a second)
 static int player_armies(void)
@@ -3950,6 +3958,7 @@ done:
 static HCURSOR WINAPI h_SetCursor(HCURSOR cur)
 {
 	if (!cur) return o_SetCursor(cur);
+	if (g_apOver && *(HCURSOR *)0x004ea834) cur = *(HCURSOR *)0x004ea834; // the plain arrow over the army scroll
 	RECT v;
 	view_rect(&v);
 	int viewH = v.bottom - v.top;
