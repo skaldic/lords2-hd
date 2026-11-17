@@ -242,6 +242,11 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 // Shared frame state
 
 static CRITICAL_SECTION g_lock;   // guards the primary surface's pixels and the palette
+// Held by the presenter from reading the frame until its picture is built from the HD layers' copies
+// (*_publish): a copy to the screen in between moved the layers on a frame (a scrolling battle showed
+// the whole field at 1x for a picture). Copies wait for it; the game's unforced ones are skipped.
+static CRITICAL_SECTION g_composeLock;
+static volatile LONG g_composing;
 static HANDLE g_dirtyEvent;
 static volatile LONG g_dirty;
 static HWND g_hwnd;               // the game's window (WinLords2Class)
@@ -283,6 +288,7 @@ static volatile LONG g_dirtyCount; // Timing=1: frame copies a second
 static volatile LONG g_frameTaken = 1; // the presenter has read the frame since the last copy (h_show_frame)
 static int g_frameSteps;               // Timing=1: logic steps since the last frame copy
 static volatile LONG g_presentCount;   // pictures shown (Timing=1)
+static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
 static volatile LONG g_copySeq;        // every copy to the screen (h_show_frame: did a forced call copy?)
 static void mark_dirty(void)
 {
@@ -816,7 +822,7 @@ static LONG g_paceReadSeq; // the number of the frame the presenter last read
 #define PACE_RING 1024
 static struct { double t; LONG seq; } g_paceChg[PACE_RING];
 static volatile LONG g_paceChgN;
-static struct { double t; LONG seq; int shown; } g_paceWake[PACE_RING]; // presenter reads: shown or unchanged
+static struct { double t; LONG seq; int shown; double present; } g_paceWake[PACE_RING]; // presenter reads: shown or unchanged; present: ms the hand-off took
 static LONG g_paceWakeN;
 static void pace_change(void)
 {
@@ -825,26 +831,46 @@ static void pace_change(void)
 	g_paceChg[i].t = perf_now(); g_paceChg[i].seq = s;
 	InterlockedIncrement(&g_paceChgN);
 }
-static void pace_wake(BOOL shown)
+static void pace_wake(int shown) // 0 read unchanged, 1 new picture shown, 2 a repeat
 {
 	int i = g_paceWakeN % PACE_RING;
 	g_paceWake[i].t = perf_now(); g_paceWake[i].seq = g_paceReadSeq; g_paceWake[i].shown = shown;
+	g_paceWake[i].present = g_perf.st[PS_BLIT];
 	g_paceWakeN++;
 }
 static double perf_next_refresh(double t);
 static void pace_classify(void)
 {
-	static double lastV, t0; static int nNew, nLate, nIdle, details; static LONG shownSeq;
+	static double lastV, t0; static int nNew, nLate, nIdle, nEmpty, details; static LONG shownSeq;
 	double now = perf_now(), vNext = perf_next_refresh(now), period = g_perf.refresh;
 	if (period <= 0) return;
 	double vNow = vNext - period; // the last refresh at or before now
 	if (!lastV) { lastV = vNow; t0 = now; return; }
 	for (double V = lastV + period; V <= vNow + period * 0.25; V += period) {
-		LONG best = -1;
+		LONG best = -1; BOOL any = FALSE; // any: a picture, new or repeated, reached this refresh
 		for (int k = 0; k < PACE_RING && k < g_paceWakeN; k++) {
 			int i = (g_paceWakeN - 1 - k) % PACE_RING;
 			if (g_paceWake[i].t <= V - period) break;
-			if (g_paceWake[i].shown && g_paceWake[i].t <= V && g_paceWake[i].seq > best) best = g_paceWake[i].seq;
+			if (g_paceWake[i].t > V) continue;
+			if (g_paceWake[i].shown == 1 || g_paceWake[i].shown == 2) any = TRUE; // (3: a refresh wait, not a picture)
+			if (g_paceWake[i].shown == 1 && g_paceWake[i].seq > best) best = g_paceWake[i].seq;
+		}
+		if (!any) {
+			nEmpty++;
+			static int emptyDetails;
+			if (emptyDetails < 40) { // what the presenter did in this refresh and the one before (times from the previous refresh)
+				emptyDetails++;
+				char w[600]; int wl = 0; w[0] = 0;
+				for (int k = PACE_RING - 1; k >= 0; k--) {
+					if (k >= g_paceWakeN) continue;
+					int i = (g_paceWakeN - 1 - k) % PACE_RING;
+					double dt = g_paceWake[i].t - (V - period);
+					if (dt < -period || dt > period + 2) continue;
+					wl += snprintf(w + wl, sizeof w - wl, " %+.1f%s(%.1f)", dt, g_paceWake[i].shown == 3 ? "W" : g_paceWake[i].shown == 2 ? "R" : g_paceWake[i].shown ? "S" : "u", g_paceWake[i].present);
+					if (wl > (int)sizeof w - 30) break;
+				}
+				logf_("pace: empty refresh; presenter around it (ms from the refresh before, S new, R repeat, u unchanged, (hand-off ms)):%s", w[0] ? w : " nothing");
+			}
 		}
 		if (best >= 0 && best != shownSeq) { nNew++; shownSeq = best; continue; }
 		LONG latest = -1; double latestT = 0;
@@ -863,7 +889,7 @@ static void pace_classify(void)
 					int i = (g_paceWakeN - 1 - k) % PACE_RING;
 					double dt = g_paceWake[i].t - (V - period);
 					if (dt < 0 || dt > period) continue;
-					wl += snprintf(w + wl, sizeof w - wl, " %.1f%s#%ld", dt, g_paceWake[i].shown ? "S" : "u", (long)g_paceWake[i].seq);
+					wl += snprintf(w + wl, sizeof w - wl, " %.1f%s#%ld", dt, g_paceWake[i].shown == 3 ? "W" : g_paceWake[i].shown == 2 ? "R" : g_paceWake[i].shown ? "S" : "u", (long)g_paceWake[i].seq);
 					if (wl > (int)sizeof w - 30) break;
 				}
 				logf_("pace: late refresh: change #%ld made %.1f ms before the previous refresh, shown #%ld; reads in it:%s", (long)latest, (V - period) - latestT, (long)shownSeq, w[0] ? w : " none");
@@ -873,8 +899,8 @@ static void pace_classify(void)
 	}
 	lastV = vNow;
 	if (now - t0 >= 1000) {
-		logf_("pace: 1 s: %d new, %d late, %d idle refreshes", nNew, nLate, nIdle);
-		nNew = nLate = nIdle = 0; t0 = now;
+		logf_("pace: 1 s: %d new, %d late, %d idle refreshes; %d got no picture at all", nNew, nLate, nIdle, nEmpty);
+		nNew = nLate = nIdle = nEmpty = 0; t0 = now;
 	}
 }
 static void perf_begin(void) { g_perf.t0 = g_perf.mark = perf_now(); memset(g_perf.st, 0, sizeof g_perf.st); }
@@ -3490,6 +3516,7 @@ static struct {
 	BOOL flip;
 	RECT lastV; BOOL have;                      // the last picture's place (repeats)
 } g_gpu;
+static IDXGIOutput *g_gpuOut;                   // the display the window is on (gpu_wait_vblank)
 static BOOL gpu_drawing(void) { return g_gpuWanted && g_gpu.state >= 0 && g_scale == SCALE_SMOOTH; }
 static double gpu_ms(void) { return g_gpu.gpuMs; }
 #define REL(p) do { if (p) { IUnknown_Release((IUnknown *)(p)); (p) = NULL; } } while (0)
@@ -3509,6 +3536,7 @@ static void gpu_teardown(int state)
 	for (int i = 0; i < GPU_Q; i++) { REL(g_gpu.qd[i]); REL(g_gpu.qa[i]); REL(g_gpu.qb[i]); }
 	REL(g_gpu.vs); REL(g_gpu.cb); REL(g_gpu.lin); REL(g_gpu.sc); REL(g_gpu.ctx); REL(g_gpu.dev);
 	g_gpu.have = FALSE;
+	REL(g_gpuOut);
 	g_gpu.srcW = g_gpu.srcH = g_gpu.midW = g_gpu.midH = g_gpu.ovlW = g_gpu.ovlH = g_gpu.stageW = g_gpu.stageH = 0;
 	g_gpu.bufW = g_gpu.bufH = 0; g_gpu.qn = 0; g_gpu.gpuMs = 0;
 	InterlockedExchange(&g_forcePresent, 1);
@@ -3743,6 +3771,16 @@ static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
 	return TRUE;
 }
 
+// Waits for the display's next vertical blank (the GPU path): DwmFlush follows the compositor, which a
+// fullscreen flip-model window bypasses (independent flip), so pictures were paced to the wrong clock
+// and a present now and then waited for a queued one (a refresh with no picture). FALSE: not available.
+static BOOL gpu_wait_vblank(void)
+{
+	if (g_gpu.state != 1 || !g_gpu.sc) return FALSE;
+	if (!g_gpuOut && FAILED(IDXGISwapChain_GetContainingOutput(g_gpu.sc, &g_gpuOut))) { g_gpuOut = NULL; return FALSE; }
+	if (FAILED(IDXGIOutput_WaitForVBlank(g_gpuOut))) { REL(g_gpuOut); return FALSE; }
+	return TRUE;
+}
 // A refresh with nothing new from the game: the last picture handed to the screen again, drawn by the
 // card from the textures it holds (no compose, no upload), so every refresh gets a picture. Only with
 // the GPU, and not while the game is minimised or in the background.
@@ -3824,6 +3862,7 @@ static void put_picture(HDC dc, const RECT *v, const DWORD *src, int sw, int sh,
 // bt_rows_job makes the picture's rows from the frame (every step only writes its own row), then
 // bt_double_job doubles them and stamps the HD troops at 2x. One thread took ~19 ms at 5K.
 #define BT_BAND 16
+static volatile LONG g_btMiss; // Timing=1: battlefield pixels whose HD art did not match this picture
 static struct {
 	DWORD *pic, *pic2; const BYTE *copy, *frame; int pitch, lw, lh, mapW;
 	const DWORD *btL; const BYTE *btS, *btV; BOOL btOn, big, menu, easu;
@@ -3935,13 +3974,16 @@ static void bt_double_job(int band, int me)
 			int fy = 24 + y - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
 			const BYTE *row = g_bt.copy + fy * pitch + g_off + PANEL_X - mapW;
 			DWORD *o0 = pic2 + 2 * y * 2 * lw, *o1 = o0 + 2 * lw;
+			int miss = 0;
 			for (int sx = 0; sx < mapW; sx++) {
 				int f = f0 + sx;
+				if (g_bt.btV[f] && row[sx] != g_bt.btS[f]) miss++; // (Timing: HD art known but not matching the frame: shown 1x)
 				if (!g_bt.btV[f] || row[sx] != g_bt.btS[f] || BT_IN_MENU(sx, y)) continue;
 				const DWORD *h = g_bt.btL + f * 4;
 				o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
 				o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
 			}
+			if (miss) InterlockedExchangeAdd(&g_btMiss, miss);
 		}
 	}
 }
@@ -4005,7 +4047,17 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		// took 25-44 ms a picture; the final stretch is Catmull-Rom). With FSR on the CPU: EASU,
 		// then the HD layer stamped.
 		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(pic, lw, lh, lw, pic2, 2 * lw, 2 * lh, 2 * lw);
+		InterlockedExchange(&g_btMiss, 0);
 		pool_run((lh + BT_BAND - 1) / BT_BAND, bt_double_job);
+		if (g_timing) { // pictures where many HD pixels fell back to 1x (a flicker)
+			static int n, bad; static double t0; static LONG worst;
+			LONG m = g_btMiss; n++;
+			if (m > 20000) bad++;
+			if (m > worst) worst = m;
+			double now = perf_now();
+			if (!t0) t0 = now;
+			if (now - t0 > 1000) { if (bad || worst > 5000) logf_("timing: battle HD art: %d of %d pictures with over 20000 pixels shown 1x (worst %ld)", bad, n, (long)worst); n = bad = 0; worst = 0; t0 = now; }
+		}
 		src = pic2;
 		sw = lw * 2;
 		sh = lh * 2;
@@ -4491,6 +4543,30 @@ static BOOL present(void)
 	return TRUE;
 }
 
+// A picture must be handed to the swap chain this long before a refresh to reach it: a fullscreen window
+// goes to the display without the compositor (independent flip), and on the player's screen a hand-off
+// 1-4 ms before the refresh missed it, left the refresh empty and blocked the next present 4-8 ms.
+#define SUBMIT_LEAD 5.0  // ms: a new frame that can't be handed over this early gets a repeat first
+#define REPEAT_LEAD 7    // ms before the refresh: no new frame by then, the last picture again
+// The wait for the next refresh after a picture: the display's vertical blank with the GPU path, the
+// compositor's next frame (DwmFlush) on the CPU path.
+static void wait_refresh(HRESULT (WINAPI *dwm_flush)(void))
+{
+	double t = perf_now();
+	static int said;
+	if (gpu_drawing() && gpu_wait_vblank()) {
+		if (!said) { said = 1; logf_("refresh wait: the display's vertical blank"); }
+	}
+	else {
+		if (said != 2 && gpu_drawing()) { said = 2; logf_("refresh wait: the compositor (no vertical blank wait)"); }
+		if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
+	}
+	if (g_timing) { // in the pacing record: W, with how long the wait was
+		int i = g_paceWakeN % PACE_RING;
+		g_paceWake[i].t = perf_now(); g_paceWake[i].seq = g_paceReadSeq; g_paceWake[i].shown = 3; g_paceWake[i].present = perf_now() - t;
+		g_paceWakeN++;
+	}
+}
 // Presents whenever the frame changed, at most once per display refresh: the game copies its
 // frame in pieces (one start-up effect uses 1200 16x16 blocks), and each copy only marks it dirty.
 static DWORD WINAPI presenter(void *unused)
@@ -4510,12 +4586,17 @@ static DWORD WINAPI presenter(void *unused)
 		// the last picture goes to that refresh again.
 		static double repeatPause; // a repeat could not be drawn (minimised, in the background): wait normally for a while
 		BOOL repeatCap = g_repeatOn && gpu_drawing() && g_gpu.state == 1 && g_gpu.have && !bench && perf_now() >= repeatPause;
+		static int dbgB1, dbgB2, dbgRepFail; static double dbgT; // Timing=1: the repeat paths taken
+		if (g_timing && perf_now() - dbgT > 5000) {
+			logf_("presenter: %d idle repeats, %d repeats before a late frame, %d repeats not drawn; a new picture takes %.1f ms", dbgB1, dbgB2, dbgRepFail, g_presentEma);
+			dbgB1 = dbgB2 = dbgRepFail = 0; dbgT = perf_now();
+		}
 		double nextV = 0, period = 0;
 		DWORD timeout = g_statsOn ? 25 : 50;
 		if (repeatCap) {
 			double n0 = perf_now();
 			nextV = perf_next_refresh(n0); period = g_perf.refresh;
-			if (period > 0) { double ms = nextV - n0 - 4; timeout = ms < 0 ? 0 : (DWORD)ms; }
+			if (period > 0) { double ms = nextV - n0 - REPEAT_LEAD; timeout = ms < 0 ? 0 : (DWORD)ms; }
 			else repeatCap = FALSE;
 		}
 		if (!bench) WaitForSingleObject(g_dirtyEvent, timeout);
@@ -4523,11 +4604,12 @@ static DWORD WINAPI presenter(void *unused)
 		if (repeatCap && !dirty && !g_waveActive && g_perf.lastAny <= nextV - period) {
 			perf_begin();
 			if (gpu_repeat()) {
-				perf_repeat();
+				perf_repeat(); if (g_timing) pace_wake(2);
 				if (g_timing) pace_classify();
-				if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
+				wait_refresh(dwm_flush);
 			}
-			else repeatPause = perf_now() + 250;
+			else { repeatPause = perf_now() + 250; dbgRepFail++; }
+			dbgB1++;
 			InterlockedExchange(&g_frameTaken, 1); // the game may copy its newest frame for the next refresh
 			continue;
 		}
@@ -4538,21 +4620,44 @@ static DWORD WINAPI presenter(void *unused)
 		if (statsOnly) lastStats = nowMs;
 		if (bench || statsOnly) InterlockedExchange(&g_forcePresent, 1);
 		if (!dirty && !bench && !statsOnly && !g_dumpPalettes && !g_waveActive) continue; // DumpPalettes: lets a palette that stays put be logged
+		// A new frame too late to be drawn before the coming refresh: that refresh gets the last
+		// picture again first (it would otherwise get nothing), and the new one goes to the next.
+		if (repeatCap && dirty) {
+			double n1 = perf_now();
+			if (nextV - n1 < g_presentEma + SUBMIT_LEAD && nextV - n1 > 0 && g_perf.lastAny <= nextV - period) {
+				perf_begin();
+				if (gpu_repeat()) {
+					perf_repeat(); if (g_timing) pace_wake(2);
+					wait_refresh(dwm_flush);
+				}
+				dbgB2++;
+				InterlockedExchange(&g_dirty, 1); // the new frame, at once after the refresh (the event too: the
+				SetEvent(g_dirtyEvent);           // wait would otherwise sleep to the next refresh's edge again)
+				continue;
+			}
+		}
 		QueryPerformanceCounter(&t0);
 		perf_begin();
+		EnterCriticalSection(&g_composeLock); // (see g_composeLock)
+		InterlockedExchange(&g_composing, 1);
 		BOOL shown = present();
+		InterlockedExchange(&g_composing, 0);
+		LeaveCriticalSection(&g_composeLock);
 		QueryPerformanceCounter(&t1);
 		if (!statsOnly) perf_end(shown, g_outW, g_outH); // (a redraw for the overlay is not a new picture)
 		if (g_timing && !statsOnly && !bench) pace_wake(shown);
 		if (shown && !bench) {
 			InterlockedIncrement(&g_presentCount);
 			double ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
+			// how long a new picture takes (the late check above); a slow one-off (the first picture starts
+			// the GPU, a screenshot reads 58 MB back) is left out, and the estimate stays within 10 ms
+			if (ms < 20) g_presentEma = min(10.0, g_presentEma * 0.9 + ms * 0.1);
 			busy += ms;
 			if (ms > worst) worst = ms;
 			presents++;
 			// Wait for the compositor's next frame, so the picture changes at most once per refresh.
 			double w0 = perf_now();
-			if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
+			wait_refresh(dwm_flush);
 			flushMs += perf_now() - w0;
 		}
 		// The game may copy its next frame now (h_show_frame): after the refresh, so the copy taken
@@ -4782,7 +4887,7 @@ static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWOR
 	SELF(Surface);
 	Surface *src = src_;
 	RECT d = dr ? *dr : (RECT){ -self->org, 0, self->w - self->org, self->h }; // no rectangle: the whole surface
-	if (self->primary) EnterCriticalSection(&g_lock);
+	if (self->primary) { EnterCriticalSection(&g_composeLock); EnterCriticalSection(&g_lock); } // (not while the presenter builds a picture from the HD layers)
 	if (flags & DDBLT_COLORFILL) {
 		BYTE colour = fx ? (BYTE)fx->dwFillColor : 0;
 		OffsetRect(&d, self->org, 0);
@@ -4811,7 +4916,7 @@ static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWOR
 		}
 	}
 	if (self->primary) {
-		LeaveCriticalSection(&g_lock);
+		LeaveCriticalSection(&g_lock); LeaveCriticalSection(&g_composeLock);
 		mark_dirty();
 	}
 	return DD_OK;
@@ -4824,10 +4929,10 @@ static HRESULT WINAPI surf_blt_fast(void *this_, DWORD x, DWORD y, void *src_, R
 	if (!src) return DDERR_INVALIDPARAMS;
 	if (trans & (DDBLTFAST_SRCCOLORKEY | DDBLTFAST_DESTCOLORKEY)) unexpected("BltFast with a colour key");
 	RECT s = sr ? *sr : (RECT){ -src->org, 0, src->w - src->org, src->h };
-	if (self->primary) EnterCriticalSection(&g_lock);
+	if (self->primary) { EnterCriticalSection(&g_composeLock); EnterCriticalSection(&g_lock); } // (not while the presenter builds a picture from the HD layers)
 	copy_rect(self, (int)x, (int)y, src, s.left, s.top, s.right - s.left, s.bottom - s.top);
 	if (self->primary) {
-		LeaveCriticalSection(&g_lock);
+		LeaveCriticalSection(&g_lock); LeaveCriticalSection(&g_composeLock);
 		mark_dirty();
 	}
 	return DD_OK;
@@ -7340,6 +7445,9 @@ static void __cdecl h_show_frame(int force)
 			memset(n, 0, sizeof n); t0 = now; moves = 0; lastPresents = pr;
 		}
 	}
+	// The presenter is building a picture from this frame's HD layers: an unforced copy now would only
+	// wait for it (g_composeLock), and nobody would see that frame; the next call copies.
+	if (!force && g_composing) return;
 	BOOL ours = FALSE;
 	if (g_frameLimit > 0 && !force && InterlockedExchange(&g_frameTaken, 0)) force = ours = 1;
 	LONG seq = g_copySeq;
@@ -7673,6 +7781,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	snprintf(g_logPath, sizeof g_logPath, "%s\\lords2hd.log", g_gameDir);
 	DeleteFileA(g_logPath);
 	InitializeCriticalSection(&g_lock);
+	InitializeCriticalSection(&g_composeLock);
 	InitializeCriticalSection(&g_recentLock);
 	load_real_ddraw();
 
