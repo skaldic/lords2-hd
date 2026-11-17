@@ -6235,8 +6235,38 @@ static void __cdecl h_castle_start(int county, int kind)
 	}
 }
 
+// Wheat fix. Each spring a county plants one grain pile (0x0053fbf4 + county * 0x300) and notes its
+// wheat fields twice: 0x0053fbb2 (kept as planted) and 0x0053fbb6 (kept in step with the pile).
+// Whenever a wheat field is lost (FUN_00469e5b, FUN_0046965a) the game takes that field's share
+// out of the pile and lowers 0x0053fbb6. Tending and harvesting (FUN_0044d15a, FUN_0044d1e5) then
+// scale the pile by FUN_0044d281: wheat fields now (0x0053fbb1) over 0x0053fbb2, as planted, so a
+// lost field is charged twice, and painting one more wheat field brings back grain it never
+// grew. Measured against 0x0053fbb6 instead, only a field taken without its share is counted.
+static BOOL g_fixWheat;
+typedef int (__cdecl *wheat_scale_t)(int, int);
+static wheat_scale_t o_wheat_scale;
+
+static int __cdecl h_wheat_scale(int county, int grain)
+{
+	if (!g_fixWheat) return o_wheat_scale(county, grain);
+	BYTE now = *(BYTE *)(0x0053fbb1 + county * 0x300), live = *(BYTE *)(0x0053fbb6 + county * 0x300);
+	int asWas = o_wheat_scale(county, grain);
+	if (now < live) grain = grain * (now * 100 / live) / 100; // the game's own percent steps (FUN_00404dc1, FUN_00404d6b)
+	static int logged, lastCounty, lastGrain;
+	if (grain != asWas && logged < 5 && (county != lastCounty || grain != lastGrain))
+		logged++, lastCounty = county, lastGrain = grain, logf_("wheat fix: county %d, %d wheat fields (%d as planted, %d with grain): %d grain counted, %d before",
+		county, now, *(BYTE *)(0x0053fbb2 + county * 0x300), live, grain, asWas);
+	return grain;
+}
+
 static void install_game_fixes(void)
 {
+	g_fixWheat = GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
+	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
+		g_fixWheat = FALSE;
+	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
+
 	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
 	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
