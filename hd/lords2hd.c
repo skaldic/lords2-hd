@@ -120,6 +120,8 @@ static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scro
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
 static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
+static BOOL g_cycleOn;   // [Display] CycleKeys: , and . cycle counties and armies (cycle_key)
+static BOOL cycle_key(int dir);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
@@ -161,6 +163,7 @@ static void read_settings(void)
 	g_tutorialOnce = GetPrivateProfileIntA("Display", "TutorialOnce", 1, g_iniPath) != 0;
 	g_wasdOn = GetPrivateProfileIntA("Display", "WASD", 1, g_iniPath) != 0;
 	g_letters = GetPrivateProfileIntA("Display", "Letters", 1, g_iniPath) != 0;
+	g_cycleOn = GetPrivateProfileIntA("Display", "CycleKeys", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
 	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
 	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
@@ -2049,7 +2052,7 @@ static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loade
 static RECT g_menuRow[16], g_menuBox;                 // in window coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_WIDE, M_ZOOM, M_COUNT };
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_COUNT };
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -2062,12 +2065,13 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_LIMIT: snprintf(v, n, "%s", g_frameLimit ? "120 a second" : "Off (as the original)"); break;
 	case M_TUTORIAL: snprintf(v, n, "%s", g_tutorialOnce ? "Once" : "Every time"); break;
 	case M_WASD: snprintf(v, n, "%s", g_wasdOn ? "On" : "Off"); break;
+	case M_CYCLE: snprintf(v, n, "%s", g_cycleOn ? "On" : "Off"); break;
 	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
 	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
-	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", "Widescreen *", "Battle zoom-out *" };
+	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -2084,6 +2088,7 @@ static void menu_change(int i)
 	case M_LIMIT: g_frameLimit = g_frameLimit ? 0 : 120; ini_set("Display", "FrameLimit", g_frameLimit); break;
 	case M_TUTORIAL: g_tutorialOnce = !g_tutorialOnce; ini_set("Display", "TutorialOnce", g_tutorialOnce); break;
 	case M_WASD: g_wasdOn = !g_wasdOn; ini_set("Display", "WASD", g_wasdOn); break;
+	case M_CYCLE: g_cycleOn = !g_cycleOn; ini_set("Display", "CycleKeys", g_cycleOn); break;
 	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
 	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
 	}
@@ -3358,6 +3363,18 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+	if (n == 17) { // testing: list the map objects (table 0x52f0b0, 0x1a4 each) and their cells
+		for (int i = 1; i <= 150; i++) {
+			const BYTE *o = (const BYTE *)0x0052f0b0 + i * 0x1a4;
+			if (!o[8]) continue;
+			int row = -1, col = -1;
+			for (int r = 0; r <= 0x80 && row < 0; r++)
+				for (int c = 0; c < 0x41; c++) if (*(int *)(0x0055cea0 + r * 0x104 + c * 4) == i) { row = r; col = c; break; }
+			logf_("object %d: type %d owner %d b2 %d b7 %d at row %d col %d", i, o[8], (signed char)o[0], o[2], o[7], row, col);
+		}
+		logf_("player %d, selected county %d, view col %d row %d", *(int *)0x0057c8cc, *(int *)0x0057c93c, *(int *)0x005651b4, *(int *)0x005651b8);
+		return 0;
+	}
 	if (n == 15) { // testing: WASD keys held (wParam = bits as g_wasd)
 		InterlockedExchange(&g_wasd, (LONG)wp);
 		return 0;
@@ -3412,6 +3429,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	if (n == 4) {
 		if (menu_key((int)wp)) return 0;
+		if ((wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD) && cycle_key(wp == VK_OEM_PERIOD ? 1 : -1)) return 0;
 		CallWindowProcA(g_gameProc, hwnd, WM_KEYDOWN, wp, 1);
 		return CallWindowProcA(g_gameProc, hwnd, WM_KEYUP, wp, 0xC0000001);
 	}
@@ -3445,7 +3463,7 @@ static void remote_hide(HWND hwnd)
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	if (g_remote) {
-		if (msg > WM_REMOTE && msg <= WM_REMOTE + 0x10) return remote_message(hwnd, msg, wp, lp);
+		if (msg > WM_REMOTE && msg <= WM_REMOTE + 0x20) return remote_message(hwnd, msg, wp, lp);
 		if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
 		if (msg == WM_ACTIVATEAPP) wp = TRUE;            // the game would pause, thinking it is in the background
 		if (msg == WM_ACTIVATE) wp = WA_ACTIVE;
@@ -3460,6 +3478,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	if (msg == WM_CHAR && wasd_screen() && wasd_bit((WPARAM)toupper((int)wp))) return 0;
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) InterlockedExchange(&g_wasd, 0);
+	if (msg == WM_KEYDOWN && (wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD) && cycle_key(wp == VK_OEM_PERIOD ? 1 : -1)) return 0;
+	if (msg == WM_CHAR && (wp == ',' || wp == '.') && *(BYTE *)0x004eac50 == 0 && *(int *)0x0052af94 == 3 && g_cycleOn) return 0;
 	if (g_menuOpen) {
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
@@ -3514,6 +3534,53 @@ static void wasd_edges(POINT *p, int right, int bottom)
 	if (!k || !wasd_screen()) return;
 	if (k & 1) p->x = 0; else if (k & 2) p->x = right;
 	if (k & 4) p->y = 0; else if (k & 8) p->y = bottom;
+}
+// , and . cycle through the player's counties and then armies on the county map, centring the
+// view on each as the minimap does ([Display] CycleKeys=1). Counties: owner 0x53f9b5 + c*0x300,
+// town cell record 0x53fa20 + c*0x300 (FUN_0043253a selects one this way). Armies: map objects
+// (0x52f0b0 + i*0x1a4, 150) of type 1 owned by the player; an object's cell is found through the
+// cell grid (0x55cea0, 0x81 rows of 0x41 records) and each record's object list (head at byte
+// 0x522f95 + record, next at +4 of the object). FUN_0043278b(record) centres the view on it.
+static BOOL g_cycleOn = TRUE;
+static int g_cyclePos = -1;
+static int army_cell(int id)
+{
+	for (int r = 0; r <= 0x80; r++)
+		for (int c = 0; c < 0x41; c++) {
+			int rec = *(int *)(0x0055cea0 + r * 0x104 + c * 4);
+			if (rec <= 0 || rec >= 0xfff0000) continue;
+			for (int o = ((BYTE *)0x00522f95)[rec], guard = 0; o && guard < 160; o = *(short *)(0x0052f0b4 + o * 0x1a4), guard++)
+				if (o == id) return rec;
+		}
+	return 0;
+}
+static BOOL cycle_key(int dir)
+{
+	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(BYTE *)0x004eac50 != 0 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
+	int me = *(int *)0x0057c8cc;
+	int list[64], kind[64], n = 0;
+	for (int c = 1; c < 32 && n < 64; c++)
+		if (((BYTE *)0x0053f9b5)[c * 0x300] == me && *(int *)(0x0053fa20 + c * 0x300)) { list[n] = c; kind[n++] = 0; }
+	for (int i = 1; i <= 150 && n < 64; i++) {
+		const BYTE *o = (const BYTE *)0x0052f0b0 + i * 0x1a4;
+		if (o[8] == 1 && (signed char)o[0] == me) { list[n] = i; kind[n++] = 1; }
+	}
+	if (!n) return TRUE;
+	for (int tries = 0; tries < n; tries++) {
+		g_cyclePos = ((g_cyclePos < 0 ? (dir > 0 ? -1 : 0) : g_cyclePos) + dir + n) % n;
+		int rec;
+		if (kind[g_cyclePos] == 0) {
+			int c = list[g_cyclePos];
+			rec = *(int *)(0x0053fa20 + c * 0x300);
+			*(int *)0x0057c93c = c;
+		}
+		else if (!(rec = army_cell(list[g_cyclePos]))) continue; // not on the map (in a castle, at sea)
+		((int (__cdecl *)(int))0x0043278b)(rec);
+		*(int *)0x00567d0c = 1;
+		logf_("cycle: %s %d", kind[g_cyclePos] ? "army" : "county", list[g_cyclePos]);
+		return TRUE;
+	}
+	return TRUE;
 }
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {

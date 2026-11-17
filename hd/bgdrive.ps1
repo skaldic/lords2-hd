@@ -29,7 +29,7 @@ $view = [IntPtr][long]((Get-Content $info -ErrorAction Stop) -split ' ')[0]
 $base = 0x8100   # WM_REMOTE in lords2hd.c
 function Post([int]$n, [long]$w, [long]$l) { [void][BG.M]::PostMessage($view, $base + $n, [IntPtr]$w, [IntPtr]$l) }
 function XY([string]$a) { $x, $y = $a -split ','; return ([long][int]$y -shl 16) -bor ([int]$x -band 0xffff) }
-$keys = @{ '{ESC}' = 0x1b; '{ENTER}' = 0x0d; '{LEFT}' = 0x25; '{UP}' = 0x26; '{RIGHT}' = 0x27; '{DOWN}' = 0x28; '{TAB}' = 0x09; '{BACKSPACE}' = 0x08; '{SPACE}' = 0x20; '{F8}' = 0x77 }
+$keys = @{ '{ESC}' = 0x1b; '{ENTER}' = 0x0d; '{LEFT}' = 0x25; '{UP}' = 0x26; '{RIGHT}' = 0x27; '{DOWN}' = 0x28; '{TAB}' = 0x09; '{BACKSPACE}' = 0x08; '{SPACE}' = 0x20; '{F8}' = 0x77; '{COMMA}' = 0xBC; '{PERIOD}' = 0xBE }
 New-Item -ItemType Directory -Force $shots | Out-Null
 foreach ($step in $Steps) {
     if (-not [BG.M]::IsWindow($view)) { "the game's window is gone (step '$step')"; break }
@@ -68,6 +68,7 @@ foreach ($step in $Steps) {
             if (Test-Path $f) { $b = [Drawing.Bitmap]::FromFile($f); $b.Save((Join-Path $shots "$arg.png"), [Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); Remove-Item $f; "saved $arg.png" } else { "no frame for $arg" }
         }
         'capscroll' { Post 12 ([int]$arg) 0 }   # testing: the captured-county scroll with its video
+        'objects' { Post 17 0 0 }   # testing: log the map objects
         'wasd' { Post 15 ([int]$arg) 0 }   # WASD held: 1 A, 2 D, 4 W, 8 S, 0 released
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
         'edge'   { Post 7 ([int]$arg) 0 }   # mouse held at screen edges: 1 left, 2 right, 4 top, 8 bottom, 0 off
