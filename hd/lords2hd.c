@@ -3638,7 +3638,7 @@ static BOOL cycle_key(int dir)
 // foot of the army panel (army_panel_keep) when one of the player's armies is selected: clicking
 // them does what , and . do. Drawn into the 2x picture; their clicks never reach the game.
 #define AP_W (8 * 16)
-#define AP_H (15 * 16)
+#define AP_H (16 * 16)
 #define AP_X (0x1dc - AP_W)
 #define AP_Y (GAME_H - AP_H)
 static int panel_army(void);
@@ -3649,7 +3649,7 @@ static BOOL cycle_btn_rect(int b, RECT *r)
 	BYTE s = *(BYTE *)0x004eac50;
 	if (s == 16) {
 		if (!panel_army()) return FALSE;
-		SetRect(r, b ? AP_X + AP_W - 24 : AP_X + 8, AP_Y + AP_H - 28, b ? AP_X + AP_W - 8 : AP_X + 24, AP_Y + AP_H - 10);
+		SetRect(r, b ? AP_X + AP_W - 24 : AP_X + 8, AP_Y + AP_H - 40, b ? AP_X + AP_W - 8 : AP_X + 24, AP_Y + AP_H - 22);
 		return TRUE;
 	}
 	int c = *(int *)0x0057c93c; // the name plate is up for the player's own county
@@ -4626,9 +4626,9 @@ static void army_panel_draw(int id)
 	int sheet = *(int *)0x005530c8;
 	static const DWORD frame[3] = { 0x00409397, 0x004093e0, 0x00409429 }; // framed panel, scroll, ...
 	((void (__cdecl *)(int, int, int, int))frame[g_apStyle % 3])(AP_X, AP_Y, AP_W / 16, AP_H / 16);
-	ctext(game_str((signed char)o[0] + 0x5d, o[0x14f]), AP_X + 2, AP_Y + 10, AP_W - 4, big, 0x3f);
+	ctext(game_str((signed char)o[0] + 0x5d, o[0x14f]), AP_X + 2, AP_Y + 18, AP_W - 4, big, 0x3f); // under the scroll's roll
 	for (int t = 0; t < 7; t++) { // a row a kind, mercenaries with their kind
-		int n = *(const short *)(o + 0x16c + t * 2) + (o[0x195] == t ? o[0x196] : 0), y = AP_Y + 30 + t * 24;
+		int n = *(const short *)(o + 0x16c + t * 2) + (o[0x195] == t ? o[0x196] : 0), y = AP_Y + 40 + t * 24;
 		icon(sheet, 0x2f + t, AP_X + AP_W / 2 - 30, y);
 		num(n, ' ', "", AP_X + AP_W / 2 + 2, y + 4, small, 0x3f);
 	}
@@ -4637,7 +4637,7 @@ static void army_panel_draw(int id)
 	const char *men = game_str(8, 0x49), *w = strrchr(men, ' ');
 	lstrcpynA(word, w ? w + 1 : men, sizeof word);
 	wsprintfA(s, "%d %s", *(const int *)(o + 0x168), word);
-	ctext(s, AP_X + 24, AP_Y + AP_H - 26, AP_W - 48, big, 0x3f);
+	ctext(s, AP_X + 24, AP_Y + AP_H - 38, AP_W - 48, big, 0x3f); // above the bottom roll
 	(void)text; (void)adv;
 }
 static void __cdecl h_redraw_map(void);
