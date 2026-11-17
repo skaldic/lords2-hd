@@ -1,4 +1,5 @@
-// Packs the HD art (<game>\lords2hd\screens, wide, tiles, sprites) into lords2hd.pak, the one file the
+// Packs the HD art (<game>\lords2hd\screens, wide, tiles, sprites, and the restored voices in sound)
+// into lords2hd.pak, the one file the
 // DLL reads it from (see "The art pack" in hd/lords2hd.c for the format and what the scrambling is
 // and is not). Built and run by tools\make_pak.ps1:
 //   l2pak <lords2hd folder> <out.pak>
@@ -25,19 +26,19 @@ int main(int argc, char **argv)
 	if (!out) { fprintf(stderr, "cannot write %s\n", argv[2]); return 1; }
 	DWORD head[4] = { PAK_MAGIC, 0, 0, 1 };
 	fwrite(head, sizeof head, 1, out);
-	static const char *dirs[] = { "screens", "wide", "tiles", "sprites" };
+	static const char *dirs[] = { "screens", "wide", "tiles", "sprites", "sound" }; // sound: optional (restored voices)
 	static BYTE buf[1 << 20];
 	unsigned long long total = 0;
-	for (int d = 0; d < 4; d++) {
+	for (int d = 0; d < 5; d++) {
 		char pattern[MAX_PATH];
 		snprintf(pattern, sizeof pattern, "%s\\%s\\*", argv[1], dirs[d]);
 		WIN32_FIND_DATAA fd;
 		HANDLE h = FindFirstFileA(pattern, &fd);
-		if (h == INVALID_HANDLE_VALUE) { fprintf(stderr, "no folder %s\\%s\n", argv[1], dirs[d]); return 1; }
+		if (h == INVALID_HANDLE_VALUE) { if (d == 4) continue; fprintf(stderr, "no folder %s\\%s\n", argv[1], dirs[d]); return 1; }
 		do {
 			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
 			const char *ext = strrchr(fd.cFileName, '.');
-			if (!ext || (_stricmp(ext, ".bin") && _stricmp(ext, ".pal"))) continue;
+			if (!ext || (d < 4 ? _stricmp(ext, ".bin") && _stricmp(ext, ".pal") : _stricmp(ext, ".wav"))) continue;
 			if (count >= 4096) { fprintf(stderr, "too many files\n"); return 1; }
 			PAK_ENTRY *e = &entries[count];
 			memset(e, 0, sizeof *e);

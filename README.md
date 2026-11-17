@@ -4,12 +4,13 @@ An unofficial fan patch for the GOG version of **Lords of the Realm II**. It mak
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **1.2.0**.
+Current version: **1.3.0**.
 
-**New in 1.2.0: press F8 in the game** for the settings panel. Switch the AI art on or off, choose
-sharp (Catmull-Rom) or soft upscaling, and more: most changes show at once and are saved for next time.
+**New in 1.3.0:** an installer, restored voices, an army scroll, WASD scrolling, `,` and `.` to jump
+between your counties and armies, fresh diplomatic letters, and the settings panel on **F10** as one
+of the game's scrolls.
 
-![The F8 settings panel](https://github.com/skaldic/lords2-hd/releases/latest/download/f8.jpg)
+![The F10 settings panel](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg)
 
 ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg)
 
@@ -29,7 +30,12 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Battles can zoom out to show four times the field
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels and lettering
 - Sharp Catmull-Rom upscaling, with the AI art or without it (the original art, scaled cleanly)
-- An in-game settings panel on F10
+- An in-game settings panel on F10, drawn as one of the game's scrolls
+- The dialogue and unit voices restored to full quality (with Lords2Resounded; see below)
+- An army scroll beside the side panel while one of your armies is selected: its troops and men
+- W, A, S, D scroll the map and the battlefield; `,` and `.` (or the `<` `>` buttons) jump between
+  your counties, or your armies
+- Fresh diplomatic letters, dealt like a shuffled deck, where the game left the letter empty
 - Foam rolling in along the coast on the county map
 - Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
@@ -41,20 +47,20 @@ The screenshots are hosted on the release: this repository holds no game art.
 
 ## Install
 
-Download `Lords2-HD-1.2.0.zip` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
-and unzip it into the game's folder, the one holding `Lords2.exe`. Start the game as usual. To
-remove the patch, delete `ddraw.dll`, `lords2hd.ini`, `lords2hd.log` and the `lords2hd` folder.
+Download `Lords2-HD-1.3.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+and run it. It finds the GOG game by itself (or asks for the folder holding `Lords2.exe`), adds the
+patch, and leaves the game's own files alone. Uninstall it from Windows' Apps list. Close the game
+first. Windows may warn that the publisher is unknown: the installer is not code-signed.
 
-The patch is a `ddraw.dll` the game loads by itself. If the game folder already holds a `ddraw.dll`
-from another wrapper, this one replaces it. The download is about 450 MB and unpacks to about
-900 MB of art.
+The patch is a `ddraw.dll` the game loads by itself, an ini with the settings, and `lords2hd.pak`,
+one file with the HD art and the restored voices. If the game folder already holds a `ddraw.dll`
+from another wrapper, this one replaces it. Updating from an older version: run the installer over
+it; your settings are kept and the loose art folders of the zip versions are removed.
 
-Updating from 1.1.1: replacing `ddraw.dll` with the one attached to the release is enough (the art
-has not changed). From an older version, unzip the new zip over it.
-
+Rather unzip by hand? `Lords2-HD-1.3.0.zip` holds the same files: unzip it into the game's folder.
 ## Better videos and music (optional)
 
-These are not part of the download; the patch uses them when you add them.
+These are not part of the download (they are not ours to give); the patch uses them when you add them.
 
 - **Videos:** the original discs held sharper, full-height videos than the GOG version. A fan made
   them available in the
@@ -71,9 +77,9 @@ These are not part of the download; the patch uses them when you add them.
 
 ## Settings
 
-Press **F10** in the game: a panel lists the settings on two tabs, Display and Quality of life (Tab
-switches them); click a line (or use the arrow keys and Enter) to change it. Most changes apply at once; those marked * (widescreen, battle zoom-out) after a
-restart. Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt)
+Press **F10** in the game: a scroll lists the settings on two tabs, Display and Quality of life (Tab
+switches them); click a line (or use the arrow keys and Enter) to change it, right-click to close.
+Most changes apply at once; those marked * (widescreen, battle zoom-out) after a restart. Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt)
 lists all its keys and is also the readme inside the zip.
 
 ## Requirements
@@ -86,7 +92,9 @@ The HD art is the game's own art enlarged with an AI upscaler (Real-ESRGAN). The
 parts of most widened paintings were painted by an AI image model (FLUX.1 Fill) from the game's own
 pictures; the original 4:3 picture is unchanged in the middle. Where a model's result did not look
 like the original (the greatest-nobles battlement, the menu stone), the original's own stonework is
-repeated instead. See [NOTICE.md](NOTICE.md).
+repeated instead. The voices are the game's own recordings, restored with
+[Lords2Resounded](https://github.com/gqzomer/Lords2Resounded) with its author's permission. See
+[NOTICE.md](NOTICE.md).
 
 ## Building it yourself
 
@@ -97,7 +105,8 @@ The repository holds only original code: nothing extracted from the game is in i
 - `tools/build_screens.ps1`, `build_tiles.ps1`, `build_sprites.ps1`, `build_battle_ground.ps1`,
   `likeness.ps1` and `build_rooms.ps1` make the art in `<game>\lords2hd`
 - `tools/expand_sides.ps1` and `expand_all.ps1` paint the sides of the widened screens
-- `tools/make_release.ps1 -Version x.y.z` makes the release zip
+- `tools/make_pak.ps1` packs the art into `lords2hd.pak`; `tools/make_release.ps1 -Version x.y.z`
+  makes the installer (Inno Setup 6, `tools/lords2hd.iss`) and the zip
 - External tools (llvm-mingw, Real-ESRGAN, stable-diffusion.cpp and its models) are found through
   the `L2HD_TOOLS` environment variable, or `tools\external`
 - `NOTES.md` holds the reverse-engineering notes

@@ -1644,7 +1644,32 @@ static BOOL wav_format(const char *path, WAVEFORMATEX *wf)
 	return ok;
 }
 
-static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
+// A sound from the art pack (sound/<name>.wav): read whole and opened as a memory file. The game
+// reads its sounds whole as soon as it opens them, so the last few buffers are kept and reused.
+static HMMIO pak_sound(const char *loosePath, const char *base, DWORD flags)
+{
+	if (!g_pak || (flags & (MMIO_WRITE | MMIO_READWRITE | MMIO_CREATE))) return NULL;
+	AFILE *f = afopen(loosePath);
+	if (!f) return NULL;
+	static BYTE *ring[8];
+	static int next;
+	DWORD size = f->f ? 0 : f->size;
+	BYTE *buf = size ? malloc(size) : NULL;
+	HMMIO h = NULL;
+	if (buf && afread(buf, 1, size, f) == size) {
+		MMIOINFO mi = { 0 };
+		mi.fccIOProc = FOURCC_MEM;
+		mi.pchBuffer = (HPSTR)buf;
+		mi.cchBuffer = (LONG)size;
+		h = o_mmioOpenA(NULL, &mi, MMIO_READ);
+	}
+	afclose(f);
+	if (!h) { free(buf); return NULL; }
+	free(ring[next]); ring[next] = buf; next = (next + 1) % 8;
+	static char last[32];
+	if (lstrcmpiA(last, base)) { logf_("sound: pack %s", base); lstrcpynA(last, base, sizeof last); }
+	return h;
+}static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 {
 	DWORD a = (DWORD)name;
 	if (!name) return o_mmioOpenA(name, info, flags);
@@ -1667,6 +1692,8 @@ static HMMIO WINAPI h_mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 					return h;
 				}
 			}
+			HMMIO h = pak_sound(alt, base, flags); // else from the pack
+			if (h) return h;
 		}
 		return o_mmioOpenA(name, info, flags);
 	}
