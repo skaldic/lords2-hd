@@ -630,7 +630,9 @@ static int key_px(int x, int y, BYTE v, const DWORD **hd, int *hw)
 	return 0;
 }
 
-static void keys_load(FILE *f)
+typedef struct AFILE AFILE;
+static size_t afread(void *buf, size_t sz, size_t n, AFILE *a);
+static void keys_load(AFILE *f)
 {
 	for (int k = 0; k < g_keyCount; k++) {
 		free(g_keys[k].bg); free(g_keys[k].mark); g_keys[k].bg = g_keys[k].mark = NULL;
@@ -639,13 +641,13 @@ static void keys_load(FILE *f)
 	}
 	g_keyCount = 0;
 	int n;
-	if (fread(&n, 4, 1, f) != 1) return;
+	if (afread(&n, 4, 1, f) != 1) return;
 	for (int k = 0; k < n && k < MAX_KEYS; k++) {
 		int wh[2];
-		if (fread(wh, 4, 2, f) != 2 || wh[0] <= 0 || wh[1] <= 0 || wh[0] > GAME_W || wh[1] > GAME_H) return;
+		if (afread(wh, 4, 2, f) != 2 || wh[0] <= 0 || wh[1] <= 0 || wh[0] > GAME_W || wh[1] > GAME_H) return;
 		int size = wh[0] * wh[1];
 		BYTE *bg = malloc(size), *mark = malloc(size);
-		if (!bg || !mark || fread(bg, 1, size, f) != (size_t)size || fread(mark, 1, size, f) != (size_t)size) { free(bg); free(mark); return; }
+		if (!bg || !mark || afread(bg, 1, size, f) != (size_t)size || afread(mark, 1, size, f) != (size_t)size) { free(bg); free(mark); return; }
 		g_keys[k].w = wh[0]; g_keys[k].h = wh[1]; g_keys[k].bg = bg; g_keys[k].mark = mark; g_keys[k].found = FALSE;
 		// Probes: up to 24 always-background pixels spread over the frame.
 		int all = 0;
@@ -656,11 +658,11 @@ static void keys_load(FILE *f)
 		g_keys[k].shown = -1;
 		g_keyCount = k + 1;
 		int frames;
-		if (fread(&frames, 4, 1, f) != 1) return;
+		if (afread(&frames, 4, 1, f) != 1) return;
 		for (int fr = 0; fr < frames && fr < MAX_KEY_FRAMES; fr++) {
 			BYTE *pix = malloc(size);
 			DWORD *hd = malloc(size * 4 * 4);
-			if (!pix || !hd || fread(pix, 1, size, f) != (size_t)size || fread(hd, 4, size * 4, f) != (size_t)(size * 4)) {
+			if (!pix || !hd || afread(pix, 1, size, f) != (size_t)size || afread(hd, 4, size * 4, f) != (size_t)(size * 4)) {
 				free(pix); free(hd);
 				return;
 			}
@@ -683,26 +685,116 @@ static int room_col(int x, int y, int *art)
 	return g >= 0 && g < GAME_W ? g : -1;
 }
 
+// ---- The art pack (lords2hd.pak) -----------------------------------------------------------------
+// The HD art ships as one file next to the game: a header, the files' bytes, and an index of their
+// names, offsets and sizes. The index is scrambled with a keystream and the files' bytes with a byte
+// table, so ordinary tools cannot open them, while the installer's compression still works on them.
+// It keeps casual copying out; it is not protection (the key is in this DLL). A loose file in
+// lords2hd\ is read first, so the art can still be replaced by hand. Made by tools\l2pak.c.
+#define PAK_MAGIC 0x50483243 // "C2HP"
+typedef struct { char name[48]; DWORD off, size; } PAK_ENTRY;
+static PAK_ENTRY *g_pak;
+static int g_pakN;
+static BYTE g_pakUn[256]; // the byte table, undone
+static char g_pakPath[MAX_PATH];
+static DWORD pak_key(DWORD *s) { DWORD x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *s = x; }
+static void pak_open(void)
+{
+	snprintf(g_pakPath, sizeof g_pakPath, "%s\\lords2hd.pak", g_gameDir);
+	HANDLE h = CreateFileA(g_pakPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (h == INVALID_HANDLE_VALUE) return;
+	DWORD head[4], got = 0; // magic, count, index offset, version
+	if (ReadFile(h, head, sizeof head, &got, NULL) && got == sizeof head && head[0] == PAK_MAGIC && head[1] > 0 && head[1] < 100000) {
+		PAK_ENTRY *e = malloc(head[1] * sizeof *e);
+		LONG hi = 0;
+		if (e && SetFilePointer(h, (LONG)head[2], &hi, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+			ReadFile(h, e, head[1] * sizeof *e, &got, NULL) && got == head[1] * sizeof *e) {
+			DWORD s = 0x9e3779b9u ^ head[1];
+			for (DWORD i = 0; i < head[1] * sizeof *e / 4; i++) ((DWORD *)e)[i] ^= pak_key(&s);
+			BYTE fw[256];
+			s = 0x2545f491u;
+			for (int i = 0; i < 256; i++) fw[i] = (BYTE)i;
+			for (int i = 255; i > 0; i--) { int j = pak_key(&s) % (i + 1); BYTE t = fw[i]; fw[i] = fw[j]; fw[j] = t; }
+			for (int i = 0; i < 256; i++) g_pakUn[fw[i]] = (BYTE)i;
+			g_pak = e; g_pakN = (int)head[1];
+			logf_("art pack: %d files", g_pakN);
+		}
+		else free(e);
+	}
+	CloseHandle(h);
+}
+// A file of the art: loose, or from the pack (read on demand through its own handle).
+struct AFILE { FILE *f; HANDLE h; DWORD base, size, pos; };
+static const PAK_ENTRY *pak_find(const char *path)
+{
+	char prefix[MAX_PATH];
+	int n = snprintf(prefix, sizeof prefix, "%s\\lords2hd\\", g_gameDir);
+	if (!g_pak || _strnicmp(path, prefix, n)) return NULL;
+	char name[64];
+	lstrcpynA(name, path + n, sizeof name);
+	for (char *c = name; *c; c++) *c = *c == '\\' ? '/' : (char)tolower((BYTE)*c);
+	for (int i = 0; i < g_pakN; i++) if (!strcmp(g_pak[i].name, name)) return &g_pak[i];
+	return NULL;
+}
+static AFILE *afopen(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	const PAK_ENTRY *e = f ? NULL : pak_find(path);
+	if (!f && !e) return NULL;
+	AFILE *a = calloc(1, sizeof *a);
+	if (!a) { if (f) fclose(f); return NULL; }
+	a->f = f;
+	if (e) {
+		a->h = CreateFileA(g_pakPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+		if (a->h == INVALID_HANDLE_VALUE) { free(a); return NULL; }
+		a->base = e->off; a->size = e->size;
+	}
+	return a;
+}
+static BOOL aexists(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES || pak_find(path); }
+static size_t afread(void *buf, size_t sz, size_t n, AFILE *a)
+{
+	if (a->f) return fread(buf, sz, n, a->f);
+	DWORD want = (DWORD)(sz * n), left = a->size - a->pos, got = 0;
+	if (want > left) want = left - left % (DWORD)sz;
+	LONG hi = 0;
+	if (!want || SetFilePointer(a->h, (LONG)(a->base + a->pos), &hi, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!ReadFile(a->h, buf, want, &got, NULL)) return 0;
+	for (DWORD i = 0; i < got; i++) ((BYTE *)buf)[i] = g_pakUn[((BYTE *)buf)[i]];
+	a->pos += got;
+	return got / sz;
+}
+static int afseek(AFILE *a, long off, int whence)
+{
+	if (a->f) return fseek(a->f, off, whence);
+	long p = whence == SEEK_SET ? off : whence == SEEK_CUR ? (long)a->pos + off : (long)a->size + off;
+	if (p < 0 || p > (long)a->size) return -1;
+	a->pos = (DWORD)p;
+	return 0;
+}
+static long aftell(AFILE *a) { return a->f ? ftell(a->f) : (long)a->pos; }
+static void afclose(AFILE *a) { if (!a) return; if (a->f) fclose(a->f); if (a->h) CloseHandle(a->h); free(a); }
+
 static void room_load(const char *base)
 {
 	char path[MAX_PATH];
 	g_room.on = FALSE;
 	snprintf(path, sizeof path, "%s\\lords2hd\\wide\\%s.bin", g_gameDir, base);
-	FILE *f = fopen(path, "rb");
+	AFILE *f = afopen(path);
 	if (!f) return;
 	int head[5];
-	if (fread(head, 4, 5, f) == 5 && head[0] > GAME_W && head[0] <= 2 * GAME_W) {
+	if (afread(head, 4, 5, f) == 5 && head[0] > GAME_W && head[0] <= 2 * GAME_W) {
 		free(g_room.px); free(g_room.out);
 		g_room.px = malloc(head[0] * 2 * GAME_H * 2 * 4);
 		g_room.out = malloc(head[0] * 2 * GAME_H * 2 * 4);
-		if (g_room.px && g_room.out && fread(g_room.px, 4, head[0] * 2 * GAME_H * 2, f) == (size_t)(head[0] * 2 * GAME_H * 2)) {
+		if (g_room.px && g_room.out && afread(g_room.px, 4, head[0] * 2 * GAME_H * 2, f) == (size_t)(head[0] * 2 * GAME_H * 2)) {
 			g_room.w = head[0]; g_room.cutL = head[1]; g_room.cutR = head[2];
 			g_room.floorY = head[3]; g_room.barY = head[4];
 			g_room.on = TRUE;
 			keys_load(f);
 		}
 	}
-	fclose(f);
+	afclose(f);
 	logf_("wider room %s: %s", base, g_room.on ? "loaded" : "bad file");
 }
 
@@ -775,12 +867,12 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 	if (dot) *dot = 0;
 	CharLowerA(base);
 	snprintf(path, sizeof path, "%s\\lords2hd\\screens\\%s.bin", g_gameDir, base);
-	FILE *f = fopen(path, "rb");
+	AFILE *f = afopen(path);
 	if (!f) return;
 	if (!g_hdPic.px) g_hdPic.px = malloc(GAME_W * 2 * GAME_H * 2 * 4);
 	EnterCriticalSection(&g_lock);
-	BOOL ok = g_hdPic.px && fread(g_hdPic.pal, 1, 768, f) == 768 &&
-		fread(g_hdPic.px, 4, GAME_W * 2 * GAME_H * 2, f) == GAME_W * 2 * GAME_H * 2;
+	BOOL ok = g_hdPic.px && afread(g_hdPic.pal, 1, 768, f) == 768 &&
+		afread(g_hdPic.px, 4, GAME_W * 2 * GAME_H * 2, f) == GAME_W * 2 * GAME_H * 2;
 	if (ok) {
 		memcpy(g_hdPic.shadow, pic, GAME_W * GAME_H);
 		g_hdPic.on = TRUE;
@@ -788,7 +880,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 		room_load(base);
 	}
 	LeaveCriticalSection(&g_lock);
-	fclose(f);
+	afclose(f);
 	logf_("HD painting %s%s", base, ok ? "" : ": bad file");
 	mark_dirty();
 }
@@ -983,20 +1075,20 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		g_tileSets[slot].buf = NULL;
 	}
 	snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
-	FILE *f = fopen(path, "rb");
+	AFILE *f = afopen(path);
 	if (!f) return;
-	fseek(f, 0, SEEK_END);
-	long bytes = ftell(f);
-	fseek(f, 0, SEEK_SET);
+	afseek(f, 0, SEEK_END);
+	long bytes = aftell(f);
+	afseek(f, 0, SEEK_SET);
 	DWORD *px = malloc(bytes);
-	if (px && fread(px, 1, bytes, f) == (size_t)bytes) {
+	if (px && afread(px, 1, bytes, f) == (size_t)bytes) {
 		g_tileSets[slot].px = px;
 		g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
 		g_tileSets[slot].buf = buffer;
 		if (g_shoreWaves && !strncmp(base, "base1", 5)) g_tileSets[slot].wave = wave_build(px, g_tileSets[slot].frames);
 	}
 	else free(px);
-	fclose(f);
+	afclose(f);
 	if (!g_layer) {
 		g_layer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_waveD = calloc(MAX_W * 2, GAME_H * 2);
@@ -1091,9 +1183,9 @@ static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[32]; } g_s
 
 static void read_palette(const char *path, BYTE *pal)
 {
-	FILE *f = fopen(path, "rb");
-	if (!f || fread(pal, 1, 768, f) != 768) memset(pal, 0, 768);
-	if (f) fclose(f);
+	AFILE *f = afopen(path);
+	if (!f || afread(pal, 1, 768, f) != 768) memset(pal, 0, 768);
+	if (f) afclose(f);
 }
 
 static void sprites_loaded(const char *name, const void *buffer)
@@ -1116,24 +1208,24 @@ static void sprites_loaded(const char *name, const void *buffer)
 	if (dot) *dot = 0;
 	CharLowerA(base);
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
-	FILE *f = fopen(path, "rb");
+	AFILE *f = afopen(path);
 	if (!f) return;
-	fseek(f, 0, SEEK_END);
-	long bytes = ftell(f);
-	fseek(f, 0, SEEK_SET);
+	afseek(f, 0, SEEK_END);
+	long bytes = aftell(f);
+	afseek(f, 0, SEEK_SET);
 	BYTE *data = slot >= 0 ? malloc(bytes) : NULL;
-	if (data && fread(data, 1, bytes, f) == (size_t)bytes) {
+	if (data && afread(data, 1, bytes, f) == (size_t)bytes) {
 		g_spriteSets[slot].buf = buffer;
 		g_spriteSets[slot].data = data;
 		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
 		g_layerGen++;
 		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
-		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+		if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 		read_palette(path, g_spriteSets[slot].pal);
 		logf_("HD sprites %s", base);
 	}
 	else free(data);
-	fclose(f);
+	afclose(f);
 }
 
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
@@ -1251,16 +1343,16 @@ static void __cdecl h_mini_load(unsigned which)
 	if (dot) *dot = 0;
 	CharLowerA(base);
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
-	FILE *f = fopen(path, "rb");
+	AFILE *f = afopen(path);
 	if (!f) return;
 	int frame = (which & 3) * 5 + 1, count = 0, off = 0;
 	WORD wh[2];
-	if (fread(&count, 4, 1, f) == 1 && frame < count && !fseek(f, 4 + 4 * frame, SEEK_SET) && fread(&off, 4, 1, f) == 1 && off &&
-		!fseek(f, off, SEEK_SET) && fread(wh, 2, 2, f) == 2 && wh[0] == 128 && wh[1] == 128 && !fseek(f, 128 * 128, SEEK_CUR)) {
+	if (afread(&count, 4, 1, f) == 1 && frame < count && !afseek(f, 4 + 4 * frame, SEEK_SET) && afread(&off, 4, 1, f) == 1 && off &&
+		!afseek(f, off, SEEK_SET) && afread(wh, 2, 2, f) == 2 && wh[0] == 128 && wh[1] == 128 && !afseek(f, 128 * 128, SEEK_CUR)) {
 		g_miniHD = malloc(256 * 256 * 4);
-		if (g_miniHD && fread(g_miniHD, 4, 256 * 256, f) != 256 * 256) { free(g_miniHD); g_miniHD = NULL; }
+		if (g_miniHD && afread(g_miniHD, 4, 256 * 256, f) != 256 * 256) { free(g_miniHD); g_miniHD = NULL; }
 	}
-	fclose(f);
+	afclose(f);
 	logf_("minimap %s variant %u%s", base, which & 3, g_miniHD ? ": HD" : "");
 }
 
@@ -5799,6 +5891,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	SYSTEMTIME t;
 	GetLocalTime(&t);
 	logf_("Lords of the Realm II HD, %04d-%02d-%02d %02d:%02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	pak_open();
 	read_settings();
 	if (!known_build()) {
 		logf_("unknown Lords2.exe build: passing DirectDraw through, nothing patched");

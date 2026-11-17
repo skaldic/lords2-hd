@@ -1,6 +1,6 @@
-﻿# Builds the release archive: dist\Lords2-HD-<version>.zip, to be unzipped into the game's folder.
-# It holds the DLL (built fresh), the default ini and the HD art in <game>\lords2hd\, plus the readme
-# for players, the license and the notice.
+# Builds the release: dist\Lords2-HD-<version>-setup.exe (Inno Setup) and the same files as a zip,
+# dist\Lords2-HD-<version>.zip, to be unzipped into the game's folder. Both hold the DLL (built fresh),
+# the default ini, the HD art packed into lords2hd.pak, the readme for players, the license and notice.
 #   .\tools\make_release.ps1 -Version 0.9.0
 param([Parameter(Mandatory)][string]$Version)
 $ErrorActionPreference = 'Stop'
@@ -19,12 +19,8 @@ if ($ini -notmatch '(?m)^Wide=0') { throw "the ini template has no Wide=0" }
 Set-Content "$stage\lords2hd.ini" ($ini -replace '(?m)^Wide=0', 'Wide=1') -Encoding ascii -NoNewline
 Copy-Item "$root\LICENSE.md", "$root\NOTICE.md" "$stage\lords2hd"
 Copy-Item "$root\hd\INSTALL.txt" "$stage\lords2hd\README.txt"
-foreach ($dir in 'screens', 'wide', 'tiles', 'sprites') {
-    $src = Join-Path $game "lords2hd\$dir"
-    if (-not (Get-ChildItem $src -Filter *.bin)) { throw "no art in $src" }
-    New-Item -ItemType Directory -Force "$stage\lords2hd\$dir" | Out-Null
-    Copy-Item "$src\*.bin", "$src\*.pal" "$stage\lords2hd\$dir" -ErrorAction SilentlyContinue
-}
+# the art: one pack, read by the DLL (tools\make_pak.ps1)
+& "$PSScriptRoot\make_pak.ps1" -Out "$stage\lords2hd.pak"
 New-Item -ItemType Directory -Force "$stage\lords2hd\music" | Out-Null
 Set-Content "$stage\lords2hd\music\put the remastered MP3s here.txt" @'
 Put the MP3s of the composer's 2020 remastered soundtrack here, with their release names
@@ -34,3 +30,10 @@ to WAV and the game plays them instead of its own tracks. Delete the files to go
 Remove-Item $zip -ErrorAction SilentlyContinue
 [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
 "{0} ({1:N0} MB)" -f $zip, ((Get-Item $zip).Length / 1MB)
+# the installer (Inno Setup 6), from the same staged files
+$iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe", (Join-Path (& "$PSScriptRoot\tools_dir.ps1") "InnoSetup\ISCC.exe")) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { "Inno Setup 6 not found: no installer made"; return }
+& $iscc /Q "/DAppVer=$Version" "$PSScriptRoot\lords2hd.iss"
+if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
+$setup = Join-Path $root "dist\Lords2-HD-$Version-setup.exe"
+"{0} ({1:N0} MB)" -f $setup, ((Get-Item $setup).Length / 1MB)
