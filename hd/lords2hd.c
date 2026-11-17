@@ -6162,8 +6162,51 @@ static int __cdecl h_logic_steps(void)
 	return n;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Mop-Up fix. Mop-Up (FUN_0047a76d) marks each unit's group as hunting (DAT_0056654a, the flag the
+// AI's charge FUN_0048c8af also sets) and puts the unit in the chase state 8. The chase handler
+// FUN_00483e55 looks for a new enemy only when the unit has no target, and only afterwards checks
+// whether the target is dying (state 2); a unit whose target falls drops it and goes idle (state 5),
+// so after its first kill it stands still. For a hunting group the dying target is let go first, so
+// the handler's own search (FUN_004954dd: nearest live, non-siege enemy) picks the next one.
+// Figures: 80 slots of 0x1b0 bytes from index 1; side at 0x005544ac (0 = empty slot), state at
+// 0x005544b1, target slot at 0x005545f4, group at 0x005545f8; a group's hunting flag is
+// 0x0056654a + group * 0x34.
+#define FIG_B(i, addr) (*(BYTE *)((addr) + (i) * 0x1b0))
+#define FIG_CUR        (*(int *)0x0053e8f8)
+static BOOL g_fixMopUp;
+typedef void (__cdecl *chase_t)(void);
+static chase_t o_chase;
+
+static void __cdecl h_chase(void)
+{
+	int me = FIG_CUR;
+	if (g_fixMopUp && me > 0 && me < 0x51) {
+		int group = *(short *)(0x005545f8 + me * 0x1b0);
+		int target = FIG_B(me, 0x005545f4);
+		if (group >= 0 && *(BYTE *)(0x0056654a + group * 0x34) && target > 0 && target < 0x51 &&
+			FIG_B(target, 0x005544ac) && FIG_B(target, 0x005544b1) == 2) {
+			FIG_B(me, 0x005545f4) = 0;
+			static int logged;
+			if (logged < 5) logged++, logf_("Mop-Up fix: unit %d (side %d) let go of fallen target %d", me,
+				FIG_B(me, 0x005544ac), target);
+		}
+	}
+	o_chase();
+}
+
+static void install_game_fixes(void)
+{
+	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
+	static const BYTE kChasePrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
+	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
+		g_fixMopUp = FALSE;
+	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
+}
+
 static void install(void)
 {
+	install_game_fixes();
 	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
 	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
