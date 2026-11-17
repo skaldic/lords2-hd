@@ -3028,9 +3028,42 @@ write:
 	InterlockedExchange(&g_burstWant, 0);
 }
 
+// testing: recording (remote message 21, wParam = frames a second, 0 stops): the picture as it goes to the
+// screen, written as lords2hd-rec-NNNNN-<ms>.bmp at most that often (halved when wider than 2000)
+static volatile LONG g_recFps;
+static LARGE_INTEGER g_recT0, g_recLast;
+static int g_recN;
+static void record_frame(const DWORD *px, int w, int h)
+{
+	if (!g_recFps) return;
+	LARGE_INTEGER t, f;
+	QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
+	if (!g_recN) g_recT0 = t;
+	else if ((t.QuadPart - g_recLast.QuadPart) * g_recFps < f.QuadPart) return;
+	g_recLast = t;
+	int half = w > 2000, ow = half ? w / 2 : w, oh = half ? h / 2 : h;
+	char path[MAX_PATH];
+	char dir[MAX_PATH]; // the temp folder: the game's may be on a slow disk
+	if (!GetTempPathA(sizeof dir, dir)) lstrcpynA(dir, g_gameDir, sizeof dir);
+	snprintf(path, sizeof path, "%s\\lords2hd-rec-%05d-%07.0f.bmp", dir, g_recN++, (t.QuadPart - g_recT0.QuadPart) * 1000.0 / f.QuadPart);
+	FILE *o = fopen(path, "wb");
+	if (!o) return;
+	BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + ow * oh * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+	BITMAPINFOHEADER ih = { sizeof ih, ow, -oh, 1, 32, BI_RGB };
+	fwrite(&fh, sizeof fh, 1, o); fwrite(&ih, sizeof ih, 1, o);
+	if (!half) fwrite(px, 4, (size_t)ow * oh, o);
+	else for (int y = 0; y < oh; y++) {
+		static DWORD row[4096];
+		for (int x = 0; x < ow && x < 4096; x++) row[x] = px[(y * 2) * w + x * 2];
+		fwrite(row, 4, ow, o);
+	}
+	fclose(o);
+}
+
 static void shot_save(const DWORD *px, int w, int h)
 {
 	burst_frame(px, w, h);
+	record_frame(px, w, h);
 	if (!InterlockedExchange(&g_shotWanted, 0)) return;
 	char path[MAX_PATH], tmp[MAX_PATH];
 	snprintf(path, sizeof path, "%s\\lords2hd-shot.bmp", g_gameDir);
@@ -3953,6 +3986,13 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		*(int *)0x0052afbc = (int)wp;
 		((void (__cdecl *)(void))0x004371ce)();
 		logf_("select object %d: screen %d", (int)wp, *(BYTE *)0x004eac50);
+		return 0;
+	}
+	if (n == 21) { // testing: recording, wParam frames a second (0 stops)
+		if (wp) g_recN = 0;
+		InterlockedExchange(&g_recFps, (LONG)wp);
+		InterlockedExchange(&g_forcePresent, 1);
+		logf_("recording: %s", wp ? "on" : "off");
 		return 0;
 	}
 	if (n == 20) { // testing: the army panel's frame kind

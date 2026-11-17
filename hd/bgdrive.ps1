@@ -71,6 +71,7 @@ foreach ($step in $Steps) {
         'centre' { Post 18 ([int]$arg) 0 }   # testing: centre the view on map object n
         'objects' { Post 17 0 0 }   # testing: log the map objects
         'select' { Post 19 ([int]$arg) 0 }   # testing: select army n as a click on it does
+        'rec' { Post 21 ([int]$arg) 0 }   # testing: record frames (rec:15 starts at 15 a second, rec:0 stops)
         'apstyle' { Post 20 ([int]$arg) 0 }   # testing: the army panel's frame kind (0, 1, 2)
         'wasd' { Post 15 ([int]$arg) 0 }   # WASD held: 1 A, 2 D, 4 W, 8 S, 0 released
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
