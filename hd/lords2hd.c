@@ -2519,6 +2519,20 @@ static void window_shift(int screen, int sx, int sw)
 	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
 	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
 	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
+	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
+	// the kept picture is of somewhere else - then the window stays where the game put it.
+	if (bx1 - bx0 > (x1g - x0g) * 9 / 10 && by1 - by0 > (GAME_H - 24) * 9 / 10) return;
+	{
+		int out = 0, n = 0; // pixels outside the window that differ
+		for (int y = 24; y < GAME_H; y += 3) {
+			const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+			for (int x = x0g; x < x1g; x += 3) {
+				if (y >= by0 && y < by1 && x >= bx0 && x < bx1) continue;
+				n++; out += a[x] != b[x];
+			}
+		}
+		if (n && out * 10 > n) return; // more than 10% of the map around it changed
+	}
 	// the window's middle onto the middle of the map on screen (frame columns 0 .. x1g)
 	int s = (bx0 + bx1) / 2 - x1g / 2;
 	s = min(s, bx0); // never past the left edge
@@ -2566,6 +2580,8 @@ static BOOL present(void)
 			memcpy(g_snap8, g_shown8, g_showW * GAME_H);
 			memcpy(g_snap2x, g_frame2x, (size_t)g_showW * 2 * GAME_H * 2 * sizeof(DWORD));
 			g_snapW = g_showW;
+			// better: the map as the game last redrew it (after any scroll the click caused)
+			if (g_snapPendW == g_showW) InterlockedExchange(&g_snapPending, 1);
 		}
 		else if (screen == 0 || !county_map_on()) g_snapW = 0;
 		lastScreen = screen;
@@ -4829,13 +4845,14 @@ static void __cdecl h_redraw_map(void)
 			}
 		}
 	}
-	// A window opening over the map redraws the map first (the Town Center recentres it): keep
-	// that map, before the window is drawn over it, for window_shift.
-	if (window_screen(SCREEN_ID) && g_showW > 0 && g_showX >= 0 && g_showX + g_showW <= g_back->w) {
+	// The map as just redrawn, before any window is drawn over it, for window_shift: a window
+	// opening over the map often scrolls or recentres it first (the Town Center; a castle near the
+	// edge), so the last picture shown before the click is not the map behind the window.
+	if ((SCREEN_ID == 0 || window_screen(SCREEN_ID)) && g_showW > 0 && g_showX >= 0 && g_showX + g_showW <= g_back->w) {
 		for (int y = 0; y < GAME_H; y++)
 			memcpy(g_snapPend8 + y * g_showW, g_back->bits + y * g_back->pitch + g_showX, g_showW);
 		g_snapPendW = g_showW;
-		InterlockedExchange(&g_snapPending, 1);
+		if (window_screen(SCREEN_ID)) InterlockedExchange(&g_snapPending, 1);
 	}
 }
 
