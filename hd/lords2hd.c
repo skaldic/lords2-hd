@@ -122,6 +122,7 @@ static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
 static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
 static BOOL g_cycleOn;   // [Display] CycleKeys: , and . cycle counties and armies (cycle_key)
 static BOOL cycle_key(int dir);
+static int army_cell(int id);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
@@ -3363,6 +3364,12 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+	if (n == 18) { // testing: centre the view on map object wParam
+		int r = army_cell((int)wp);
+		if (r) ((int (__cdecl *)(int))0x0043278b)(r);
+		logf_("centre on object %d: cell %d", (int)wp, r);
+		return 0;
+	}
 	if (n == 17) { // testing: list the map objects (table 0x52f0b0, 0x1a4 each) and their cells
 		for (int i = 1; i <= 150; i++) {
 			const BYTE *o = (const BYTE *)0x0052f0b0 + i * 0x1a4;
@@ -3372,7 +3379,8 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 				for (int c = 0; c < 0x41; c++) if (*(int *)(0x0055cea0 + r * 0x104 + c * 4) == i) { row = r; col = c; break; }
 			logf_("object %d: type %d owner %d b2 %d b7 %d at row %d col %d", i, o[8], (signed char)o[0], o[2], o[7], row, col);
 		}
-		logf_("player %d, selected county %d, view col %d row %d", *(int *)0x0057c8cc, *(int *)0x0057c93c, *(int *)0x005651b4, *(int *)0x005651b8);
+		logf_("player %d, selected county %d, view col %d row %d, clicked object %d (afb4 %d), screen %d", *(int *)0x0057c8cc, *(int *)0x0057c93c, *(int *)0x005651b4, *(int *)0x005651b8,
+			*(int *)0x0052afbc, *(int *)0x0052afb4, *(BYTE *)0x004eac50);
 		return 0;
 	}
 	if (n == 15) { // testing: WASD keys held (wParam = bits as g_wasd)
@@ -3479,7 +3487,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	if (msg == WM_CHAR && wasd_screen() && wasd_bit((WPARAM)toupper((int)wp))) return 0;
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) InterlockedExchange(&g_wasd, 0);
 	if (msg == WM_KEYDOWN && (wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD) && cycle_key(wp == VK_OEM_PERIOD ? 1 : -1)) return 0;
-	if (msg == WM_CHAR && (wp == ',' || wp == '.') && *(BYTE *)0x004eac50 == 0 && *(int *)0x0052af94 == 3 && g_cycleOn) return 0;
+	if (msg == WM_CHAR && (wp == ',' || wp == '.') && (*(BYTE *)0x004eac50 == 0 || *(BYTE *)0x004eac50 == 16) && *(int *)0x0052af94 == 3 && g_cycleOn) return 0;
 	if (g_menuOpen) {
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
@@ -3542,7 +3550,6 @@ static void wasd_edges(POINT *p, int right, int bottom)
 // cell grid (0x55cea0, 0x81 rows of 0x41 records) and each record's object list (head at byte
 // 0x522f95 + record, next at +4 of the object). FUN_0043278b(record) centres the view on it.
 static BOOL g_cycleOn = TRUE;
-static int g_cyclePos = -1;
 static int army_cell(int id)
 {
 	for (int r = 0; r <= 0x80; r++)
@@ -3554,32 +3561,48 @@ static int army_cell(int id)
 		}
 	return 0;
 }
+// With one of the player's armies selected (screen 16, the army in 0x57c8c4) the keys go through
+// the armies, each selected as if clicked (FUN_004371ce: it asks first, as a click does, when the
+// army already has orders); otherwise through the counties, from the selected one (0x57c93c).
 static BOOL cycle_key(int dir)
 {
-	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(BYTE *)0x004eac50 != 0 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
+	BYTE screen = *(BYTE *)0x004eac50;
+	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || (screen != 0 && screen != 16) || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
 	int me = *(int *)0x0057c8cc;
-	int list[64], kind[64], n = 0;
-	for (int c = 1; c < 32 && n < 64; c++)
-		if (((BYTE *)0x0053f9b5)[c * 0x300] == me && *(int *)(0x0053fa20 + c * 0x300)) { list[n] = c; kind[n++] = 0; }
-	for (int i = 1; i <= 150 && n < 64; i++) {
-		const BYTE *o = (const BYTE *)0x0052f0b0 + i * 0x1a4;
-		if (o[8] == 1 && (signed char)o[0] == me) { list[n] = i; kind[n++] = 1; }
+	int sel = *(int *)0x0057c8c4;
+	BOOL armies = screen == 16 && sel > 0 && sel <= 150 && ((BYTE *)0x0052f0b8)[sel * 0x1a4] == 1 && ((signed char *)0x0052f0b0)[sel * 0x1a4] == me;
+	int list[160], rec[160], n = 0, at = -1;
+	if (armies) {
+		for (int i = 1; i <= 150 && n < 160; i++) {
+			const BYTE *o = (const BYTE *)0x0052f0b0 + i * 0x1a4;
+			if (o[8] != 1 || (signed char)o[0] != me) continue;
+			int r = army_cell(i);
+			if (!r) continue; // not standing on the map (in a castle, at sea)
+			if (i == sel) at = n;
+			list[n] = i; rec[n++] = r;
+		}
+	}
+	else {
+		int cur = *(int *)0x0057c93c;
+		for (int c = 1; c < 32 && n < 160; c++) {
+			int r = *(int *)(0x0053fa20 + c * 0x300);
+			if (((BYTE *)0x0053f9b5)[c * 0x300] != me || !r) continue;
+			if (c == cur) at = n;
+			list[n] = c; rec[n++] = r;
+		}
 	}
 	if (!n) return TRUE;
-	for (int tries = 0; tries < n; tries++) {
-		g_cyclePos = ((g_cyclePos < 0 ? (dir > 0 ? -1 : 0) : g_cyclePos) + dir + n) % n;
-		int rec;
-		if (kind[g_cyclePos] == 0) {
-			int c = list[g_cyclePos];
-			rec = *(int *)(0x0053fa20 + c * 0x300);
-			*(int *)0x0057c93c = c;
-		}
-		else if (!(rec = army_cell(list[g_cyclePos]))) continue; // not on the map (in a castle, at sea)
-		((int (__cdecl *)(int))0x0043278b)(rec);
-		*(int *)0x00567d0c = 1;
-		logf_("cycle: %s %d", kind[g_cyclePos] ? "army" : "county", list[g_cyclePos]);
-		return TRUE;
+	int k = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
+	((int (__cdecl *)(int))0x0043278b)(rec[k]); // centre the view on it
+	if (armies) {
+		*(int *)0x0052afbc = list[k];
+		((void (__cdecl *)(void))0x004371ce)(); // select it, as a click on it does
 	}
+	else {
+		*(int *)0x0057c93c = list[k];
+		*(int *)0x00567d0c = 1;
+	}
+	logf_("cycle: %s %d", armies ? "army" : "county", list[k]);
 	return TRUE;
 }
 static BOOL WINAPI h_GetCursorPos(POINT *p)

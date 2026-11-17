@@ -68,6 +68,7 @@ foreach ($step in $Steps) {
             if (Test-Path $f) { $b = [Drawing.Bitmap]::FromFile($f); $b.Save((Join-Path $shots "$arg.png"), [Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); Remove-Item $f; "saved $arg.png" } else { "no frame for $arg" }
         }
         'capscroll' { Post 12 ([int]$arg) 0 }   # testing: the captured-county scroll with its video
+        'centre' { Post 18 ([int]$arg) 0 }   # testing: centre the view on map object n
         'objects' { Post 17 0 0 }   # testing: log the map objects
         'wasd' { Post 15 ([int]$arg) 0 }   # WASD held: 1 A, 2 D, 4 W, 8 S, 0 released
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
