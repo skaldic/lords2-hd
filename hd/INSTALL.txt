@@ -1,12 +1,14 @@
-Lords of the Realm II HD 1.2.0: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 1.3.0: an unofficial fan patch for the GOG version of the game.
 You need your own copy of the game.
 
 INSTALL
-Unzip everything into the game's folder, the one holding Lords2.exe, so that ddraw.dll and
-lords2hd.ini sit next to it. Then start the game as usual.
+Run Lords2-HD-1.3.0-setup.exe with the game closed: it finds the GOG game (or asks for the folder
+holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
+ddraw.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
 UNINSTALL
-Delete ddraw.dll, lords2hd.ini, lords2hd.log and the lords2hd folder. Your game files are not changed.
+From Windows' Apps list; or delete ddraw.dll, lords2hd.ini, lords2hd.pak, lords2hd.log and the
+lords2hd folder. Your game files are not changed.
 
 WHAT IT DOES
 - Runs fullscreen at your monitor's resolution, without switching its display mode
@@ -18,16 +20,21 @@ WHAT IT DOES
 - Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
 - Leaves the CPU mostly idle (the game runs at 120 frames a second, its own speed unchanged)
+- The dialogue and unit voices restored (Lords2Resounded, see NOTICE.md)
+- An army scroll while one of your armies is selected; WASD scrolling; , and . jump between your
+  counties and armies; fresh diplomatic letters
 
-BETTER VIDEOS AND MUSIC (optional, not included)
-- Videos: copy the SMK_HIGH videos (GOG forum, Lords of the Realm II SMK_HIGH patch thread) over
-  the ones in the game's videos folder. The larger event clips then fit their frame.
-- Music: put the MP3s of the composer's 2020 remastered soundtrack, with their release names
-  (for example "07. Scroll 1 (1996, Remastered).mp3"), in lords2hd\music. The patch converts them
-  at the next start and the game plays them instead of its own tracks.
+VIDEOS AND MUSIC
+- Videos: the disc-quality videos are included (in lords2hd.pak) and play instead of the GOG ones.
+- Music (optional, not included): put the MP3s of the composer's 2020 remastered soundtrack, with their release names
+  (for example "07. Scroll 1 (1996, Remastered).mp3"), in lords2hd\music. At the next start the
+  patch converts them and cuts each as Lords2Resounded edits the soundtrack, so they loop
+  seamlessly; the game then plays them instead of its own tracks. Or copy the WAVs made by the
+  Lords2Resounded tool (github.com/gqzomer/Lords2Resounded) into lords2hd\music.
 
 SETTINGS
-Press F8 in the game for the settings panel: most changes apply at once and are saved.
+Press F10 in the game for the settings panel (two tabs: Display and Quality of life; Tab switches
+them; a right-click closes it): most changes apply at once and are saved. F8 is the game's own key again.
 Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
@@ -38,6 +45,11 @@ Upscale=bilinear  the softer scaling of earlier versions (default: catmullrom, s
 CursorScale=50  cursor size in percent
 FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
 TutorialOnce=0  show the tutorial scrolls every time, as the original (default: once each)
+WASD=0          W, A, S, D do not scroll the map
+CycleKeys=0     , and . (and the < > buttons) do not jump through your counties and armies
+ArmyPanel=0     no army scroll beside the side panel while one of your armies is selected
+Letters=0       diplomatic letters start empty, as the original (default: a fresh letter each time)
+Resounded=0     the game's own voices instead of the ones restored by Lords2Resounded
 
 ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.
