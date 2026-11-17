@@ -1541,8 +1541,10 @@ static smk_tobuf_t o_SmackToBuffer;
 static smk_frame_t o_SmackDoFrame;
 static smk_close_t o_SmackClose;
 
+static volatile LONG g_videoOpened; // a video has been opened since launch (the music hold, h_stream_play)
 static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 {
+	InterlockedExchange(&g_videoOpened, 1);
 	// The GOG videos are stored interlaced (header flag 2: half the rows, played on every other
 	// line, the lines between left black). Opened with SMACKYDOUBLE (0x200000) Smacker draws each
 	// row twice instead: same size and place, no black lines.
@@ -1721,6 +1723,44 @@ static HMMIO pak_sound(const char *loosePath, const char *base, DWORD flags)
 	return h;
 }
 
+// The game starts the setup music at launch and the intro video stops it a moment later. Who wins
+// that race varies: when the music gets going first, ~20 ms of it slips out, a pop at launch. So a
+// music stream started (FUN_00426b92) before any video has opened is started silent; the game starts
+// it again after the intro, and that start (or 5 s without a video) gives it its volume back.
+typedef int (__cdecl *stream_play_t)(DWORD);
+static stream_play_t o_stream_play;
+static LONG g_streamHeld[2], g_streamVol[2];
+static DWORD g_streamT0;
+// after every game frame: a held stream gets its volume back 5 s after launch at the latest
+static void stream_hold_tick(void)
+{
+	for (int n = 0; n < 2; n++)
+		if (g_streamHeld[n] && GetTickCount() - g_streamT0 >= 5000) {
+			g_streamHeld[n] = 0;
+			if (STREAM_BUFS[n]) IDirectSoundBuffer_SetVolume(STREAM_BUFS[n], g_streamVol[n]);
+			logf_("music: stream %d heard again (5 s)", n);
+		}
+}
+static int __cdecl h_stream_play(DWORD n)
+{
+	IDirectSoundBuffer *b = n < 2 ? STREAM_BUFS[n] : NULL;
+	if (!g_streamT0) g_streamT0 = GetTickCount();
+	if (b) {
+		if (!g_videoOpened && GetTickCount() - g_streamT0 < 5000) {
+			if (!g_streamHeld[n] && IDirectSoundBuffer_GetVolume(b, &g_streamVol[n]) == DS_OK) {
+				g_streamHeld[n] = 1;
+				IDirectSoundBuffer_SetVolume(b, DSBVOLUME_MIN);
+				logf_("music: stream %lu held silent until the intro has started", n);
+			}
+		}
+		else if (g_streamHeld[n]) {
+			g_streamHeld[n] = 0;
+			IDirectSoundBuffer_SetVolume(b, g_streamVol[n]);
+			logf_("music: stream %lu heard again", n);
+		}
+	}
+	return o_stream_play(n);
+}
 // Players get the remastered soundtrack as MP3s with names like "07. Scroll 1 (1996, Remastered).mp3".
 // Dropped into lords2hd\music, they are turned into the WAVs above on a low-priority thread at start,
 // by Windows' own decoder (Media Foundation, loaded by hand so the DLL still loads where it's missing).
@@ -5853,6 +5893,7 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00429ba4, kPickPrologue, sizeof kPickPrologue, h_pick_cell, &o_pick_cell);
 	hook_code((BYTE *)0x0040464c, kBlockPrologue, sizeof kBlockPrologue, h_clip_x, &o_clip_x);
 	hook_code((BYTE *)0x0040477b, kBlockPrologue, sizeof kBlockPrologue, h_clip_y, &o_clip_y);
+	hook_code((BYTE *)0x00426b92, kBlockPrologue, sizeof kBlockPrologue, h_stream_play, &o_stream_play);
 	hook_code((BYTE *)0x004bc020, kBlockPrologue, sizeof kBlockPrologue, h_battle_view, &o_battle_view);
 	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
@@ -5899,6 +5940,7 @@ static show_frame_t o_show_frame;
 static void __cdecl h_show_frame(int force)
 {
 	if (!*(void **)0x004eabd0) return;
+	stream_hold_tick();
 	army_panel_keep();
 	menu_scroll_keep();
 	o_show_frame(force);
