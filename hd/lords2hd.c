@@ -144,6 +144,9 @@ static void logf_(const char *fmt, ...)
 	static FILE *f;
 	if (!f) f = fopen(g_logPath, "a");
 	if (!f) return;
+	static DWORD t0;
+	if (!t0) t0 = GetTickCount();
+	fprintf(f, "%6lu  ", GetTickCount() - t0); // ms since the patch started
 	va_list ap;
 	va_start(ap, fmt);
 	vfprintf(f, fmt, ap);
@@ -1681,7 +1684,30 @@ static BOOL wav_format(const char *path, WAVEFORMATEX *wf)
 	return ok;
 }
 
-// A sound from the art pack (sound/<name>.wav): read whole and opened as a memory file. The game
+// a sound from the pack as a file for mmio: adwInfo[0] its bytes, adwInfo[1] their count
+static LRESULT CALLBACK pak_ioproc(LPSTR info, UINT msg, LPARAM a, LPARAM b)
+{
+	MMIOINFO *mi = (MMIOINFO *)info;
+	LONG size = (LONG)mi->adwInfo[1];
+	switch (msg) {
+	case MMIOM_OPEN: mi->lDiskOffset = 0; return MMSYSERR_NOERROR;
+	case MMIOM_CLOSE: return 0;
+	case MMIOM_READ: {
+		LONG n = (LONG)b, left = size - mi->lDiskOffset;
+		if (n > left) n = left;
+		if (n <= 0) return 0;
+		memcpy((void *)a, (const BYTE *)mi->adwInfo[0] + mi->lDiskOffset, n);
+		mi->lDiskOffset += n;
+		return n;
+	}
+	case MMIOM_SEEK: {
+		LONG to = (int)b == SEEK_CUR ? mi->lDiskOffset + (LONG)a : (int)b == SEEK_END ? size + (LONG)a : (LONG)a;
+		if (to < 0 || to > size) return -1;
+		return mi->lDiskOffset = to;
+	}
+	}
+	return -1; // (writing: never)
+}// A sound from the art pack (sound/<name>.wav): read whole and opened as a memory file. The game
 // reads its sounds whole as soon as it opens them, so the last few buffers are kept and reused.
 static HMMIO pak_sound(const char *loosePath, const char *base, DWORD flags)
 {
@@ -1694,11 +1720,14 @@ static HMMIO pak_sound(const char *loosePath, const char *base, DWORD flags)
 	BYTE *buf = size ? malloc(size) : NULL;
 	HMMIO h = NULL;
 	if (buf && afread(buf, 1, size, f) == size) {
+		// not a plain memory file (FOURCC_MEM): its whole data comes back in one piece, and the game's
+		// reader (FUN_004b9652) refuses pieces over 200,000 bytes - a long restored line did not play.
+		// Through pak_ioproc it is read in the usual 8 KB buffer, as from a file.
 		MMIOINFO mi = { 0 };
-		mi.fccIOProc = FOURCC_MEM;
-		mi.pchBuffer = (HPSTR)buf;
-		mi.cchBuffer = (LONG)size;
-		h = o_mmioOpenA(NULL, &mi, MMIO_READ);
+		mi.pIOProc = pak_ioproc;
+		mi.adwInfo[0] = (DWORD)buf;
+		mi.adwInfo[1] = size;
+		h = o_mmioOpenA((LPSTR)base, &mi, MMIO_READ | MMIO_ALLOCBUF);
 	}
 	afclose(f);
 	if (!h) { free(buf); return NULL; }
