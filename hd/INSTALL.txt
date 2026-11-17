@@ -27,7 +27,8 @@ BETTER VIDEOS AND MUSIC (optional, not included)
   at the next start and the game plays them instead of its own tracks.
 
 SETTINGS
-Press F8 in the game for the settings panel: most changes apply at once and are saved.
+Press F10 in the game for the settings panel (two tabs: Display and Quality of life; Tab switches
+them): most changes apply at once and are saved. F8 is the game's own key again.
 Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
@@ -38,6 +39,10 @@ Upscale=bilinear  the softer scaling of earlier versions (default: catmullrom, s
 CursorScale=50  cursor size in percent
 FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
 TutorialOnce=0  show the tutorial scrolls every time, as the original (default: once each)
+WASD=0          W, A, S, D do not scroll the map
+CycleKeys=0     , and . (and the < > buttons) do not jump through your counties and armies
+ArmyPanel=0     no army scroll beside the side panel while one of your armies is selected
+Letters=0       diplomatic letters start empty, as the original (default: a fresh letter each time)
 
 ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.

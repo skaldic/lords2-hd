@@ -1,4 +1,4 @@
-﻿# Lords of the Realm II HD
+# Lords of the Realm II HD
 
 An unofficial fan patch for the GOG version of **Lords of the Realm II**. It makes the game fill a
 modern monitor and shows its art at double detail. You need your own copy of the game; the patch
@@ -29,7 +29,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Battles can zoom out to show four times the field
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels and lettering
 - Sharp Catmull-Rom upscaling, with the AI art or without it (the original art, scaled cleanly)
-- An in-game settings panel on F8
+- An in-game settings panel on F10
 - Foam rolling in along the coast on the county map
 - Message scrolls, yes/no questions and the end-of-battle scroll centred over the map or battlefield
 - A smaller mouse cursor
@@ -37,7 +37,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Leaves the CPU mostly idle: the original game redraws thousands of times a second; the patch runs
   it at 120 frames a second with the game's own speed unchanged
 - Plays the disc-quality videos and the remastered soundtrack if you add them (below)
-- Every feature can be switched off, in the F8 panel or in `lords2hd.ini`
+- Every feature can be switched off, in the F10 panel or in `lords2hd.ini`
 
 ## Install
 
@@ -71,8 +71,8 @@ These are not part of the download; the patch uses them when you add them.
 
 ## Settings
 
-Press **F8** in the game: a panel lists the settings; click a line (or use the arrow keys and Enter)
-to change it. Most changes apply at once; those marked * (widescreen, battle zoom-out) after a
+Press **F10** in the game: a panel lists the settings on two tabs, Display and Quality of life (Tab
+switches them); click a line (or use the arrow keys and Enter) to change it. Most changes apply at once; those marked * (widescreen, battle zoom-out) after a
 restart. Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt)
 lists all its keys and is also the readme inside the zip.
 

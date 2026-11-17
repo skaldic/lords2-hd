@@ -120,6 +120,7 @@ static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scro
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
 static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
+static BOOL g_armyPanel; // [Display] ArmyPanel: the selected army's scroll (army_panel_keep)
 static BOOL g_cycleOn;   // [Display] CycleKeys: , and . cycle counties and armies (cycle_key)
 static BOOL cycle_key(int dir);
 static int army_cell(int id);
@@ -131,7 +132,7 @@ static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr)
-static volatile LONG g_menuOpen; // the settings panel (F8) is up
+static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL menu_key(int vk);
 static void menu_click(int x, int y);
 
@@ -169,6 +170,7 @@ static void read_settings(void)
 	g_wasdOn = GetPrivateProfileIntA("Display", "WASD", 1, g_iniPath) != 0;
 	g_letters = GetPrivateProfileIntA("Display", "Letters", 1, g_iniPath) != 0;
 	g_cycleOn = GetPrivateProfileIntA("Display", "CycleKeys", 1, g_iniPath) != 0;
+	g_armyPanel = GetPrivateProfileIntA("Display", "ArmyPanel", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
 	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
 	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
@@ -2049,15 +2051,25 @@ static void text_overlay(int sx, int sw)
 static volatile LONG g_forcePresent; // the window needs repainting even if the frame is the same
 static BYTE g_shown8[MAX_W * GAME_H];
 
-// ---- The settings panel (F8) ----------------------------------------------------------------------
+// ---- The settings panel (F10) ---------------------------------------------------------------------
 // Drawn by the patch over the picture; keys and clicks go to it while it is open, not to the game.
-// Changes apply at once where they can and are written to lords2hd.ini.
-static int g_menuSel;
+// Changes apply at once where they can and are written to lords2hd.ini. Two tabs: the picture, and
+// the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
+static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-static RECT g_menuRow[16], g_menuBox;                 // in window coordinates, as last drawn
+static RECT g_menuRow[16], g_menuTabRect[2], g_menuBox; // in window coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_COUNT };
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_COUNT };
+#define MENU_TABS 2
+#define MENU_ROWS 8 // the most rows a tab has: the panel's height
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Quality of life" };
+static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
+	{ M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_WIDE, M_ZOOM, -1 },
+	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, -1 },
+};
+static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
+static BOOL menu_new(int i) { return i == M_ARMY || i == M_LETTERS; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -2073,10 +2085,13 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_CYCLE: snprintf(v, n, "%s", g_cycleOn ? "On" : "Off"); break;
 	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
 	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
+	case M_ARMY: snprintf(v, n, "%s", g_armyPanel ? "On" : "Off"); break;
+	case M_LETTERS: snprintf(v, n, "%s", g_letters ? "On" : "Off"); break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
-	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *" };
+	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
+	"Army panel", "Fresh letters" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -2096,6 +2111,8 @@ static void menu_change(int i)
 	case M_CYCLE: g_cycleOn = !g_cycleOn; ini_set("Display", "CycleKeys", g_cycleOn); break;
 	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
 	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
+	case M_ARMY: g_armyPanel = !g_armyPanel; ini_set("Display", "ArmyPanel", g_armyPanel); break;
+	case M_LETTERS: g_letters = !g_letters; ini_set("Display", "Letters", g_letters); break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -2109,16 +2126,19 @@ static void menu_toggle(void)
 	InterlockedExchange(&g_menuOpen, !g_menuOpen);
 	menu_redraw();
 }
-// A key while the panel is open (or F8 to open it). TRUE: it was the panel's.
+static void menu_set_tab(int tab) { g_menuTab = (tab + MENU_TABS) % MENU_TABS; g_menuSel = 0; }
+// A key while the panel is open (or F10 to open it). TRUE: it was the panel's.
 static BOOL menu_key(int vk)
 {
-	if (vk == VK_F8) { menu_toggle(); return TRUE; }
+	if (vk == VK_F10) { menu_toggle(); return TRUE; }
 	if (!g_menuOpen) return FALSE;
+	int n = menu_tab_count(g_menuTab);
 	switch (vk) {
 	case VK_ESCAPE: menu_toggle(); break;
-	case VK_UP: g_menuSel = (g_menuSel + M_COUNT - 1) % M_COUNT; break;
-	case VK_DOWN: g_menuSel = (g_menuSel + 1) % M_COUNT; break;
-	case VK_RETURN: case VK_SPACE: case VK_LEFT: case VK_RIGHT: menu_change(g_menuSel); break;
+	case VK_TAB: menu_set_tab(g_menuTab + (GetKeyState(VK_SHIFT) < 0 ? -1 : 1)); break;
+	case VK_UP: g_menuSel = (g_menuSel + n - 1) % n; break;
+	case VK_DOWN: g_menuSel = (g_menuSel + 1) % n; break;
+	case VK_RETURN: case VK_SPACE: case VK_LEFT: case VK_RIGHT: menu_change(kMenuTabItems[g_menuTab][g_menuSel]); break;
 	}
 	menu_redraw();
 	return TRUE;
@@ -2127,16 +2147,20 @@ static BOOL menu_key(int vk)
 static void menu_click(int x, int y)
 {
 	POINT p = { x, y };
-	for (int i = 0; i < g_menuRows; i++) if (PtInRect(&g_menuRow[i], p)) { g_menuSel = i; menu_change(i); menu_redraw(); return; }
+	for (int k = 0; k < MENU_TABS; k++) if (PtInRect(&g_menuTabRect[k], p)) { if (k != g_menuTab) menu_set_tab(k); menu_redraw(); return; }
+	for (int i = 0; i < g_menuRows; i++)
+		if (PtInRect(&g_menuRow[i], p)) { g_menuSel = i; menu_change(kMenuTabItems[g_menuTab][i]); menu_redraw(); return; }
 	if (!PtInRect(&g_menuBox, p)) menu_toggle(); // outside closes it
 }
 // The panel, onto a DC holding the picture (vw x vh), at window offset ox, oy.
 static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 {
 	int fh = max(16, vh / 34), pad = fh, rowH = fh * 3 / 2, labelW = fh * 10, valueW = fh * 12;
-	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (M_COUNT + 4);
+	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (MENU_ROWS + 6);
 	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
-	HBRUSH paper = CreateSolidBrush(RGB(222, 196, 140)), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(RGB(244, 226, 180));
+	COLORREF cPaper = RGB(222, 196, 140), cHi = RGB(244, 226, 180), cLine = RGB(120, 80, 40);
+	HBRUSH paper = CreateSolidBrush(cPaper), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(cHi);
+	HBRUSH back = CreateSolidBrush(RGB(200, 172, 118)), line = CreateSolidBrush(cLine);
 	RECT r = { bx - fh / 4, by - fh / 4, bx + bw + fh / 4, by + bh + fh / 4 };
 	FillRect(dc, &r, edge);
 	r = (RECT){ bx, by, bx + bw, by + bh };
@@ -2144,40 +2168,73 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	SetRect(&g_menuBox, ox + r.left, oy + r.top, ox + r.right, oy + r.bottom);
 	HFONT title = CreateFontA(fh * 3 / 2, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
 	HFONT font = CreateFontA(fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
+	HFONT bold = CreateFontA(fh, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
 	HFONT small = CreateFontA(fh * 4 / 5, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
 	HGDIOBJ old = SelectObject(dc, title);
 	SetBkMode(dc, TRANSPARENT);
 	SetTextColor(dc, RGB(120, 20, 10));
 	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
 	DrawTextA(dc, "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-	SelectObject(dc, font);
-	g_menuRows = M_COUNT;
-	for (int i = 0; i < M_COUNT; i++) {
-		int y = by + pad + rowH * (i + 1) + rowH / 2;
+	// the tabs, on a line across the panel; the open one joins the paper below it
+	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 9, gap = fh / 2, tx0 = bx + (bw - MENU_TABS * tw - (MENU_TABS - 1) * gap) / 2, lw = max(1, fh / 12);
+	RECT ln = { bx + pad / 2, ty + th - lw, bx + bw - pad / 2, ty + th };
+	FillRect(dc, &ln, line);
+	for (int k = 0; k < MENU_TABS; k++) {
+		RECT tr = { tx0 + k * (tw + gap), ty, tx0 + k * (tw + gap) + tw, ty + th };
+		SetRect(&g_menuTabRect[k], ox + tr.left, oy + tr.top, ox + tr.right, oy + tr.bottom);
+		if (k == g_menuTab) {
+			RECT o = { tr.left - lw, tr.top - lw, tr.right + lw, tr.bottom };
+			FillRect(dc, &o, line);
+			RECT in = { tr.left, tr.top, tr.right, tr.bottom + lw };
+			FillRect(dc, &in, hi);
+			SelectObject(dc, bold);
+			SetTextColor(dc, RGB(120, 20, 10));
+		}
+		else {
+			RECT in = { tr.left, tr.top, tr.right, tr.bottom - lw };
+			FillRect(dc, &in, back);
+			SelectObject(dc, font);
+			SetTextColor(dc, RGB(110, 80, 45));
+		}
+		DrawTextA(dc, kMenuTab[k], -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	}
+	int n = menu_tab_count(g_menuTab);
+	if (g_menuSel >= n) g_menuSel = 0;
+	g_menuRows = n;
+	for (int i = 0; i < n; i++) {
+		int item = kMenuTabItems[g_menuTab][i];
+		int y = ty + th + rowH / 2 + rowH * i;
 		RECT row = { bx + pad / 2, y, bx + bw - pad / 2, y + rowH };
 		if (i == g_menuSel) FillRect(dc, &row, hi);
 		SetRect(&g_menuRow[i], ox + row.left, oy + row.top, ox + row.right, oy + row.bottom);
 		char v[64]; BOOL restart;
-		menu_value(i, v, sizeof v, &restart);
+		menu_value(item, v, sizeof v, &restart);
+		SelectObject(dc, font);
 		SetTextColor(dc, RGB(40, 24, 10));
 		RECT a = { bx + pad, y, bx + pad + labelW, y + rowH };
-		DrawTextA(dc, kMenuLabel[i], -1, &a, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		DrawTextA(dc, kMenuLabel[item], -1, &a, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 		if (restart) strncat(v, "  (restart)", sizeof v - strlen(v) - 1);
 		SetTextColor(dc, restart ? RGB(150, 60, 20) : RGB(20, 60, 20));
 		RECT b = { bx + pad + labelW, y, bx + bw - pad, y + rowH };
 		DrawTextA(dc, v, -1, &b, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		if (menu_new(item)) {
+			SelectObject(dc, small);
+			SetTextColor(dc, RGB(120, 20, 10));
+			DrawTextA(dc, "new", -1, &b, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+		}
 	}
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
-	RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
-	DrawTextA(dc, "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	if (g_menuTab == 0) {
+		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
+		DrawTextA(dc, "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
-	DrawTextA(dc, "Click or Enter to change   -   F8 or Esc to close   -   saved in lords2hd.ini", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	SelectObject(dc, old);
-	DeleteObject(title); DeleteObject(font); DeleteObject(small);
-	DeleteObject(paper); DeleteObject(edge); DeleteObject(hi);
+	DeleteObject(title); DeleteObject(font); DeleteObject(bold); DeleteObject(small);
+	DeleteObject(paper); DeleteObject(edge); DeleteObject(hi); DeleteObject(back); DeleteObject(line);
 }
-
 // The picture onto the window: src (sw x sh, BGRX) stretched to the view v. Catmull-Rom into a
 // window-sized buffer, or GDI with gdiMode (HALFTONE / COLORONCOLOR) as before; the settings panel
 // on top when open. The buffer is a DIB section, so GDI can draw the panel straight into it.
@@ -3500,8 +3557,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (msg == WM_ACTIVATE) wp = WA_ACTIVE;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) return 0; // only the driver's mouse
 	}
-	// The settings panel: F8 opens it; while open, keys and the mouse are its own.
+	// The settings panel: F10 opens it; while open, keys and the mouse are its own.
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && menu_key((int)wp)) return 0;
+	if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && wp == VK_F10) return 0; // not Windows' menu key
 	// WASD: held keys scroll (wasd_edges); their letters are not typed on the map or battlefield
 	if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && wasd_bit(wp)) {
 		if (msg == WM_KEYDOWN) InterlockedOr(&g_wasd, wasd_bit(wp)); else InterlockedAnd(&g_wasd, ~wasd_bit(wp));
@@ -3640,7 +3698,7 @@ static BOOL cycle_key(int dir)
 #define AP_W (8 * 16)
 #define AP_H (16 * 16)
 #define AP_X (0x1dc - AP_W)
-#define AP_Y (GAME_H - AP_H)
+#define AP_Y (GAME_H - 8 - AP_H) // on the map's bottom edge: the rows under it are not the map's
 static int panel_army(void);
 static const RECT kCycleBtn[2] = { { 487, 162, 503, 180 }, { 615, 162, 631, 180 } }; // game coords: < and >
 static BOOL cycle_btn_rect(int b, RECT *r)
@@ -4578,7 +4636,6 @@ static void __cdecl h_edit_text(char *text, int max, int a, int b)
 // own, so like the yes/no box (yesno_keep) it is drawn with the game's routines after every game
 // frame in which anything changed its pixels, and the HD art and lettering apply to it as to the
 // rest. Army fields: map object 0x52f0b0 + id*0x1a4 (as the army's info box, FUN_0041b19d).
-static BOOL g_armyPanel = TRUE;
 static int g_apStyle = 1; // the frame (FUN_00409934's kinds): 0 framed panel, 1 scroll, 2 ...
 static int panel_army(void)
 {
