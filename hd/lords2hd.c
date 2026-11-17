@@ -2287,7 +2287,7 @@ static void text_stamp(const BYTE *src, int w, int h, int x, int y, int colour, 
 // its picture, where the game may draw over them (troops, flags) in the moment before a frame is
 // shown. So once a frame shows one intact, its finished HD pixels are kept and laid over every frame
 // after, above everything: on = up, gen = what it shows (a new gen is caught again).
-typedef struct { volatile LONG on, gen, mapPal; int x, y, w, h; const BYTE *snap; DWORD *cache; int cacheW, cacheH; LONG cached; } SCROLL_OVL;
+typedef struct { volatile LONG on, gen, mapPal; int x, y, w, h; const BYTE *snap, *under; DWORD *cache; int cacheW, cacheH; LONG cached; } SCROLL_OVL;
 static SCROLL_OVL g_ovl[2]; // 0 the army scroll, 1 the settings scroll
 // The settings scroll on a screen with its own palette (the main menu): its art and lettering are the
 // county map's, so its pixels are made here in the map's colours (Base01.256): the HD sprite pixels
@@ -2361,11 +2361,19 @@ static void scroll_overlays(int sx, int sw)
 		}
 		show[i] = TRUE; col[i] = c0;
 	}
-	for (int i = 0; i < 2; i++) { // ... then lay them on, the settings scroll last
-		SCROLL_OVL *s = &g_ovl[i];
-		if (!show[i]) continue;
-		for (int r = 0; r < 2 * s->h; r++)
-			memcpy(g_frame2x + (2 * s->y + r) * (2 * sw) + 2 * col[i], s->cache + r * 2 * s->w, (size_t)s->w * 8);
+	for (int i = 0; i < 2; i++) { // ... then lay them on, the settings scroll last: only the scroll's own
+		SCROLL_OVL *s = &g_ovl[i];   // pixels (where it differs from what it covers), so the live map
+		if (!show[i]) continue;      // shows through its ragged edges instead of a frozen strip of it
+		for (int r = 0; r < s->h; r++) {
+			const BYTE *sn = s->snap + r * s->w, *un = s->under ? s->under + r * s->w : NULL;
+			DWORD *o0 = g_frame2x + (2 * (s->y + r)) * (2 * sw) + 2 * col[i], *o1 = o0 + 2 * sw;
+			const DWORD *c0 = s->cache + (2 * r) * (2 * s->w), *c1 = c0 + 2 * s->w;
+			for (int c = 0; c < s->w; c++) {
+				if (un && sn[c] == un[c]) continue;
+				o0[2 * c] = c0[2 * c]; o0[2 * c + 1] = c0[2 * c + 1];
+				o1[2 * c] = c1[2 * c]; o1[2 * c + 1] = c1[2 * c + 1];
+			}
+		}
 	}
 }
 static void text_overlay(int sx, int sw)
@@ -5183,7 +5191,7 @@ static void army_panel_keep(void)
 	((void (__cdecl *)(int, int, int, int))0x00452306)(AP_X, AP_Y, AP_X + AP_W - 1, AP_Y + AP_H - 1); // to be shown
 	ap_region(1);
 	g_apDrawn = 1;
-	g_ovl[0].x = AP_X; g_ovl[0].y = AP_Y; g_ovl[0].w = AP_W; g_ovl[0].h = AP_H; g_ovl[0].snap = g_apSnap;
+	g_ovl[0].x = AP_X; g_ovl[0].y = AP_Y; g_ovl[0].w = AP_W; g_ovl[0].h = AP_H; g_ovl[0].snap = g_apSnap; g_ovl[0].under = g_apUnder;
 	InterlockedExchange(&g_ovl[0].gen, sig);
 	InterlockedExchange(&g_ovl[0].on, 1);
 	g_apSig = sig;
@@ -5193,7 +5201,7 @@ static void army_panel_keep(void)
 // lettering into its picture, like the army scroll, before every flush that would show the place
 // without it. What it covered is kept and put back when it closes.
 #define MS_W (24 * 16)
-#define MS_H (16 * 16)
+#define MS_H (17 * 16)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
 static BOOL ms_region(BYTE *buf, int op) // 0 compare, 1 save, 2 put back
@@ -5243,9 +5251,9 @@ static void menu_scroll_draw(void)
 		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
-	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + MS_H - 58, MS_W, small, ink);
+	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink); // under the last of 8 rows
 	const char *keys = "Click to change, right-click to close";
-	ctext(keys, x0, y0 + MS_H - 40, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
+	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
 	g_ownScroll = FALSE;
 }
@@ -5283,7 +5291,7 @@ static void menu_scroll_keep(void)
 	g_drawingLeft = g_drawingLow = FALSE;
 	ms_region(g_msSnap, 1);
 	g_msDrawn = 1;
-	g_ovl[1].x = g_msX; g_ovl[1].y = g_msY; g_ovl[1].w = MS_W; g_ovl[1].h = MS_H; g_ovl[1].snap = g_msSnap;
+	g_ovl[1].x = g_msX; g_ovl[1].y = g_msY; g_ovl[1].w = MS_W; g_ovl[1].h = MS_H; g_ovl[1].snap = g_msSnap; g_ovl[1].under = g_msUnder;
 	g_ovl[1].mapPal = 1; // always in the map's colours, the screen's palette whatever it is (ovl_build_mappal)
 	InterlockedExchange(&g_ovl[1].gen, g_menuGen);
 	InterlockedExchange(&g_ovl[1].on, 1);
