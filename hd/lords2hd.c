@@ -2310,7 +2310,7 @@ static void ini_set(const char *sec, const char *key, int v)
 // from the pack) when on, the game's own when off, so the difference is heard at once.
 static void resound_sample(void)
 {
-	static const char kLine[] = "Mace_p2.wav";
+	static const char kLine[] = "Mace_u1.wav";
 	static BYTE *mem;
 	char path[MAX_PATH];
 	if (g_remote) return; // muted while testing
