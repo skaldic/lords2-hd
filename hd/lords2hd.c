@@ -7680,9 +7680,40 @@ static int __cdecl h_wheat_scale(int county, int grain)
 	return grain;
 }
 
+// Besieged castles. The game's rule (Readme, "Besieged Castles"): no army may enter a castle or
+// strengthen its garrison until the siege is lifted. The human order checks it (FUN_004a9372 refuses
+// when the garrison army's besieger link 0x0052f24a is set), but the arrival itself, FUN_004a79a3
+// (army, county), which every army stepping onto its own castle goes through, only checks room. So
+// a computer lord's reinforcements (FUN_0049f12f, FUN_004a6270, FUN_004a64ca) merged into a
+// besieged garrison. Now the arrival is turned away there as when the castle is full.
+static BOOL g_fixSiegeGarrison;
+typedef void (__cdecl *castle_enter_t)(unsigned, int);
+static castle_enter_t o_castle_enter;
+
+static void __cdecl h_castle_enter(unsigned army, int county)
+{
+	if (g_fixSiegeGarrison && army > 0 && army < 0x97 && county > 0) {
+		int garrison = *(int *)(0x0053fb6c + county * 0x300);
+		if (garrison > 0 && garrison < 0x97 && (unsigned)garrison != army && *(BYTE *)(0x0052f24a + garrison * 0x1a4)) {
+			*(BYTE *)(0x0052f200 + army * 0x1a4) = 1;   // as the full-castle branch leaves it
+			*(BYTE *)(0x0052f0ca + army * 0x1a4) = 2;
+			*(BYTE *)(0x0052f1fc + army * 0x1a4) = 0;
+			static int logged;
+			if (logged < 5) logged++, logf_("besieged castle: army %u kept out of county %d's castle", army, county);
+			return;
+		}
+	}
+	o_castle_enter(army, county);
+}
+
 static void install_game_fixes(void)
 {
-	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
+	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
+	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
+	if (!hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter))
+		g_fixSiegeGarrison = FALSE;
+	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
+	g_runBackground =GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
 	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
 	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
