@@ -2428,7 +2428,7 @@ static void scroll_overlays(int sx, int sw)
 		LONG gen = s->gen;
 		BOOL whole = TRUE; // whole in this frame? Then caught again (so fades and palette changes reach it too)
 		for (int r = 0; r < s->h && whole; r++) whole = !memcmp(g_frame8 + (s->y + r) * sw + c0, s->snap + r * s->w, s->w);
-		if (!whole && s->cached != gen + 1) continue; // never seen whole: the game's own drawing stands
+		if (!whole && !s->cached) continue; // never seen whole: the game's own drawing stands (else the last copy, until the new one is seen: no flicker on a change)
 		if (whole) {
 			if (!s->cache || s->cacheW < s->w || s->cacheH < s->h) {
 				free(s->cache);
@@ -2518,7 +2518,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_TEXT: snprintf(v, n, "%s", g_hdText ? "On" : "Off"); break;
 	case M_WAVES: snprintf(v, n, "%s", g_shoreWaves ? "On" : "Off"); break;
 	case M_LIMIT: snprintf(v, n, "%s", g_frameLimit ? "120 a second" : "Off (as the original)"); break;
-	case M_TUTORIAL: snprintf(v, n, "%s", g_tutorialOnce ? "Once" : "Every time"); break;
+	case M_TUTORIAL: snprintf(v, n, "%s", !*(int *)0x0053f24c ? "Off" : g_tutorialOnce ? "Once" : "Every time"); break; // Off: the game's own option (0x53f24c)
 	case M_WASD: snprintf(v, n, "%s", g_wasdOn ? "On" : "Off"); break;
 	case M_CYCLE: snprintf(v, n, "%s", g_cycleOn ? "On" : "Off"); break;
 	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
@@ -2569,10 +2569,12 @@ static void resound_sample(void)
 	case M_TEXT: g_hdText = !g_hdText; ini_set("Display", "SharpText", g_hdText); break;
 	case M_WAVES: g_shoreWaves = !g_shoreWaves; ini_set("Display", "ShoreWaves", g_shoreWaves); break;
 	case M_LIMIT: g_frameLimit = g_frameLimit ? 0 : 120; ini_set("Display", "FrameLimit", g_frameLimit); break;
-	case M_TUTORIAL:
-		g_tutorialOnce = !g_tutorialOnce;
+	case M_TUTORIAL: // Off (the game's own tutorial option, 0x53f24c, saved in lords2.inf) -> Once -> Every time
+		if (!*(int *)0x0053f24c) { *(int *)0x0053f24c = 1; g_tutorialOnce = TRUE; ((void (__cdecl *)(void))0x00476a5d)(); } // on, as the game's own switch does (its marks cleared)
+		else if (g_tutorialOnce) g_tutorialOnce = FALSE;
+		else { *(int *)0x0053f24c = 0; g_tutorialOnce = TRUE; }
 		ini_set("Display", "TutorialOnce", g_tutorialOnce);
-		if (!g_tutorialOnce) { // Every time: shown again from now on - the game's marks for this session cleared too
+		if (*(int *)0x0053f24c && !g_tutorialOnce) { // Every time: shown again from now on - the game's marks for this session cleared too
 			memset((BYTE *)0x004f0298 + 200, 0, 32);
 			WritePrivateProfileStringA("Tutorial", "Seen", NULL, g_iniPath);
 		}
