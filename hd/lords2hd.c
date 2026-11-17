@@ -3527,7 +3527,7 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		int btn = cycle_button_at(fx, fy);
 		if (n == 2 && btn) { cycle_key(btn); btnDown = TRUE; InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return 0; }
 		if (n == 3 && btnDown) { btnDown = FALSE; return 0; }
-		if (n != 1 && army_panel_at(fx, fy)) return 0;
+		if (army_panel_at(fx, fy)) return 0; // nor its moves: the map would point the army there
 	}
 	if (n == 2) buttons |= MK_LBUTTON; else if (n == 3) buttons &= ~MK_LBUTTON;
 	if (n == 5) buttons |= MK_RBUTTON; else if (n == 6) buttons &= ~MK_RBUTTON;
@@ -3584,7 +3584,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		int btn = cycle_button_at(x, y);
 		if (msg == WM_LBUTTONDOWN && btn) { cycle_key(btn); btnDown = TRUE; InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return 0; }
 		if (msg == WM_LBUTTONUP && btnDown) { btnDown = FALSE; return 0; }
-		if (msg != WM_MOUSEMOVE && army_panel_at(x, y)) return 0;
+		if (army_panel_at(x, y)) return 0; // nor its moves: the map would point the army there
 		lp = MAKELPARAM(x, y);
 	}
 	else if (msg == WM_PAINT || msg == WM_SIZE || msg == WM_ACTIVATEAPP) {
@@ -3700,13 +3700,14 @@ static BOOL cycle_key(int dir)
 #define AP_X (0x1dc - AP_W)
 #define AP_Y (GAME_H - 8 - AP_H) // on the map's bottom edge: the rows under it are not the map's
 static int panel_army(void);
+static int player_armies(void);
 static const RECT kCycleBtn[2] = { { 487, 162, 503, 180 }, { 615, 162, 631, 180 } }; // game coords: < and >
 static BOOL cycle_btn_rect(int b, RECT *r)
 {
 	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
 	BYTE s = *(BYTE *)0x004eac50;
 	if (s == 16) {
-		if (!panel_army()) return FALSE;
+		if (!panel_army() || player_armies() < 2) return FALSE; // one army: nothing to go to
 		SetRect(r, b ? AP_X + AP_W - 24 : AP_X + 8, AP_Y + AP_H - 40, b ? AP_X + AP_W - 8 : AP_X + 24, AP_Y + AP_H - 22);
 		return TRUE;
 	}
@@ -3727,6 +3728,31 @@ static int cycle_button_at(int x, int y)
 }
 // a click on the army panel elsewhere than its buttons does nothing (it must not send the army there)
 static BOOL army_panel_at(int x, int y) { return panel_army() && x >= AP_X && x < AP_X + AP_W && y >= AP_Y && y < AP_Y + AP_H; }
+// The game reads the mouse for the map too (the path and cursor of a move): over the scroll it is
+// told the last place outside it, so hovering or tapping the scroll never aims the army.
+static int g_apOutX = 1, g_apOutY = 1;
+static void ap_mouse(LONG *x, LONG *y)
+{
+	if (army_panel_at(*x, *y)) { *x = g_apOutX; *y = g_apOutY; }
+	else { g_apOutX = *x; g_apOutY = *y; }
+}
+// how many of the player's armies stand on the map (counted at most 4 times a second)
+static int player_armies(void)
+{
+	static DWORD at; static int n;
+	DWORD now = GetTickCount();
+	if (at && now - at < 250) return n;
+	at = now; n = 0;
+	int me = *(int *)0x0057c8cc;
+	for (int r = 0; r <= 0x80; r++)
+		for (int c = 0; c < 0x41; c++) {
+			int rec = *(int *)(0x0055cea0 + r * 0x104 + c * 4);
+			if (rec <= 0 || rec >= 0xfff0000) continue;
+			for (int o = ((BYTE *)0x00522f95)[rec], guard = 0; o && guard < 160; o = *(short *)(0x0052f0b4 + o * 0x1a4), guard++)
+				if (o > 0 && o <= 150 && ((BYTE *)0x0052f0b8)[o * 0x1a4] == 1 && ((signed char *)0x0052f0b0)[o * 0x1a4] == me) n++;
+		}
+	return n;
+}
 // into the 2x frame (sw columns from game x sx - g_off)
 static void cycle_buttons_draw(int sx, int sw)
 {
@@ -3746,7 +3772,8 @@ static void cycle_buttons_draw(int sx, int sw)
 			}
 		}
 	}
-}static BOOL WINAPI h_GetCursorPos(POINT *p)
+}
+static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
 		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
@@ -3757,6 +3784,7 @@ static void cycle_buttons_draw(int sx, int sw)
 		if (g_fakeEdge & 4) p->y = 0;
 		if (g_fakeEdge & 8) p->y = bottom;
 		wasd_edges(p, right, bottom);
+		ap_mouse(&p->x, &p->y);
 		return TRUE;
 	}
 	if (!o_GetCursorPos(p)) return FALSE;
@@ -3781,6 +3809,7 @@ static void cycle_buttons_draw(int sx, int sw)
 		p->x = x;
 		p->y = y;
 		if (g_off) wasd_edges(p, max(2, SCROLL_EDGE_W - 1), max(2, *(int *)0x004ea838 - 1));
+		ap_mouse(&p->x, &p->y);
 	}
 	return TRUE;
 }
@@ -4683,7 +4712,22 @@ static void army_panel_draw(int id)
 	int sheet = *(int *)0x005530c8;
 	static const DWORD frame[3] = { 0x00409397, 0x004093e0, 0x00409429 }; // framed panel, scroll, ...
 	((void (__cdecl *)(int, int, int, int))frame[g_apStyle % 3])(AP_X, AP_Y, AP_W / 16, AP_H / 16);
-	ctext(game_str((signed char)o[0] + 0x5d, o[0x14f]), AP_X + 2, AP_Y + 18, AP_W - 4, big, 0x3f); // under the scroll's roll
+	// the name under the scroll's roll; too wide ("The Panthers." in quotes), it loses its quotes
+	// and full stop, and then takes the small lettering
+	int (__cdecl *width)(const char *, void *) = (void *)0x004014f0;
+	char name[64];
+	lstrcpynA(name, game_str((signed char)o[0] + 0x5d, o[0x14f]), sizeof name);
+	void *nf = big;
+	if (width(name, big) > AP_W - 12) {
+		char *a = name, *e;
+		while (*a && (strchr("\"'.", *a) || (BYTE)*a >= 0x80)) a++;
+		e = a + lstrlenA(a);
+		while (e > a && (strchr("\"'. ", e[-1]) || (BYTE)e[-1] >= 0x80)) e--;
+		*e = 0;
+		memmove(name, a, e - a + 1);
+		if (width(name, big) > AP_W - 12) nf = small;
+	}
+	ctext(name, AP_X + 2, AP_Y + 18, AP_W - 4, nf, 0x3f);
 	for (int t = 0; t < 7; t++) { // a row a kind, mercenaries with their kind
 		int n = *(const short *)(o + 0x16c + t * 2) + (o[0x195] == t ? o[0x196] : 0), y = AP_Y + 40 + t * 24;
 		icon(sheet, 0x2f + t, AP_X + AP_W / 2 - 30, y);
