@@ -1541,6 +1541,17 @@ static smk_tobuf_t o_SmackToBuffer;
 static smk_frame_t o_SmackDoFrame;
 static smk_close_t o_SmackClose;
 
+// the pack handles videos are playing from, closed with them (h_SmackClose)
+static struct { void *smk; HANDLE h; } g_vidHandles[4];
+static void video_handle_add(void *s, HANDLE h)
+{
+	for (int i = 0; i < 4; i++) if (!g_vidHandles[i].smk) { g_vidHandles[i].smk = s; g_vidHandles[i].h = h; return; }
+	CloseHandle(g_vidHandles[0].h); g_vidHandles[0].smk = s; g_vidHandles[0].h = h; // (never more than a couple open)
+}
+static void video_handle_close(void *s)
+{
+	for (int i = 0; i < 4; i++) if (g_vidHandles[i].smk == s) { CloseHandle(g_vidHandles[i].h); g_vidHandles[i].smk = NULL; }
+}
 static volatile LONG g_videoOpened; // a video has been opened since launch (the music hold, h_stream_play)
 static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 {
@@ -1549,19 +1560,47 @@ static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 	// line, the lines between left black). Opened with SMACKYDOUBLE (0x200000) Smacker draws each
 	// row twice instead: same size and place, no black lines.
 	BOOL doubled = FALSE;
-	if (name && !(flags & 0x1000) && !(flags & 0x300000)) { // a file name, no Y mode asked for
-		FILE *f = fopen(name, "rb");
-		DWORD head[6];
-		if (f) {
-			if (fread(head, 4, 6, f) == 6 && (head[0] & 0xffffff) == 0x4b4d53 && (head[5] & 2)) { flags |= 0x200000; doubled = TRUE; }
-			fclose(f);
+	// The disc-quality videos ride in the art pack (videos/<name>.smk): such a video is played from
+	// the pack - Smacker is given the pack's handle at its place (SMACKFILEHANDLE, 0x1000) - in place
+	// of the game's own file.
+	HANDLE packed = INVALID_HANDLE_VALUE;
+	if (name && !(flags & 0x1000) && g_pak) {
+		const char *base = strrchr(name, '\\'), *b2 = strrchr(name, '/');
+		base = max(base, b2); base = base ? base + 1 : name;
+		char path[MAX_PATH];
+		snprintf(path, sizeof path, "%s\\lords2hd\\videos\\%s", g_gameDir, base);
+		const PAK_ENTRY *e = pak_find(path);
+		if (e) {
+			packed = CreateFileA(g_pakPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+			LONG hi = 0;
+			if (packed != INVALID_HANDLE_VALUE && SetFilePointer(packed, (LONG)e->off, &hi, FILE_BEGIN) == INVALID_SET_FILE_POINTER) { CloseHandle(packed); packed = INVALID_HANDLE_VALUE; }
 		}
 	}
-	void *s = o_SmackOpen(name, flags, extra);
+	if (name && !(flags & 0x1000) && !(flags & 0x300000)) { // a file name, no Y mode asked for
+		DWORD head[6], got = 0;
+		if (packed != INVALID_HANDLE_VALUE) {
+			LONG hi = 0; DWORD at = SetFilePointer(packed, 0, &hi, FILE_CURRENT);
+			BOOL ok = ReadFile(packed, head, sizeof head, &got, NULL) && got == sizeof head;
+			hi = 0; SetFilePointer(packed, (LONG)at, &hi, FILE_BEGIN);
+			if (ok && (head[0] & 0xffffff) == 0x4b4d53 && (head[5] & 2)) { flags |= 0x200000; doubled = TRUE; }
+		}
+		else {
+			FILE *f = fopen(name, "rb");
+			if (f) {
+				if (fread(head, 4, 6, f) == 6 && (head[0] & 0xffffff) == 0x4b4d53 && (head[5] & 2)) { flags |= 0x200000; doubled = TRUE; }
+				fclose(f);
+			}
+		}
+	}
+	void *s = packed != INVALID_HANDLE_VALUE ? o_SmackOpen((const char *)packed, flags | 0x1000, extra) : o_SmackOpen(name, flags, extra);
+	if (packed != INVALID_HANDLE_VALUE) {
+		if (s) { video_handle_add(s, packed); logf_("video %s: from the pack", name); }
+		else { CloseHandle(packed); s = o_SmackOpen(name, flags, extra); } // the game's own file then
+	}
 	if (s && doubled) logf_("video %s: interlaced, shown line-doubled", name);
 	if (s) {
 		int w = *(int *)((BYTE *)s + 4), h = *(int *)((BYTE *)s + 8);
-		logf_("video %s: %dx%d, %d frames, flags %08lx", (const char *)name, w, h, *(int *)((BYTE *)s + 12), (unsigned long)flags);
+		logf_("video %s: %dx%d, %d frames, flags %08lx", name, w, h, *(int *)((BYTE *)s + 12), (unsigned long)flags);
 		if (w == 500 && h == 312) { // the disc version of a 296x184 event clip
 			BYTE *b = realloc(g_vid.buf, w * h), *p = realloc(g_vid.pub, w * h);
 			if (b && p) {
@@ -1610,6 +1649,7 @@ static void __stdcall h_SmackClose(void *s)
 		InterlockedExchange(&g_vid.on, 0);
 	}
 	o_SmackClose(s);
+	video_handle_close(s);
 }
 
 // ---- Better music --------------------------------------------------------------------------------

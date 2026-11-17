@@ -42,7 +42,7 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Tutorial scrolls shown once, not every time a game is started or loaded
 - Leaves the CPU mostly idle: the original game redraws thousands of times a second; the patch runs
   it at 120 frames a second with the game's own speed unchanged
-- Plays the disc-quality videos and the remastered soundtrack if you add them (below)
+- Plays the disc-quality videos (included), and the hi-fi soundtrack if you add it (below)
 - Every feature can be switched off, in the F10 panel or in `lords2hd.ini`
 
 ## Install
@@ -58,15 +58,13 @@ from another wrapper, this one replaces it. Updating from an older version: run 
 it; your settings are kept and the loose art folders of the zip versions are removed.
 
 Rather unzip by hand? `Lords2-HD-1.3.0.zip` holds the same files: unzip it into the game's folder.
-## Better videos and music (optional)
+## Videos and music
 
-These are not part of the download (they are not ours to give); the patch uses them when you add them.
+The videos come with the patch; the hi-fi music you add yourself (it is the composer's, not ours to give).
 
-- **Videos:** the original discs held sharper, full-height videos than the GOG version. A fan made
-  them available in the
-  [SMK_HIGH thread on the GOG forum](https://www.gog.com/forum/lords_of_the_realm_lords_of_magic_series/lords_of_the_realm_ii_gog_smk_high_patch_official_higher_quality_videos).
-  Copy its `.smk` files over the ones in the game's `videos` folder (keep a backup). The larger event
-  clips (the hanging, the jail, the merchant cart) then fit their frame and show their full detail.
+- **Videos:** now part of the download: the disc-quality videos, sharper and full-height (the GOG
+  version's are interlaced), play from `lords2hd.pak`. The larger event clips (the hanging, the jail,
+  the merchant cart) fit their frame and show their full detail.
 - **Music (hi-fi):** the composer, Keith Zizza, has published the original recordings of the
   soundtrack, far clearer than the game's 11 kHz tracks. Two ways to hear them in the game:
   - **The MP3s** of the 2020 "Remastered" release: put them, named as in that release (for example
