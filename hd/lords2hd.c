@@ -63,25 +63,12 @@ static BOOL battle_zoom_on(void);
 	__attribute__((naked)) void fw_##name(void) { __asm__("jmp *_real_" #name); }
 DDRAW_EXPORTS(DECLARE_FORWARD)
 
-// The DirectDraw the game gets when the patch does not draw itself (Enabled=0, or an exe it does not
-// know): Windows' own, or DDrawCompat when it is in lords2hd\ddrawcompat\ddraw.dll (it fixes the
-// game's broken colours on Windows 7). DDrawCompat refuses to run beside another ddraw.dll in its own
-// folder, hence the subfolder; it is loaded only then, so its hooks stay out of the patch's drawing.
-static char g_gameDir[MAX_PATH];
-static void logf_(const char *fmt, ...);
-static void load_real_ddraw(BOOL compat)
+static void load_real_ddraw(void)
 {
 	char path[MAX_PATH];
-	HMODULE real = NULL;
-	if (compat) {
-		snprintf(path, sizeof path, "%s\\lords2hd\\ddrawcompat\\ddraw.dll", g_gameDir);
-		if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES && (real = LoadLibraryA(path)) != NULL) logf_("DirectDraw: DDrawCompat (lords2hd\\ddrawcompat)");
-	}
-	if (!real) {
-		GetSystemDirectoryA(path, sizeof path);
-		strcat(path, "\\ddraw.dll");
-		real = LoadLibraryA(path);
-	}
+	GetSystemDirectoryA(path, sizeof path);
+	strcat(path, "\\ddraw.dll");
+	HMODULE real = LoadLibraryA(path);
 #define RESOLVE_FORWARD(name) real_##name = real ? GetProcAddress(real, #name) : NULL;
 	DDRAW_EXPORTS(RESOLVE_FORWARD)
 }
@@ -91,7 +78,7 @@ static void load_real_ddraw(BOOL compat)
 
 enum { SCALE_NONE, SCALE_SHARP, SCALE_SMOOTH };
 
-static char g_iniPath[MAX_PATH], g_logPath[MAX_PATH];
+static char g_gameDir[MAX_PATH], g_iniPath[MAX_PATH], g_logPath[MAX_PATH];
 static BOOL g_emulate;          // our DirectDraw is in use (known exe build and [Display] Enabled=1)
 static int g_scale = SCALE_SMOOTH;
 static BOOL g_fullscreen = TRUE, g_integerScale;
@@ -5926,6 +5913,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	DeleteFileA(g_logPath);
 	InitializeCriticalSection(&g_lock);
 	InitializeCriticalSection(&g_recentLock);
+	load_real_ddraw();
 
 	SYSTEMTIME t;
 	GetLocalTime(&t);
@@ -5935,11 +5923,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	if (!known_build()) {
 		logf_("unknown Lords2.exe build: passing DirectDraw through, nothing patched");
 		g_emulate = FALSE;
-		load_real_ddraw(TRUE);
 		return TRUE;
 	}
 	AddVectoredExceptionHandler(1, crash_logger);
-	load_real_ddraw(!g_emulate);
 	if (!g_emulate) {
 		logf_("[Display] Enabled=0: stock DirectDraw");
 		return TRUE;
