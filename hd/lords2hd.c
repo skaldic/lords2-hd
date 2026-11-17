@@ -5435,6 +5435,15 @@ static void remote_hide(HWND hwnd)
 	if (f) { fprintf(f, "%lu %lu\n", (unsigned long)(ULONG_PTR)hwnd, GetCurrentProcessId()); fclose(f); }
 }
 
+// Running in the background ([Game] RunInBackground): 0 = the game pauses when another window is
+// active (original), 1 = it always keeps running, 2 = it keeps running in a multiplayer game only
+// (DAT_00553030 is 1 while a DirectPlay session is open), where a paused player stalls everyone.
+static int g_runBackground = 2;
+static BOOL keep_running(void)
+{
+	return g_runBackground == 1 || (g_runBackground == 2 && *(int *)0x00553030 != 0);
+}
+
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || (msg == WM_KEYDOWN && !(lp & 0x40000000))) perf_input(); // latency (perf_end)
@@ -5480,6 +5489,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	else if (msg == WM_PAINT || msg == WM_SIZE || msg == WM_ACTIVATEAPP) {
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+	}
+	if (msg == WM_ACTIVATEAPP && !wp && keep_running()) {
+		// The game clears its active flag (DAT_004e65a8) and its main loop then only sleeps
+		// (Sleep(200) instead of a frame), so in multiplayer every other player waits too.
+		LRESULT r = CallWindowProcA(g_gameProc, hwnd, msg, wp, lp);
+		*(int *)0x004e65a8 = 1;
+		return r;
 	}
 	return CallWindowProcA(g_gameProc, hwnd, msg, wp, lp);
 }
@@ -7666,7 +7682,8 @@ static int __cdecl h_wheat_scale(int county, int grain)
 
 static void install_game_fixes(void)
 {
-	g_fixWheat = GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
+	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
+	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
 	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
 		g_fixWheat = FALSE;
