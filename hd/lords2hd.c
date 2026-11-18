@@ -7974,14 +7974,102 @@ static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
 	for (size_t i = 0; i < n; i++) { h ^= p[i]; for (int k = 0; k < 8; k++) h = (h >> 1) ^ (0xEDB88320u & (0u - (h & 1))); }
 	return h;
 }
+// Multiplayer session logs ([Debug] MpLogs=1, the default): each multiplayer game (DAT_00553030 set)
+// gets a folder lords2hd-mp\<date and time>\ that a player can zip and post when something goes wrong:
+//   session.txt  versions (this DLL, the exe, a replacement dplayx.dll) and the settings that matter
+//   sync.txt     per-season checksums of the county, army and player records (compare two players')
+//   copies of lords2hd.log and, if present, dplayx.log and desync.txt, refreshed each season and at the end
+// Only the ten newest folders are kept.
+static BOOL g_mpLogs = TRUE, g_syncLog;
+static DWORD crc_file(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) return 0;
+	BYTE buf[65536]; size_t n; DWORD h = ~0u;
+	while ((n = fread(buf, 1, sizeof buf, f)) > 0) h = crc_block(h, buf, n);
+	fclose(f);
+	return ~h;
+}
+static void mp_copy_logs(const char *dir)
+{
+	static const char *names[] = { "lords2hd.log", "dplayx.log", "desync.txt" };
+	char from[MAX_PATH], to[MAX_PATH];
+	for (int i = 0; i < 3; i++) {
+		snprintf(from, sizeof from, "%s\\%s", g_gameDir, names[i]);
+		snprintf(to, sizeof to, "%s\\%s", dir, names[i]);
+		if (GetFileAttributesA(from) != INVALID_FILE_ATTRIBUTES) CopyFileA(from, to, FALSE);
+	}
+}
+static void mp_prune(const char *root)
+{
+	char pat[MAX_PATH], names[64][MAX_PATH]; int n = 0;
+	snprintf(pat, sizeof pat, "%s\\*", root);
+	WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(pat, &fd);
+	if (h == INVALID_HANDLE_VALUE) return;
+	do { if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.' && n < 64) lstrcpynA(names[n++], fd.cFileName, MAX_PATH); } while (FindNextFileA(h, &fd));
+	FindClose(h);
+	while (n > 10) { // names are dates: the smallest is the oldest
+		int old = 0;
+		for (int i = 1; i < n; i++) if (strcmp(names[i], names[old]) < 0) old = i;
+		char dir[MAX_PATH], file[MAX_PATH];
+		snprintf(dir, sizeof dir, "%s\\%s", root, names[old]);
+		snprintf(pat, sizeof pat, "%s\\*", dir);
+		h = FindFirstFileA(pat, &fd);
+		if (h != INVALID_HANDLE_VALUE) {
+			do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) { snprintf(file, sizeof file, "%s\\%s", dir, fd.cFileName); DeleteFileA(file); } } while (FindNextFileA(h, &fd));
+			FindClose(h);
+		}
+		RemoveDirectoryA(dir);
+		lstrcpynA(names[old], names[--n], MAX_PATH);
+	}
+}
+static void mp_session_start(char *dir, size_t size)
+{
+	char root[MAX_PATH], path[MAX_PATH];
+	snprintf(root, sizeof root, "%s\\lords2hd-mp", g_gameDir);
+	CreateDirectoryA(root, NULL);
+	SYSTEMTIME t; GetLocalTime(&t);
+	snprintf(dir, size, "%s\\%04d-%02d-%02d_%02d-%02d-%02d", root, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	CreateDirectoryA(dir, NULL);
+	mp_prune(root);
+	snprintf(path, sizeof path, "%s\\session.txt", dir);
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	char me[MAX_PATH], exe[MAX_PATH];
+	HMODULE self = NULL;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)mp_session_start, &self);
+	GetModuleFileNameA(self, me, sizeof me);
+	GetModuleFileNameA(NULL, exe, sizeof exe);
+	fprintf(f, "Lords of the Realm II HD multiplayer session, %04d-%02d-%02d %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	fprintf(f, "ddraw.dll (HD): built %s %s, crc %08lx\n", __DATE__, __TIME__, (unsigned long)crc_file(me));
+	fprintf(f, "Lords2.exe: crc %08lx\n", (unsigned long)crc_file(exe));
+	HMODULE dp = GetModuleHandleA("dplayx.dll");
+	if (dp) {
+		char dpPath[MAX_PATH]; GetModuleFileNameA(dp, dpPath, sizeof dpPath);
+		BOOL repl = GetProcAddress(dp, "LF_NetSessionOpen") != NULL;
+		fprintf(f, "dplayx.dll: %s, crc %08lx (%s)\n", dpPath, (unsigned long)crc_file(dpPath), repl ? "replacement multiplayer layer" : "Windows DirectPlay");
+	}
+	fprintf(f, "game fixes in this game: %s (MultiplayerFixes=%d)\n", g_mpFixes ? "on" : "off (multiplayer safe mode)", g_mpFixes);
+	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
+		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
+	fprintf(f, "this player: %d; game speed %d\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
+	fclose(f);
+	logf_("multiplayer session log: %s", dir);
+}
+
 static DWORD WINAPI sync_log_thread(LPVOID unused)
 {
 	(void)unused;
 	int lastSeason = -1; DWORD changed = 0; int pending = 0, n = 0;
-	char req[MAX_PATH];
+	char req[MAX_PATH], mpDir[MAX_PATH] = "";
+	BOOL inSession = FALSE;
 	snprintf(req, sizeof req, "%s\\lords2hd-sync.req", g_gameDir);
 	for (;;) {
 		Sleep(250);
+		BOOL mp = *(int *)0x00553030 != 0;
+		if (g_mpLogs && mp && !inSession) { mp_session_start(mpDir, sizeof mpDir); n = 0; lastSeason = -1; }
+		if (inSession && !mp && mpDir[0]) { mp_copy_logs(mpDir); logf_("multiplayer session ended"); }
+		inSession = mp;
 		// On request (a test drops lords2hd-sync.req, holding a name): every record's checksum to lords2hd-sync-<name>.txt
 		FILE *rq = fopen(req, "r");
 		if (rq) {
@@ -8020,15 +8108,29 @@ static DWORD WINAPI sync_log_thread(LPVOID unused)
 		DWORD c = crc_block(~0u, (const BYTE *)(0x0053f9b0 + 0x300), (size_t)counties * 0x300);
 		DWORD a = crc_block(~0u, (const BYTE *)(0x0052f0b0 + 0x1a4), (size_t)0x96 * 0x1a4);
 		DWORD p = crc_block(~0u, (const BYTE *)(0x0057bf00 + 0x160), (size_t)5 * 0x160);
-		logf_("sync %d: season %d/%d, counties %08lx, armies %08lx, players %08lx, multiplayer %d", ++n,
+		++n;
+		if (g_syncLog) logf_("sync %d: season %d/%d, counties %08lx, armies %08lx, players %08lx, multiplayer %d", n,
 			*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p, *(int *)0x00553030);
+		if (inSession && mpDir[0]) {
+			char path[MAX_PATH]; snprintf(path, sizeof path, "%s\\sync.txt", mpDir);
+			FILE *f = fopen(path, "a");
+			if (f) {
+				SYSTEMTIME t; GetLocalTime(&t);
+				fprintf(f, "%02d:%02d:%02d  check %d  season %d/%d  counties %08lx  armies %08lx  players %08lx\n", t.wHour, t.wMinute, t.wSecond, n,
+					*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p);
+				fclose(f);
+			}
+			mp_copy_logs(mpDir);
+		}
 	}
 	return 0;
 }
 
 static void install_game_fixes(void)
 {
-	if (GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath)) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
+	g_syncLog = GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath) != 0;
+	g_mpLogs = GetPrivateProfileIntA("Debug", "MpLogs", 1, g_iniPath) != 0;
+	if (g_syncLog || g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
 	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
