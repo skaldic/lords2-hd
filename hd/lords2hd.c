@@ -5629,6 +5629,7 @@ static void client_to_game(int *x, int *y)
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
 static int g_fakeEdge;
+static volatile int g_testMopUp;   // remote testing: run Mop-Up for this side at the next battle step
 static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
@@ -5723,6 +5724,10 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		InterlockedExchange(&g_shotViewWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+		return 0;
+	}
+	if (n == 25) { // testing: Mop-Up for side w (the game's FUN_0047a76d), run at the next battle step
+		g_testMopUp = (int)wp;
 		return 0;
 	}
 	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
@@ -8129,9 +8134,12 @@ static BOOL g_fixMopUp;
 typedef void (__cdecl *chase_t)(void);
 static chase_t o_chase;
 
+static void chase_progress(int me);
+
 static void __cdecl h_chase(void)
 {
 	int me = FIG_CUR;
+	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) chase_progress(me);
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
 		int group = *(short *)(0x005545f8 + me * 0x1b0);
 		int target = FIG_B(me, 0x005545f4);
@@ -8171,6 +8179,7 @@ static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
+static int g_bretarget, g_bwake, g_bdropTarget;
 
 static void blog(const char *fmt, ...)
 {
@@ -8290,12 +8299,29 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, g_bheld, g_bswapsBlocked, tw, cols);
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = 0;
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
 	fflush(g_blog);
+}
+
+typedef int (__cdecl *step_check_t)(int);
+static step_check_t o_step_check;
+static int __cdecl h_step_check(int dir)   // FUN_00490616(dir): logged for traced figures
+{
+	int r = o_step_check(dir);
+	int me = FIG_CUR;
+	if (g_blog && me > 0 && me < 0x51 && g_traceUntil[me] > g_btick) {
+		static const int fdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 }, fdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+		int x = FIG_S(me, 0x20) + fdx[dir & 7], y = FIG_S(me, 0x22) + fdy[dir & 7];
+		BYTE *c = x >= 0 && x < 80 && y >= 0 && y < 80 ? BCELL(x, y) : NULL;
+		blog("chk fig %d dir %d -> %d (cell %d,%d occ %d flags %02x h %d, my h %d, adj-enemy %d)", me, dir, r, x, y,
+			c ? c[5] : -1, c ? c[1] : -1, c ? c[4] : -1, BCELL(FIG_S(me, 0x20), FIG_S(me, 0x22))[4], *(int *)0x00554474);
+	}
+	return r;
 }
 
 static BOOL __cdecl h_path_search(int sx, int sy, int dx, int dy)
@@ -8415,6 +8441,14 @@ static int __cdecl h_mover(int p1)
 			g_bheld++;
 			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d after stepping back (destination was %d,%d)", me, nx, ny, gx, gy);
 		}
+		// a chaser that steps straight back close to its target (a crowd round it) waits a moment
+		// instead of dancing; the chase's give-up then finds it another target if it stays stuck
+		else if (nx == g_jPrevX[me] && ny == g_jPrevY[me] && g_btick - g_jLastMove[me] < 64 &&
+			abs(gx - nx) <= 2 && abs(gy - ny) <= 2 && f[0x31] == 8) {
+			f[0x2f] = 8; f[0x31] = 1; f[0x30] = 4;   // ~16 steps
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("chase wait fig %d at %d,%d (target cell %d,%d crowded)", me, nx, ny, gx, gy);
+		}
 		g_jPrevX[me] = x; g_jPrevY[me] = y; g_jLastMove[me] = g_btick;
 		return r;
 	}
@@ -8437,11 +8471,209 @@ static int __cdecl h_mover(int p1)
 	return r;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Walking distances (phase 3) and the Mop-Up fixes that use them (phase 4), both under MopUpFix.
+// For every live soldier a map of how many steps each cell is from it, by the game's own movement
+// rules (FUN_00490a44: flags 0x90 and water 0x40 block, gates 0x08 block, a height step of more than
+// one level blocks unless the cell is level 5; moats are crossed by filling them). The maps are
+// rebuilt in turn, five figures a logic step (each every 16 steps), in a fixed order.
+// - Chasing melee units pick their target by walking distance (FUN_004954dd used a straight line, so
+//   units chased enemies on walls, across water or a level above them and stood or danced there).
+//   An enemy that can't be reached is skipped; with none left the unit stops.
+// - A chaser that gets no closer to its target for two seconds drops it and ignores it for four.
+// - An idle melee unit in a Mop-Up group goes back to chasing (state 5 never woke it).
+// - Selecting units after Mop-Up keeps their Mop-Up; your move or attack order cancels it for that group
+//   (a group on Mop-Up used to ignore every order for the rest of the battle).
+#define DM_FAR 0xFFFF
+static BOOL g_dmapOn;   // the phase-4 hooks are in
+static unsigned short g_dmap[81][6400];
+static BYTE g_dmapOk[81];
+static unsigned g_cSince[81], g_cAvoidUntil[81];
+static int g_cBest[81], g_cTarget[81], g_cAvoid[81];
+typedef int (__cdecl *target_t)(void);
+static target_t o_target;
+typedef void (__cdecl *idle_t)(void);
+static idle_t o_idle;
+typedef void (__cdecl *order_t)(int, int, int, int, int, int);
+static order_t o_order;
+typedef void (__cdecl *select_t)(unsigned);
+static select_t o_select;
+
+static BOOL dm_step_ok(int from, int to)
+{
+	BYTE ht = ((BYTE *)0x005440e4)[to * 8], hf = ((BYTE *)0x005440e4)[from * 8], fl = ((BYTE *)0x005440e1)[to * 8];
+	if (ht != hf && ht != 5 && (ht + 1 < hf || hf + 1 < ht)) return FALSE;
+	return (fl & (0x90 | 0x40 | 0x08)) == 0;
+}
+
+static void dm_build(int e)
+{
+	static int q[6400];
+	unsigned short *m = g_dmap[e];
+	for (int k = 0; k < 6400; k++) m[k] = DM_FAR;
+	g_dmapOk[e] = 0;
+	if (!FIG(e)[0x2c]) return;
+	int x0 = FIG_S(e, 0x20), y0 = FIG_S(e, 0x22);
+	if (x0 < 0 || x0 > 79 || y0 < 0 || y0 > 79) return;
+	int head = 0, tail = 0;
+	m[y0 * 80 + x0] = 0; q[tail++] = y0 * 80 + x0;
+	while (head < tail) {
+		int u = q[head++], ux = u % 80, uy = u / 80;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			if (!dx && !dy) continue;
+			int vx = ux + dx, vy = uy + dy;
+			if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (m[v] != DM_FAR || !dm_step_ok(v, u)) continue;   // reversed: a unit at v steps to u
+			m[v] = m[u] + 1; q[tail++] = v;
+		}
+	}
+	g_dmapOk[e] = 1;
+}
+
+static void dm_refresh(void)
+{
+	for (int e = 1; e < 0x51; e++)
+		if ((unsigned)(e + g_btick) % 16 == 0 || (!g_dmapOk[e] && FIG(e)[0x2c])) dm_build(e);
+}
+
+static int dm_dist(int e, int me)
+{
+	if (e < 1 || e > 0x50 || !g_dmapOk[e]) return DM_FAR;
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	if (x < 0 || x > 79 || y < 0 || y > 79) return DM_FAR;
+	return g_dmap[e][y * 80 + x];
+}
+
+static int dm_pick(int me)
+{
+	int best = 0, bestCost = 0x7fffffff;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *f = FIG(e);
+		if (!f[0x2c] || f[0x2c] == FIG(me)[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		if (g_cAvoid[me] == e && g_btick < g_cAvoidUntil[me]) continue;
+		int d = dm_dist(e, me);
+		if (d == DM_FAR) continue;
+		if (f[0x16a]) d /= 2;   // as the game: archers count at half distance
+		int cost = d + (signed char)f[0x175];
+		if (cost < bestCost) { bestCost = cost; best = e; }
+	}
+	return best;
+}
+
+static int __cdecl h_target(void)
+{
+	int me = FIG_CUR;
+	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50 || FIG(me)[0x16a] || FIG(me)[0x12] >= 7) return o_target();
+	int best = dm_pick(me);
+	if (best) {
+		*(int *)0x0056d5d0 = best;
+		FIG(best)[0x175] += 2;
+		g_bretarget++;
+	}
+	return best;
+}
+
+// Called from h_chase each step: a target that hasn't come closer (walking distance) for 164 steps is
+// dropped and avoided for 328, so the chase picks another.
+static void chase_progress(int me)
+{
+	BYTE *f = FIG(me);
+	if (f[0x16a] || f[0x12] >= 7) return;
+	int t = f[0x174];
+	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) { g_cTarget[me] = 0; return; }
+	int d = dm_dist(t, me);
+	if (t != g_cTarget[me] || d < g_cBest[me]) { g_cTarget[me] = t; g_cBest[me] = d; g_cSince[me] = g_btick; return; }
+	// only a target that can't be reached, or one close by that it isn't getting to (a far one that
+	// keeps its distance is still worth chasing)
+	unsigned waited = g_btick - g_cSince[me];
+	if ((waited >= 164 && (d == DM_FAR || d <= 6)) || (waited >= 82 && d <= 2)) {
+		g_cAvoid[me] = t; g_cAvoidUntil[me] = g_btick + 328;
+		f[0x174] = 0; g_cTarget[me] = 0;
+		g_bdropTarget++;
+		if (g_blog && g_battleLog >= 1) blog("give up fig %d on target %d (no closer than %d steps for 2 s)", me, t, d == DM_FAR ? -1 : d);
+	}
+}
+
+// State 5 (idle): a melee unit in a Mop-Up group goes back to chasing.
+static void __cdecl h_idle(void)
+{
+	o_idle();
+	int me = FIG_CUR;
+	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50) return;
+	BYTE *f = FIG(me);
+	if (f[0x2c] && f[0x31] == 5 && !f[0x16a] && f[0x12] < 7 && group_hunting(FIG_S(me, 0x178)) && dm_pick(me)) {
+		f[0x31] = 8; f[0x174] = 0;
+		g_bwake++;
+	}
+}
+
+// FUN_00479e90(group, x, y, target, fire, formation) carries out an order. Called from your move/attack
+// command (FUN_0043c634) or a multiplayer order message (FUN_00448137) with no formation change, it now
+// ends Mop-Up for that group first, so the group obeys. The computer's own calls are left alone.
+static void __cdecl h_order(int g, int x, int y, int target, int fire, int formation)
+{
+	DWORD ret = (DWORD)__builtin_return_address(0);
+	if (fix_on(g_fixMopUp) && formation == 0 && g > 0 && g < 80 &&
+		((ret > 0x0043c634 && ret < 0x0043c77a) || (ret > 0x00448137 && ret < 0x00448300)) &&
+		*(BYTE *)(0x0056654a + g * 0x34)) {
+		*(BYTE *)(0x0056654a + g * 0x34) = 0;
+		if (g_blog && g_battleLog >= 1) blog("order ends Mop-Up for group %d", g);
+	}
+	o_order(g, x, y, target, fire, formation);
+}
+
+// FUN_00478987(player): a selection that isn't one whole group becomes a new group, whose record is
+// zeroed. Units that came from a group on Mop-Up keep it in their new group.
+static void __cdecl h_select(unsigned player)
+{
+	static short before[81];
+	static BYTE hunt[81];
+	BOOL on = fix_on(g_fixMopUp);
+	if (on) for (int i = 1; i < 0x51; i++) {
+		before[i] = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
+		hunt[i] = before[i] >= 0 ? (BYTE)group_hunting(before[i]) : 0;
+	}
+	o_select(player);
+	if (!on) return;
+	for (int i = 1; i < 0x51; i++) {
+		short g = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
+		if (g >= 0 && g < 80 && g != before[i] && hunt[i] && !group_hunting(g)) {
+			*(BYTE *)(0x0056654a + g * 0x34) = 1;
+			if (g_blog && g_battleLog >= 1) blog("selection keeps Mop-Up: new group %d (from %d)", g, before[i]);
+		}
+	}
+}
+
+// 6. FUN_004972f9(x, y, cell) gives the direction of an adjacent enemy to attack before any other move,
+//    but it didn't skip dying ones (state 2, which keep their cell for ~80 steps). A unit next to a
+//    corpse tried to attack it, was refused, and sidestepped, never fighting the live enemy beside it:
+//    the dance round every crowded fight. Dying enemies are now skipped.
+typedef int (__cdecl *adj_enemy_t)(int, int, int);
+static adj_enemy_t o_adj_enemy;
+static int __cdecl h_adj_enemy(int x, int y, int cell)
+{
+	if (!fix_on(g_fixJitter)) return o_adj_enemy(x, y, cell);
+	int me = FIG_CUR;
+	if (me < 1 || me > 0x50 || FIG(me)[0x18d] || x <= 0 || y <= 0 || x >= 0x4f || y >= 0x4f) return 8;
+	const int *off = (const int *)0x004d8588;
+	BYTE *grid = (BYTE *)0x005440e0;
+	for (int k = 0; k < 8; k++) {
+		int c = cell + off[k];
+		int occ = grid[c + 5];
+		if (occ && occ < 0x51 && FIG(me)[0x2c] != FIG(occ)[0x2c] && grid[c + 4] == grid[cell + 4] && FIG(occ)[0x31] != 2)
+			return k;
+	}
+	return 8;
+}
+
 static void battle_reset(void)
 {
 	g_btick = 0;
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
+	memset(g_dmapOk, 0, sizeof g_dmapOk); memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
+	memset(g_cBest, 0, sizeof g_cBest); memset(g_cTarget, 0, sizeof g_cTarget); memset(g_cAvoid, 0, sizeof g_cAvoid);
 }
 
 static void __cdecl h_fig_loop(void)
@@ -8453,6 +8685,13 @@ static void __cdecl h_fig_loop(void)
 	if (fresh) battle_reset();
 	if (g_battleLog && (fresh || !g_blastCall || now - g_blastCall > 3000)) battle_start();
 	g_blastCall = now;
+	if (g_testMopUp && g_remote) {
+		int side = g_testMopUp;
+		g_testMopUp = 0;
+		((void (__cdecl *)(unsigned))0x0047a76d)((unsigned)side);
+		if (g_blog) blog("TEST: Mop-Up for side %d", side);
+	}
+	if (g_dmapOn && fix_on(g_fixMopUp)) dm_refresh();
 	o_fig_loop();
 	g_btick++;
 	if (!g_blog) return;
@@ -8865,22 +9104,36 @@ static void install_game_fixes(void)
 	g_battleLog = GetPrivateProfileIntA("Debug", "BattleLog", 0, g_iniPath);
 	g_fixJitter = GetPrivateProfileIntA("Game", "JitterFix", 1, g_iniPath) != 0;
 	BOOL figLoop = FALSE;
-	if (g_battleLog || g_fixJitter) {
+	if (g_battleLog || g_fixJitter || g_fixMopUp) {
 		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
 		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
 	}
 	if (g_battleLog) {
 		static const BYTE kSearch[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C };   // push ebp; mov ebp,esp; sub esp,1Ch
 		if (figLoop) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
+		static const BYTE kStep[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };   // push ebp; mov ebp,esp; sub esp,8
+		if (figLoop && g_battleLog >= 2) hook_code((BYTE *)0x00490616, kStep, sizeof kStep, h_step_check, &o_step_check);
 		logf_("battle log %s (level %d)", figLoop ? "on" : "failed", g_battleLog);
 	}
 	if (g_fixJitter) {
 		static const BYTE kMover[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };   // push ebp; mov ebp,esp; sub esp,0Ch
 		static const BYTE kSwapQ[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14 };   // push ebp; mov ebp,esp; sub esp,14h
 		if (!figLoop || !hook_code((BYTE *)0x0048f1dd, kMover, sizeof kMover, h_mover, &o_mover) ||
-			!hook_code((BYTE *)0x0049005f, kSwapQ, sizeof kSwapQ, h_swapq, &o_swapq))
+			!hook_code((BYTE *)0x0049005f, kSwapQ, sizeof kSwapQ, h_swapq, &o_swapq) ||
+			!hook_code((BYTE *)0x004972f9, (const BYTE[]){ 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }, 6, h_adj_enemy, &o_adj_enemy))
 			g_fixJitter = FALSE;
 		logf_("jitter fix %s", g_fixJitter ? "on" : "off");
+	}
+	if (g_fixMopUp && figLoop) {
+		static const BYTE kTarget[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
+		static const BYTE kIdle[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };    // sub esp,4
+		static const BYTE kOrder[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 };   // sub esp,24h
+		static const BYTE kSelect[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };  // sub esp,10h
+		g_dmapOn = hook_code((BYTE *)0x004954dd, kTarget, sizeof kTarget, h_target, &o_target) &&
+			hook_code((BYTE *)0x004832ea, kIdle, sizeof kIdle, h_idle, &o_idle) &&
+			hook_code((BYTE *)0x00479e90, kOrder, sizeof kOrder, h_order, &o_order) &&
+			hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select);
+		logf_("Mop-Up walking distances %s", g_dmapOn ? "on" : "failed");
 	}
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))

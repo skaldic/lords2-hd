@@ -52,6 +52,7 @@ foreach ($step in $Steps) {
             }
             "burst saved to shots\$arg"
         }
+        'mopup'  { Post 25 ([int]$arg) 0 }   # battle test: Mop-Up for side n at the next battle step
         'video'  { Post 8 ([int]$arg) 0 }   # play video n of the DLL's test table (hang, jail, axmen, cart, win_game, intro, credits, castle1, bat_win1, imptitle)
         'shot1x' {   # the game's own frame at 1x (no HD art, no scaling) as shots\<name>.png
             $f = Join-Path $game "lords2hd-shot1x.bmp"; Remove-Item $f -ErrorAction SilentlyContinue
