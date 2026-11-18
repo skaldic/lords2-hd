@@ -4329,6 +4329,7 @@ static void bt_double_job(int band, int me)
 // comes from the previous picture, which held it. Only the battlefield part of the picture moves (not
 // the bar above it or the side panel), and longer jumps (the minimap) are not slid. The game's view and
 // everything it does are unchanged: this is the picture only.
+static volatile int g_scrollTrace = 120;   // Timing=1: lines of "scroll trace" left
 static struct { const DWORD *cur, *old; DWORD *out; int w, rowTop, rowEnd, colEnd, dx, dy, ox, oy; } g_ss;
 static void ss_rows_job(int band, int me)
 {
@@ -4377,6 +4378,19 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	RECT v, c;
 	view_rect(&v);
 	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
+	if (g_timing && g_scrollTrace > 0) {   // Timing=1, while the view moves: what each read finds (100 lines)
+		static int lastCol = -1, lastRow = -1, quiet;
+		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
+		if (col != lastCol || row != lastRow) quiet = 0;
+		if (quiet++ < 6) {
+			int diffRows = 0, firstRow = -1, lastRowD = -1;
+			for (int y = 0; y < fh; y++) if (memcmp(copy + y * pitch, shown + y * pitch, pitch)) { diffRows++; if (firstRow < 0) firstRow = y; lastRowD = y; }
+			g_scrollTrace--;
+			logf_("scroll trace: read seq %ld view %d,%d (was %d,%d), rows changed %d (%d..%d of %d), forced %d", (long)g_paceReadSeq, col, row, lastCol, lastRow,
+				diffRows, firstRow, lastRowD, fh, forced);
+		}
+		lastCol = col; lastRow = row;
+	}
 	if (!forced && palSame && memcmp(copy, shown, pitch * fh) == 0) return FALSE;
 	memcpy(shown, copy, pitch * fh);
 	lastView = v;
@@ -8115,6 +8129,13 @@ static void __cdecl h_show_frame(int force)
 	if (ours) { sfOurs++; if (g_copySeq == seq) sfOursNoCopy++; } else { sfOther++; if (g_copySeq != seq) sfOtherCopy++; }
 	if (g_timing) {
 		pace_event(g_copySeq != seq ? 'C' : ours ? 'c' : 'N', g_paceChangeSeq);
+		if (IN_BATTLE_NOW() && g_scrollTrace > 0) {
+			static int lc = -1, lr = -1, q;
+			if (BATTLE_COL != lc || BATTLE_ROW != lr) q = 0;
+			if (q++ < 4) logf_("scroll trace: game frame view %d,%d copy %s (turn %d, marks %d, change #%ld)", BATTLE_COL, BATTLE_ROW,
+				g_copySeq != seq ? "made" : "none", ours, *(int *)0x0050d09c, (long)g_paceChangeSeq);
+			lc = BATTLE_COL; lr = BATTLE_ROW;
+		}
 		static int gateLogs;
 		if (ours && g_copySeq == seq && *(int *)0x0050d09c > 0 && gateLogs < 30) { // marked for the screen, our turn, and still no copy: the copy routine's own gates
 			gateLogs++;
