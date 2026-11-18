@@ -8170,7 +8170,7 @@ static DWORD g_blastCall;
 static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
-static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1;
+static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
 
 static void blog(const char *fmt, ...)
 {
@@ -8204,7 +8204,7 @@ static void battle_start(void)
 		g_blog = fopen(path, "w");
 		if (!g_blog) return;
 	}
-	g_btick = 0; g_bsecTick = 0;
+	g_bsecTick = g_btick;
 	memset(g_twitch, 0, sizeof g_twitch); memset(g_twitchSec, 0, sizeof g_twitchSec);
 	memset(g_traceUntil, 0, sizeof g_traceUntil); memset(g_idleSince, 0, sizeof g_idleSince);
 	memset(g_lastMove, 0, sizeof g_lastMove); memset(g_prevX, -1, sizeof g_prevX); memset(g_prevY, -1, sizeof g_prevY);
@@ -8290,11 +8290,11 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, tw, cols);
+		g_btwitch, g_bheld, g_bswapsBlocked, tw, cols);
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
-	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = 0;
+	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
 	fflush(g_blog);
 }
 
@@ -8327,14 +8327,135 @@ static void __cdecl h_setup_call(void)
 	o_setup_call();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Jitter fix ([Game] JitterFix=1, single player; multiplayer only with MultiplayerFixes=1).
+// 1. The mover FUN_0048f1dd throws a unit's whole path away when the next cell on it is taken by a
+//    friend (a groupmate that was moving when the path was searched, or any friend for the computer,
+//    whose units treat friends like terrain). With no path the unit heads straight at its goal, which is
+//    usually the cell it just left, then finds the same detour again: it steps back and forth about
+//    three times a second. Now the path is kept and the unit waits a moment (state 1, ~8 steps) for the
+//    friend to move on; after 10 waits in a row (about a second) the game's own handling takes over.
+// 2. Swaps (FUN_0049005f, your units only): two units could swap places, swap back and swap again every
+//    few steps. The same pair can't swap again within 48 steps; the blocked unit waits instead.
+// 3. A swapped unit was always sent marching (saved state 3); a chasing one now keeps chasing.
+// Everything here only reads game state and the patch's own per-battle tables, reset when the game's
+// battle step counter (0x0057c998) starts again, so it gives the same result on every machine.
+#define JIT_MAX_WAITS 10
+static BOOL g_fixJitter;
+typedef int (__cdecl *mover_t)(int);
+static mover_t o_mover;
+typedef int (__cdecl *swapq_t)(void);
+static swapq_t o_swapq;
+static int g_jWaits[81], g_jSwapWith[81];
+static unsigned g_jSwapT[81], g_jLastMove[81];
+static short g_jPrevX[81], g_jPrevY[81];
+static int g_jSwapB, g_jSwapPrev;
+static int g_lastStep = -1;
+
+static int __cdecl h_swapq(void)
+{
+	int me = FIG_CUR, b = *(int *)0x0052eff4;
+	if (fix_on(g_fixJitter) && me > 0 && me < 0x51 && b > 0 && b < 0x51 &&
+		((g_jSwapWith[me] == b && g_btick - g_jSwapT[me] < 48) || (g_jSwapWith[b] == me && g_btick - g_jSwapT[b] < 48))) {
+		g_bswapsBlocked++;
+		return 0;   // wait instead of swapping back
+	}
+	int prev = b > 0 && b < 0x51 ? FIG(b)[0x31] : 0;
+	int r = o_swapq();
+	if (r == 2 && me > 0 && me < 0x51 && b > 0 && b < 0x51) {
+		g_jSwapWith[me] = b; g_jSwapT[me] = g_btick;
+		g_jSwapWith[b] = me; g_jSwapT[b] = g_btick;
+		g_jSwapB = b; g_jSwapPrev = prev;
+	}
+	return r;
+}
+
+static int __cdecl h_mover(int p1)
+{
+	int me = FIG_CUR;
+	if (!fix_on(g_fixJitter) || me < 1 || me > 0x50) return o_mover(p1);
+	BYTE *f = FIG(me);
+	BYTE pathOn = f[0x164];
+	short left = FIG_S(me, 0x36), x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	int wx = -1, wy = -1;
+	static BYTE wp[300];
+	if (pathOn && left >= 1 && left <= 150) {
+		wx = f[0x38 + 2 * (left - 1)]; wy = f[0x39 + 2 * (left - 1)];
+		memcpy(wp, f + 0x38, 300);
+	}
+	// 4. Arriving: one cell from its destination, with a friend standing on it, a unit sidestepped
+	//    right, then left, then right (FUN_004904ec has no memory). It now stops where it is.
+	short gx = FIG_S(me, 0x24), gy = FIG_S(me, 0x26);
+	if (!pathOn && (gx != x || gy != y) && abs(gx - x) <= 1 && abs(gy - y) <= 1 &&
+		gx >= 0 && gx < 80 && gy >= 0 && gy < 80) {
+		int occ = BCELL(gx, gy)[5];
+		if (occ > 0 && occ < 0x51 && occ != me && FIG(occ)[0x2c] == f[0x2c]) {
+			BYTE st = FIG(occ)[0x31];
+			if (st == 5 || st == 7 || st == 0x11 || (st == 1 && FIG(occ)[0x2f] == 5)) {
+				FIG_S(me, 0x24) = x; FIG_S(me, 0x26) = y;
+				g_bheld++;
+				if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d: destination %d,%d has standing fig %d", me, x, y, gx, gy, occ);
+			}
+		}
+	}
+	g_jSwapB = 0;
+	int r = o_mover(p1);
+	if (g_jSwapB && g_jSwapPrev == 8 && FIG(g_jSwapB)[0x31] == 1)
+		FIG(g_jSwapB)[0x2f] = 8;   // a chasing unit that was swapped keeps chasing
+	g_jSwapB = 0;
+	if (!f[0x2c]) return r;
+	if (FIG_S(me, 0x20) != x || FIG_S(me, 0x22) != y) {
+		g_jWaits[me] = 0;
+		// 5. Close to its destination (2 cells) with no path, a unit that steps straight back to the cell it
+		//    left a moment ago stops there: it was dancing round a taken destination.
+		short nx = FIG_S(me, 0x20), ny = FIG_S(me, 0x22);
+		if (!f[0x164] && nx == g_jPrevX[me] && ny == g_jPrevY[me] && g_btick - g_jLastMove[me] < 64 &&
+			abs(gx - nx) <= 2 && abs(gy - ny) <= 2 && f[0x31] == 3) {
+			FIG_S(me, 0x24) = nx; FIG_S(me, 0x26) = ny;
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d after stepping back (destination was %d,%d)", me, nx, ny, gx, gy);
+		}
+		g_jPrevX[me] = x; g_jPrevY[me] = y; g_jLastMove[me] = g_btick;
+		return r;
+	}
+	if (pathOn && !f[0x164] && wx >= 0 && wx < 80 && wy >= 0 && wy < 80 && abs(wx - x) <= 1 && abs(wy - y) <= 1 &&
+		g_jWaits[me] < JIT_MAX_WAITS) {
+		int occ = BCELL(wx, wy)[5];
+		if (occ > 0 && occ < 0x51 && occ != me && FIG(occ)[0x2c] == f[0x2c] && FIG(occ)[0x31] != 2) {
+			g_jWaits[me]++;
+			memcpy(f + 0x38, wp, 300);
+			f[0x164] = 1;
+			FIG_S(me, 0x36) = left;
+			if (f[0x31] != 1) { f[0x2f] = f[0x31]; f[0x31] = 1; }
+			f[0x30] = 2;   // counted down one step in four: ~8 steps
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("held fig %d at %d,%d: next cell %d,%d has fig %d (wait %d)", me, x, y, wx, wy, occ,
+				g_jWaits[me]);
+			return 1;
+		}
+	}
+	return r;
+}
+
+static void battle_reset(void)
+{
+	g_btick = 0;
+	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
+	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
+}
+
 static void __cdecl h_fig_loop(void)
 {
+	int step = *(int *)0x0057c998;
+	BOOL fresh = step < g_lastStep || g_lastStep < 0;
+	g_lastStep = step;
 	DWORD now = GetTickCount();
-	if (!g_blastCall || now - g_blastCall > 3000) battle_start();
+	if (fresh) battle_reset();
+	if (g_battleLog && (fresh || !g_blastCall || now - g_blastCall > 3000)) battle_start();
 	g_blastCall = now;
 	o_fig_loop();
-	if (!g_blog) return;
 	g_btick++;
+	if (!g_blog) return;
 	static fig_snap n[81];
 	for (int i = 1; i < 0x51; i++) fig_take(i, &n[i]);
 	for (int i = 1; i < 0x51; i++) {
@@ -8742,12 +8863,24 @@ static void install_game_fixes(void)
 	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
 
 	g_battleLog = GetPrivateProfileIntA("Debug", "BattleLog", 0, g_iniPath);
-	if (g_battleLog) {
+	g_fixJitter = GetPrivateProfileIntA("Game", "JitterFix", 1, g_iniPath) != 0;
+	BOOL figLoop = FALSE;
+	if (g_battleLog || g_fixJitter) {
 		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
+		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
+	}
+	if (g_battleLog) {
 		static const BYTE kSearch[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C };   // push ebp; mov ebp,esp; sub esp,1Ch
-		BOOL ok = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
-		if (ok) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
-		logf_("battle log %s (level %d)", ok ? "on" : "failed", g_battleLog);
+		if (figLoop) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
+		logf_("battle log %s (level %d)", figLoop ? "on" : "failed", g_battleLog);
+	}
+	if (g_fixJitter) {
+		static const BYTE kMover[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };   // push ebp; mov ebp,esp; sub esp,0Ch
+		static const BYTE kSwapQ[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14 };   // push ebp; mov ebp,esp; sub esp,14h
+		if (!figLoop || !hook_code((BYTE *)0x0048f1dd, kMover, sizeof kMover, h_mover, &o_mover) ||
+			!hook_code((BYTE *)0x0049005f, kSwapQ, sizeof kSwapQ, h_swapq, &o_swapq))
+			g_fixJitter = FALSE;
+		logf_("jitter fix %s", g_fixJitter ? "on" : "off");
 	}
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
