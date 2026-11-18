@@ -8233,7 +8233,7 @@ static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
-static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback;
+static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -8424,9 +8424,9 @@ static void battle_second(const fig_snap *n)
 				break;
 			}
 	}
-	blog("idle-close %d | archers standing %d, with an enemy in range %d, shots %d, stepped back %d", idleClose, archIdle, archInRange,
-		g_bshots, g_bstepback);
-	g_bshots = 0; g_bstepback = 0;
+	blog("idle-close %d | archers standing %d, with an enemy in range %d, shots %d, stepped back %d | routes planned %d", idleClose,
+		archIdle, archInRange, g_bshots, g_bstepback, g_bplanned);
+	g_bshots = 0; g_bstepback = 0; g_bplanned = 0;
 	unsigned h = 2166136261u;   // a hash of every figure, to compare two runs of the same battle
 	for (int i = 1; i < 0x51; i++) {
 		int v[6] = { n[i].live, n[i].x, n[i].y, n[i].state, n[i].men, n[i].target };
@@ -8958,6 +8958,252 @@ static void archer_idle(int me)
 	g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
 }
 
+// ---------------------------------------------------------------------------------------------
+// Group routes against the "snake" ([Game] GroupMoveFix=1; multiplayer only with MultiplayerFixes=1).
+// FUN_00489b8d(x, y, fig, group) gives each unit of an ordered group its formation slot; the unit then
+// walks straight at it and only looks for a way round once blocked, with a search that follows the
+// obstacle's edge, so a whole group strings out along a forest edge in single file. Now, when the
+// straight line to a unit's slot crosses blocked ground, its whole route is planned at once (A* on the
+// game's movement rules), costing extra on cells next to the routes its groupmates were already given:
+// the group goes round in parallel lanes. At most 3 routes a logic step (the rest wait their turn).
+#define GR_PER_STEP 3
+static BOOL g_fixGroupMove;
+typedef void (__cdecl *slot_t)(int, int, int, int);
+static slot_t o_slot;
+static BYTE g_grCong[6400];           // groupmates' routes so far: 2 on a route cell, 1 beside it
+static BYTE g_grCorr[6400];           // the group's corridor: within 2 cells of its first unit's route
+static BOOL g_grLeaderSet;
+static int g_grCongGroup = -1;
+static unsigned g_grCongTick;
+static int g_grQueue[81], g_grQLen;   // units waiting for a route, in order
+static int g_grPlannedThisStep;
+
+static BOOL gr_line_clear(int x0, int y0, int x1, int y1)
+{
+	int dx = abs(x1 - x0), dy = abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx - dy;
+	int x = x0, y = y0;
+	while (x != x1 || y != y1) {
+		int e2 = 2 * err, px = x, py = y;
+		if (e2 > -dy) { err -= dy; x += sx; }
+		if (e2 < dx) { err += dx; y += sy; }
+		if (!dm_step_ok(py * 80 + px, y * 80 + x)) return FALSE;
+	}
+	return TRUE;
+}
+
+// A* from the unit's cell to (gx, gy); writes the route into the unit's waypoint list (entry 0 = the
+// last cell, the next step is entry count-1, as FUN_00472875 does). Returns the route's length.
+static int gr_plan(int me, int gx, int gy)
+{
+	static int g[6400], from[6400], heap[6400 * 2];
+	static unsigned stamp[6400], cur;
+	static BYTE closed[6400];
+	int x0 = FIG_S(me, 0x20), y0 = FIG_S(me, 0x22);
+	if (x0 < 0 || x0 > 79 || y0 < 0 || y0 > 79 || gx < 0 || gx > 79 || gy < 0 || gy > 79) return 0;
+	int s = y0 * 80 + x0, t = gy * 80 + gx;
+	if (s == t) return 0;
+	cur++;
+	int hn = 0;
+#define GR_H(c) (10 * max(abs((c) % 80 - gx), abs((c) / 80 - gy)))
+#define GR_PUSH(c) do { int i_ = hn++; heap[i_] = (c); while (i_ > 0) { int p_ = (i_ - 1) / 2; \
+	if (g[heap[p_]] + GR_H(heap[p_]) <= g[heap[i_]] + GR_H(heap[i_])) break; int tmp_ = heap[p_]; heap[p_] = heap[i_]; heap[i_] = tmp_; i_ = p_; } } while (0)
+	stamp[s] = cur; g[s] = 0; from[s] = -1; closed[s] = 0;
+	GR_PUSH(s);
+	BOOL found = FALSE;
+	while (hn > 0) {
+		int u = heap[0];
+		heap[0] = heap[--hn];
+		for (int i = 0;;) {   // sift down
+			int l = 2 * i + 1, r = l + 1, m = i;
+			if (l < hn && g[heap[l]] + GR_H(heap[l]) < g[heap[m]] + GR_H(heap[m])) m = l;
+			if (r < hn && g[heap[r]] + GR_H(heap[r]) < g[heap[m]] + GR_H(heap[m])) m = r;
+			if (m == i) break;
+			int tmp = heap[m]; heap[m] = heap[i]; heap[i] = tmp; i = m;
+		}
+		if (stamp[u] == cur && closed[u]) continue;
+		closed[u] = 1;
+		if (u == t) { found = TRUE; break; }
+		int ux = u % 80, uy = u / 80;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			if (!dx && !dy) continue;
+			int vx = ux + dx, vy = uy + dy;
+			if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (!dm_step_ok(u, v)) continue;
+			int cost = g[u] + (dx && dy ? 14 : 10) + 3 * g_grCong[v] + (g_grLeaderSet && !g_grCorr[v] ? 10 : 0);
+			if (stamp[v] != cur) { stamp[v] = cur; closed[v] = 0; g[v] = 0x7fffffff; }
+			if (closed[v] || cost >= g[v]) continue;
+			g[v] = cost; from[v] = u;
+			if (hn < 6400 * 2) GR_PUSH(v);
+		}
+	}
+#undef GR_PUSH
+#undef GR_H
+	if (!found) return 0;
+	static int path[6400];
+	int n = 0;
+	for (int c = t; c != s && n < 6400; c = from[c]) path[n++] = c;   // reversed: path[0] = goal
+	// the waypoint list holds 150: a longer route keeps its first 150 cells (the unit walks on from there)
+	int skip = n > 150 ? n - 150 : 0;
+	int cnt = n - skip;
+	BYTE *f = FIG(me);
+	for (int k = 0; k < cnt; k++) {
+		int c = path[k + skip];
+		f[0x38 + 2 * k] = (BYTE)(c % 80); f[0x39 + 2 * k] = (BYTE)(c / 80);
+	}
+	FIG_S(me, 0x36) = (short)cnt;
+	f[0x164] = 1;
+	if (!g_grLeaderSet) {   // the group's first route sets the corridor the others keep to
+		for (int k = 0; k < n; k++) {
+			int c = path[k], cx = c % 80, cy = c / 80;
+			for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
+				int nx = cx + dx, ny = cy + dy;
+				if (nx >= 0 && nx < 80 && ny >= 0 && ny < 80) g_grCorr[ny * 80 + nx] = 1;
+			}
+		}
+		g_grLeaderSet = TRUE;
+	}
+	for (int k = 0; k < n; k++) {   // mark it for the groupmates that follow
+		// not added up: a lane taken costs a little, so the next unit takes the lane beside it, but a
+		// long way round never becomes cheaper than walking next to its groupmates
+		int c = path[k], cx = c % 80, cy = c / 80;
+		g_grCong[c] = 2;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int nx = cx + dx, ny = cy + dy;
+			if ((dx || dy) && nx >= 0 && nx < 80 && ny >= 0 && ny < 80 && !g_grCong[ny * 80 + nx]) g_grCong[ny * 80 + nx] = 1;
+		}
+	}
+	return n;
+}
+
+// The group's first route, kept so the others can follow it shifted by their own offset.
+static int g_grLeadPath[6400], g_grLeadN, g_grLeadX, g_grLeadY;
+
+static void gr_set_path(int me, const int *cells, int n)   // cells[0] = first step ... cells[n-1] = last
+{
+	BYTE *f = FIG(me);
+	int cnt = n > 150 ? 150 : n;   // the first 150 steps; the unit walks on from there
+	for (int k = 0; k < cnt; k++) {
+		int c = cells[cnt - 1 - k];
+		f[0x38 + 2 * k] = (BYTE)(c % 80); f[0x39 + 2 * k] = (BYTE)(c / 80);
+	}
+	FIG_S(me, 0x36) = (short)cnt;
+	f[0x164] = 1;
+}
+
+// Follows the leader's route shifted by (ox, oy); where the shifted cell is blocked it moves in toward the
+// leader's own cell. Every step must be a legal move; if not, returns 0 and the unit plans its own route.
+static int gr_follow(int me, int ox, int oy, int gx, int gy)
+{
+	static int out[6400];
+	int n = 0, px = FIG_S(me, 0x20), py = FIG_S(me, 0x22);
+	for (int k = 0; k < g_grLeadN && n < 6000; k++) {
+		int lc = g_grLeadPath[k], lx = lc % 80, ly = lc / 80, tx = lx, ty = ly;
+		for (int s = 8; s >= 0; s--) {   // from the full offset in toward the leader's cell
+			int qx = lx + ox * s / 8, qy = ly + oy * s / 8;
+			if (qx < 0 || qx > 79 || qy < 0 || qy > 79) continue;
+			BYTE fl = BCELL(qx, qy)[1];
+			if (!(fl & (0x90 | 0x40 | 0x08))) { tx = qx; ty = qy; break; }
+		}
+		for (int tries = 0; (px != tx || py != ty) && tries < 40; tries++) {   // walk there one legal step at a time
+			int sx = (tx > px) - (tx < px), sy = (ty > py) - (ty < py);
+			// straight at it, else the two steps beside that direction; round a corner, not through it
+			int cand[3][2] = { { sx, sy }, { sx, 0 }, { 0, sy } };
+			if (!sx) { cand[1][0] = 1; cand[1][1] = sy; cand[2][0] = -1; cand[2][1] = sy; }
+			if (!sy) { cand[1][0] = sx; cand[1][1] = 1; cand[2][0] = sx; cand[2][1] = -1; }
+			int k2;
+			for (k2 = 0; k2 < 3; k2++) {
+				int nx = px + cand[k2][0], ny = py + cand[k2][1];
+				if ((cand[k2][0] || cand[k2][1]) && nx >= 0 && nx < 80 && ny >= 0 && ny < 80 && dm_step_ok(py * 80 + px, ny * 80 + nx)) {
+					px = nx; py = ny;
+					if (n < 6000) out[n++] = py * 80 + px;
+					break;
+				}
+			}
+			if (k2 == 3) {   // stuck: aim at the leader's own cell instead (its route is legal)
+				if (tx == lx && ty == ly) return 0;
+				tx = lx; ty = ly;
+			}
+		}
+		if (px != tx || py != ty) return 0;
+	}
+	for (int tries = 0; (px != gx || py != gy) && tries < 40; tries++) {   // and on to its own slot
+		int sx = (gx > px) - (gx < px), sy = (gy > py) - (gy < py);
+		int cand[3][2] = { { sx, sy }, { sx, 0 }, { 0, sy } }, k2;
+		for (k2 = 0; k2 < 3; k2++) {
+			int nx = px + cand[k2][0], ny = py + cand[k2][1];
+			if ((cand[k2][0] || cand[k2][1]) && dm_step_ok(py * 80 + px, ny * 80 + nx)) {
+				px = nx; py = ny;
+				if (n < 6000) out[n++] = py * 80 + px;
+				break;
+			}
+		}
+		if (k2 == 3) break;   // the game walks the rest
+	}
+	if (!n) return 0;
+	gr_set_path(me, out, n);
+	return n;
+}
+
+static void gr_route(int me)
+{
+	BYTE *f = FIG(me);
+	if (!f[0x2c] || f[0x31] != 3 || f[0x12] >= 7) return;
+	int g = FIG_S(me, 0x178);
+	if (g != g_grCongGroup || g_btick - g_grCongTick > 82) {
+		memset(g_grCong, 0, sizeof g_grCong); memset(g_grCorr, 0, sizeof g_grCorr);
+		g_grLeaderSet = FALSE; g_grLeadN = 0; g_grCongGroup = g;
+	}
+	g_grCongTick = g_btick;
+	int gx = FIG_S(me, 0x24), gy = FIG_S(me, 0x26);
+	int n = 0;
+	const char *how = "own";
+	if (g_grLeaderSet && g_grLeadN > 0) {
+		n = gr_follow(me, FIG_S(me, 0x20) - g_grLeadX, FIG_S(me, 0x22) - g_grLeadY, gx, gy);
+		how = n ? "follows" : "own (couldn't follow)";
+	}
+	else how = "leads";
+	if (!n) {
+		BOOL lead = !g_grLeaderSet;
+		int lx = FIG_S(me, 0x20), ly = FIG_S(me, 0x22);
+		n = gr_plan(me, gx, gy);
+		if (n && lead) {   // keep the leader's route, first step first
+			int cnt = FIG_S(me, 0x36);
+			g_grLeadN = 0;
+			for (int k = cnt - 1; k >= 0; k--) g_grLeadPath[g_grLeadN++] = FIG(me)[0x38 + 2 * k] + 80 * FIG(me)[0x39 + 2 * k];
+			g_grLeadX = lx; g_grLeadY = ly;
+		}
+	}
+	if (n) {
+		g_bplanned++;
+		if (g_blog && g_battleLog >= 1) blog("route fig %d (group %d, %s) to %d,%d: %d cells", me, g, how, gx, gy, n);
+	}
+}
+
+static void __cdecl h_slot(int x, int y, int fig, int group)
+{
+	o_slot(x, y, fig, group);
+	if (!fix_on(g_fixGroupMove) || fig < 1 || fig > 0x50) return;
+	BYTE *f = FIG(fig);
+	if (!f[0x2c] || f[0x31] != 3 || f[0x12] >= 7) return;
+	int x0 = FIG_S(fig, 0x20), y0 = FIG_S(fig, 0x22);
+	if (max(abs(x - x0), abs(y - y0)) < 3 || gr_line_clear(x0, y0, x, y)) return;   // the game's own walk is fine
+	for (int k = 0; k < g_grQLen; k++) if (g_grQueue[k] == fig) return;
+	if (g_grQLen < 80) g_grQueue[g_grQLen++] = fig;
+}
+
+// each logic step: plan the next few queued routes
+static void gr_step(void)
+{
+	g_grPlannedThisStep = 0;
+	while (g_grQLen > 0 && g_grPlannedThisStep < GR_PER_STEP) {
+		int fig = g_grQueue[0];
+		memmove(g_grQueue, g_grQueue + 1, (size_t)(--g_grQLen) * sizeof g_grQueue[0]);
+		gr_route(fig);
+		g_grPlannedThisStep++;
+	}
+}
+
 // Called from h_chase for a unit that engaged from idle: leash and letting retreaters go.
 static BOOL engage_chase(int me)
 {
@@ -8994,6 +9240,7 @@ static void battle_reset(void)
 	g_btick = 0;
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
+	g_grQLen = 0; g_grCongGroup = -1;
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
 	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
@@ -9027,6 +9274,7 @@ static void __cdecl h_fig_loop(void)
 	LARGE_INTEGER c0, c1;
 	QueryPerformanceCounter(&c0);
 	g_dmFullThisStep = 0;
+	if (fix_on(g_fixGroupMove)) gr_step();
 	o_fig_loop();
 	QueryPerformanceCounter(&c1);
 	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
@@ -9445,8 +9693,9 @@ static void install_game_fixes(void)
 	g_fixJitter = GetPrivateProfileIntA("Game", "JitterFix", 1, g_iniPath) != 0;
 	g_fixEngage = GetPrivateProfileIntA("Game", "EngageFix", 1, g_iniPath) != 0 && !g_chaseHookFailed;
 	logf_("engage fix %s", g_fixEngage ? "on" : "off");
+	g_fixGroupMove = GetPrivateProfileIntA("Game", "GroupMoveFix", 1, g_iniPath) != 0;
 	BOOL figLoop = FALSE;
-	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage) {
+	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage || g_fixGroupMove) {
 		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
 		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
 	}
@@ -9465,6 +9714,11 @@ static void install_game_fixes(void)
 			!hook_code((BYTE *)0x004972f9, (const BYTE[]){ 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }, 6, h_adj_enemy, &o_adj_enemy))
 			g_fixJitter = FALSE;
 		logf_("jitter fix %s", g_fixJitter ? "on" : "off");
+	}
+	if (g_fixGroupMove) {
+		static const BYTE kSlot[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };   // push ebp; mov ebp,esp; sub esp,4
+		if (!figLoop || !hook_code((BYTE *)0x00489b8d, kSlot, sizeof kSlot, h_slot, &o_slot)) g_fixGroupMove = FALSE;
+		logf_("group move fix %s", g_fixGroupMove ? "on" : "off");
 	}
 	if ((g_fixMopUp || g_fixEngage) && figLoop) {
 		static const BYTE kTarget[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
