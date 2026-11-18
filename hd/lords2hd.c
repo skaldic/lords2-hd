@@ -8015,12 +8015,15 @@ static void mp_session_start(char *dir, size_t size)
 	fprintf(f, "ddraw.dll (HD): built %s %s, crc %08lx\n", __DATE__, __TIME__, (unsigned long)crc_file(me));
 	fprintf(f, "Lords2.exe: crc %08lx\n", (unsigned long)crc_file(exe));
 	fprintf(f, "dplayx.dll: %s, crc %08lx\n", dpPath, (unsigned long)crc_file(dpPath));
+	// GameRanger always injects its GameRanger.dll into the game it launches (dplayx's gr_mode checks the same)
+	const char *conn = GetModuleHandleA("GameRanger.dll") ? "GameRanger" : "direct";
+	fprintf(f, "connection: %s\n", conn);
 	fprintf(f, "game fixes in this game: %s (MultiplayerFixes=%d)\n", g_mpFixes ? "on" : "off (multiplayer safe mode)", g_mpFixes);
 	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
 		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
 	fprintf(f, "this player: %d; game speed %d\n\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
 	fclose(f);
-	logf_("multiplayer session log: %s", dir);
+	logf_("multiplayer session log: %s (connection: %s)", dir, conn);
 }
 
 static DWORD WINAPI sync_log_thread(LPVOID unused)
