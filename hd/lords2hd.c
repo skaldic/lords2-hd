@@ -8146,6 +8146,270 @@ static void __cdecl h_chase(void)
 	o_chase();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Battle log ([Debug] BattleLog=1, =2 adds every cell move). No gameplay change: the figure loop
+// FUN_004822ed (once per logic step, figures 1..80) is wrapped, each figure is compared with the step
+// before and the changes go to lords2hd-battle.txt: state changes, swaps, path searches and dropped
+// paths, "twitches" (the walk restarting without a cell change), idle units while enemies live, and a
+// summary each second. A figure that twitches gets a per-step trace for two seconds. At each battle
+// start the battlefield's 80x80 cells (8 bytes at 0x005440e0) are written as a map and raw bytes.
+#define FIG(i)     ((BYTE *)(0x00554480 + (i) * 0x1b0))
+#define FIG_S(i, o) (*(short *)(FIG(i) + (o)))
+#define BCELL(x, y) ((BYTE *)(0x005440e0 + ((y) * 80 + (x)) * 8))
+static int g_battleLog;
+static FILE *g_blog;
+typedef void (__cdecl *fig_loop_t)(void);
+static fig_loop_t o_fig_loop;
+typedef BOOL (__cdecl *path_search_t)(int, int, int, int);
+static path_search_t o_path_search;
+typedef struct { BYTE live, side, type, state, saved, wait, sub, face, frame, pathOn, fails, target;
+	short x, y, dx, dy, group, men, pathLeft; } fig_snap;
+static fig_snap g_snap[81];
+static unsigned g_btick, g_bsecTick;
+static DWORD g_blastCall;
+static int g_bnum;
+static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
+static short g_prevX[81], g_prevY[81];
+static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1;
+
+static void blog(const char *fmt, ...)
+{
+	if (!g_blog) return;
+	fprintf(g_blog, "%6u ", g_btick);
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(g_blog, fmt, ap);
+	va_end(ap);
+	fputc('\n', g_blog);
+}
+
+static void fig_take(int i, fig_snap *s)
+{
+	BYTE *f = FIG(i);
+	s->live = f[0x2c] != 0; s->side = f[0x2c]; s->type = f[0x12]; s->state = f[0x31]; s->saved = f[0x2f];
+	s->wait = f[0x30]; s->sub = f[0x32]; s->face = f[0x18]; s->frame = f[0x10]; s->pathOn = f[0x164];
+	s->fails = f[0x176]; s->target = f[0x174];
+	s->x = FIG_S(i, 0x20); s->y = FIG_S(i, 0x22); s->dx = FIG_S(i, 0x24); s->dy = FIG_S(i, 0x26);
+	s->group = FIG_S(i, 0x178); s->men = FIG_S(i, 0x1a0); s->pathLeft = FIG_S(i, 0x36);
+}
+
+static int group_hunting(int g) { return g >= 0 && g < 80 ? *(BYTE *)(0x0056654a + g * 0x34) : 0; }
+
+static void battle_start(void)
+{
+	char path[MAX_PATH];
+	g_bnum++;
+	if (!g_blog) {
+		snprintf(path, sizeof path, "%s\\lords2hd-battle.txt", g_gameDir);
+		g_blog = fopen(path, "w");
+		if (!g_blog) return;
+	}
+	g_btick = 0; g_bsecTick = 0;
+	memset(g_twitch, 0, sizeof g_twitch); memset(g_twitchSec, 0, sizeof g_twitchSec);
+	memset(g_traceUntil, 0, sizeof g_traceUntil); memset(g_idleSince, 0, sizeof g_idleSince);
+	memset(g_lastMove, 0, sizeof g_lastMove); memset(g_prevX, -1, sizeof g_prevX); memset(g_prevY, -1, sizeof g_prevY);
+	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = 0;
+	fprintf(g_blog, "\n==== battle %d ====\n", g_bnum);
+	fprintf(g_blog, "figures: slot side type human group men x,y dest state ranged range delay\n");
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c]) continue;
+		fprintf(g_blog, "  fig %2d side %d type %2d human %d group %2d men %3d at %2d,%2d dest %2d,%2d state %2d ranged %d range %d delay %d\n",
+			i, f[0x2c], f[0x12], f[0x13], FIG_S(i, 0x178), FIG_S(i, 0x1a0), FIG_S(i, 0x20), FIG_S(i, 0x22),
+			FIG_S(i, 0x24), FIG_S(i, 0x26), f[0x31], f[0x16a], FIG_S(i, 0x170), f[0x189]);
+	}
+	// The battlefield: one character per cell from the flags (byte +1): # 0x10 blocked, X 0x80 siege
+	// footprint, ~ 0x40 water, m 0x20 moat, g 0x08 gate, else the height digit (+4); then the kind
+	// (+7) and the first byte (+0) as hex rows.
+	fprintf(g_blog, "map (flags: # blocked 0x10, X 0x80, ~ water 0x40, m moat 0x20, g gate 0x08, digit = height):\n");
+	for (int y = 0; y < 80; y++) {
+		char row[81];
+		for (int x = 0; x < 80; x++) {
+			BYTE *c = BCELL(x, y), fl = c[1];
+			row[x] = fl & 0x10 ? '#' : fl & 0x80 ? 'X' : fl & 0x40 ? '~' : fl & 0x20 ? 'm' : fl & 0x08 ? 'g' :
+				(char)('0' + (c[4] % 10));
+		}
+		row[80] = 0;
+		fprintf(g_blog, "  %2d %s\n", y, row);
+	}
+	for (int k = 0; k < 3; k++) {
+		static const int off[3] = { 0, 1, 7 };
+		static const char *name[3] = { "byte+0", "flags+1", "kind+7" };
+		fprintf(g_blog, "map %s (hex):\n", name[k]);
+		for (int y = 0; y < 80; y++) {
+			fprintf(g_blog, "  %2d ", y);
+			for (int x = 0; x < 80; x++) fprintf(g_blog, "%02x", BCELL(x, y)[off[k]]);
+			fputc('\n', g_blog);
+		}
+	}
+	snprintf(path, sizeof path, "%s\\lords2hd-battle%d-map.bin", g_gameDir, g_bnum);
+	FILE *m = fopen(path, "wb");
+	if (m) { fwrite((void *)0x005440e0, 8, 6400, m); fclose(m); }
+	for (int i = 1; i < 0x51; i++) fig_take(i, &g_snap[i]);
+	fflush(g_blog);
+}
+
+static int nearest_enemy(int i, const fig_snap *n)
+{
+	int best = 999;
+	for (int j = 1; j < 0x51; j++) {
+		const fig_snap *e = &n[j];
+		if (!e->live || e->side == n[i].side || e->state == 2) continue;
+		int d = abs(e->x - n[i].x), dy = abs(e->y - n[i].y);
+		if (dy > d) d = dy;
+		if (d < best) best = d;
+	}
+	return best;
+}
+
+static void battle_second(const fig_snap *n)
+{
+	int alive[3] = { 0 }, moving = 0, waiting = 0, idle = 0, chasing = 0, melee = 0;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live) continue;
+		alive[n[i].side < 3 ? n[i].side : 0]++;
+		switch (n[i].state) { case 3: moving++; break; case 1: waiting++; break; case 5: idle++; break;
+			case 8: chasing++; break; case 4: melee++; break; }
+	}
+	char cols[400] = "", *p = cols;
+	for (int g = 0; g < 80 && p < cols + sizeof cols - 24; g++) {
+		int minx = 99, maxx = -1, miny = 99, maxy = -1, cnt = 0;
+		for (int i = 1; i < 0x51; i++) {
+			if (!n[i].live || n[i].group != g || n[i].state == 2) continue;
+			cnt++;
+			if (n[i].x < minx) minx = n[i].x; if (n[i].x > maxx) maxx = n[i].x;
+			if (n[i].y < miny) miny = n[i].y; if (n[i].y > maxy) maxy = n[i].y;
+		}
+		if (cnt > 1) p += sprintf(p, " g%d:%dx%d/%d", g, maxx - minx + 1, maxy - miny + 1, cnt);
+	}
+	unsigned h = 2166136261u;   // a hash of every figure, to compare two runs of the same battle
+	for (int i = 1; i < 0x51; i++) {
+		int v[6] = { n[i].live, n[i].x, n[i].y, n[i].state, n[i].men, n[i].target };
+		for (int k = 0; k < 6; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
+	}
+	blog("hash %08x", h);
+	char tw[300] = "", *q = tw;
+	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d [%s] | groups%s",
+		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
+		g_btwitch, tw, cols);
+	memset(g_twitchSec, 0, sizeof g_twitchSec);
+	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = 0;
+	fflush(g_blog);
+}
+
+static BOOL __cdecl h_path_search(int sx, int sy, int dx, int dy)
+{
+	BOOL r = o_path_search(sx, sy, dx, dy);
+	if (g_blog) {
+		int me = FIG_CUR;
+		g_bsearch++;
+		if (!r) g_bsearchFail++;
+		if (g_battleLog >= 1) blog("path fig %d %d,%d -> %d,%d %s (fails %d)", me, sx, sy, dx, dy, r ? "edge-walk found" : "edge-walk failed",
+			me > 0 && me < 0x51 ? FIG(me)[0x176] : -1);
+	}
+	return r;
+}
+
+// [Debug] BattleSeed=1 (single player): the battle setup FUN_004778a0 draws its random numbers (the
+// computer's approach route, its strength jitter, siege deployment) from the game's generators, whose
+// state depends on how long the menus ran. The call at 0x004778ca (to 0x0040489e) comes before every
+// draw; it now first resets the generators to the game's start-up seeds, so the same battle repeats.
+static void (__cdecl *o_setup_call)(void) = (void (__cdecl *)(void))0x0040489e;
+static void __cdecl h_setup_call(void)
+{
+	if (!*(int *)0x00553030) {
+		*(DWORD *)0x0058fe28 = 0x54657687;
+		*(DWORD *)0x0058fe08 = 0x72641663;
+		*(DWORD *)0x00591564 = 0x34518632;
+		logf_("battle seed: random generators reset for a repeatable battle");
+	}
+	o_setup_call();
+}
+
+static void __cdecl h_fig_loop(void)
+{
+	DWORD now = GetTickCount();
+	if (!g_blastCall || now - g_blastCall > 3000) battle_start();
+	g_blastCall = now;
+	o_fig_loop();
+	if (!g_blog) return;
+	g_btick++;
+	static fig_snap n[81];
+	for (int i = 1; i < 0x51; i++) fig_take(i, &n[i]);
+	for (int i = 1; i < 0x51; i++) {
+		fig_snap *o = &g_snap[i], *c = &n[i];
+		if (!c->live && !o->live) continue;
+		if (c->live != o->live) { blog("fig %d %s", i, c->live ? "appears" : "removed"); continue; }
+		BOOL moved = c->x != o->x || c->y != o->y;
+		if (moved) {
+			// a swap: someone else went from our new cell to our old one this step
+			for (int j = i + 1; j < 0x51; j++)
+				if (n[j].live && n[j].x == o->x && n[j].y == o->y && g_snap[j].x == c->x && g_snap[j].y == c->y) {
+					g_bswaps++;
+					blog("swap fig %d (state %d) at %d,%d <-> fig %d (state %d) at %d,%d", i, o->state, o->x, o->y, j,
+						g_snap[j].state, g_snap[j].x, g_snap[j].y);
+				}
+			if (g_battleLog >= 2) blog("move fig %d %d,%d -> %d,%d state %d", i, o->x, o->y, c->x, c->y, c->state);
+		}
+		if (c->state != o->state) {
+			if (c->state == 1) g_bstate1++;
+			blog("state fig %d %d -> %d (saved %d wait %d target %d) at %d,%d dest %d,%d", i, o->state, c->state, c->saved,
+				c->wait, c->target, c->x, c->y, c->dx, c->dy);
+			if (c->state == 5 && c->type < 7 && FIG(i)[0x16a] == 0) {
+				int d = nearest_enemy(i, n);
+				if (d <= 12) {
+					int t = c->target;
+					blog("IDLE fig %d side %d human %d group %d hunting %d target %d (state %d) nearest enemy %d cells",
+						i, c->side, FIG(i)[0x13], c->group, group_hunting(c->group), t,
+						t > 0 && t < 0x51 ? n[t].state : -1, d);
+				}
+				g_idleSince[i] = g_btick;
+			}
+		}
+		if (o->pathOn && !c->pathOn && (c->x != c->dx || c->y != c->dy)) {
+			g_bdrops++;
+			if (g_battleLog >= 1) blog("drop fig %d path at %d,%d (%d left) dest %d,%d", i, c->x, c->y, o->pathLeft, c->dx, c->dy);
+		}
+		// a twitch: a step straight back to the cell it left (within ~2 s), or the facing turning
+		// round (4 of 8 directions) without a cell change
+		BOOL twitch = FALSE;
+		if (moved) {
+			if (c->x == g_prevX[i] && c->y == g_prevY[i] && g_btick - g_lastMove[i] < 164) {
+				twitch = TRUE;
+				blog("BACKSTEP fig %d %d,%d -> %d,%d -> back (state %d, %u steps)", i, c->x, c->y, o->x, o->y, c->state,
+					g_btick - g_lastMove[i]);
+				if (g_traceUntil[i] < g_btick + 60) g_traceUntil[i] = g_btick + 120;
+			}
+			g_prevX[i] = o->x; g_prevY[i] = o->y; g_lastMove[i] = g_btick;
+		}
+		else if (((c->face - o->face) & 7) == 4) twitch = TRUE;
+		if (twitch) {
+			g_twitch[i]++; g_twitchSec[i]++; g_btwitch++;
+			if (g_twitchSec[i] == 3 && g_traceUntil[i] < g_btick) {
+				g_traceUntil[i] = g_btick + 164;
+				blog("trace fig %d starts (twitching at %d,%d)", i, c->x, c->y);
+			}
+		}
+		if (g_traceUntil[i] > g_btick) {
+			// who stands in the cell the figure faces
+			static const int fdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 }, fdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+			int ax = c->x + fdx[c->face & 7], ay = c->y + fdy[c->face & 7], occ = -1, ofl = -1;
+			if (ax >= 0 && ax < 80 && ay >= 0 && ay < 80) { occ = BCELL(ax, ay)[5]; ofl = BCELL(ax, ay)[1]; }
+			// the next two waypoints: entry k is at +0x38 + 2k, the next one is entry (left - 1)
+			int k = c->pathLeft - 1, w1x = -1, w1y = -1, w2x = -1, w2y = -1;
+			if (k >= 0 && k < 150) { w1x = FIG(i)[0x38 + 2 * k]; w1y = FIG(i)[0x39 + 2 * k]; }
+			if (k >= 1 && k < 151) { w2x = FIG(i)[0x36 + 2 * k]; w2y = FIG(i)[0x37 + 2 * k]; }
+			blog("tr %d %d,%d st %d sv %d w %d sub %d face %d frame %d path %d/%d wp %d,%d %d,%d fails %d cd %d dest %d,%d tgt %d grp %d | ahead %d,%d fig %d (st %d grp %d) flags %02x",
+				i, c->x, c->y, c->state, c->saved, c->wait, c->sub, c->face, c->frame, c->pathOn, c->pathLeft, w1x, w1y, w2x, w2y,
+				c->fails, FIG(i)[0x165], c->dx, c->dy, c->target, c->group, ax, ay, occ, occ > 0 && occ < 0x51 ? n[occ].state : -1,
+				occ > 0 && occ < 0x51 ? n[occ].group : -1, ofl & 0xff);
+		}
+	}
+	memcpy(g_snap, n, sizeof n);
+	if (g_btick - g_bsecTick >= 82) { g_bsecTick = g_btick; battle_second(n); }
+}
+
 // AI castle cap. A computer lord's building step (FUN_0049edc7(player)) starts a castle
 // (FUN_00436d02(county, kind)) in each of its counties that has none, is big enough and while
 // its count of castles under construction (player record +0x4d, 0x0057bf4d + player * 0x160) is
@@ -8476,6 +8740,18 @@ static void install_game_fixes(void)
 	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
 		g_fixMopUp = FALSE;
 	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
+
+	g_battleLog = GetPrivateProfileIntA("Debug", "BattleLog", 0, g_iniPath);
+	if (g_battleLog) {
+		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
+		static const BYTE kSearch[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C };   // push ebp; mov ebp,esp; sub esp,1Ch
+		BOOL ok = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
+		if (ok) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
+		logf_("battle log %s (level %d)", ok ? "on" : "failed", g_battleLog);
+	}
+	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
+		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
+		logf_("battle seed on");
 }
 
 static void install(void)
