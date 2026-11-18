@@ -26,3 +26,6 @@
 
 # Notes for another project, kept local
 /docs/
+
+# Multiplayer DLL build output
+/multiplayer/dplayx/dplayx.dll
