@@ -27,7 +27,7 @@ DPDFNet model removes hiss from the dialogue. The sound effects and the music ar
 `dplayx.dll` is built from the LotR2 Fix multiplayer source in `multiplayer/`, by members of the
 Lords of the Realm II community: Wolfe (the replacement DirectPlay layer, the per-turn sync check and
 repair, the host checks and the game's multiplayer desync fixes) and Socius (GameRanger support). It
-is included with Socius's permission; see `multiplayer/CREDITS.md`.
+is included with Wolfe's and Socius's permission; see `multiplayer/CREDITS.md`.
 
 ## AMD FidelityFX Super Resolution 1
 
