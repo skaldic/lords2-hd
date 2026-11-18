@@ -7795,6 +7795,12 @@ static int __cdecl h_logic_steps(void)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Multiplayer safe mode: the game fixes below change what happens in the game, and nothing checks that
+// every player runs them, so in a multiplayer game (DAT_00553030) they stay off unless every player
+// has [Game] MultiplayerFixes=1; a player with the original game, or other settings, would drift apart.
+static BOOL g_mpFixes;
+static BOOL fix_on(BOOL fix) { return fix && (g_mpFixes || !*(int *)0x00553030); }
+
 // Mop-Up fix. Mop-Up (FUN_0047a76d) marks each unit's group as hunting (DAT_0056654a, the flag the
 // AI's charge FUN_0048c8af also sets) and puts the unit in the chase state 8. The chase handler
 // FUN_00483e55 looks for a new enemy only when the unit has no target, and only afterwards checks
@@ -7813,7 +7819,7 @@ static chase_t o_chase;
 static void __cdecl h_chase(void)
 {
 	int me = FIG_CUR;
-	if (g_fixMopUp && me > 0 && me < 0x51) {
+	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
 		int group = *(short *)(0x005545f8 + me * 0x1b0);
 		int target = FIG_B(me, 0x005545f4);
 		if (group >= 0 && *(BYTE *)(0x0056654a + group * 0x34) && target > 0 && target < 0x51 &&
@@ -7863,7 +7869,7 @@ static void __cdecl h_castle_start(int county, int kind)
 	if (g_aiBuilding > 0 && g_aiBuilding < 6) {
 		g_aiStarts++;
 		BYTE *building = (BYTE *)(0x0057bf4d + g_aiBuilding * 0x160);
-		if (g_fixCastleCap && *building < 255) ++*building;
+		if (fix_on(g_fixCastleCap) && *building < 255) ++*building;
 	}
 }
 
@@ -7880,7 +7886,7 @@ static wheat_scale_t o_wheat_scale;
 
 static int __cdecl h_wheat_scale(int county, int grain)
 {
-	if (!g_fixWheat) return o_wheat_scale(county, grain);
+	if (!fix_on(g_fixWheat)) return o_wheat_scale(county, grain);
 	BYTE now = *(BYTE *)(0x0053fbb1 + county * 0x300), live = *(BYTE *)(0x0053fbb6 + county * 0x300);
 	int asWas = o_wheat_scale(county, grain);
 	if (now < live) grain = grain * (now * 100 / live) / 100; // the game's own percent steps (FUN_00404dc1, FUN_00404d6b)
@@ -7933,7 +7939,7 @@ static void siege_unmark(const BYTE *saved)
 }
 static int marked_call(county_step_t f, unsigned a, int b)
 {
-	if (!g_fixSiegeGarrison) return f(a, b);
+	if (!fix_on(g_fixSiegeGarrison)) return f(a, b);
 	BYTE saved[64];
 	int marked = siege_marks(saved), r = f(a, b);
 	if (marked) siege_unmark(saved);
@@ -7946,7 +7952,7 @@ static void __cdecl h_season_castles(void) { g_inUpgrade++; o_season_castles(); 
 
 static void __cdecl h_castle_enter(unsigned army, int county)
 {
-	if (g_fixSiegeGarrison && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
+	if (fix_on(g_fixSiegeGarrison) && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
 		if (county_besieged(county) && (unsigned)*(int *)(0x0053fb6c + county * 0x300) != army) {
 			*(BYTE *)(0x0052f200 + army * 0x1a4) = 1;   // as the full-castle branch leaves it
 			*(BYTE *)(0x0052f0ca + army * 0x1a4) = 2;
@@ -8034,7 +8040,8 @@ static void install_game_fixes(void)
 		!hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march))
 		g_fixSiegeGarrison = FALSE;
 	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
-	g_runBackground =GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
+	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
+	g_mpFixes = GetPrivateProfileIntA("Game", "MultiplayerFixes", 0, g_iniPath) != 0;
 	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
 	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
