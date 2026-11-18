@@ -6132,8 +6132,12 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		client_to_game(&x, &y);
 		if (g_off) {
 			int right = max(2, SCROLL_EDGE_W - 1);
-			g_battleLeftEdge = cx <= v.left;
-			if (cx <= v.left) x = leftX < 1 ? leftX : 0;
+			// in a battle only the screen's outermost pixels scroll left, so a drag can start in the
+			// black strip beside the picture; elsewhere the whole strip is the edge, as before
+			BOOL edge = leftX < 1 ? cx <= 1 : cx <= v.left;
+			g_battleLeftEdge = edge;
+			if (edge) x = leftX < 1 ? leftX : 0;
+			else if (cx <= v.left) x = leftX;
 			else if (cx >= v.right - 1) x = right;
 			else x = max(leftX, min(right - 1, x));
 			// The same for the bottom edge, measured against the frame's height (DAT_004ea838).
@@ -8215,7 +8219,7 @@ static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
-static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage;
+static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots;
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -8394,7 +8398,20 @@ static void battle_second(const fig_snap *n)
 			if (n[j].live && n[j].side != n[i].side && n[j].state != 2 && n[j].type < 7 &&
 				abs(n[j].x - n[i].x) <= 2 && abs(n[j].y - n[i].y) <= 2) { idleClose++; break; }
 	}
-	blog("idle-close %d", idleClose);
+	// archers and crossbowmen standing (idle or waiting) with an enemy inside their range box
+	int archIdle = 0, archInRange = 0;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || !FIG(i)[0x16a] || (n[i].state != 5 && n[i].state != 1)) continue;
+		archIdle++;
+		int rg = FIG_S(i, 0x170) / 8;
+		for (int j = 1; j < 0x51; j++)
+			if (n[j].live && n[j].side != n[i].side && n[j].state != 2 && abs(n[j].x - n[i].x) <= rg && abs(n[j].y - n[i].y) <= rg) {
+				archInRange++;
+				break;
+			}
+	}
+	blog("idle-close %d | archers standing %d, with an enemy in range %d, shots %d", idleClose, archIdle, archInRange, g_bshots);
+	g_bshots = 0;
 	unsigned h = 2166136261u;   // a hash of every figure, to compare two runs of the same battle
 	for (int i = 1; i < 0x51; i++) {
 		int v[6] = { n[i].live, n[i].x, n[i].y, n[i].state, n[i].men, n[i].target };
@@ -8814,8 +8831,9 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 // - after letting go, it ignores that enemy for 3 seconds;
 // - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
 // - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
-#define ENG_RANGE 2
-#define ENG_RANGE_KNIGHT 3
+#define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
+#define ENG_RANGE_KNIGHT 4
+#define ENG_RANGE_ARCHERS 5  // enemy archers and crossbowmen shooting at the unit
 #define ENG_LEASH 4
 static short g_eAnchorX[81], g_eAnchorY[81], g_eGroupX[81], g_eGroupY[81];
 static BYTE g_eAnchorOk[81];
@@ -8845,15 +8863,16 @@ static void engage_idle(int me)
 		BYTE *t = FIG(e);
 		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x12] >= 7) continue;
 		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
-		if (cheb(x, y, ex, ey) > range || cheb(g_eAnchorX[me], g_eAnchorY[me], ex, ey) > ENG_LEASH + 1) continue;
+		int r = t[0x16a] ? max(range, ENG_RANGE_ARCHERS) : range;   // archers shooting at us: further
+		if (cheb(x, y, ex, ey) > r || cheb(g_eAnchorX[me], g_eAnchorY[me], ex, ey) > ENG_LEASH + 1) continue;
 		if (g_eIgnore[me] == e && g_btick < g_eIgnoreUntil[me]) continue;
 		int n = 0;   // our units already on it
 		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
 		if (n >= 2) continue;
-		g_dmMaxDepth = range + 1;
+		g_dmMaxDepth = r + 1;
 		int d = dm_dist(e, me);
 		g_dmMaxDepth = 0x7fff;
-		if (d == DM_FAR || d > range) continue;
+		if (d == DM_FAR || d > r) continue;
 		if (d < bestD) { bestD = d; best = e; }
 	}
 	if (!best) return;
@@ -8940,7 +8959,10 @@ static void __cdecl h_fig_loop(void)
 	g_btick++;
 	if (!g_blog) return;
 	static fig_snap n[81];
-	for (int i = 1; i < 0x51; i++) fig_take(i, &n[i]);
+	for (int i = 1; i < 0x51; i++) {
+		fig_take(i, &n[i]);
+		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++;   // set to 120 by a shot (FUN_00483337), counted down each step
+	}
 	for (int i = 1; i < 0x51; i++) {
 		fig_snap *o = &g_snap[i], *c = &n[i];
 		if (!c->live && !o->live) continue;
