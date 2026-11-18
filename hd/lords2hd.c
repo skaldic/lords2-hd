@@ -8140,10 +8140,13 @@ typedef void (__cdecl *chase_t)(void);
 static chase_t o_chase;
 
 static void chase_progress(int me);
+static BOOL engage_chase(int me);
+static BOOL g_fixEngage, g_chaseHookFailed;
 
 static void __cdecl h_chase(void)
 {
 	int me = FIG_CUR;
+	if (fix_on(g_fixEngage) && me > 0 && me < 0x51 && engage_chase(me)) return;   // walked back to its place
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) chase_progress(me);
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
 		int group = *(short *)(0x005545f8 + me * 0x1b0);
@@ -8184,7 +8187,7 @@ static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
-static int g_bretarget, g_bwake, g_bdropTarget;
+static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage;
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -8355,6 +8358,15 @@ static void battle_second(const fig_snap *n)
 		}
 		if (cnt > 1) p += sprintf(p, " g%d:%dx%d/%d", g, maxx - minx + 1, maxy - miny + 1, cnt);
 	}
+	// melee units standing idle with a live enemy within 2 cells (what phase 5 is for)
+	int idleClose = 0;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || n[i].state != 5 || n[i].type >= 7 || FIG(i)[0x16a]) continue;
+		for (int j = 1; j < 0x51; j++)
+			if (n[j].live && n[j].side != n[i].side && n[j].state != 2 && n[j].type < 7 &&
+				abs(n[j].x - n[i].x) <= 2 && abs(n[j].y - n[i].y) <= 2) { idleClose++; break; }
+	}
+	blog("idle-close %d", idleClose);
 	unsigned h = 2166136261u;   // a hash of every figure, to compare two runs of the same battle
 	for (int i = 1; i < 0x51; i++) {
 		int v[6] = { n[i].live, n[i].x, n[i].y, n[i].state, n[i].men, n[i].target };
@@ -8363,13 +8375,13 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, tw, cols);
-	g_bretarget = g_bwake = g_bdropTarget = 0;
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = 0;
 	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
-	blog("cpu units %.1f ms, searches %.1f ms (in the last second)", g_bcpuLoop * 1000.0 / fq.QuadPart,
-		g_bcpuBfs * 1000.0 / fq.QuadPart);
+	blog("cpu units %.1f ms, searches %.1f ms (in the last second); selected group %d", g_bcpuLoop * 1000.0 / fq.QuadPart,
+		g_bcpuBfs * 1000.0 / fq.QuadPart, *(int *)0x0053e984);
 	g_bcpuLoop = g_bcpuBfs = 0;
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
@@ -8581,6 +8593,9 @@ static BOOL dm_step_ok(int from, int to)
 // distance (DM_FAR if it can't be reached). Run only when a unit needs it: a target pick, or every 16
 // steps per chaser to measure progress, so it costs little (a full search is ~0.2 ms).
 static unsigned short g_dscratch[6400];
+static int g_dmMaxDepth = 0x7fff;   // dm_from stops expanding past this many steps (for short checks)
+static int g_dmFullThisStep;        // full searches this logic step; capped so a charge can't cause a hitch
+#define DM_FULL_PER_STEP 4
 static int dm_from(int me, int stop)
 {
 	static int q[6400];
@@ -8596,6 +8611,7 @@ static int dm_from(int me, int stop)
 		while (head < tail) {
 			int u = q[head++], ux = u % 80, uy = u / 80;
 			if (u == stop) { r = m[u]; break; }
+			if (m[u] >= g_dmMaxDepth) continue;
 			for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
 				if (!dx && !dy) continue;
 				int vx = ux + dx, vy = uy + dy;
@@ -8650,7 +8666,9 @@ static int dm_pick(int me)
 static int __cdecl h_target(void)
 {
 	int me = FIG_CUR;
-	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50 || FIG(me)[0x16a] || FIG(me)[0x12] >= 7) return o_target();
+	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50 || FIG(me)[0x16a] || FIG(me)[0x12] >= 7 ||
+		g_dmFullThisStep >= DM_FULL_PER_STEP) return o_target();   // over the cap: the game's own quick pick
+	g_dmFullThisStep++;
 	int best = dm_pick(me);
 	if (best) {
 		*(int *)0x0056d5d0 = best;
@@ -8683,17 +8701,19 @@ static void chase_progress(int me)
 }
 
 // State 5 (idle): a melee unit in a Mop-Up group goes back to chasing.
+static void engage_idle(int me);
 static void __cdecl h_idle(void)
 {
 	o_idle();
 	int me = FIG_CUR;
-	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50) return;
+	if (me < 1 || me > 0x50) return;
 	BYTE *f = FIG(me);
-	if (f[0x2c] && f[0x31] == 5 && !f[0x16a] && f[0x12] < 7 && group_hunting(FIG_S(me, 0x178)) &&
-		(unsigned)(me + g_btick) % 16 == 0 && dm_pick(me)) {
+	if (fix_on(g_fixMopUp) && f[0x2c] && f[0x31] == 5 && !f[0x16a] && f[0x12] < 7 && group_hunting(FIG_S(me, 0x178)) &&
+		(unsigned)(me + g_btick) % 16 == 0 && g_dmFullThisStep < DM_FULL_PER_STEP && (g_dmFullThisStep++, dm_pick(me))) {
 		f[0x31] = 8; f[0x174] = 0;
 		g_bwake++;
 	}
+	if (fix_on(g_fixEngage) && f[0x2c] && f[0x31] == 5) engage_idle(me);
 }
 
 // FUN_00479e90(group, x, y, target, fire, formation) carries out an order. Called from your move/attack
@@ -8755,9 +8775,104 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 	return 8;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Phase 5: idle units engage ([Game] EngageFix=1; multiplayer only with MultiplayerFixes=1).
+// An idle melee unit (state 5, not on Mop-Up) fought only an enemy that walked into it. Now, checked
+// every 8 steps, it goes for an enemy that is close by walking distance (2 cells, 3 for knights),
+// within its leash, with the anti-bait rules agreed with the user:
+// - it remembers where it stood (its anchor; reset when its group gets a new destination) and never
+//   goes more than 4 cells from it, nor after an enemy more than 5 cells from it; past that it walks back;
+// - an enemy that keeps getting away for a second is let go;
+// - after letting go, it ignores that enemy for 3 seconds;
+// - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
+// - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
+#define ENG_RANGE 2
+#define ENG_RANGE_KNIGHT 3
+#define ENG_LEASH 4
+static short g_eAnchorX[81], g_eAnchorY[81], g_eGroupX[81], g_eGroupY[81];
+static BYTE g_eAnchorOk[81];
+static int g_eTarget[81], g_eIgnore[81], g_eBestD[81];
+static unsigned g_eIgnoreUntil[81], g_eSince[81];
+
+static int cheb(int x0, int y0, int x1, int y1) { int a = abs(x1 - x0), b = abs(y1 - y0); return a > b ? a : b; }
+
+static void engage_forget(int me) { g_eTarget[me] = 0; }
+
+// Called from h_idle for an idle unit.
+static void engage_idle(int me)
+{
+	BYTE *f = FIG(me);
+	if (f[0x16a] || f[0x12] >= 7 || group_hunting(FIG_S(me, 0x178))) return;
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), g = FIG_S(me, 0x178);
+	if (x < 0 || x > 79 || y < 0 || y > 79 || BCELL(x, y)[4] != 0) return;   // on a wall
+	short gx = g >= 0 && g < 80 ? *(short *)(0x00566542 + g * 0x34) : -1, gy = g >= 0 && g < 80 ? *(short *)(0x00566544 + g * 0x34) : -1;
+	if (!g_eAnchorOk[me] || gx != g_eGroupX[me] || gy != g_eGroupY[me]) {
+		g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eGroupX[me] = gx; g_eGroupY[me] = gy; g_eAnchorOk[me] = 1;
+	}
+	engage_forget(me);
+	if ((unsigned)(me + g_btick) % 8) return;
+	int range = f[0x12] == 6 ? ENG_RANGE_KNIGHT : ENG_RANGE;
+	int best = 0, bestD = 99;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x12] >= 7) continue;
+		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
+		if (cheb(x, y, ex, ey) > range || cheb(g_eAnchorX[me], g_eAnchorY[me], ex, ey) > ENG_LEASH + 1) continue;
+		if (g_eIgnore[me] == e && g_btick < g_eIgnoreUntil[me]) continue;
+		int n = 0;   // our units already on it
+		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
+		if (n >= 2) continue;
+		g_dmMaxDepth = range + 1;
+		int d = dm_dist(e, me);
+		g_dmMaxDepth = 0x7fff;
+		if (d == DM_FAR || d > range) continue;
+		if (d < bestD) { bestD = d; best = e; }
+	}
+	if (!best) return;
+	g_eTarget[me] = best; g_eBestD[me] = bestD; g_eSince[me] = g_btick;
+	f[0x174] = (BYTE)best;
+	f[0x31] = 8;
+	g_bengage++;
+	if (g_blog && g_battleLog >= 1) blog("engage fig %d (side %d) -> enemy %d, %d steps away, anchor %d,%d", me, f[0x2c], best, bestD,
+		g_eAnchorX[me], g_eAnchorY[me]);
+}
+
+// Called from h_chase for a unit that engaged from idle: leash and letting retreaters go.
+static BOOL engage_chase(int me)
+{
+	int t = g_eTarget[me];
+	if (!t) return FALSE;
+	BYTE *f = FIG(me);
+	if (group_hunting(FIG_S(me, 0x178))) { engage_forget(me); return FALSE; }   // Mop-Up rules take over
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	int tt = f[0x174];
+	BOOL gone = tt < 1 || tt > 0x50 || !FIG(tt)[0x2c] || FIG(tt)[0x31] == 2;
+	int tx = gone ? x : FIG_S(tt, 0x20), ty = gone ? y : FIG_S(tt, 0x22);
+	int d = cheb(x, y, tx, ty);
+	if (!gone && tt == t) { if (d < g_eBestD[me]) { g_eBestD[me] = d; g_eSince[me] = g_btick; } }
+	BOOL leash = cheb(g_eAnchorX[me], g_eAnchorY[me], x, y) > ENG_LEASH || (!gone && cheb(g_eAnchorX[me], g_eAnchorY[me], tx, ty) > ENG_LEASH + 1);
+	BOOL fled = !gone && tt == t && g_btick - g_eSince[me] >= 82 && d > 1;
+	if (gone || tt != t || leash || fled) {
+		if (!gone && (leash || fled)) { g_eIgnore[me] = tt; g_eIgnoreUntil[me] = g_btick + 246; }
+		engage_forget(me);
+		// back to where it stood
+		f[0x174] = 0;
+		FIG_S(me, 0x24) = g_eAnchorX[me]; FIG_S(me, 0x26) = g_eAnchorY[me];
+		f[0x164] = 0;
+		f[0x31] = 3;
+		g_bdisengage++;
+		if (g_blog && g_battleLog >= 1) blog("disengage fig %d (%s), back to %d,%d", me, gone ? "target down" : leash ? "leash" : tt != t ? "new target" : "let it go",
+			g_eAnchorX[me], g_eAnchorY[me]);
+		return TRUE;
+	}
+	return FALSE;
+}
+
 static void battle_reset(void)
 {
 	g_btick = 0;
+	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
+	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil);
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
 	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
@@ -8790,6 +8905,7 @@ static void __cdecl h_fig_loop(void)
 	}
 	LARGE_INTEGER c0, c1;
 	QueryPerformanceCounter(&c0);
+	g_dmFullThisStep = 0;
 	o_fig_loop();
 	QueryPerformanceCounter(&c1);
 	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
@@ -9198,13 +9314,15 @@ static void install_game_fixes(void)
 	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
 	static const BYTE kChasePrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
 	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
-		g_fixMopUp = FALSE;
+		g_fixMopUp = FALSE, g_chaseHookFailed = TRUE;
 	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
 
 	g_battleLog = GetPrivateProfileIntA("Debug", "BattleLog", 0, g_iniPath);
 	g_fixJitter = GetPrivateProfileIntA("Game", "JitterFix", 1, g_iniPath) != 0;
+	g_fixEngage = GetPrivateProfileIntA("Game", "EngageFix", 1, g_iniPath) != 0 && !g_chaseHookFailed;
+	logf_("engage fix %s", g_fixEngage ? "on" : "off");
 	BOOL figLoop = FALSE;
-	if (g_battleLog || g_fixJitter || g_fixMopUp) {
+	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage) {
 		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
 		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
 	}
@@ -9224,7 +9342,7 @@ static void install_game_fixes(void)
 			g_fixJitter = FALSE;
 		logf_("jitter fix %s", g_fixJitter ? "on" : "off");
 	}
-	if (g_fixMopUp && figLoop) {
+	if ((g_fixMopUp || g_fixEngage) && figLoop) {
 		static const BYTE kTarget[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
 		static const BYTE kIdle[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };    // sub esp,4
 		static const BYTE kOrder[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 };   // sub esp,24h
