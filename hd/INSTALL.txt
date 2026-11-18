@@ -1,14 +1,47 @@
-Lords of the Realm II HD 1.3.0: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 1.4.0: an unofficial fan patch for the GOG and Steam versions of the game.
 You need your own copy of the game.
 
 INSTALL
-Run Lords2-HD-1.3.0-setup.exe with the game closed: it finds the GOG game (or asks for the folder
-holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
-ddraw.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
+Run Lords2-HD-1.4.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
+folder holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
+ddraw.dll, dplayx.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
 UNINSTALL
-From Windows' Apps list; or delete ddraw.dll, lords2hd.ini, lords2hd.pak, lords2hd.log and the
-lords2hd folder. Your game files are not changed.
+From Windows' Apps list; or delete ddraw.dll, dplayx.dll, lords2hd.ini, lords2hd.pak, lords2hd.log
+and the lords2hd folder. Your game files are not changed.
+
+MULTIPLAYER
+- dplayx.dll is the LotR2 Fix multiplayer layer by Wolfe and Socius (see lords2hd\MULTIPLAYER-CREDITS.md):
+  it replaces Windows' DirectPlay with its own network code over TCP port 47700, checks every turn
+  that all players' games agree and repairs them if not, and fixes the game's own multiplayer
+  desyncs. Every player needs the same dplayx.dll (this patch's, or the same build from the Discord).
+- Host: allow the Firewall prompt; the other players need to reach your TCP port 47700 (same network,
+  a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose Connect to a game
+  and type the host's address.
+- The patch's own game fixes (Mop-Up, the computer's castles, wheat, besieged castles) are switched
+  off in multiplayer, so players with different setups stay in step; set MultiplayerFixes=1 only if
+  every player does. The game keeps running when you switch windows, so nobody waits for you.
+- MULTIPLAYER LOGS: each multiplayer game writes a folder lords2hd-mp\<date and time>\ with what is
+  needed to debug the session (versions, settings, every player's checksums each season, copies of
+  the logs). If a game desyncs or crashes, every player zips their folder for that game and posts it
+  on the community Discord (https://discord.gg/uBzaMGjUR). The ten newest games are kept.
+
+COMMUNITY
+Join the Lords of the Realm II community on Discord: https://discord.gg/uBzaMGjUR
+Multiplayer games, the multiplayer layer, and bugs and ideas for this patch.
+
+GAME FIXES (single player; lords2hd.ini [Game])
+- Mop-Up: your troops keep fighting after their first kill instead of standing idle
+- The computer no longer starts a castle in every county at once (the Bishop's royal castles)
+- A wheat field lost after planting costs its grain once, not twice
+- No army can enter or strengthen a castle under siege (the game's own rule)
+
+NEW IN 1.4.0
+- The graphics card draws the picture (Direct3D 11) and upscales it with AMD FSR 1: sharper, and the
+  processor is left free
+- A locked 60 frames a second, in battles and while scrolling the map
+- An FPS counter (Ctrl+F10) and a Performance tab on F10
+- Game fixes and the bundled multiplayer layer (below)
 
 WHAT IT DOES
 - Runs fullscreen at your monitor's resolution, without switching its display mode
@@ -33,15 +66,18 @@ VIDEOS AND MUSIC
   Lords2Resounded tool (github.com/gqzomer/Lords2Resounded) into lords2hd\music.
 
 SETTINGS
-Press F10 in the game for the settings panel (two tabs: Display and Quality of life; Tab switches
-them; a right-click closes it): most changes apply at once and are saved. F8 is the game's own key again.
-Or edit lords2hd.ini:
+Press F10 in the game for the settings panel (three tabs: Display, Performance and Quality of life;
+Tab switches them; a right-click closes it): most changes apply at once and are saved. F8 is the
+game's own key again. Ctrl+F10 switches the FPS counter. Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
 Wide=0          4:3 instead of widescreen
 BattleZoom=0    battles at normal size
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
-Upscale=bilinear  the softer scaling of earlier versions (default: catmullrom, sharper)
+Upscale=fsr     AMD FSR 1 (default); catmullrom = the scaling of 1.3, bilinear = softer still
+Renderer=cpu    the processor draws the picture instead of the graphics card (after a restart)
+RepeatFrames=0  a refresh with nothing new from the game shows nothing new (the counter then dips)
+FpsCounter=1    frames a second in the corner; 2 = detailed timings
 CursorScale=50  cursor size in percent
 FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
 TutorialOnce=0  show the tutorial scrolls every time, as the original (default: once each)
@@ -55,8 +91,13 @@ ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.
 
 REQUIREMENTS
-The GOG version of the game, Windows, and a screen of 720p (1280x720) or larger.
+The GOG or Steam version of the game, Windows, and a screen of 720p (1280x720) or larger. GPU drawing
+needs Direct3D 11 (feature level 11.0) graphics from any maker: NVIDIA GeForce GTX 400 or newer, AMD
+Radeon HD 5000 or newer, Intel HD Graphics 4000 or newer. AMD FSR 1 is not limited to AMD cards. On
+older graphics the patch draws on the processor by itself, and FSR still works there.
 
 BUGS
 After a crash, keep lords2hd.log from the game's folder straight away: it is rewritten at each start.
+For multiplayer problems, every player sends their lords2hd-mp folder of that game (see MULTIPLAYER).
+Report on the Discord (https://discord.gg/uBzaMGjUR) or at github.com/skaldic/lords2-hd/issues.
 Say which monitor you use and whether another ddraw.dll wrapper or an overlay is running.

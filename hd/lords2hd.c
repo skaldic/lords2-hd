@@ -19,6 +19,9 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <dwmapi.h>
+#include <d3d11.h>
+#include <d3dcompiler.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -132,7 +135,16 @@ static void cycle_buttons_draw(int sx, int sw);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static BOOL wasd_screen(void);
-static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr)
+static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr), 2 FSR (fsr_easu, fsr_rcas)
+static int g_fsrFinal;
+static float g_rcasSharp;
+static int g_gpuWanted;         // [Display] Renderer: gpu (1, gpu_present) or cpu (0), as this session started
+static BOOL g_gpuWantedSet;     // the F10 Drawing line, saved for the next start
+static int g_repeatOn;          // [Display] RepeatFrames: refreshes with nothing new get the last picture again (gpu_repeat)
+static BOOL gpu_drawing(void);  // the GPU draws the window (or is about to try)
+static double gpu_ms(void);     // the card's time for a recent frame
+static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
+static BOOL g_perfLogOn;        // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
 static BOOL menu_key(int vk);
@@ -177,9 +189,19 @@ static void read_settings(void)
 	g_cycleOn = GetPrivateProfileIntA("Display", "CycleKeys", 1, g_iniPath) != 0;
 	g_armyPanel = GetPrivateProfileIntA("Display", "ArmyPanel", 1, g_iniPath) != 0;
 	g_resounded = GetPrivateProfileIntA("Display", "Resounded", 1, g_iniPath) != 0;
+	GetPrivateProfileStringA("Display", "Renderer", "gpu", s, sizeof s, g_iniPath);
+	g_gpuWanted = g_gpuWantedSet = lstrcmpiA(s, "cpu") != 0;
+	g_repeatOn = GetPrivateProfileIntA("Display", "RepeatFrames", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
-	g_upscaleCR = lstrcmpiA(s, "bilinear") != 0;
-	logf_("upscaling: %s", g_upscaleCR ? "Catmull-Rom" : "bilinear");
+	g_upscaleCR = !lstrcmpiA(s, "bilinear") ? 0 : !lstrcmpiA(s, "fsr") ? 2 : 1;
+	g_fsrFinal = GetPrivateProfileIntA("Display", "FsrFinal", 0, g_iniPath) != 0;
+	GetPrivateProfileStringA("Display", "FsrSharpness", "0.2", s, sizeof s, g_iniPath);
+	g_rcasSharp = (float)atof(s);
+	logf_("upscaling: %s (FSR sharpness %.2f%s)", g_upscaleCR == 2 ? "FSR" : g_upscaleCR ? "Catmull-Rom" : "bilinear", g_rcasSharp, g_fsrFinal ? ", EASU final" : "");
+	g_statsOn = GetPrivateProfileIntA("Display", "FpsCounter", 0, g_iniPath);
+	if (g_statsOn < 0 || g_statsOn > 2) g_statsOn = 0;
+	if (GetPrivateProfileIntA("Debug", "Stats", 0, g_iniPath)) g_statsOn = 2;
+	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
 	logf_("frame limit: %d game frames a second%s", g_frameLimit, g_frameLimit ? "" : " (off: as fast as the CPU allows)");
@@ -220,6 +242,11 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 // Shared frame state
 
 static CRITICAL_SECTION g_lock;   // guards the primary surface's pixels and the palette
+// Held by the presenter from reading the frame until its picture is built from the HD layers' copies
+// (*_publish): a copy to the screen in between moved the layers on a frame (a scrolling battle showed
+// the whole field at 1x for a picture). Copies wait for it; the game's unforced ones are skipped.
+static CRITICAL_SECTION g_composeLock;
+static volatile LONG g_composing;
 static HANDLE g_dirtyEvent;
 static volatile LONG g_dirty;
 static HWND g_hwnd;               // the game's window (WinLords2Class)
@@ -257,8 +284,20 @@ static Surface *g_back; // the system-memory surface the game draws into
 static BOOL county_map_on(void);
 static volatile BOOL g_mapSticky; // the wide map view carries on under dialogs (see county_map_on)
 
+static volatile LONG g_dirtyCount; // Timing=1: frame copies a second
+static volatile LONG g_frameTaken = 1; // the presenter has read the frame since the last copy (h_show_frame)
+static HANDLE g_turnEvent; // set with g_frameTaken: wakes the frame limiter's wait to copy a finished frame at once (pending_copy)
+static int g_frameSteps;               // Timing=1: logic steps since the last frame copy
+static volatile LONG g_presentCount;   // pictures shown (Timing=1)
+static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
+static volatile LONG g_copySeq;        // every copy to the screen (h_show_frame: did a forced call copy?)
+static volatile LONG g_copyPending;    // the game's last finished frame was not copied (pending_copy)
+static volatile double g_frameCopyT;   // when the game last copied a whole frame to the screen
+static int g_pendingCopies;            // Timing=1: copies made from the frame limiter's wait
 static void mark_dirty(void)
 {
+	InterlockedIncrement(&g_dirtyCount);
+	InterlockedIncrement(&g_copySeq);
 	InterlockedExchange(&g_dirty, 1);
 	if (g_dirtyEvent) SetEvent(g_dirtyEvent);
 }
@@ -370,7 +409,7 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 #include <emmintrin.h>
 #define CR_MAXTAPS 12
 typedef struct { int n, taps; int *idx; short *w; } cr_axis; // per output index: taps source indexes and weights
-static int g_upscaleCR = 1;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1)
+static int g_upscaleCR = 1;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1), 2 FSR (Catmull-Rom's final stretch, then RCAS)
 static double cr_k(double t) { t = fabs(t); return t < 1 ? 1.5 * t * t * t - 2.5 * t * t + 1 : t < 2 ? -0.5 * t * t * t + 2.5 * t * t - 4 * t + 2 : 0; }
 // weights for src length sn -> dst length dn, fixed point "one" (256 or 1024)
 static BOOL cr_axis_make(cr_axis *a, int sn, int dn, int one)
@@ -408,6 +447,7 @@ static struct {
 	volatile LONG next; int bands;
 	HANDLE go[16], idle[16]; int threads;
 	short *strip[17]; int stripRows;           // per worker (and the caller) a strip of horizontal rows
+	void (*job)(int band, int me);             // what the workers do with each band (cr_job, easu_job, rcas_job)
 } g_cr;
 #define CR_BAND 32
 // one source row -> 16-bit row of dw pixels (value * 64). Taps in pairs: the two pixels' channels
@@ -466,9 +506,10 @@ static void cr_work(int me)
 	for (;;) {
 		LONG b = InterlockedIncrement(&g_cr.next) - 1;
 		if (b >= g_cr.bands) return;
-		cr_band(b, g_cr.strip[me]);
+		g_cr.job(b, me);
 	}
 }
+static void cr_job(int band, int me) { cr_band(band, g_cr.strip[me]); }
 static DWORD WINAPI cr_thread(void *arg)
 {
 	int me = (int)(INT_PTR)arg;
@@ -479,10 +520,9 @@ static DWORD WINAPI cr_thread(void *arg)
 	}
 	return 0;
 }
-// src (sw x sh, stride sstride pixels) -> dst (dw x dh, stride dstride), BGRX
-static BOOL resize_cr(const DWORD *src, int sw, int sh, int sstride, DWORD *dst, int dw, int dh, int dstride)
+// The worker threads, started once: one fewer than the CPU's threads, the caller being the last.
+static void pool_start(void)
 {
-	if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return FALSE;
 	if (!g_cr.threads) {
 		SYSTEM_INFO si; GetSystemInfo(&si);
 		int n = (int)si.dwNumberOfProcessors - 1;
@@ -494,8 +534,33 @@ static BOOL resize_cr(const DWORD *src, int sw, int sh, int sstride, DWORD *dst,
 			if (t) CloseHandle(t);
 		}
 		g_cr.threads = n + 1; // the caller works too, with the last strip
-		logf_("Catmull-Rom scaling on %d threads", g_cr.threads);
+		logf_("scaling on %d threads", g_cr.threads);
 	}
+}
+// Runs job over bands 0 .. bands-1 on all the threads; back when every band is done.
+// (from the presenter and, for the battle's stamps, the game thread: one at a time, g_poolLock)
+static CRITICAL_SECTION g_poolLock;
+static void pool_run(int bands, void (*job)(int band, int me))
+{
+	static LONG init;
+	if (InterlockedCompareExchange(&init, 1, 0) == 0) { InitializeCriticalSection(&g_poolLock); InterlockedExchange(&init, 2); }
+	while (init != 2) Sleep(0);
+	EnterCriticalSection(&g_poolLock);
+	pool_start();
+	g_cr.job = job;
+	g_cr.bands = bands;
+	g_cr.next = 0;
+	int helpers = g_cr.threads - 1;
+	for (int i = 0; i < helpers; i++) SetEvent(g_cr.go[i]);
+	cr_work(g_cr.threads - 1);
+	if (helpers) WaitForMultipleObjects(helpers, g_cr.idle, TRUE, INFINITE);
+	LeaveCriticalSection(&g_poolLock);
+}
+// src (sw x sh, stride sstride pixels) -> dst (dw x dh, stride dstride), BGRX
+static BOOL resize_cr(const DWORD *src, int sw, int sh, int sstride, DWORD *dst, int dw, int dh, int dstride)
+{
+	if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return FALSE;
+	pool_start();
 	if (g_cr.hsw != sw || g_cr.hdw != dw) { if (!cr_axis_make(&g_cr.hx, sw, dw, 256)) return FALSE; g_cr.hsw = sw; g_cr.hdw = dw; }
 	if (g_cr.vsh != sh || g_cr.vdh != dh) { if (!cr_axis_make(&g_cr.vy, sh, dh, 1024)) return FALSE; g_cr.vsh = sh; g_cr.vdh = dh; }
 	int rows = (int)ceil(CR_BAND * (double)sh / dh) + g_cr.vy.taps + 2;
@@ -505,13 +570,555 @@ static BOOL resize_cr(const DWORD *src, int sw, int sh, int sstride, DWORD *dst,
 	}
 	g_cr.src = src; g_cr.sw = sw; g_cr.sh = sh; g_cr.sstride = sstride;
 	g_cr.dst = dst; g_cr.dw = dw; g_cr.dh = dh; g_cr.dstride = dstride;
-	g_cr.bands = (dh + CR_BAND - 1) / CR_BAND;
-	g_cr.next = 0;
-	int helpers = g_cr.threads - 1;
-	for (int i = 0; i < helpers; i++) SetEvent(g_cr.go[i]);
-	cr_work(g_cr.threads - 1);
-	if (helpers) WaitForMultipleObjects(helpers, g_cr.idle, TRUE, INFINITE);
+	pool_run((dh + CR_BAND - 1) / CR_BAND, cr_job);
 	return TRUE;
+}
+
+// ---- AMD FidelityFX Super Resolution 1 ([Display] Upscale=fsr) -----------------------------------
+// A CPU port of FSR 1.0's two passes (ffx_fsr1.h, MIT licence, (c) Advanced Micro Devices):
+// EASU, an edge-adaptive upscale (a Lanczos-like 12-tap kernel stretched along the local edge, the
+// result held within the four nearest pixels so it never rings), and RCAS, a sharpening pass at the
+// output size that backs off where it would clip or where the area is noise. EASU does the 2x step
+// (the game's own pixels -> the frame the HD art is stamped into); the final stretch to the window
+// stays Catmull-Rom (EASU per pixel at 5K would cost too much on the CPU, see FsrFinal) and RCAS
+// sharpens the result. Colours stay in the frame's gamma space, as the shader expects.
+static int g_fsrFinal;              // [Display] FsrFinal=1: EASU for the final stretch too (benchmarks)
+static float g_rcasSharp = 0.2f;    // [Display] FsrSharpness: stops, 0 = sharpest, 2 = little; below 0 no RCAS
+static struct {
+	const DWORD *src; int sw, sh, sstride; DWORD *dst; int dw, dh, dstride;
+	float *lin; int linCap;            // the source as r, g, b, luma floats (0 .. 1; luma = r/2 + g + b/2)
+	float sx, sy;                      // source pixels per output pixel
+	float scale;                       // RCAS: exp2(-sharpness)
+} g_fsr;
+#define FSR_BAND 16
+static void easu_prep_job(int band, int me)
+{
+	(void)me;
+	int y0 = band * FSR_BAND, y1 = min(g_fsr.sh, y0 + FSR_BAND);
+	for (int y = y0; y < y1; y++) {
+		const DWORD *s = g_fsr.src + (size_t)y * g_fsr.sstride;
+		float *o = g_fsr.lin + (size_t)y * g_fsr.sw * 4;
+		for (int x = 0; x < g_fsr.sw; x++, o += 4) {
+			DWORD p = s[x];
+			float r = ((p >> 16) & 255) * (1.0f / 255), g = ((p >> 8) & 255) * (1.0f / 255), b = (p & 255) * (1.0f / 255);
+			o[0] = r; o[1] = g; o[2] = b; o[3] = 0.5f * r + g + 0.5f * b;
+		}
+	}
+}
+// direction and edge length from one of the four nearest pixels (c), weighted w; a above, b left,
+// d right, e below (FsrEasuSetF)
+static inline void easu_set(float *dx, float *dy, float *len, float w, float la, float lb, float lc, float ld, float le)
+{
+	float dc = ld - lc, cb = lc - lb, lenX = fmaxf(fabsf(dc), fabsf(cb));
+	float dirX = ld - lb;
+	lenX = lenX > 0 ? fminf(fabsf(dirX) / lenX, 1.0f) : 0;
+	*dx += dirX * w;
+	*len += lenX * lenX * w;
+	float ec = le - lc, ca = lc - la, lenY = fmaxf(fabsf(ec), fabsf(ca));
+	float dirY = le - la;
+	lenY = lenY > 0 ? fminf(fabsf(dirY) / lenY, 1.0f) : 0;
+	*dy += dirY * w;
+	*len += lenY * lenY * w;
+}
+static inline void easu_tap(float *ac, float *aw, float ox, float oy, float dx, float dy, float l2x, float l2y, float lob, float clp, const float *c)
+{
+	float vx = (ox * dx + oy * dy) * l2x, vy = (ox * -dy + oy * dx) * l2y;
+	float d2 = fminf(vx * vx + vy * vy, clp);
+	float wb = 0.4f * d2 - 1.0f, wa = lob * d2 - 1.0f;
+	wb *= wb; wa *= wa;
+	float w = (25.0f / 16.0f * wb - (25.0f / 16.0f - 1.0f)) * wa;
+	*aw += w;
+	ac[0] += c[0] * w; ac[1] += c[1] * w; ac[2] += c[2] * w;
+}
+static void easu_job(int band, int me)
+{
+	(void)me;
+	int y0 = band * FSR_BAND, y1 = min(g_fsr.dh, y0 + FSR_BAND), sw = g_fsr.sw, sh = g_fsr.sh;
+	const float *L = g_fsr.lin;
+	for (int y = y0; y < y1; y++) {
+		float py = (y + 0.5f) * g_fsr.sy - 0.5f, fy = floorf(py);
+		int iy = (int)fy; py -= fy;
+		int ry[4];                                      // rows -1 .. +2 around the pixel, clamped
+		for (int k = 0; k < 4; k++) { int r = iy - 1 + k; ry[k] = r < 0 ? 0 : r >= sh ? sh - 1 : r; }
+		DWORD *out = g_fsr.dst + (size_t)y * g_fsr.dstride;
+		for (int x = 0; x < g_fsr.dw; x++) {
+			float px = (x + 0.5f) * g_fsr.sx - 0.5f, fx = floorf(px);
+			int ix = (int)fx; px -= fx;
+			int cx[4];
+			for (int k = 0; k < 4; k++) { int c = ix - 1 + k; cx[k] = c < 0 ? 0 : c >= sw ? sw - 1 : c; }
+#define EP(col, row) (L + ((size_t)ry[row] * sw + cx[col]) * 4)
+			//    b c        columns 0..3 = x-1 .. x+2, rows 0..3 = y-1 .. y+2
+			//  e f g h
+			//  i j k l
+			//    n o
+			const float *b = EP(1, 0), *c = EP(2, 0), *e = EP(0, 1), *f = EP(1, 1), *g = EP(2, 1), *h = EP(3, 1);
+			const float *i = EP(0, 2), *j = EP(1, 2), *k = EP(2, 2), *l = EP(3, 2), *n = EP(1, 3), *o = EP(2, 3);
+#undef EP
+			float dx = 0, dy = 0, len = 0;
+			easu_set(&dx, &dy, &len, (1 - px) * (1 - py), b[3], e[3], f[3], g[3], j[3]);
+			easu_set(&dx, &dy, &len, px * (1 - py), c[3], f[3], g[3], h[3], k[3]);
+			easu_set(&dx, &dy, &len, (1 - px) * py, f[3], i[3], j[3], k[3], n[3]);
+			easu_set(&dx, &dy, &len, px * py, g[3], j[3], k[3], l[3], o[3]);
+			float dr = dx * dx + dy * dy;
+			if (dr < 1.0f / 32768) { dx = 1; dr = 1; } else dr = 1.0f / sqrtf(dr);
+			dx *= dr; dy *= dr;
+			len *= 0.5f; len *= len;
+			float stretch = (dx * dx + dy * dy) / fmaxf(fabsf(dx), fabsf(dy));
+			float l2x = 1 + (stretch - 1) * len, l2y = 1 - 0.5f * len;
+			float lob = 0.5f + (0.25f - 0.04f - 0.5f) * len, clp = 1.0f / lob;
+			float ac[3] = { 0, 0, 0 }, aw = 0;
+			easu_tap(ac, &aw, 0 - px, -1 - py, dx, dy, l2x, l2y, lob, clp, b);
+			easu_tap(ac, &aw, 1 - px, -1 - py, dx, dy, l2x, l2y, lob, clp, c);
+			easu_tap(ac, &aw, -1 - px, 1 - py, dx, dy, l2x, l2y, lob, clp, i);
+			easu_tap(ac, &aw, 0 - px, 1 - py, dx, dy, l2x, l2y, lob, clp, j);
+			easu_tap(ac, &aw, 0 - px, 0 - py, dx, dy, l2x, l2y, lob, clp, f);
+			easu_tap(ac, &aw, -1 - px, 0 - py, dx, dy, l2x, l2y, lob, clp, e);
+			easu_tap(ac, &aw, 1 - px, 1 - py, dx, dy, l2x, l2y, lob, clp, k);
+			easu_tap(ac, &aw, 2 - px, 1 - py, dx, dy, l2x, l2y, lob, clp, l);
+			easu_tap(ac, &aw, 2 - px, 0 - py, dx, dy, l2x, l2y, lob, clp, h);
+			easu_tap(ac, &aw, 1 - px, 0 - py, dx, dy, l2x, l2y, lob, clp, g);
+			easu_tap(ac, &aw, 1 - px, 2 - py, dx, dy, l2x, l2y, lob, clp, o);
+			easu_tap(ac, &aw, 0 - px, 2 - py, dx, dy, l2x, l2y, lob, clp, n);
+			float rw = aw != 0 ? 1.0f / aw : 0, rgb[3];
+			for (int q = 0; q < 3; q++) {
+				float mn = fminf(fminf(f[q], g[q]), fminf(j[q], k[q])), mx = fmaxf(fmaxf(f[q], g[q]), fmaxf(j[q], k[q]));
+				float v = ac[q] * rw;
+				v = v < mn ? mn : v > mx ? mx : v;      // dering: within the four nearest
+				rgb[q] = v * 255 + 0.5f;
+			}
+			out[x] = ((DWORD)rgb[0] << 16) | ((DWORD)rgb[1] << 8) | (DWORD)rgb[2];
+		}
+	}
+}
+// src (sw x sh) -> dst (dw x dh), BGRX, both with strides in pixels
+static BOOL fsr_easu(const DWORD *src, int sw, int sh, int sstride, DWORD *dst, int dw, int dh, int dstride)
+{
+	if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return FALSE;
+	if (sw * sh > g_fsr.linCap) {
+		free(g_fsr.lin);
+		g_fsr.lin = malloc((size_t)sw * sh * 4 * sizeof(float));
+		g_fsr.linCap = g_fsr.lin ? sw * sh : 0;
+		if (!g_fsr.lin) return FALSE;
+	}
+	g_fsr.src = src; g_fsr.sw = sw; g_fsr.sh = sh; g_fsr.sstride = sstride;
+	g_fsr.dst = dst; g_fsr.dw = dw; g_fsr.dh = dh; g_fsr.dstride = dstride;
+	g_fsr.sx = (float)sw / dw; g_fsr.sy = (float)sh / dh;
+	pool_run((sh + FSR_BAND - 1) / FSR_BAND, easu_prep_job);
+	pool_run((dh + FSR_BAND - 1) / FSR_BAND, easu_job);
+	return TRUE;
+}
+// RCAS, four pixels at a time in SSE2: each pixel from itself and the four around it (b above,
+// d left, f right, h below), as FsrRcasF with its noise removal (FSR_RCAS_DENOISE).
+__attribute__((target("sse2")))
+static inline void rcas_split(__m128i p, __m128 *r, __m128 *g, __m128 *b)
+{
+	const __m128i m = _mm_set1_epi32(255);
+	const __m128 k = _mm_set1_ps(1.0f / 255);
+	*r = _mm_mul_ps(_mm_cvtepi32_ps(_mm_and_si128(_mm_srli_epi32(p, 16), m)), k);
+	*g = _mm_mul_ps(_mm_cvtepi32_ps(_mm_and_si128(_mm_srli_epi32(p, 8), m)), k);
+	*b = _mm_mul_ps(_mm_cvtepi32_ps(_mm_and_si128(p, m)), k);
+}
+__attribute__((target("sse2")))
+static inline __m128 rcas_lobe(__m128 bR, __m128 dR, __m128 eR, __m128 fR, __m128 hR)
+{
+	__m128 mn = _mm_min_ps(_mm_min_ps(bR, dR), _mm_min_ps(fR, hR));
+	__m128 mx = _mm_max_ps(_mm_max_ps(bR, dR), _mm_max_ps(fR, hR));
+	const __m128 four = _mm_set1_ps(4.0f), one = _mm_set1_ps(1.0f), tiny = _mm_set1_ps(1.0f / 4096);
+	__m128 hitMin = _mm_div_ps(_mm_min_ps(mn, eR), _mm_add_ps(_mm_mul_ps(four, mx), tiny));
+	__m128 hitMax = _mm_div_ps(_mm_sub_ps(one, _mm_max_ps(mx, eR)), _mm_sub_ps(_mm_mul_ps(four, mn), _mm_add_ps(four, tiny)));
+	return _mm_max_ps(_mm_sub_ps(_mm_setzero_ps(), hitMin), hitMax);
+}
+__attribute__((target("sse2")))
+static void rcas_job(int band, int me)
+{
+	(void)me;
+	int y0 = band * FSR_BAND, y1 = min(g_fsr.dh, y0 + FSR_BAND), w = g_fsr.dw;
+	const __m128 half = _mm_set1_ps(0.5f), quarter = _mm_set1_ps(0.25f), one = _mm_set1_ps(1.0f), zero = _mm_setzero_ps();
+	const __m128 limit = _mm_set1_ps(-(0.25f - 1.0f / 16)), scale = _mm_set1_ps(g_fsr.scale), k255 = _mm_set1_ps(255.0f), tiny = _mm_set1_ps(1.0f / 4096);
+	for (int y = y0; y < y1; y++) {
+		const DWORD *row = g_fsr.src + (size_t)y * g_fsr.sstride;
+		const DWORD *up = g_fsr.src + (size_t)(y > 0 ? y - 1 : y) * g_fsr.sstride;
+		const DWORD *dn = g_fsr.src + (size_t)(y < g_fsr.dh - 1 ? y + 1 : y) * g_fsr.sstride;
+		DWORD *out = g_fsr.dst + (size_t)y * g_fsr.dstride;
+		out[0] = row[0];                       // the outermost columns as they are
+		out[w - 1] = row[w - 1];
+		int x = 1;
+		for (; x + 4 <= w - 1; x += 4) {
+			__m128 bR, bG, bB, dR, dG, dB, eR, eG, eB, fR, fG, fB, hR, hG, hB;
+			rcas_split(_mm_loadu_si128((const __m128i *)(up + x)), &bR, &bG, &bB);
+			rcas_split(_mm_loadu_si128((const __m128i *)(row + x - 1)), &dR, &dG, &dB);
+			rcas_split(_mm_loadu_si128((const __m128i *)(row + x)), &eR, &eG, &eB);
+			rcas_split(_mm_loadu_si128((const __m128i *)(row + x + 1)), &fR, &fG, &fB);
+			rcas_split(_mm_loadu_si128((const __m128i *)(dn + x)), &hR, &hG, &hB);
+#define LUMA(R, G, B) _mm_add_ps(_mm_mul_ps(_mm_add_ps(R, B), half), G)
+			__m128 bL = LUMA(bR, bG, bB), dL = LUMA(dR, dG, dB), eL = LUMA(eR, eG, eB), fL = LUMA(fR, fG, fB), hL = LUMA(hR, hG, hB);
+#undef LUMA
+			__m128 nz = _mm_sub_ps(_mm_mul_ps(quarter, _mm_add_ps(_mm_add_ps(bL, dL), _mm_add_ps(fL, hL))), eL);
+			__m128 lmx = _mm_max_ps(_mm_max_ps(_mm_max_ps(bL, dL), eL), _mm_max_ps(fL, hL));
+			__m128 lmn = _mm_min_ps(_mm_min_ps(_mm_min_ps(bL, dL), eL), _mm_min_ps(fL, hL));
+			nz = _mm_div_ps(_mm_andnot_ps(_mm_set1_ps(-0.0f), nz), _mm_add_ps(_mm_sub_ps(lmx, lmn), tiny));
+			nz = _mm_min_ps(nz, one);
+			nz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(-0.5f), nz), one);
+			__m128 lobe = _mm_max_ps(_mm_max_ps(rcas_lobe(bR, dR, eR, fR, hR), rcas_lobe(bG, dG, eG, fG, hG)), rcas_lobe(bB, dB, eB, fB, hB));
+			lobe = _mm_mul_ps(_mm_max_ps(limit, _mm_min_ps(lobe, zero)), scale);
+			lobe = _mm_mul_ps(lobe, nz);
+			__m128 rcp = _mm_div_ps(one, _mm_add_ps(_mm_mul_ps(_mm_set1_ps(4.0f), lobe), one));
+#define RES(b_, d_, e_, f_, h_) _mm_cvtps_epi32(_mm_min_ps(_mm_max_ps(_mm_mul_ps(_mm_mul_ps(_mm_add_ps(_mm_mul_ps(lobe, _mm_add_ps(_mm_add_ps(b_, d_), _mm_add_ps(f_, h_))), e_), rcp), k255), zero), k255))
+			__m128i r = RES(bR, dR, eR, fR, hR), g = RES(bG, dG, eG, fG, hG), bb = RES(bB, dB, eB, fB, hB);
+#undef RES
+			__m128i px = _mm_or_si128(_mm_or_si128(_mm_slli_epi32(r, 16), _mm_slli_epi32(g, 8)), bb);
+			_mm_storeu_si128((__m128i *)(out + x), px);
+		}
+		for (; x < w - 1; x++) out[x] = row[x];
+	}
+}
+// src -> dst at the same size (dw x dh), sharpened; dst must not be src
+static BOOL fsr_rcas(const DWORD *src, int sstride, DWORD *dst, int dw, int dh, int dstride)
+{
+	if (dw < 8 || dh < 1) return FALSE;
+	g_fsr.src = src; g_fsr.sstride = sstride; g_fsr.dst = dst; g_fsr.dw = dw; g_fsr.dh = dh; g_fsr.dstride = dstride;
+	g_fsr.scale = exp2f(-g_rcasSharp);
+	pool_run((dh + FSR_BAND - 1) / FSR_BAND, rcas_job);
+	return TRUE;
+}
+
+// ---- Frame timing ([Debug] Stats=1 or Ctrl+F10 on screen; [Debug] PerfLog=1 to lords2hd-perf.csv) --
+// Each picture shown is timed in stages: compose (the game's frame read, coloured, doubled and the HD
+// art stamped), scale (to the window), sharpen (RCAS) and blit (to the window). The presenter keeps
+// the last 256; the overlay shows the last second. Latency: from a click or key to the end of the
+// next picture that differs (the game's reaction plus ours; the compositor then shows it at its next
+// refresh, which is added as an estimate from DWM's timing). Remote message 22 benchmarks: n
+// pictures composed and shown back to back, whatever changed, the averages written to the log.
+enum { PS_COMPOSE, PS_SCALE, PS_SHARPEN, PS_BLIT, PS_N };
+#define PERF_HIST 256
+static struct {
+	FILE *csv;
+	LARGE_INTEGER qpf;
+	double t0, mark, st[PS_N];          // this picture: its start, the last mark, its stages
+	struct { double t, interval, st[PS_N], total; int rep; } h[PERF_HIST]; // rep: a repeat (gpu_repeat)
+	double lastAny;                     // the last picture handed to the screen, new or repeat
+	int hn, hi;                         // entries, next slot
+	double lastShown;
+	volatile LONG inputPending; double tInput;
+	double lat[16], latLast, latScreen; int latN, latI;
+	double refresh;                     // ms per display refresh (DWM)
+	volatile LONG bench; int benchN, benchDone; double benchSt[PS_N], benchTotal, benchWorst;
+} g_perf;
+static double perf_now(void)
+{
+	LARGE_INTEGER t;
+	if (!g_perf.qpf.QuadPart) QueryPerformanceFrequency(&g_perf.qpf);
+	QueryPerformanceCounter(&t);
+	return t.QuadPart * 1000.0 / g_perf.qpf.QuadPart;
+}
+// Timing=1: the map picture's steps (double, sprites, tiles, letters, scrolls), summed per 5 s
+static double g_ct[8], g_ctWorst[8]; static int g_ctN;
+static void ct_add(int k, double *t) { double n = perf_now(), d = n - *t; g_ct[k] += d; if (d > g_ctWorst[k]) g_ctWorst[k] = d; *t = n; if (!k) g_ctN++; }
+// ---- Frame pacing check (Timing=1) ----------------------------------------------------------------
+// Every refresh of the display is one of: new (a picture not shown before reached it), idle (nothing
+// newer existed) or late (the game had a changed picture at least one refresh before, and it did not
+// reach this refresh). "Locked 60" means late = 0. The game thread hashes its whole frame at each copy
+// (pace_change), each copy carries the newest change's number to the screen surface, and the
+// presenter notes which number each picture it shows carried. Logged per second, with the first late
+// refreshes in detail: when the change came, and what the presenter did in that refresh.
+static volatile LONG g_paceChangeSeq, g_paceCopying, g_pacePrimarySeq;
+static LONG g_paceReadSeq; // the number of the frame the presenter last read
+#define PACE_RING 1024
+static struct { double t; LONG seq; } g_paceChg[PACE_RING];
+static volatile LONG g_paceChgN;
+static struct { double t; LONG seq; int shown; double present; } g_paceWake[PACE_RING]; // presenter reads: shown or unchanged; present: ms the hand-off took
+static LONG g_paceWakeN;
+static void pace_change(void)
+{
+	LONG s = InterlockedIncrement(&g_paceChangeSeq);
+	int i = g_paceChgN % PACE_RING;
+	g_paceChg[i].t = perf_now(); g_paceChg[i].seq = s;
+	InterlockedIncrement(&g_paceChgN);
+}
+// Timing=1: both threads' events, for the late-refresh trace: T turn given, H changed frame finished,
+// C copied, K skipped (composing), N no turn, P copied from the wait
+static struct { double t; char k; LONG seq; } g_paceEv[PACE_RING];
+static volatile LONG g_paceEvN;
+static void pace_event(char k, LONG seq)
+{
+	if (!g_timing) return;
+	LONG n = InterlockedIncrement(&g_paceEvN) - 1;
+	int i = n % PACE_RING;
+	g_paceEv[i].t = perf_now(); g_paceEv[i].k = k; g_paceEv[i].seq = seq;
+}
+// The game may copy its next frame (h_show_frame, pending_copy); a finished frame waiting in the frame
+// limiter is copied at once (it slept in 2 ms slices and came 3-5 ms into the refresh, too late for it).
+static void give_turn(void)
+{
+	InterlockedExchange(&g_frameTaken, 1); pace_event('T', 0);
+	if (g_turnEvent) SetEvent(g_turnEvent);
+}
+// While a picture waits for its refresh, every frame the game finishes is copied, each replacing the
+// last, until the next picture is started (g_preTurn cleared): a busy battle picture takes ~8 ms, so the
+// frame must be in before the refresh, and on the map a copy that used up the turn early left the newer
+// frame finished just before the refresh out (a refresh late).
+static volatile LONG g_preTurn;
+static void give_pre_turn(void)
+{
+	InterlockedExchange(&g_preTurn, 1); pace_event('T', 0);
+	if (g_turnEvent) SetEvent(g_turnEvent);
+}
+static void pace_trace(double from, double to, double base)
+{
+	char w[900]; int wl = 0; w[0] = 0;
+	LONG n = g_paceEvN;
+	for (int k = PACE_RING - 1; k >= 0; k--) {
+		if (k >= n) continue;
+		int i = (n - 1 - k) % PACE_RING;
+		if (g_paceEv[i].t < from || g_paceEv[i].t > to) continue;
+		wl += snprintf(w + wl, sizeof w - wl, " %+.1f%c%ld", g_paceEv[i].t - base, g_paceEv[i].k, (long)g_paceEv[i].seq);
+		if (wl > (int)sizeof w - 30) break;
+	}
+	logf_("pace:   events:%s", w);
+}
+static void pace_wake(int shown) // 0 read unchanged, 1 new picture shown, 2 a repeat
+{
+	int i = g_paceWakeN % PACE_RING;
+	g_paceWake[i].t = perf_now(); g_paceWake[i].seq = g_paceReadSeq; g_paceWake[i].shown = shown;
+	g_paceWake[i].present = g_perf.st[PS_BLIT];
+	g_paceWakeN++;
+}
+static double perf_next_refresh(double t);
+static void pace_classify(void)
+{
+	static double lastV, t0; static int nNew, nLate, nIdle, nEmpty, details; static LONG shownSeq;
+	double now = perf_now(), vNext = perf_next_refresh(now), period = g_perf.refresh;
+	if (period <= 0) return;
+	double vNow = vNext - period; // the last refresh at or before now
+	if (!lastV) { lastV = vNow; t0 = now; return; }
+	for (double V = lastV + period; V <= vNow + period * 0.25; V += period) {
+		LONG best = -1; BOOL any = FALSE; // any: a picture, new or repeated, reached this refresh
+		for (int k = 0; k < PACE_RING && k < g_paceWakeN; k++) {
+			int i = (g_paceWakeN - 1 - k) % PACE_RING;
+			if (g_paceWake[i].t <= V - period) break;
+			if (g_paceWake[i].t > V) continue;
+			if (g_paceWake[i].shown == 1 || g_paceWake[i].shown == 2) any = TRUE; // (3: a refresh wait, not a picture)
+			if (g_paceWake[i].shown == 1 && g_paceWake[i].seq > best) best = g_paceWake[i].seq;
+		}
+		if (!any) {
+			nEmpty++;
+			static int emptyDetails;
+			if (emptyDetails < 40) { // what the presenter did in this refresh and the one before (times from the previous refresh)
+				emptyDetails++;
+				char w[600]; int wl = 0; w[0] = 0;
+				for (int k = PACE_RING - 1; k >= 0; k--) {
+					if (k >= g_paceWakeN) continue;
+					int i = (g_paceWakeN - 1 - k) % PACE_RING;
+					double dt = g_paceWake[i].t - (V - period);
+					if (dt < -period || dt > period + 2) continue;
+					wl += snprintf(w + wl, sizeof w - wl, " %+.1f%s(%.1f)", dt, g_paceWake[i].shown == 3 ? "W" : g_paceWake[i].shown == 2 ? "R" : g_paceWake[i].shown ? "S" : "u", g_paceWake[i].present);
+					if (wl > (int)sizeof w - 30) break;
+				}
+				logf_("pace: empty refresh; presenter around it (ms from the refresh before, S new, R repeat, u unchanged, (hand-off ms)):%s", w[0] ? w : " nothing");
+			}
+		}
+		if (best >= 0 && best != shownSeq) { nNew++; shownSeq = best; continue; }
+		LONG latest = -1; double latestT = 0;
+		LONG cn = g_paceChgN;
+		for (int k = 0; k < PACE_RING && k < cn; k++) {
+			int i = (cn - 1 - k) % PACE_RING;
+			if (g_paceChg[i].t <= V - period) { latest = g_paceChg[i].seq; latestT = g_paceChg[i].t; break; }
+		}
+		if (latest > shownSeq) {
+			nLate++;
+			static double firstT; if (!firstT) firstT = now;
+			if (details < 300 && now - firstT > 40000) { // what happened in this refresh (after the first 30 s: not the menus)
+				details++;
+				char w[400]; int wl = 0; w[0] = 0;
+				for (int k = PACE_RING - 1; k >= 0; k--) {
+					if (k >= g_paceWakeN) continue;
+					int i = (g_paceWakeN - 1 - k) % PACE_RING;
+					double dt = g_paceWake[i].t - (V - period);
+					if (dt < 0 || dt > period) continue;
+					wl += snprintf(w + wl, sizeof w - wl, " %.1f%s#%ld", dt, g_paceWake[i].shown == 3 ? "W" : g_paceWake[i].shown == 2 ? "R" : g_paceWake[i].shown ? "S" : "u", (long)g_paceWake[i].seq);
+					if (wl > (int)sizeof w - 30) break;
+				}
+				logf_("pace: late refresh: change #%ld made %.1f ms before the previous refresh, shown #%ld; reads in it:%s", (long)latest, (V - period) - latestT, (long)shownSeq, w[0] ? w : " none");
+				pace_trace(V - 2 * period, V, V - period);
+			}
+		}
+		else nIdle++;
+	}
+	lastV = vNow;
+	if (now - t0 >= 1000) {
+		logf_("pace: 1 s: %d new, %d late, %d idle refreshes; %d got no picture at all", nNew, nLate, nIdle, nEmpty);
+		nNew = nLate = nIdle = nEmpty = 0; t0 = now;
+	}
+}
+static void perf_begin(void) { g_perf.t0 = g_perf.mark = perf_now(); memset(g_perf.st, 0, sizeof g_perf.st); }
+static void perf_mark(int stage) { double t = perf_now(); g_perf.st[stage] += t - g_perf.mark; g_perf.mark = t; }
+static void perf_input(void)
+{
+	if (InterlockedCompareExchange(&g_perf.inputPending, 1, 0) == 0) g_perf.tInput = perf_now();
+}
+static const char *upscale_name(void);
+// The display's refresh period and the time of its next refresh after t (ms), from DWM.
+static double perf_next_refresh(double t)
+{
+	static HRESULT (WINAPI *get)(HWND, DWM_TIMING_INFO *);
+	static BOOL tried;
+	if (!tried) { tried = TRUE; HMODULE d = LoadLibraryA("dwmapi.dll"); if (d) get = (void *)GetProcAddress(d, "DwmGetCompositionTimingInfo"); }
+	DWM_TIMING_INFO ti; memset(&ti, 0, sizeof ti); ti.cbSize = sizeof ti;
+	if (!get || FAILED(get(NULL, &ti)) || !ti.qpcRefreshPeriod) { g_perf.refresh = 0; return t; }
+	double period = ti.qpcRefreshPeriod * 1000.0 / g_perf.qpf.QuadPart, vb = ti.qpcVBlank * 1000.0 / g_perf.qpf.QuadPart;
+	g_perf.refresh = period;
+	double k = ceil((t - vb) / period);
+	return vb + (k < 0 ? 0 : k) * period;
+}
+// After a present: shown says whether a picture went to the window.
+static void perf_end(BOOL shown, int vw, int vh)
+{
+	if (!shown) return;
+	double t = perf_now(), total = t - g_perf.t0;
+	if (g_perf.bench > 0) { // benchmark: only the sums
+		for (int i = 0; i < PS_N; i++) g_perf.benchSt[i] += g_perf.st[i];
+		g_perf.benchTotal += total;
+		if (total > g_perf.benchWorst) g_perf.benchWorst = total;
+		g_perf.benchDone++;
+		if (InterlockedDecrement(&g_perf.bench) == 0) {
+			int n = g_perf.benchDone ? g_perf.benchDone : 1;
+			char line[300];
+			BOOL gpu = gpu_drawing();
+			snprintf(line, sizeof line, "bench: %d pictures, %s on the %s%s, %dx%d: compose %.2f, %s %.2f, %s %.2f, %s %.2f, total %.2f ms (worst %.1f)%s",
+				g_perf.benchDone, upscale_name(), gpu ? "GPU" : "CPU", g_fsrFinal && !gpu ? " (EASU final)" : "", vw, vh, g_perf.benchSt[0] / n,
+				gpu ? "upload" : "scale", g_perf.benchSt[1] / n, gpu ? "submit" : "sharpen", g_perf.benchSt[2] / n, gpu ? "present" : "blit",
+				g_perf.benchSt[3] / n, g_perf.benchTotal / n, g_perf.benchWorst, "");
+			if (gpu) snprintf(line + strlen(line), sizeof line - strlen(line), "; GPU %.2f ms", gpu_ms());
+			logf_("%s", line);
+		}
+		return;
+	}
+	int slot = g_perf.hi;
+	g_perf.h[slot].t = t;
+	g_perf.h[slot].interval = g_perf.lastAny ? t - g_perf.lastAny : 0;
+	memcpy(g_perf.h[slot].st, g_perf.st, sizeof g_perf.st);
+	g_perf.h[slot].total = total;
+	g_perf.h[slot].rep = 0;
+	g_perf.hi = (slot + 1) % PERF_HIST;
+	if (g_perf.hn < PERF_HIST) g_perf.hn++;
+	g_perf.lastShown = g_perf.lastAny = t;
+	double lat = -1, onScreen = -1;
+	if (g_perf.inputPending && g_perf.t0 >= g_perf.tInput) { // a picture read after the input
+		lat = t - g_perf.tInput;
+		onScreen = perf_next_refresh(t) - g_perf.tInput;
+		g_perf.latLast = lat; g_perf.latScreen = onScreen;
+		g_perf.lat[g_perf.latI] = onScreen; g_perf.latI = (g_perf.latI + 1) % 16;
+		if (g_perf.latN < 16) g_perf.latN++;
+		InterlockedExchange(&g_perf.inputPending, 0);
+	}
+	if (g_perfLogOn) {
+		if (!g_perf.csv) {
+			char path[MAX_PATH];
+			snprintf(path, sizeof path, "%s\\lords2hd-perf.csv", g_gameDir);
+			g_perf.csv = fopen(path, "w");
+			if (g_perf.csv) fprintf(g_perf.csv, "time_ms,interval_ms,compose_ms,scale_ms,sharpen_ms,blit_ms,total_ms,upscale,view_w,view_h,input_to_blit_ms,input_to_screen_ms\n");
+		}
+		if (g_perf.csv) {
+			fprintf(g_perf.csv, "%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,", t, g_perf.h[slot].interval, g_perf.st[0], g_perf.st[1], g_perf.st[2], g_perf.st[3], total, upscale_name(), vw, vh);
+			if (lat >= 0) fprintf(g_perf.csv, "%.2f,%.2f\n", lat, onScreen); else fputs(",\n", g_perf.csv);
+			static int lines;
+			if (++lines % 30 == 0) fflush(g_perf.csv);
+		}
+	}
+}
+// After a repeat (gpu_repeat): counted as a refresh served, never as a new picture, a latency sample
+// or a recorded frame.
+static void perf_repeat(void)
+{
+	double t = perf_now();
+	int slot = g_perf.hi;
+	g_perf.h[slot].t = t;
+	g_perf.h[slot].interval = g_perf.lastAny ? t - g_perf.lastAny : 0;
+	memcpy(g_perf.h[slot].st, g_perf.st, sizeof g_perf.st);
+	g_perf.h[slot].total = t - g_perf.t0;
+	g_perf.h[slot].rep = 1;
+	g_perf.hi = (slot + 1) % PERF_HIST;
+	if (g_perf.hn < PERF_HIST) g_perf.hn++;
+	g_perf.lastAny = t;
+}
+// The overlay, top left of the picture (drawn into the window-sized buffer before it is shown).
+static void perf_draw(HDC dc, int vw, int vh)
+{
+	double now = perf_now(), st[PS_N] = { 0 }, tot = 0, worst = 0, ivs[PERF_HIST];
+	int n = 0, nNew = 0; // n: pictures handed to the screen (new and repeats), nNew: new ones
+	for (int k = 0; k < g_perf.hn; k++) {
+		int i = (g_perf.hi - 1 - k + PERF_HIST) % PERF_HIST;
+		if (now - g_perf.h[i].t > 1000) break;
+		if (!g_perf.h[i].rep) {
+			for (int s = 0; s < PS_N; s++) st[s] += g_perf.h[i].st[s];
+			tot += g_perf.h[i].total;
+			if (g_perf.h[i].total > worst) worst = g_perf.h[i].total;
+			nNew++;
+		}
+		if (g_perf.h[i].interval > 0) ivs[n] = g_perf.h[i].interval;
+		else ivs[n] = 0;
+		n++;
+	}
+	BOOL repeats = g_repeatOn && gpu_drawing();
+	// the slowest 1% of frame intervals (here the slowest of the last second)
+	double ivMax = 0;
+	for (int i = 0; i < n; i++) if (ivs[i] > ivMax) ivMax = ivs[i];
+	double latAvg = 0;
+	for (int i = 0; i < g_perf.latN; i++) latAvg += g_perf.lat[i];
+	if (g_perf.latN) latAvg /= g_perf.latN;
+	if (g_statsOn == 1) { // the simple counter: new pictures in the last second
+		char s[32];
+		BOOL still = !repeats && (!g_perf.lastShown || now - g_perf.lastShown > 500); // nothing moving: no new pictures to count (without repeats)
+		if (still) snprintf(s, sizeof s, "still");
+		else snprintf(s, sizeof s, "%d fps", n);
+		int sfh = max(14, vh / 60);
+		HFONT sf = CreateFontA(-sfh, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+		HGDIOBJ so = SelectObject(dc, sf);
+		SIZE sz; GetTextExtentPoint32A(dc, s, (int)strlen(s), &sz);
+		int sp = sfh / 3;
+		RECT sb = { sp, sp, sp + sz.cx + 2 * sp, sp + sz.cy + sp };
+		HBRUSH sbg = CreateSolidBrush(RGB(16, 12, 8));
+		FillRect(dc, &sb, sbg);
+		DeleteObject(sbg);
+		SetBkMode(dc, TRANSPARENT);
+		SetTextColor(dc, still ? RGB(150, 140, 120) : n >= 55 ? RGB(150, 230, 120) : n >= 30 ? RGB(240, 220, 160) : RGB(240, 140, 110));
+		TextOutA(dc, sb.left + sp, sb.top + sp / 2, s, (int)strlen(s));
+		SelectObject(dc, so);
+		DeleteObject(sf);
+		return;
+	}
+	char lines[5][160];
+	int d = nNew ? nNew : 1;
+	if (repeats) snprintf(lines[0], sizeof lines[0], "%d fps (%d new, %d repeated)   slowest gap %.1f ms", n, nNew, n - nNew, ivMax);
+	else snprintf(lines[0], sizeof lines[0], "%d fps   frame %.1f ms   slowest gap %.1f ms", n, n ? 1000.0 / n : 0.0, ivMax);
+	if (gpu_drawing())
+		snprintf(lines[1], sizeof lines[1], "CPU %.1f ms (worst %.1f): compose %.1f  upload %.1f  submit %.1f  present %.1f   GPU %.2f ms",
+			tot / d, worst, st[0] / d, st[1] / d, st[2] / d, st[3] / d, gpu_ms());
+	else
+		snprintf(lines[1], sizeof lines[1], "CPU %.1f ms (worst %.1f): compose %.1f  scale %.1f  sharpen %.1f  blit %.1f",
+			tot / d, worst, st[0] / d, st[1] / d, st[2] / d, st[3] / d);
+	if (g_perf.latN) snprintf(lines[2], sizeof lines[2], "input to screen %.0f ms (avg of %d: %.0f)   to blit %.0f ms", g_perf.latScreen, g_perf.latN, latAvg, g_perf.latLast);
+	else snprintf(lines[2], sizeof lines[2], "input to screen: click or press a key");
+	snprintf(lines[3], sizeof lines[3], "%s on the %s   %dx%d", upscale_name(), gpu_drawing() ? "GPU" : "CPU", vw, vh);
+	if (g_perf.refresh > 0) snprintf(lines[3] + strlen(lines[3]), sizeof lines[3] - strlen(lines[3]), "   %.0f Hz", 1000.0 / g_perf.refresh);
+	snprintf(lines[4], sizeof lines[4], "Ctrl+F10 hides this (F10, Performance: FPS counter)");
+	int fh = max(14, vh / 70);
+	HFONT font = CreateFontA(-fh, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+	HGDIOBJ old = SelectObject(dc, font);
+	int w = 0;
+	for (int i = 0; i < 5; i++) { SIZE s; GetTextExtentPoint32A(dc, lines[i], (int)strlen(lines[i]), &s); if (s.cx > w) w = s.cx; }
+	int pad = fh / 2, lh = fh + fh / 4;
+	RECT box = { pad, pad, pad + w + 2 * pad, pad + 5 * lh + 2 * pad };
+	HBRUSH bg = CreateSolidBrush(RGB(16, 12, 8));
+	FillRect(dc, &box, bg);
+	DeleteObject(bg);
+	SetBkMode(dc, TRANSPARENT);
+	for (int i = 0; i < 5; i++) {
+		SetTextColor(dc, i == 4 ? RGB(150, 140, 120) : RGB(240, 220, 160));
+		TextOutA(dc, box.left + pad, box.top + pad + i * lh, lines[i], (int)strlen(lines[i]));
+	}
+	SelectObject(dc, old);
+	DeleteObject(font);
 }
 
 // Doubles the frame with bilinear interpolation: each output pixel sits a quarter of a source
@@ -519,6 +1126,7 @@ static BOOL resize_cr(const DWORD *src, int sw, int sh, int sstride, DWORD *dst,
 // the same doubling with its weights (sharper, no blocks).
 static void double_frame(int w)
 {
+	if (g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(g_frame32, w, GAME_H, w, g_frame2x, 2 * w, 2 * GAME_H, 2 * w)) return;
 	if (g_upscaleCR && resize_cr(g_frame32, w, GAME_H, w, g_frame2x, 2 * w, 2 * GAME_H, 2 * w)) return;
 	for (int y = 0; y < GAME_H; y++) {
 		const DWORD *row = g_frame32 + y * w;
@@ -545,6 +1153,12 @@ static void double_frame(int w)
 // check as the county layers. FUN_004b5333 redrawing a ground cell forgets what stood on it.
 static DWORD *g_btLayer;
 static BYTE *g_btShadow, *g_btValid;
+// Rows of the HD sprite, lettering and battle layers written since their last copy for the
+// presenter (*_publish): a frame copy takes only those (all of every layer came to ~50 MB a copy,
+// 3.5 ms of the game's frame, which slowed battles once every frame went to the screen).
+#define DIRTY_ROWS 4096
+static BYTE g_sprDirty[DIRTY_ROWS], g_txtDirty[DIRTY_ROWS], g_btDirty[DIRTY_ROWS];
+static void rows_dirty(BYTE *d, int y0, int y1) { y0 = max(0, y0); y1 = min(DIRTY_ROWS, y1); if (y1 > y0) memset(d + y0, 1, y1 - y0); }
 static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
 static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
@@ -855,7 +1469,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
-	if (g_sprValid) memset(g_sprValid, 0, MAX_W * GAME_H); // a new screen: nothing stamped on it yet
+	if (g_sprValid) { memset(g_sprValid, 0, MAX_W * GAME_H); rows_dirty(g_sprDirty, 0, GAME_H); } // a new screen: nothing stamped on it yet
 	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H) return;
@@ -947,7 +1561,8 @@ static BYTE *g_sprShadow;
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
 static BOOL g_ownScroll; // the settings scroll is being drawn: its HD art is stamped whatever the palette
 static BYTE *g_txt, *g_txtShadow, *g_txtValid;     // the sharp letters' layer (text_overlay)
-static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;  // ... as of the frame on screen
+static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  // ... as of the frame on screen (volatile: g_txtS is read first, set last)
+static int g_txtW, g_txtH; // the size all of them were made for (the back buffer's then)
 static BYTE g_tilePal[768];
 
 static BOOL wave_is_water(DWORD p)
@@ -1226,6 +1841,65 @@ static void sprites_loaded(const char *name, const void *buffer)
 	afclose(f);
 }
 
+// The zoomed-out battle's HD stamping, batched: while the game redraws the battlefield (h_battle_draw)
+// every stamp and every cell's clearing is queued, then all of them are done at the end on all the
+// CPU's threads, each taking a band of rows and going through the queue in order. Each stamp checks the
+// finished frame instead of the frame as it stood then, which gives the same layer: a pixel drawn
+// over later fails the check, and its new owner stamps it. A scroll redraws ~1500 cells: stamped one
+// by one they took ~9 ms of every game frame and the battle ran 30% slow.
+typedef struct { const BYTE *idx; const DWORD *hd; int x, y, w, h; } bt_job; // idx NULL: clear w x h
+#define BT_QUEUE 16384
+static bt_job g_btQ[BT_QUEUE];
+static int g_btQN;
+static BOOL g_btDefer;
+static void bt_apply(const bt_job *j, int r0, int r1)
+{
+	int y0 = max(max(j->y, 0), r0), y1 = min(min(j->y + j->h, g_frameH), r1);
+	if (!j->idx) { // a cell about to be redrawn: its HD pixels forgotten
+		int x0 = max(j->x, 0), x1 = min(j->x + j->w, g_frameW);
+		for (int r = y0; r < y1; r++) if (x1 > x0) memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
+		return;
+	}
+	int w = j->w;
+	for (int fy = y0; fy < y1; fy++) {
+		int r = fy - j->y;
+		const BYTE *row = g_back->bits + fy * g_back->pitch, *src = j->idx + r * w;
+		const DWORD *h0row = j->hd + (2 * r) * (2 * w), *h1row = h0row + 2 * w;
+		DWORD *o = g_btLayer + (size_t)fy * g_frameW * 4;
+		BYTE *sh = g_btShadow + fy * g_frameW, *va = g_btValid + fy * g_frameW;
+		int c0 = max(0, -(j->x + g_back->org)), c1 = min(w, g_frameW - (j->x + g_back->org));
+		for (int c = c0; c < c1; c++) {
+			BYTE v = src[c];
+			int fx = j->x + g_back->org + c;
+			if (!v || row[fx] != v) continue;
+			DWORD *p = o + fx * 4;
+			p[0] = h0row[2 * c]; p[1] = h0row[2 * c + 1]; p[2] = h1row[2 * c]; p[3] = h1row[2 * c + 1];
+			sh[fx] = v; va[fx] = 1;
+		}
+	}
+}
+#define BT_FLUSH_BAND 24
+static void bt_flush_job(int band, int me)
+{
+	(void)me;
+	int r0 = band * BT_FLUSH_BAND, r1 = min(g_frameH, r0 + BT_FLUSH_BAND);
+	for (int i = 0; i < g_btQN; i++) if (g_btQ[i].y < r1 && g_btQ[i].y + g_btQ[i].h > r0) bt_apply(&g_btQ[i], r0, r1);
+}
+static void pool_run(int bands, void (*job)(int band, int me));
+static void bt_flush(void)
+{
+	if (!g_btQN) return;
+	// (marked at queue time too, but a copy to the screen in between would have cleared the marks)
+	for (int i = 0; i < g_btQN; i++) rows_dirty(g_btDirty, g_btQ[i].y, g_btQ[i].y + g_btQ[i].h);
+	if (g_btLayer && g_back) pool_run((g_frameH + BT_FLUSH_BAND - 1) / BT_FLUSH_BAND, bt_flush_job);
+	g_btQN = 0;
+}
+static void bt_queue(const BYTE *idx, const DWORD *hd, int x, int y, int w, int h)
+{
+	if (g_btQN >= BT_QUEUE) bt_flush(); // (in order: what was queued first is done first)
+	g_btQ[g_btQN++] = (bt_job){ idx, hd, x, y, w, h };
+}
+
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
 	if (stamp_record(buf, index, x, y, 1)) return;
@@ -1273,6 +1947,8 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	const BYTE *idx = p + 4;
 	const DWORD *hd = (const DWORD *)(idx + w * h);
 	if (battle_zoom_on() && g_btLayer && !g_ownScroll) { // (the settings scroll is not the battle's: its ground keeps its HD art)
+		rows_dirty(g_btDirty, y, y + h);
+		if (g_btDefer) { bt_queue(idx, hd, x, y, w, h); return; } // during a battlefield redraw: batched (bt_flush)
 		for (int r = 0; r < h; r++) {
 			int fy = y + r;
 			if (fy < 0 || fy >= g_frameH) continue;
@@ -1316,6 +1992,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			o1[0] = h1[0]; o1[1] = h1[1];
 			g_sprShadow[fy * MAX_W + fx] = v;
 			g_sprValid[fy * MAX_W + fx] = 1;
+			g_sprDirty[fy] = 1;
 		}
 	}
 }
@@ -1421,6 +2098,7 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 			}
 			g_sprShadow[fy * MAX_W + fx] = now;
 			g_sprValid[fy * MAX_W + fx] = 1;
+			g_sprDirty[fy] = 1;
 			stamped++;
 		}
 	}
@@ -1453,6 +2131,7 @@ static void forget_tiles(void)
 		if (keep <= 0 || keep >= MAX_W || IN_BATTLE_NOW()) keep = MAX_W;
 		for (int y = 0; y < GAME_H; y++) {
 			BYTE *v = g_sprValid + y * MAX_W;
+			g_sprDirty[y] = 1;
 			for (int x = 0; x < keep; x++) if (v[x]) v[x] = 2;
 		}
 	}
@@ -2262,13 +2941,19 @@ static void spr_publish(int y0, int y1)
 		g_sprShadowS = s; g_sprValidS = v;
 		MemoryBarrier();
 		g_sprLayerS = l;
+		rows_dirty(g_sprDirty, 0, GAME_H);
 	}
-	y0 = max(0, y0); y1 = min(GAME_H, y1);
-	if (y1 <= y0) return;
-	size_t n = (size_t)(y1 - y0) * MAX_W;
-	memcpy(g_sprLayerS + (size_t)y0 * 4 * MAX_W, g_sprLayer + (size_t)y0 * 4 * MAX_W, n * 16);
-	memcpy(g_sprShadowS + (size_t)y0 * MAX_W, g_sprShadow + (size_t)y0 * MAX_W, n);
-	memcpy(g_sprValidS + (size_t)y0 * MAX_W, g_sprValid + (size_t)y0 * MAX_W, n);
+	int cw = min(MAX_W, g_frameW); // only the frame's columns (as tile_publish)
+	for (int y = max(0, y0); y < min(GAME_H, y1); y++) {
+		if (!g_sprDirty[y]) continue;
+		g_sprDirty[y] = 0;
+		for (int r = 0; r < 2; r++) {
+			size_t o = (size_t)(2 * y + r) * 2 * MAX_W;
+			memcpy(g_sprLayerS + o, g_sprLayer + o, (size_t)cw * 8);
+		}
+		memcpy(g_sprShadowS + (size_t)y * MAX_W, g_sprShadow + (size_t)y * MAX_W, cw);
+		memcpy(g_sprValidS + (size_t)y * MAX_W, g_sprValid + (size_t)y * MAX_W, cw);
+	}
 }
 
 // The ground tile layer as of the frame on screen, like the sprites (spr_publish). It was shown
@@ -2291,13 +2976,17 @@ static void tile_publish(int y0, int y1)
 		g_layerS = l;
 		tile_dirty(0, GAME_H);
 	}
+	int cw = min(MAX_W, g_frameW); // only the frame's columns: the rows are MAX_W long (a scroll copies every row)
 	for (int y = max(0, y0); y < min(GAME_H, y1); y++) {
 		if (!g_layerDirty[y]) continue;
 		g_layerDirty[y] = 0;
-		memcpy(g_layerS + (size_t)y * 4 * MAX_W, g_layer + (size_t)y * 4 * MAX_W, (size_t)MAX_W * 16);
-		memcpy(g_layerShadowS + (size_t)y * MAX_W, g_layerShadow + (size_t)y * MAX_W, MAX_W);
-		memcpy(g_layerValidS + (size_t)y * MAX_W, g_layerValid + (size_t)y * MAX_W, MAX_W);
-		if (g_waveDS) memcpy(g_waveDS + (size_t)y * 4 * MAX_W, g_waveD + (size_t)y * 4 * MAX_W, (size_t)MAX_W * 4);
+		for (int r = 0; r < 2; r++) {
+			size_t o = (size_t)(2 * y + r) * 2 * MAX_W;
+			memcpy(g_layerS + o, g_layer + o, (size_t)cw * 8);
+			if (g_waveDS) memcpy(g_waveDS + o, g_waveD + o, (size_t)cw * 2);
+		}
+		memcpy(g_layerShadowS + (size_t)y * MAX_W, g_layerShadow + (size_t)y * MAX_W, cw);
+		memcpy(g_layerValidS + (size_t)y * MAX_W, g_layerValid + (size_t)y * MAX_W, cw);
 	}
 }
 
@@ -2311,31 +3000,36 @@ static void bt_publish(int y0, int y1)
 		g_btShadowS = s; g_btValidS = v;
 		MemoryBarrier();
 		g_btLayerS = l;
+		rows_dirty(g_btDirty, 0, g_frameH);
 	}
-	y0 = max(0, y0); y1 = min(g_frameH, y1);
-	if (y1 <= y0) return;
-	size_t n = (size_t)(y1 - y0) * g_frameW;
-	memcpy(g_btLayerS + (size_t)y0 * g_frameW * 4, g_btLayer + (size_t)y0 * g_frameW * 4, n * 16);
-	memcpy(g_btShadowS + (size_t)y0 * g_frameW, g_btShadow + (size_t)y0 * g_frameW, n);
-	memcpy(g_btValidS + (size_t)y0 * g_frameW, g_btValid + (size_t)y0 * g_frameW, n);
+	for (int y = max(0, y0); y < min(min(g_frameH, DIRTY_ROWS), y1); y++) {
+		if (!g_btDirty[y]) continue;
+		g_btDirty[y] = 0;
+		memcpy(g_btLayerS + (size_t)y * g_frameW * 4, g_btLayer + (size_t)y * g_frameW * 4, (size_t)g_frameW * 16);
+		memcpy(g_btShadowS + (size_t)y * g_frameW, g_btShadow + (size_t)y * g_frameW, g_frameW);
+		memcpy(g_btValidS + (size_t)y * g_frameW, g_btValid + (size_t)y * g_frameW, g_frameW);
+	}
 }
 
 static void text_publish(int y0, int y1)
 {
 	if (!g_txt || !g_back) return;
-	int W = g_back->w, H = g_back->h;
+	int W = g_txtW, H = g_txtH;
 	if (!g_txtS) {
 		BYTE *l = malloc(W * H * 4), *s = calloc(W, H), *v = calloc(W, H); // (set last, as in spr_publish)
 		if (!l || !s || !v) { free(l); free(s); free(v); return; }
 		g_txtShadowS = s; g_txtValidS = v;
 		MemoryBarrier();
 		g_txtS = l;
+		rows_dirty(g_txtDirty, 0, H);
 	}
-	y0 = max(0, y0); y1 = min(H, y1);
-	if (y1 <= y0) return;
-	memcpy(g_txtS + y0 * W * 4, g_txt + y0 * W * 4, (y1 - y0) * W * 4);
-	memcpy(g_txtShadowS + y0 * W, g_txtShadow + y0 * W, (y1 - y0) * W);
-	memcpy(g_txtValidS + y0 * W, g_txtValid + y0 * W, (y1 - y0) * W);
+	for (int y = max(0, y0); y < min(min(H, DIRTY_ROWS), y1); y++) {
+		if (!g_txtDirty[y]) continue;
+		g_txtDirty[y] = 0;
+		memcpy(g_txtS + y * W * 4, g_txt + y * W * 4, W * 4);
+		memcpy(g_txtShadowS + y * W, g_txtShadow + y * W, W);
+		memcpy(g_txtValidS + y * W, g_txtValid + y * W, W);
+	}
 }
 
 static void text_clear(int x, int y, int w, int h)
@@ -2345,6 +3039,7 @@ static void text_clear(int x, int y, int w, int h)
 	int x0 = max(x, 0), x1 = min(x + w, g_back->w);
 	if (x1 <= x0) return;
 	for (int r = max(y, 0); r < min(y + h, g_back->h); r++) memset(g_txtValid + r * g_back->w + x0, 0, x1 - x0);
+	rows_dirty(g_txtDirty, y, y + h);
 }
 static void text_stale(void);
 
@@ -2356,6 +3051,7 @@ static void text_stale(void)
 	if (!g_txtValid || !g_back) return;
 	int n = g_back->w * g_back->h;
 	for (int i = 0; i < n; i++) if (g_txtValid[i]) g_txtValid[i] = 2;
+	rows_dirty(g_txtDirty, 0, g_back->h);
 }
 
 // w x h letter at game x, y, drawn in "colour" (-1: its own pixels); before = the frame under it.
@@ -2367,8 +3063,11 @@ static void text_stamp(const BYTE *src, int w, int h, int x, int y, int colour, 
 		g_txtShadow = malloc(W * H);
 		g_txtValid = calloc(W, H);
 		if (!g_txt || !g_txtShadow || !g_txtValid) { g_hdText = FALSE; return; }
+		g_txtW = W; g_txtH = H;
 	}
+	if (W != g_txtW || H > g_txtH) return; // (a back buffer of another size: the layers are not its)
 #define ON(c, r) ((c) >= 0 && (r) >= 0 && (c) < w && (r) < h && src[(r) * w + (c)] != 0)
+	rows_dirty(g_txtDirty, y, y + h);
 	for (int r = 0; r < h; r++) {
 		int fy = y + r;
 		if (fy < 0 || fy >= H) continue;
@@ -2422,6 +3121,7 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 {
 	if (!map_lut()) return;
 	int W = g_back->w;
+	if (g_txt && W != g_txtW) return; // (text layers made for another back buffer size)
 	const BYTE *tx = g_txtS ? g_txtS : g_txt, *tsh = g_txtS ? g_txtShadowS : g_txtShadow, *tv = g_txtS ? g_txtValidS : g_txtValid;
 	for (int r = 0; r < s->h; r++) {
 		int y = s->y + r;
@@ -2490,7 +3190,8 @@ static void scroll_overlays(int sx, int sw)
 static void text_overlay(int sx, int sw)
 {
 	if (!g_txt || !g_hdText) return;
-	int W = g_back->w;
+	int W = g_txtW;
+	if (sx < 0 || sx + sw > W || GAME_H > g_txtH || W != g_back->w) return; // (layers made for another back buffer size)
 	// what the frame on screen had (see text_publish); the live layer until the first copy
 	const BYTE *g_txt_ = g_txtS ? g_txtS : g_txt, *shadow = g_txtS ? g_txtShadowS : g_txtShadow, *valid = g_txtS ? g_txtValidS : g_txtValid;
 	for (int y = 0; y < GAME_H; y++) {
@@ -2524,15 +3225,16 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-static RECT g_menuRow[16], g_menuTabRect[2], g_menuBox; // in game coordinates, as last drawn
+#define MENU_TABS 3
+static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_COUNT };
-#define MENU_TABS 2
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_COUNT };
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Quality of life" };
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_WIDE, M_ZOOM, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_ZOOM, -1 },
+	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
@@ -2541,7 +3243,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
 	switch (i) {
-	case M_UPSCALE: snprintf(v, n, "%s", g_upscaleCR ? "Catmull-Rom (sharp)" : "Bilinear (soft)"); break;
+	case M_UPSCALE: snprintf(v, n, "%s", g_upscaleCR == 2 ? "AMD FSR 1 (sharpest)" : g_upscaleCR ? "Catmull-Rom (sharp)" : "Bilinear (soft)"); break;
 	case M_SCREENS: snprintf(v, n, "%s", g_showScreens ? "On" : "Off"); *restart = g_showScreens && !g_hdScreens; break;
 	case M_TILES: snprintf(v, n, "%s", g_showTiles ? "On" : "Off"); *restart = g_showTiles && !g_hdTiles; break;
 	case M_TEXT: snprintf(v, n, "%s", g_hdText ? "On" : "Off"); break;
@@ -2555,11 +3257,16 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_ARMY: snprintf(v, n, "%s", g_armyPanel ? "On" : "Off"); break;
 	case M_LETTERS: snprintf(v, n, "%s", g_letters ? "On" : "Off"); break;
 	case M_RESOUND: snprintf(v, n, "%s", g_resounded ? "On" : "Off"); break;
+	case M_RENDERER: // a restart: once the GPU has drawn into the window, Windows no longer shows the CPU's drawing there
+		snprintf(v, n, "%s", g_gpuWantedSet ? (g_gpuWanted && !gpu_drawing() ? "Graphics card (failed)" : "Graphics card") : "Processor");
+		*restart = g_gpuWantedSet != g_gpuWanted;
+		break;
+	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -2592,7 +3299,7 @@ static void resound_sample(void)
 }static void menu_change(int i)
 {
 	switch (i) {
-	case M_UPSCALE: g_upscaleCR = !g_upscaleCR; WritePrivateProfileStringA("Display", "Upscale", g_upscaleCR ? "catmullrom" : "bilinear", g_iniPath); break;
+	case M_UPSCALE: g_upscaleCR = (g_upscaleCR + 1) % 3; WritePrivateProfileStringA("Display", "Upscale", g_upscaleCR == 2 ? "fsr" : g_upscaleCR ? "catmullrom" : "bilinear", g_iniPath); break;
 	case M_SCREENS: g_showScreens = !g_showScreens; ini_set("Display", "HDScreens", g_showScreens); break;
 	case M_TILES: g_showTiles = !g_showTiles; ini_set("Display", "HDTiles", g_showTiles); break;
 	case M_TEXT: g_hdText = !g_hdText; ini_set("Display", "SharpText", g_hdText); break;
@@ -2615,6 +3322,11 @@ static void resound_sample(void)
 	case M_ARMY: g_armyPanel = !g_armyPanel; ini_set("Display", "ArmyPanel", g_armyPanel); break;
 	case M_LETTERS: g_letters = !g_letters; ini_set("Display", "Letters", g_letters); break;
 	case M_RESOUND: g_resounded = !g_resounded; ini_set("Display", "Resounded", g_resounded); resound_sample(); break;
+	case M_RENDERER:
+		g_gpuWantedSet = !g_gpuWantedSet;
+		WritePrivateProfileStringA("Display", "Renderer", g_gpuWantedSet ? "gpu" : "cpu", g_iniPath);
+		break;
+	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -2634,8 +3346,17 @@ static void menu_toggle(void)
 }
 static void menu_set_tab(int tab) { g_menuTab = (tab + MENU_TABS) % MENU_TABS; g_menuSel = 0; }
 // A key while the panel is open (or F10 to open it). TRUE: it was the panel's.
+static const char *upscale_name(void) { return g_upscaleCR == 2 ? "FSR 1" : g_upscaleCR ? "Catmull-Rom" : "bilinear"; }
 static BOOL menu_key(int vk)
 {
+	if (vk == VK_F10 && GetKeyState(VK_CONTROL) < 0) { // Ctrl+F10: the FPS counter, off / simple / detailed
+		InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3);
+		ini_set("Display", "FpsCounter", g_statsOn);
+		logf_("FPS counter: %d", (int)g_statsOn);
+		if (g_menuOpen) menu_redraw();
+		InterlockedExchange(&g_forcePresent, 1); mark_dirty();
+		return TRUE;
+	}
 	if (vk == VK_F10) { menu_toggle(); return TRUE; }
 	if (!g_menuOpen) return FALSE;
 	int n = menu_tab_count(g_menuTab);
@@ -2653,7 +3374,7 @@ static BOOL menu_key(int vk)
 // a drawing layer of their own; there it is the plain panel, drawn over the picture (menu_draw).
 static BOOL menu_as_scroll(void) { return TRUE; }
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
-static RECT g_menuRowW[16], g_menuTabRectW[2], g_menuBoxW; // the plain panel's, in window coordinates
+static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW; // the plain panel's, in window coordinates
 // A click while the panel is open: window and game coordinates.
 static void menu_click(int wx, int wy, int gx, int gy)
 {
@@ -2759,17 +3480,427 @@ static HBITMAP g_outBmp;
 static DWORD *g_outBits;
 static int g_outW, g_outH;
 static volatile LONG g_shotViewWanted;
+
+// ---- The GPU path ([Display] Renderer=gpu, the default) -----------------------------------------
+// The picture the CPU composed (the 2x frame with the HD art in it) goes up as a texture and the
+// graphics card stretches it to the window: bilinear, Catmull-Rom, or FSR 1 (EASU to the window's
+// size, then RCAS), in shaders compiled at start with Windows' own d3dcompiler_47.dll. A flip-model
+// swap chain on the game's window; the presenter thread owns the device. Anything failing (no
+// Direct3D 11, a lost device) falls back to the CPU path for the rest of the session.
+static int g_gpuWanted = 1;
+static const char kShaders[] =
+"Texture2D<float4> T : register(t0);\n"
+"SamplerState S : register(s0);\n"
+"cbuffer C : register(b0) { float4 A; float4 B; };\n" // A: source w, h, output w, h; B: output origin x, y, RCAS scale
+"float3 L3(int2 p) { return T.Load(int3(clamp(p, int2(0, 0), int2(A.xy) - 1), 0)).rgb; }\n"
+"float LU(float3 c) { return 0.5 * c.r + c.g + 0.5 * c.b; }\n"
+"float4 vs(uint id : SV_VertexID) : SV_Position { float2 p = float2((id << 1) & 2, id & 2); return float4(p * float2(2, -2) + float2(-1, 1), 0, 1); }\n"
+"void setF(inout float2 dir, inout float len, float w, float la, float lb, float lc, float ld, float le) {\n"
+"  float lx = max(abs(ld - lc), abs(lc - lb)); float dx = ld - lb; dir.x += dx * w;\n"
+"  lx = lx > 0 ? saturate(abs(dx) / lx) : 0; len += lx * lx * w;\n"
+"  float ly = max(abs(le - lc), abs(lc - la)); float dy = le - la; dir.y += dy * w;\n"
+"  ly = ly > 0 ? saturate(abs(dy) / ly) : 0; len += ly * ly * w; }\n"
+"void tapF(inout float3 ac, inout float aw, float2 off, float2 dir, float2 len2, float lob, float clp, float3 c) {\n"
+"  float2 v = float2(off.x * dir.x + off.y * dir.y, off.x * -dir.y + off.y * dir.x) * len2;\n"
+"  float d2 = min(dot(v, v), clp); float wb = 0.4 * d2 - 1; float wa = lob * d2 - 1; wb *= wb; wa *= wa;\n"
+"  float w = (1.5625 * wb - 0.5625) * wa; aw += w; ac += c * w; }\n"
+"float4 easu(float4 pos : SV_Position) : SV_Target {\n"
+"  float2 pp = (pos.xy - B.xy) * (A.xy / A.zw) - 0.5; float2 fp = floor(pp); pp -= fp; int2 q = int2(fp);\n"
+"  float3 cb = L3(q + int2(0, -1)), cc = L3(q + int2(1, -1)), ce = L3(q + int2(-1, 0)), cf = L3(q), cg = L3(q + int2(1, 0)), ch = L3(q + int2(2, 0));\n"
+"  float3 ci = L3(q + int2(-1, 1)), cj = L3(q + int2(0, 1)), ck = L3(q + int2(1, 1)), cl = L3(q + int2(2, 1)), cn = L3(q + int2(0, 2)), co = L3(q + int2(1, 2));\n"
+"  float2 dir = 0; float len = 0;\n"
+"  setF(dir, len, (1 - pp.x) * (1 - pp.y), LU(cb), LU(ce), LU(cf), LU(cg), LU(cj));\n"
+"  setF(dir, len, pp.x * (1 - pp.y), LU(cc), LU(cf), LU(cg), LU(ch), LU(ck));\n"
+"  setF(dir, len, (1 - pp.x) * pp.y, LU(cf), LU(ci), LU(cj), LU(ck), LU(cn));\n"
+"  setF(dir, len, pp.x * pp.y, LU(cg), LU(cj), LU(ck), LU(cl), LU(co));\n"
+"  float dr = dot(dir, dir); bool z = dr < 1.0 / 32768; dr = z ? 1 : rsqrt(dr); if (z) dir.x = 1; dir *= dr;\n"
+"  len *= 0.5; len *= len;\n"
+"  float st = dot(dir, dir) / max(abs(dir.x), abs(dir.y));\n"
+"  float2 len2 = float2(1 + (st - 1) * len, 1 - 0.5 * len); float lob = 0.5 + (0.25 - 0.04 - 0.5) * len; float clp = 1 / lob;\n"
+"  float3 ac = 0; float aw = 0;\n"
+"  tapF(ac, aw, float2(0, -1) - pp, dir, len2, lob, clp, cb); tapF(ac, aw, float2(1, -1) - pp, dir, len2, lob, clp, cc);\n"
+"  tapF(ac, aw, float2(-1, 1) - pp, dir, len2, lob, clp, ci); tapF(ac, aw, float2(0, 1) - pp, dir, len2, lob, clp, cj);\n"
+"  tapF(ac, aw, float2(0, 0) - pp, dir, len2, lob, clp, cf); tapF(ac, aw, float2(-1, 0) - pp, dir, len2, lob, clp, ce);\n"
+"  tapF(ac, aw, float2(1, 1) - pp, dir, len2, lob, clp, ck); tapF(ac, aw, float2(2, 1) - pp, dir, len2, lob, clp, cl);\n"
+"  tapF(ac, aw, float2(2, 0) - pp, dir, len2, lob, clp, ch); tapF(ac, aw, float2(1, 0) - pp, dir, len2, lob, clp, cg);\n"
+"  tapF(ac, aw, float2(1, 2) - pp, dir, len2, lob, clp, co); tapF(ac, aw, float2(0, 2) - pp, dir, len2, lob, clp, cn);\n"
+"  float3 mn = min(min(cf, cg), min(cj, ck)), mx = max(max(cf, cg), max(cj, ck));\n"
+"  return float4(clamp(ac / aw, mn, mx), 1); }\n"
+"float4 rcas(float4 pos : SV_Position) : SV_Target {\n"
+"  int2 q = int2(pos.xy - B.xy);\n"
+"  float3 b = L3(q + int2(0, -1)), d = L3(q + int2(-1, 0)), e = L3(q), f = L3(q + int2(1, 0)), h = L3(q + int2(0, 1));\n"
+"  float bl = LU(b), dl = LU(d), el = LU(e), fl = LU(f), hl = LU(h);\n"
+"  float nz = 0.25 * (bl + dl + fl + hl) - el;\n"
+"  float rg = max(max(max(bl, dl), max(el, fl)), hl) - min(min(min(bl, dl), min(el, fl)), hl);\n"
+"  nz = -0.5 * saturate(abs(nz) / max(rg, 1.0 / 4096)) + 1;\n"
+"  float3 mn = min(min(b, d), min(f, h)), mx = max(max(b, d), max(f, h));\n"
+"  float3 hmin = min(mn, e) / (4 * mx + 1.0 / 4096), hmax = (1 - max(mx, e)) / (4 * mn - 4 - 1.0 / 4096);\n"
+"  float3 lb = max(-hmin, hmax); float lobe = max(-0.1875, min(max(lb.r, max(lb.g, lb.b)), 0)) * B.z * nz;\n"
+"  return float4(saturate((lobe * (b + d + f + h) + e) / (4 * lobe + 1)), 1); }\n"
+"float4 wts(float t) { float t2 = t * t, t3 = t2 * t; return float4(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1, -1.5 * t3 + 2 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2); }\n"
+"float4 cr(float4 pos : SV_Position) : SV_Target {\n"
+"  float2 pp = (pos.xy - B.xy) * (A.xy / A.zw) - 0.5; float2 fp = floor(pp); float2 t = pp - fp; int2 q = int2(fp);\n"
+"  float4 wx = wts(t.x), wy = wts(t.y); float3 c = 0;\n"
+"  [unroll] for (int j = 0; j < 4; j++) { float3 r = 0; [unroll] for (int i = 0; i < 4; i++) r += L3(q + int2(i - 1, j - 1)) * wx[i]; c += r * wy[j]; }\n"
+"  return float4(saturate(c), 1); }\n"
+"float4 bil(float4 pos : SV_Position) : SV_Target { return float4(T.SampleLevel(S, (pos.xy - B.xy) / A.zw, 0).rgb, 1); }\n"
+"float4 key(float4 pos : SV_Position) : SV_Target {\n" // the overlay: magenta is see-through
+"  float3 c = T.Load(int3(int2(pos.xy - B.xy), 0)).rgb; if (c.r > 0.99 && c.b > 0.99 && c.g < 0.01) discard; return float4(c, 1); }\n";
+
+static const GUID kIID_Tex2D = { 0x6f15aaf2, 0xd208, 0x4e89, { 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c } };
+static const GUID kIID_DXGIFactory = { 0x7b7166ec, 0x21c7, 0x44ae, { 0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69 } };
+static const GUID kIID_DXGIDevice1 = { 0x77db970f, 0x6276, 0x48ba, { 0xba, 0x28, 0x07, 0x01, 0x43, 0xb4, 0x39, 0x2c } };
+enum { GP_EASU, GP_RCAS, GP_CR, GP_BIL, GP_KEY, GP_N };
+#define GPU_Q 4
+static struct {
+	int state;                                  // 0 not tried, 1 on, -1 off (the CPU path)
+	ID3D11Device *dev; ID3D11DeviceContext *ctx; IDXGISwapChain *sc;
+	ID3D11VertexShader *vs; ID3D11PixelShader *ps[GP_N];
+	ID3D11Buffer *cb; ID3D11SamplerState *lin;
+	ID3D11Texture2D *src; ID3D11ShaderResourceView *srcV; int srcW, srcH;
+	ID3D11Texture2D *mid; ID3D11RenderTargetView *midR; ID3D11ShaderResourceView *midV; int midW, midH;
+	ID3D11Texture2D *ovl; ID3D11ShaderResourceView *ovlV; int ovlW, ovlH;
+	HDC ovlDC; HBITMAP ovlBmp; DWORD *ovlBits;
+	ID3D11Texture2D *stage; int stageW, stageH; // screenshots read back
+	int bufW, bufH;
+	ID3D11Query *qd[GPU_Q], *qa[GPU_Q], *qb[GPU_Q]; int qn;
+	double gpuMs;                               // the card's time for the last frame measured
+	BOOL flip;
+	RECT lastV; BOOL have;                      // the last picture's place (repeats)
+} g_gpu;
+static IDXGIOutput *g_gpuOut;                   // the display the window is on (gpu_wait_vblank)
+static BOOL gpu_drawing(void) { return g_gpuWanted && g_gpu.state >= 0 && g_scale == SCALE_SMOOTH; }
+static double gpu_ms(void) { return g_gpu.gpuMs; }
+#define REL(p) do { if (p) { IUnknown_Release((IUnknown *)(p)); (p) = NULL; } } while (0)
+static void gpu_teardown(int state);
+static void gpu_fail(const char *why, HRESULT hr)
+{
+	logf_("GPU drawing off (%s, %08lx): the CPU draws", why, (unsigned long)hr);
+	gpu_teardown(-1);
+}
+// Everything released; state -1 (failed: the CPU draws) or 0 (switched off, may start again).
+static void gpu_teardown(int state)
+{
+	g_gpu.state = state;
+	if (g_gpu.ctx) ID3D11DeviceContext_ClearState(g_gpu.ctx);
+	REL(g_gpu.srcV); REL(g_gpu.src); REL(g_gpu.midV); REL(g_gpu.midR); REL(g_gpu.mid); REL(g_gpu.ovlV); REL(g_gpu.ovl); REL(g_gpu.stage);
+	for (int i = 0; i < GP_N; i++) REL(g_gpu.ps[i]);
+	for (int i = 0; i < GPU_Q; i++) { REL(g_gpu.qd[i]); REL(g_gpu.qa[i]); REL(g_gpu.qb[i]); }
+	REL(g_gpu.vs); REL(g_gpu.cb); REL(g_gpu.lin); REL(g_gpu.sc); REL(g_gpu.ctx); REL(g_gpu.dev);
+	g_gpu.have = FALSE;
+	REL(g_gpuOut);
+	g_gpu.srcW = g_gpu.srcH = g_gpu.midW = g_gpu.midH = g_gpu.ovlW = g_gpu.ovlH = g_gpu.stageW = g_gpu.stageH = 0;
+	g_gpu.bufW = g_gpu.bufH = 0; g_gpu.qn = 0; g_gpu.gpuMs = 0;
+	InterlockedExchange(&g_forcePresent, 1);
+}
+static BOOL gpu_tex(ID3D11Texture2D **t, ID3D11ShaderResourceView **v, ID3D11RenderTargetView **r, int w, int h, BOOL dynamic);
+static void gpu_pass(int ps, ID3D11ShaderResourceView *srv, int sw, int sh, ID3D11RenderTargetView *rtv, int x, int y, int w, int h, float rcas);
+static BOOL gpu_init(int cw, int ch)
+{
+	typedef HRESULT (WINAPI *create_t)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *, UINT, UINT,
+		const DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **, ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
+	typedef HRESULT (WINAPI *compile_t)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO *, ID3DInclude *, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob **, ID3DBlob **);
+	HMODULE d3d = LoadLibraryA("d3d11.dll"), dc = LoadLibraryA("d3dcompiler_47.dll");
+	create_t create = d3d ? (create_t)GetProcAddress(d3d, "D3D11CreateDeviceAndSwapChain") : NULL;
+	compile_t compile = dc ? (compile_t)GetProcAddress(dc, "D3DCompile") : NULL;
+	if (!create || !compile) { gpu_fail("no d3d11.dll or d3dcompiler_47.dll", 0); return FALSE; }
+	DXGI_SWAP_CHAIN_DESC sd;
+	memset(&sd, 0, sizeof sd);
+	sd.BufferDesc.Width = cw; sd.BufferDesc.Height = ch;
+	sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	sd.SampleDesc.Count = 1;
+	sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	sd.BufferCount = 2;
+	sd.OutputWindow = g_hwnd;
+	sd.Windowed = TRUE;
+	sd.SwapEffect = 4; // DXGI_SWAP_EFFECT_FLIP_DISCARD
+	D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0, got;
+	HRESULT hr = create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &g_gpu.sc, &g_gpu.dev, &got, &g_gpu.ctx);
+	g_gpu.flip = SUCCEEDED(hr);
+	if (FAILED(hr)) { // (an older blit-model chain, as on a layered window)
+		sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD; sd.BufferCount = 1;
+		hr = create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, &fl, 1, D3D11_SDK_VERSION, &sd, &g_gpu.sc, &g_gpu.dev, &got, &g_gpu.ctx);
+	}
+	if (FAILED(hr)) { gpu_fail("no Direct3D 11 device", hr); return FALSE; }
+	IDXGIFactory *fac = NULL;
+	if (SUCCEEDED(IDXGISwapChain_GetParent(g_gpu.sc, &kIID_DXGIFactory, (void **)&fac))) {
+		IDXGIFactory_MakeWindowAssociation(fac, g_hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
+		IDXGIFactory_Release(fac);
+	}
+	IDXGIDevice1 *xd = NULL;
+	if (SUCCEEDED(ID3D11Device_QueryInterface(g_gpu.dev, &kIID_DXGIDevice1, (void **)&xd))) { IDXGIDevice1_SetMaximumFrameLatency(xd, 1); IDXGIDevice1_Release(xd); }
+	static const char *const entry[GP_N] = { "easu", "rcas", "cr", "bil", "key" };
+	ID3DBlob *code = NULL, *err = NULL;
+	hr = compile(kShaders, sizeof kShaders - 1, "lords2hd", NULL, NULL, "vs", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &err);
+	if (FAILED(hr)) { if (err) logf_("shader: %s", (char *)ID3D10Blob_GetBufferPointer(err)); REL(err); gpu_fail("vertex shader", hr); return FALSE; }
+	hr = ID3D11Device_CreateVertexShader(g_gpu.dev, ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), NULL, &g_gpu.vs);
+	REL(code);
+	if (FAILED(hr)) { gpu_fail("vertex shader", hr); return FALSE; }
+	for (int i = 0; i < GP_N; i++) {
+		hr = compile(kShaders, sizeof kShaders - 1, "lords2hd", NULL, NULL, entry[i], "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &err);
+		if (FAILED(hr)) { if (err) logf_("shader %s: %s", entry[i], (char *)ID3D10Blob_GetBufferPointer(err)); REL(err); gpu_fail("pixel shader", hr); return FALSE; }
+		hr = ID3D11Device_CreatePixelShader(g_gpu.dev, ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), NULL, &g_gpu.ps[i]);
+		REL(code);
+		if (FAILED(hr)) { gpu_fail("pixel shader", hr); return FALSE; }
+	}
+	D3D11_BUFFER_DESC bd = { 32, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0 };
+	hr = ID3D11Device_CreateBuffer(g_gpu.dev, &bd, NULL, &g_gpu.cb);
+	if (FAILED(hr)) { gpu_fail("constant buffer", hr); return FALSE; }
+	D3D11_SAMPLER_DESC smp;
+	memset(&smp, 0, sizeof smp);
+	smp.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	smp.MaxLOD = D3D11_FLOAT32_MAX;
+	hr = ID3D11Device_CreateSamplerState(g_gpu.dev, &smp, &g_gpu.lin);
+	if (FAILED(hr)) { gpu_fail("sampler", hr); return FALSE; }
+	for (int i = 0; i < GPU_Q; i++) {
+		D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 }, qt = { D3D11_QUERY_TIMESTAMP, 0 };
+		ID3D11Device_CreateQuery(g_gpu.dev, &qd, &g_gpu.qd[i]);
+		ID3D11Device_CreateQuery(g_gpu.dev, &qt, &g_gpu.qa[i]);
+		ID3D11Device_CreateQuery(g_gpu.dev, &qt, &g_gpu.qb[i]);
+	}
+	// Every shader drawn once into a small texture now: the driver finishes a shader at its first draw,
+	// and the first Catmull-Rom picture (a battle's zoomed-out view) took 110 ms (six empty refreshes).
+	{
+		double w0 = perf_now();
+		ID3D11Texture2D *wt = NULL, *ws = NULL; ID3D11ShaderResourceView *wv = NULL, *wsv = NULL; ID3D11RenderTargetView *wr = NULL;
+		if (gpu_tex(&wt, &wv, &wr, 16, 16, FALSE) && gpu_tex(&ws, &wsv, NULL, 16, 16, TRUE)) {
+			ID3D11DeviceContext_IASetPrimitiveTopology(g_gpu.ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			ID3D11DeviceContext_IASetInputLayout(g_gpu.ctx, NULL);
+			ID3D11DeviceContext_VSSetShader(g_gpu.ctx, g_gpu.vs, NULL, 0);
+			ID3D11DeviceContext_PSSetConstantBuffers(g_gpu.ctx, 0, 1, &g_gpu.cb);
+			ID3D11DeviceContext_PSSetSamplers(g_gpu.ctx, 0, 1, &g_gpu.lin);
+			for (int i = 0; i < GP_N; i++) gpu_pass(i, wsv, 16, 16, wr, 0, 0, 16, 16, 0.5f);
+			ID3D11ShaderResourceView *none = NULL;
+			ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &none);
+			ID3D11DeviceContext_OMSetRenderTargets(g_gpu.ctx, 0, NULL, NULL);
+			ID3D11DeviceContext_Flush(g_gpu.ctx);
+		}
+		REL(wr); REL(wv); REL(wt); REL(wsv); REL(ws);
+		logf_("GPU shaders warmed up in %.1f ms", perf_now() - w0);
+	}
+	g_gpu.bufW = cw; g_gpu.bufH = ch;
+	g_gpu.state = 1;
+	logf_("GPU drawing on (%s swap chain, %dx%d)", g_gpu.flip ? "flip" : "blit", cw, ch);
+	return TRUE;
+}
+// A texture of w x h (BGRA), dynamic for uploads or a render target.
+static BOOL gpu_tex(ID3D11Texture2D **t, ID3D11ShaderResourceView **v, ID3D11RenderTargetView **r, int w, int h, BOOL dynamic)
+{
+	REL(*v); if (r) REL(*r); REL(*t);
+	D3D11_TEXTURE2D_DESC td;
+	memset(&td, 0, sizeof td);
+	td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+	td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+	td.Usage = dynamic ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
+	td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (r ? D3D11_BIND_RENDER_TARGET : 0);
+	td.CPUAccessFlags = dynamic ? D3D11_CPU_ACCESS_WRITE : 0;
+	if (FAILED(ID3D11Device_CreateTexture2D(g_gpu.dev, &td, NULL, t))) return FALSE;
+	if (FAILED(ID3D11Device_CreateShaderResourceView(g_gpu.dev, (ID3D11Resource *)*t, NULL, v))) return FALSE;
+	if (r && FAILED(ID3D11Device_CreateRenderTargetView(g_gpu.dev, (ID3D11Resource *)*t, NULL, r))) return FALSE;
+	return TRUE;
+}
+static BOOL gpu_upload(ID3D11Texture2D *t, const DWORD *px, int w, int h, int stride)
+{
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (FAILED(ID3D11DeviceContext_Map(g_gpu.ctx, (ID3D11Resource *)t, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return FALSE;
+	for (int y = 0; y < h; y++) memcpy((BYTE *)m.pData + (size_t)y * m.RowPitch, px + (size_t)y * stride, (size_t)w * 4);
+	ID3D11DeviceContext_Unmap(g_gpu.ctx, (ID3D11Resource *)t, 0);
+	return TRUE;
+}
+// One pass: shader ps reading srv (sw x sh) into rtv over the viewport x, y, w, h.
+static void gpu_pass(int ps, ID3D11ShaderResourceView *srv, int sw, int sh, ID3D11RenderTargetView *rtv, int x, int y, int w, int h, float rcas)
+{
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (SUCCEEDED(ID3D11DeviceContext_Map(g_gpu.ctx, (ID3D11Resource *)g_gpu.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+		float *c = m.pData;
+		c[0] = (float)sw; c[1] = (float)sh; c[2] = (float)w; c[3] = (float)h;
+		c[4] = (float)x; c[5] = (float)y; c[6] = rcas; c[7] = 0;
+		ID3D11DeviceContext_Unmap(g_gpu.ctx, (ID3D11Resource *)g_gpu.cb, 0);
+	}
+	ID3D11ShaderResourceView *none = NULL;
+	ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &none);
+	ID3D11DeviceContext_OMSetRenderTargets(g_gpu.ctx, 1, &rtv, NULL);
+	D3D11_VIEWPORT vp = { (float)x, (float)y, (float)w, (float)h, 0, 1 };
+	ID3D11DeviceContext_RSSetViewports(g_gpu.ctx, 1, &vp);
+	ID3D11DeviceContext_PSSetShader(g_gpu.ctx, g_gpu.ps[ps], NULL, 0);
+	ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &srv);
+	ID3D11DeviceContext_Draw(g_gpu.ctx, 3, 0);
+}
+static void perf_draw(HDC dc, int vw, int vh);
+static void gpu_record(ID3D11Texture2D *back, const RECT *v);
+// The picture to the window by the GPU; FALSE: draw it on the CPU instead.
+static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
+{
+	RECT c;
+	GetClientRect(g_hwnd, &c);
+	int cw = c.right, ch = c.bottom, vw = v->right - v->left, vh = v->bottom - v->top;
+	if (cw <= 0 || ch <= 0 || vw <= 0 || vh <= 0) return FALSE;
+	if (!g_gpu.state && !gpu_init(cw, ch)) return FALSE;
+	if (g_gpu.state != 1) return FALSE;
+	HRESULT hr;
+	if (cw != g_gpu.bufW || ch != g_gpu.bufH) {
+		ID3D11DeviceContext_OMSetRenderTargets(g_gpu.ctx, 0, NULL, NULL);
+		hr = IDXGISwapChain_ResizeBuffers(g_gpu.sc, 0, cw, ch, DXGI_FORMAT_UNKNOWN, 0);
+		if (FAILED(hr)) { gpu_fail("resize", hr); return FALSE; }
+		g_gpu.bufW = cw; g_gpu.bufH = ch;
+	}
+	if (!src) { // a repeat (gpu_repeat): the last picture again, from the texture the card already holds
+		if (!g_gpu.srcV || g_gpu.srcW != sw || g_gpu.srcH != sh) return FALSE;
+	}
+	else {
+		if ((sw != g_gpu.srcW || sh != g_gpu.srcH) && !gpu_tex(&g_gpu.src, &g_gpu.srcV, NULL, sw, sh, TRUE)) { gpu_fail("texture", 0); return FALSE; }
+		g_gpu.srcW = sw; g_gpu.srcH = sh;
+		if (!gpu_upload(g_gpu.src, src, sw, sh, sw)) { gpu_fail("upload", 0); return FALSE; }
+		g_gpu.lastV = *v; g_gpu.have = TRUE;
+	}
+	perf_mark(PS_SCALE); // (the upload)
+	double tSub0 = perf_now(), tSub1, tSub2; // Timing=1: a slow draw's parts
+	ID3D11Texture2D *back = NULL;
+	ID3D11RenderTargetView *bv = NULL;
+	if (FAILED(hr = IDXGISwapChain_GetBuffer(g_gpu.sc, 0, &kIID_Tex2D, (void **)&back)) ||
+		FAILED(hr = ID3D11Device_CreateRenderTargetView(g_gpu.dev, (ID3D11Resource *)back, NULL, &bv))) { REL(back); gpu_fail("back buffer", hr); return FALSE; }
+	int q = g_gpu.qn % GPU_Q;
+	if (g_gpu.qd[q]) { ID3D11DeviceContext_Begin(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qd[q]); ID3D11DeviceContext_End(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qa[q]); }
+	static const float black[4] = { 0, 0, 0, 1 };
+	ID3D11DeviceContext_ClearRenderTargetView(g_gpu.ctx, bv, black);
+	ID3D11DeviceContext_IASetPrimitiveTopology(g_gpu.ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	ID3D11DeviceContext_IASetInputLayout(g_gpu.ctx, NULL);
+	ID3D11DeviceContext_VSSetShader(g_gpu.ctx, g_gpu.vs, NULL, 0);
+	ID3D11DeviceContext_PSSetConstantBuffers(g_gpu.ctx, 0, 1, &g_gpu.cb);
+	ID3D11DeviceContext_PSSetSamplers(g_gpu.ctx, 0, 1, &g_gpu.lin);
+	int mode = g_upscaleCR;
+	tSub1 = perf_now();
+	if (mode == 2) { // FSR: EASU (Catmull-Rom when not enlarging) into a window-sized texture, RCAS onto the screen
+		if ((vw != g_gpu.midW || vh != g_gpu.midH) && !gpu_tex(&g_gpu.mid, &g_gpu.midV, &g_gpu.midR, vw, vh, FALSE)) { REL(bv); REL(back); gpu_fail("texture", 0); return FALSE; }
+		g_gpu.midW = vw; g_gpu.midH = vh;
+		gpu_pass(vh > sh ? GP_EASU : GP_CR, g_gpu.srcV, sw, sh, g_gpu.midR, 0, 0, vw, vh, 0);
+		gpu_pass(GP_RCAS, g_gpu.midV, vw, vh, bv, v->left, v->top, vw, vh, g_rcasSharp >= 0 ? exp2f(-g_rcasSharp) : 0);
+	}
+	else gpu_pass(mode ? GP_CR : GP_BIL, g_gpu.srcV, sw, sh, bv, v->left, v->top, vw, vh, 0);
+	tSub2 = perf_now();
+	if (g_statsOn) { // the overlay: drawn by GDI into a small bitmap, magenta where it is see-through
+		int ow = min(vw, max(640, vw * 6 / 10)), oh = min(vh, max(120, vh / 7));
+		if (ow != g_gpu.ovlW || oh != g_gpu.ovlH) {
+			if (g_gpu.ovlDC) { DeleteDC(g_gpu.ovlDC); DeleteObject(g_gpu.ovlBmp); g_gpu.ovlDC = NULL; }
+			BITMAPINFOHEADER ob = { sizeof ob, ow, -oh, 1, 32, BI_RGB };
+			g_gpu.ovlBmp = CreateDIBSection(NULL, (BITMAPINFO *)&ob, DIB_RGB_COLORS, (void **)&g_gpu.ovlBits, NULL, 0);
+			if (g_gpu.ovlBmp) { g_gpu.ovlDC = CreateCompatibleDC(NULL); SelectObject(g_gpu.ovlDC, g_gpu.ovlBmp); }
+			if (!g_gpu.ovlBmp || !gpu_tex(&g_gpu.ovl, &g_gpu.ovlV, NULL, ow, oh, TRUE)) g_gpu.ovlW = 0;
+			else { g_gpu.ovlW = ow; g_gpu.ovlH = oh; }
+		}
+		if (g_gpu.ovlW) {
+			for (int i = 0; i < ow * oh; i++) g_gpu.ovlBits[i] = 0xff00ff;
+			perf_draw(g_gpu.ovlDC, vw, vh);
+			GdiFlush();
+			if (gpu_upload(g_gpu.ovl, g_gpu.ovlBits, ow, oh, ow)) gpu_pass(GP_KEY, g_gpu.ovlV, ow, oh, bv, v->left, v->top, ow, oh, 0);
+		}
+	}
+	ID3D11ShaderResourceView *none = NULL;
+	ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &none);
+	if (g_timing && perf_now() - tSub0 > 30) logf_("gpu: slow draw: back buffer %.1f, passes %.1f, overlay %.1f ms (view %dx%d, source %dx%d)", tSub1 - tSub0, tSub2 - tSub1, perf_now() - tSub2, vw, vh, sw, sh);
+	if (g_gpu.qd[q]) { ID3D11DeviceContext_End(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qb[q]); ID3D11DeviceContext_End(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qd[q]); }
+	g_gpu.qn++;
+	if (g_shotViewWanted && InterlockedExchange(&g_shotViewWanted, 0)) { // testing: the picture as on screen, read back
+		if (vw != g_gpu.stageW || vh != g_gpu.stageH) {
+			REL(g_gpu.stage);
+			D3D11_TEXTURE2D_DESC td;
+			memset(&td, 0, sizeof td);
+			td.Width = vw; td.Height = vh; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+			td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			if (SUCCEEDED(ID3D11Device_CreateTexture2D(g_gpu.dev, &td, NULL, &g_gpu.stage))) { g_gpu.stageW = vw; g_gpu.stageH = vh; }
+		}
+		D3D11_BOX box = { v->left, v->top, 0, v->right, v->bottom, 1 };
+		D3D11_MAPPED_SUBRESOURCE m;
+		if (g_gpu.stage) {
+			ID3D11DeviceContext_CopySubresourceRegion(g_gpu.ctx, (ID3D11Resource *)g_gpu.stage, 0, 0, 0, 0, (ID3D11Resource *)back, 0, &box);
+			if (SUCCEEDED(ID3D11DeviceContext_Map(g_gpu.ctx, (ID3D11Resource *)g_gpu.stage, 0, D3D11_MAP_READ, 0, &m))) {
+				char path[MAX_PATH];
+				snprintf(path, sizeof path, "%s\\lords2hd-shotview.bmp", g_gameDir);
+				FILE *f = fopen(path, "wb");
+				if (f) {
+					BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + vw * vh * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+					BITMAPINFOHEADER ih = { sizeof ih, vw, -vh, 1, 32, BI_RGB };
+					fwrite(&fh, sizeof fh, 1, f); fwrite(&ih, sizeof ih, 1, f);
+					for (int y = 0; y < vh; y++) fwrite((BYTE *)m.pData + (size_t)y * m.RowPitch, 4, vw, f);
+					fclose(f);
+				}
+				ID3D11DeviceContext_Unmap(g_gpu.ctx, (ID3D11Resource *)g_gpu.stage, 0);
+			}
+		}
+	}
+	if (src) gpu_record(back, v); // (a repeat is not a recorded frame)
+	REL(bv); REL(back);
+	perf_mark(PS_SHARPEN); // (the commands sent)
+	hr = IDXGISwapChain_Present(g_gpu.sc, 0, 0);
+	perf_mark(PS_BLIT);
+	if (FAILED(hr)) { gpu_fail("present", hr); return TRUE; }
+	if (g_timing && g_gpu.flip) { // Timing=1: whether pictures go to the display directly or through the compositor
+		static const GUID kIID_SCMedia = { 0xdd95b90b, 0xf05f, 0x4f6a, { 0xbd, 0x65, 0x25, 0xbf, 0xb2, 0x64, 0xbd, 0x84 } };
+		typedef struct { UINT presentCount, presentRefreshCount, syncRefreshCount; LARGE_INTEGER syncQPC; UINT syncGPU, mode, approved; } stats_t;
+		typedef struct { void *qi; void *addRef; ULONG (WINAPI *release)(void *); HRESULT (WINAPI *stats)(void *, stats_t *); } media_vt;
+		static void *media; static BOOL tried; static int lastMode = -1;
+		if (!tried) { tried = TRUE; if (FAILED(IDXGISwapChain_QueryInterface(g_gpu.sc, &kIID_SCMedia, &media))) media = NULL; }
+		stats_t st;
+		if (media && SUCCEEDED((*(media_vt **)media)->stats(media, &st)) && (int)st.mode != lastMode) {
+			static const char *const names[] = { "composed", "overlay", "independent flip", "composition failure" };
+			logf_("display mode: %s", st.mode < 4 ? names[st.mode] : "?");
+			lastMode = st.mode;
+		}
+	}
+	// the card's time for a frame drawn a few frames ago (its queries are read without waiting)
+	if (g_gpu.qn >= GPU_Q) {
+		int r = g_gpu.qn % GPU_Q; // the oldest
+		D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj; UINT64 a, b;
+		if (g_gpu.qd[r] && ID3D11DeviceContext_GetData(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qd[r], &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+			ID3D11DeviceContext_GetData(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qa[r], &a, sizeof a, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+			ID3D11DeviceContext_GetData(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qb[r], &b, sizeof b, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+			!dj.Disjoint && dj.Frequency)
+			g_gpu.gpuMs = (double)(b - a) * 1000.0 / dj.Frequency;
+	}
+	g_outW = vw; g_outH = vh;
+	return TRUE;
+}
+
+// Waits for the display's next vertical blank (the GPU path): DwmFlush follows the compositor, which a
+// fullscreen flip-model window bypasses (independent flip), so pictures were paced to the wrong clock
+// and a present now and then waited for a queued one (a refresh with no picture). FALSE: not available.
+static BOOL gpu_wait_vblank(void)
+{
+	if (g_gpu.state != 1 || !g_gpu.sc) return FALSE;
+	if (!g_gpuOut && FAILED(IDXGISwapChain_GetContainingOutput(g_gpu.sc, &g_gpuOut))) { g_gpuOut = NULL; return FALSE; }
+	if (FAILED(IDXGIOutput_WaitForVBlank(g_gpuOut))) { REL(g_gpuOut); return FALSE; }
+	return TRUE;
+}
+// A refresh with nothing new from the game: the last picture handed to the screen again, drawn by the
+// card from the textures it holds (no compose, no upload), so every refresh gets a picture. Only with
+// the GPU, and not while the game is minimised or in the background.
+static BOOL gpu_repeat(void)
+{
+	if (!g_repeatOn || !gpu_drawing() || g_gpu.state != 1 || !g_gpu.have || !g_hwnd) return FALSE;
+	if (IsIconic(g_hwnd) || (!g_remote && GetForegroundWindow() != g_hwnd)) return FALSE;
+	RECT v;
+	view_rect(&v);
+	if (!EqualRect(&v, &g_gpu.lastV)) return FALSE; // the window changed: a real picture is due
+	return gpu_present(&g_gpu.lastV, NULL, g_gpu.srcW, g_gpu.srcH);
+}
+
 static void put_picture(HDC dc, const RECT *v, const DWORD *src, int sw, int sh, int gdiMode)
 {
 	int vw = v->right - v->left, vh = v->bottom - v->top;
 	BITMAPINFOHEADER bi = { sizeof bi, sw, -sh, 1, 32, BI_RGB };
-	BOOL cr = g_upscaleCR, menu = g_menuOpen, shot = g_shotViewWanted;
-	if (!cr && !menu && !shot) {
+	BOOL cr = g_upscaleCR, menu = g_menuOpen, shot = g_shotViewWanted, stats = g_statsOn;
+	perf_mark(PS_COMPOSE);
+	if (g_gpuWanted && g_gpu.state >= 0 && gpu_present(v, src, sw, sh)) return;
+	if (!cr && !menu && !shot && !stats) {
 		SetStretchBltMode(dc, gdiMode);
 		if (gdiMode == HALFTONE) SetBrushOrgEx(dc, 0, 0, NULL);
 		StretchDIBits(dc, v->left, v->top, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+		perf_mark(PS_SCALE);
 		return;
 	}
+	static DWORD *tmp;       // FSR: the stretched picture before RCAS
+	static int tmpCap;
 	if (!g_outDC || g_outW != vw || g_outH != vh) {
 		if (g_outDC) { DeleteDC(g_outDC); DeleteObject(g_outBmp); g_outDC = NULL; }
 		BITMAPINFOHEADER ob = { sizeof ob, vw, -vh, 1, 32, BI_RGB };
@@ -2780,12 +3911,24 @@ static void put_picture(HDC dc, const RECT *v, const DWORD *src, int sw, int sh,
 		g_outW = vw; g_outH = vh;
 	}
 	GdiFlush();
-	if (!cr || !resize_cr(src, sw, sh, sw, g_outBits, vw, vh, vw)) {
+	BOOL fsr = cr == 2, sharpen = fsr && g_rcasSharp >= 0;
+	if (sharpen && vw * vh > tmpCap) { free(tmp); tmp = malloc((size_t)vw * vh * 4); tmpCap = tmp ? vw * vh : 0; }
+	if (sharpen && !tmp) sharpen = FALSE;
+	DWORD *to = sharpen ? tmp : g_outBits;
+	BOOL scaled = FALSE;
+	if (fsr && g_fsrFinal && vh > sh) scaled = fsr_easu(src, sw, sh, sw, to, vw, vh, vw);
+	if (!scaled && cr) scaled = resize_cr(src, sw, sh, sw, to, vw, vh, vw);
+	if (!scaled) {
+		sharpen = FALSE;
 		SetStretchBltMode(g_outDC, gdiMode);
 		if (gdiMode == HALFTONE) SetBrushOrgEx(g_outDC, 0, 0, NULL);
 		StretchDIBits(g_outDC, 0, 0, vw, vh, 0, 0, sw, sh, src, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
 	}
+	perf_mark(PS_SCALE);
+	if (sharpen && !fsr_rcas(tmp, vw, g_outBits, vw, vh, vw)) memcpy(g_outBits, tmp, (size_t)vw * vh * 4);
+	perf_mark(PS_SHARPEN);
 	if (menu && !menu_as_scroll()) menu_draw(g_outDC, vw, vh, v->left, v->top);
+	if (stats) perf_draw(g_outDC, vw, vh);
 	GdiFlush();
 	if (shot && InterlockedExchange(&g_shotViewWanted, 0)) { // testing: the picture as on screen
 		char path[MAX_PATH];
@@ -2799,11 +3942,142 @@ static void put_picture(HDC dc, const RECT *v, const DWORD *src, int sw, int sh,
 		}
 	}
 	BitBlt(dc, v->left, v->top, vw, vh, g_outDC, 0, 0, SRCCOPY);
+	GdiFlush();
+	perf_mark(PS_BLIT);
 }
 
 // The zoomed-out battle's picture, twice the size of the normal one: the battlefield 1:1 from the
 // frame's tall area, the side panel and the top bar doubled. Above 2x on screen it is smoothed
 // once more; below (1080p is 1.125x) GDI's smooth mode does the rest.
+// The zoomed-out battle's picture is built in bands of rows on all the CPU's threads (pool_run):
+// bt_rows_job makes the picture's rows from the frame (every step only writes its own row), then
+// bt_double_job doubles them and stamps the HD troops at 2x. One thread took ~19 ms at 5K.
+#define BT_BAND 16
+static volatile LONG g_btMiss; // Timing=1: battlefield pixels whose HD art did not match this picture
+static struct {
+	DWORD *pic, *pic2; const BYTE *copy, *frame; int pitch, lw, lh, mapW;
+	const DWORD *btL; const BYTE *btS, *btV; BOOL btOn, big, menu, easu;
+	int mx0, mx1, my1, lx, fy0;
+} g_bt;
+#define BT_IN_MENU(sx, sy) ((sx) >= g_bt.mx0 && (sx) < g_bt.mx1 && (sy) >= 48 && (sy) < g_bt.my1)
+static void bt_row(int sy)
+{
+	int lw = g_bt.lw, mapW = g_bt.mapW, pitch = g_bt.pitch;
+	const BYTE *frame = g_bt.frame, *copy = g_bt.copy;
+	DWORD *o = g_bt.pic + sy * lw;
+	if (sy >= 48) {
+		const BYTE *row = frame + (24 + sy - 48) * pitch + PANEL_X - mapW;
+		for (int sx = 0; sx < mapW; sx++) o[sx] = g_lut[row[sx]];
+		// The panel doubled smoothly (3:1 between neighbours), not as square blocks: its stone and
+		// the battle overview have no 2x art.
+		int py = sy - 48, y0 = py / 2, y1 = max(0, min(GAME_H - 25, y0 + ((py & 1) ? 1 : -1)));
+		const BYTE *pan = frame + (24 + y0) * pitch + PANEL_X, *pan1 = frame + (24 + y1) * pitch + PANEL_X;
+		int pw = (lw - mapW) / 2;
+		for (int sx = mapW; sx < lw; sx++) {
+			int px = sx - mapW, x0 = px / 2, x1 = max(0, min(pw - 1, x0 + ((px & 1) ? 1 : -1)));
+			DWORD a = g_lut[pan[x0]], b = g_lut[pan[x1]], c2 = g_lut[pan1[x0]], d = g_lut[pan1[x1]];
+			DWORD rb = (a & 0xff00ff) * 9 + (b & 0xff00ff) * 3 + (c2 & 0xff00ff) * 3 + (d & 0xff00ff);
+			DWORD gg = (a & 0xff00) * 9 + (b & 0xff00) * 3 + (c2 & 0xff00) * 3 + (d & 0xff00);
+			o[sx] = ((rb >> 4) & 0xff00ff) | ((gg >> 4) & 0xff00);
+		}
+	}
+	else {
+		const BYTE *bar = frame + (sy / 2) * pitch - g_extra;
+		for (int sx = 0; sx < lw; sx++) o[sx] = g_lut[bar[sx / 2]];
+	}
+	int from = sy < 48 ? 0 : mapW;
+	// Letters in the doubled top bar and side panel.
+	if (g_txt && g_hdText && g_back->w == g_txtW) {
+		int W = g_back->w;
+		const BYTE *tv = g_txtS ? g_txtValidS : g_txtValid, *ts = g_txtS ? g_txtShadowS : g_txtShadow, *tx = g_txtS ? g_txtS : g_txt;
+		int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
+		for (int sx = from; sx < lw; sx++) {
+			int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
+			int f = gy * W + gx;
+			if (tv[f] && copy[gy * pitch + gx] == ts[f]) o[sx] = g_lut[tx[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)]];
+		}
+	}
+	// HD sprites in the doubled top bar and side panel: already at 2x there.
+	if (g_bt.btOn) {
+		int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
+		for (int sx = from; sx < lw; sx++) {
+			int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
+			int f = gy * g_frameW + gx;
+			if (gx < 0 || gx >= g_frameW || !g_bt.btV[f] || copy[gy * pitch + gx] != g_bt.btS[f]) continue;
+			o[sx] = g_bt.btL[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)];
+		}
+	}
+	// the open drop-down, doubled
+	if (g_bt.menu && sy >= 48 && sy < g_bt.my1) {
+		int W = g_back ? g_back->w : 0, gy = g_bt.fy0 + (sy - 48) / 2;
+		for (int sx = max(0, g_bt.mx0); sx < g_bt.mx1; sx++) {
+			int gx = g_off + g_bt.lx + (sx - g_bt.mx0) / 2;
+			if (gx < 0 || gx >= pitch) continue;
+			BYTE v8 = copy[gy * pitch + gx];
+			DWORD p = g_lut[v8];
+			int q = (sy & 1) * 2 + ((sx - g_bt.mx0) & 1);
+			if (g_bt.btOn && gx < g_frameW) { int f = gy * g_frameW + gx; if (g_bt.btV[f] && g_bt.btS[f] == v8) p = g_bt.btL[f * 4 + q]; }
+			if (g_txt && g_hdText && W && W == g_txtW && gx < W && gy < g_txtH) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
+			o[sx] = p;
+		}
+	}
+	// too small for the 2x art: each HD block averaged into its one pixel
+	if (g_bt.btOn && !g_bt.big && sy >= 48) {
+		int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
+		const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
+		for (int sx = 0; sx < mapW; sx++) {
+			int f = f0 + sx;
+			if (!g_bt.btV[f] || row[sx] != g_bt.btS[f] || BT_IN_MENU(sx, sy)) continue;
+			const DWORD *h = g_bt.btL + f * 4;
+			DWORD rb = (h[0] & 0xff00ff) + (h[1] & 0xff00ff) + (h[2] & 0xff00ff) + (h[3] & 0xff00ff);
+			DWORD gg = (h[0] & 0xff00) + (h[1] & 0xff00) + (h[2] & 0xff00) + (h[3] & 0xff00);
+			o[sx] = ((rb >> 2) & 0xff00ff) | ((gg >> 2) & 0xff00);
+		}
+	}
+}
+static void bt_rows_job(int band, int me)
+{
+	(void)me;
+	int y1 = min(g_bt.lh, (band + 1) * BT_BAND);
+	for (int sy = band * BT_BAND; sy < y1; sy++) bt_row(sy);
+}
+static void bt_double_job(int band, int me)
+{
+	(void)me;
+	int lw = g_bt.lw, lh = g_bt.lh, mapW = g_bt.mapW, pitch = g_bt.pitch;
+	const DWORD *pic = g_bt.pic;
+	DWORD *pic2 = g_bt.pic2;
+	int y1 = min(lh, (band + 1) * BT_BAND);
+	for (int y = band * BT_BAND; y < y1; y++) {
+		if (!g_bt.easu) {
+			const DWORD *row = pic + y * lw, *up = pic + (y > 0 ? y - 1 : y) * lw, *dn = pic + (y < lh - 1 ? y + 1 : y) * lw;
+			DWORD *o0 = pic2 + 2 * y * 2 * lw, *o1 = o0 + 2 * lw;
+			for (int x = 0; x < lw; x++) {
+				int l = x > 0 ? x - 1 : x, r = x < lw - 1 ? x + 1 : x;
+				DWORD p = row[x];
+				o0[2 * x] = mix4(p, row[l], up[x], up[l]);
+				o0[2 * x + 1] = mix4(p, row[r], up[x], up[r]);
+				o1[2 * x] = mix4(p, row[l], dn[x], dn[l]);
+				o1[2 * x + 1] = mix4(p, row[r], dn[x], dn[r]);
+			}
+		}
+		if (g_bt.btOn && y >= 48) {
+			int fy = 24 + y - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
+			const BYTE *row = g_bt.copy + fy * pitch + g_off + PANEL_X - mapW;
+			DWORD *o0 = pic2 + 2 * y * 2 * lw, *o1 = o0 + 2 * lw;
+			int miss = 0;
+			for (int sx = 0; sx < mapW; sx++) {
+				int f = f0 + sx;
+				if (g_bt.btV[f] && row[sx] != g_bt.btS[f]) miss++; // (Timing: HD art known but not matching the frame: shown 1x)
+				if (!g_bt.btV[f] || row[sx] != g_bt.btS[f] || BT_IN_MENU(sx, y)) continue;
+				const DWORD *h = g_bt.btL + f * 4;
+				o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
+				o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
+			}
+			if (miss) InterlockedExchangeAdd(&g_btMiss, miss);
+		}
+	}
+}
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 {
 	static DWORD *pic, *pic2;
@@ -2820,6 +4094,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	}
 	EnterCriticalSection(&g_lock);
 	memcpy(copy, g_primary->bits, pitch * fh);
+	g_paceReadSeq = g_pacePrimarySeq;
 	LeaveCriticalSection(&g_lock);
 	RECT v, c;
 	view_rect(&v);
@@ -2829,144 +4104,50 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	lastView = v;
 
 	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
-	const DWORD *btL = g_btLayerS ? g_btLayerS : g_btLayer;
-	const BYTE *btS = g_btLayerS ? g_btShadowS : g_btShadow, *btV = g_btLayerS ? g_btValidS : g_btValid;
-	BOOL btOn = btL && btS && btV && g_showTiles; // all three, or the HD battle layer is left out of this picture
+	g_bt.btL = g_btLayerS ? g_btLayerS : g_btLayer;
+	g_bt.btS = g_btLayerS ? g_btShadowS : g_btShadow; g_bt.btV = g_btLayerS ? g_btValidS : g_btValid;
+	g_bt.btOn = g_bt.btL && g_bt.btS && g_bt.btV && g_showTiles; // all three, or the HD battle layer is left out of this picture
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
-	const BYTE *frame = copy + g_off; // the game's x = 0
-	for (int sy = 48; sy < lh; sy++) {
-		const BYTE *row = frame + (24 + sy - 48) * pitch + PANEL_X - mapW;
-		DWORD *o = pic + sy * lw;
-		for (int sx = 0; sx < mapW; sx++) o[sx] = g_lut[row[sx]];
-		// The panel doubled smoothly (3:1 between neighbours), not as square blocks: its stone and
-		// the battle overview have no 2x art.
-		int py = sy - 48, y0 = py / 2, y1 = max(0, min(GAME_H - 25, y0 + ((py & 1) ? 1 : -1)));
-		const BYTE *pan = frame + (24 + y0) * pitch + PANEL_X, *pan1 = frame + (24 + y1) * pitch + PANEL_X;
-		int pw = (lw - mapW) / 2;
-		for (int sx = mapW; sx < lw; sx++) {
-			int px = sx - mapW, x0 = px / 2, x1 = max(0, min(pw - 1, x0 + ((px & 1) ? 1 : -1)));
-			DWORD a = g_lut[pan[x0]], b = g_lut[pan[x1]], c2 = g_lut[pan1[x0]], d = g_lut[pan1[x1]];
-			DWORD rb = (a & 0xff00ff) * 9 + (b & 0xff00ff) * 3 + (c2 & 0xff00ff) * 3 + (d & 0xff00ff);
-			DWORD gg = (a & 0xff00) * 9 + (b & 0xff00) * 3 + (c2 & 0xff00) * 3 + (d & 0xff00);
-			o[sx] = ((rb >> 4) & 0xff00ff) | ((gg >> 4) & 0xff00);
-		}
-	}
-	for (int sy = 0; sy < 48; sy++) {
-		const BYTE *bar = frame + (sy / 2) * pitch - g_extra;
-		DWORD *o = pic + sy * lw;
-		for (int sx = 0; sx < lw; sx++) o[sx] = g_lut[bar[sx / 2]];
-	}
-
-	// Letters in the doubled top bar and side panel.
-	if (g_txt && g_hdText) {
-		int W = g_back->w;
-		for (int sy = 0; sy < lh; sy++) {
-			DWORD *o = pic + sy * lw;
-			int from = sy < 48 ? 0 : mapW;
-			for (int sx = from; sx < lw; sx++) {
-				int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
-				int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
-				int f = gy * W + gx;
-				if ((g_txtS ? g_txtValidS : g_txtValid)[f] && copy[gy * pitch + gx] == (g_txtS ? g_txtShadowS : g_txtShadow)[f])
-					o[sx] = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)]];
-			}
-		}
-	}
-	// HD sprites in the doubled top bar and side panel: already at 2x there.
-	if (btOn) {
-		for (int sy = 0; sy < lh; sy++) {
-			DWORD *o = pic + sy * lw;
-			int from = sy < 48 ? 0 : mapW;
-			for (int sx = from; sx < lw; sx++) {
-				int gx = sy < 48 ? g_off - g_extra + sx / 2 : g_off + PANEL_X + (sx - mapW) / 2;
-				int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
-				int f = gy * g_frameW + gx;
-				if (gx < 0 || gx >= g_frameW || !btV[f] || copy[gy * pitch + gx] != btS[f]) continue;
-				o[sx] = btL[f * 4 + (sy & 1) * 2 + ((sx - from) & 1)];
-			}
-		}
-	}
+	g_bt.pic = pic; g_bt.pic2 = pic2; g_bt.copy = copy; g_bt.frame = copy + g_off; // the game's x = 0
+	g_bt.pitch = pitch; g_bt.lw = lw; g_bt.lh = lh; g_bt.mapW = mapW;
 	// An open drop-down: doubled from its corner like the bar above it (it covers its 1:1 self).
-	int mx0 = 0, mx1 = 0, my1 = 0; // its doubled rectangle in this picture, rows 48 .. my1
-	if (menu_doubled()) {
-		int lx = g_menuX, fy0 = max(24, g_menuY), fy1 = g_menuY + MENU_H;
-		mx0 = lx - (PANEL_X - mapW); mx1 = min(mapW, mx0 + 2 * MENU_W); my1 = min(lh, 48 + 2 * (fy1 - fy0));
-		int W = g_back ? g_back->w : 0;
-		for (int sy = 48; sy < my1; sy++) {
-			int gy = fy0 + (sy - 48) / 2;
-			DWORD *o = pic + sy * lw;
-			for (int sx = max(0, mx0); sx < mx1; sx++) {
-				int gx = g_off + lx + (sx - mx0) / 2;
-				if (gx < 0 || gx >= pitch) continue;
-				BYTE v8 = copy[gy * pitch + gx];
-				DWORD p = g_lut[v8];
-				int q = (sy & 1) * 2 + ((sx - mx0) & 1);
-				if (btOn && gx < g_frameW) { int f = gy * g_frameW + gx; if (btV[f] && btS[f] == v8) p = btL[f * 4 + q]; }
-				if (g_txt && g_hdText && W && gx < W) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
-				o[sx] = p;
-			}
-		}
+	g_bt.mx0 = g_bt.mx1 = g_bt.my1 = 0; // its doubled rectangle in this picture, rows 48 .. my1
+	g_bt.menu = menu_doubled();
+	if (g_bt.menu) {
+		g_bt.lx = g_menuX; g_bt.fy0 = max(24, g_menuY); int fy1 = g_menuY + MENU_H;
+		g_bt.mx0 = g_bt.lx - (PANEL_X - mapW); g_bt.mx1 = min(mapW, g_bt.mx0 + 2 * MENU_W); g_bt.my1 = min(lh, 48 + 2 * (fy1 - g_bt.fy0));
 	}
-#define IN_MENU(sx, sy) ((sx) >= mx0 && (sx) < mx1 && (sy) >= 48 && (sy) < my1)
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
-	BOOL big = (v.bottom - v.top) >= lh * 2;
-	if (btOn && !big) {
-		for (int sy = 48; sy < lh; sy++) {
-			int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
-			const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
-			DWORD *o = pic + sy * lw;
-			for (int sx = 0; sx < mapW; sx++) {
-				int f = f0 + sx;
-				if (!btV[f] || row[sx] != btS[f] || IN_MENU(sx, sy)) continue;
-				const DWORD *h = btL + f * 4;
-				DWORD rb = (h[0] & 0xff00ff) + (h[1] & 0xff00ff) + (h[2] & 0xff00ff) + (h[3] & 0xff00ff);
-				DWORD gg = (h[0] & 0xff00) + (h[1] & 0xff00) + (h[2] & 0xff00) + (h[3] & 0xff00);
-				o[sx] = ((rb >> 2) & 0xff00ff) | ((gg >> 2) & 0xff00);
-			}
-		}
-	}
+	g_bt.big = (v.bottom - v.top) >= lh * 2;
+	pool_run((lh + BT_BAND - 1) / BT_BAND, bt_rows_job); // the picture's rows, on all threads
 	GetClientRect(g_hwnd, &c);
 	HDC dc = GetDC(g_hwnd);
 	if (!dc) return FALSE;
-	PatBlt(dc, 0, 0, c.right, v.top, BLACKNESS);
-	PatBlt(dc, 0, v.bottom, c.right, c.bottom - v.bottom, BLACKNESS);
-	PatBlt(dc, 0, v.top, v.left, v.bottom - v.top, BLACKNESS);
-	PatBlt(dc, v.right, v.top, c.right - v.right, v.bottom - v.top, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, 0, 0, c.right, v.top, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, 0, v.bottom, c.right, c.bottom - v.bottom, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, 0, v.top, v.left, v.bottom - v.top, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, v.right, v.top, c.right - v.right, v.bottom - v.top, BLACKNESS);
 	BITMAPINFOHEADER bi = { sizeof bi };
 	bi.biPlanes = 1;
 	bi.biBitCount = 32;
 	bi.biCompression = BI_RGB;
-	int vh = v.bottom - v.top;
 	const DWORD *src = pic;
 	int sw = lw, sh = lh;
-	if (vh >= lh * 2) {
+	if (g_bt.big) {
 		// (the doubling stays bilinear even with Catmull-Rom: at 3392x1920 two Catmull-Rom passes
-		// took 25-44 ms a picture; the final stretch is Catmull-Rom)
-		for (int y = 0; y < lh; y++) {
-			const DWORD *row = pic + y * lw, *up = pic + (y > 0 ? y - 1 : y) * lw, *dn = pic + (y < lh - 1 ? y + 1 : y) * lw;
-			DWORD *o0 = pic2 + 2 * y * 2 * lw, *o1 = o0 + 2 * lw;
-			for (int x = 0; x < lw; x++) {
-				int l = x > 0 ? x - 1 : x, r = x < lw - 1 ? x + 1 : x;
-				DWORD p = row[x];
-				o0[2 * x] = mix4(p, row[l], up[x], up[l]);
-				o0[2 * x + 1] = mix4(p, row[r], up[x], up[r]);
-				o1[2 * x] = mix4(p, row[l], dn[x], dn[l]);
-				o1[2 * x + 1] = mix4(p, row[r], dn[x], dn[r]);
-			}
-		}
-		if (btOn) {
-			for (int sy = 48; sy < lh; sy++) {
-				int fy = 24 + sy - 48, f0 = fy * g_frameW + g_off + PANEL_X - mapW;
-				const BYTE *row = copy + fy * pitch + g_off + PANEL_X - mapW;
-				DWORD *o0 = pic2 + 2 * sy * 2 * lw, *o1 = o0 + 2 * lw;
-				for (int sx = 0; sx < mapW; sx++) {
-					int f = f0 + sx;
-					if (!btV[f] || row[sx] != btS[f] || IN_MENU(sx, sy)) continue;
-					const DWORD *h = btL + f * 4;
-					o0[2 * sx] = h[0]; o0[2 * sx + 1] = h[1];
-					o1[2 * sx] = h[2]; o1[2 * sx + 1] = h[3];
-				}
-			}
+		// took 25-44 ms a picture; the final stretch is Catmull-Rom). With FSR on the CPU: EASU,
+		// then the HD layer stamped.
+		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(pic, lw, lh, lw, pic2, 2 * lw, 2 * lh, 2 * lw);
+		InterlockedExchange(&g_btMiss, 0);
+		pool_run((lh + BT_BAND - 1) / BT_BAND, bt_double_job);
+		if (g_timing) { // pictures where many HD pixels fell back to 1x (a flicker)
+			static int n, bad; static double t0; static LONG worst;
+			LONG m = g_btMiss; n++;
+			if (m > 20000) bad++;
+			if (m > worst) worst = m;
+			double now = perf_now();
+			if (!t0) t0 = now;
+			if (now - t0 > 1000) { if (bad || worst > 5000) logf_("timing: battle HD art: %d of %d pictures with over 20000 pixels shown 1x (worst %ld)", bad, n, (long)worst); n = bad = 0; worst = 0; t0 = now; }
 		}
 		src = pic2;
 		sw = lw * 2;
@@ -3033,9 +4214,10 @@ write:
 static volatile LONG g_recFps;
 static LARGE_INTEGER g_recT0, g_recLast;
 static int g_recN;
+static volatile LONG g_recCrop; // with the GPU: 0 the whole picture at half size, else a 1:1 1920x1080 crop at x | y << 16
 static void record_frame(const DWORD *px, int w, int h)
 {
-	if (!g_recFps) return;
+	if (!g_recFps || gpu_drawing()) return; // (the GPU path records its own finished picture: gpu_record)
 	LARGE_INTEGER t, f;
 	QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
 	if (!g_recN) g_recT0 = t;
@@ -3058,6 +4240,115 @@ static void record_frame(const DWORD *px, int w, int h)
 		fwrite(row, 4, ow, o);
 	}
 	fclose(o);
+}
+
+// Recording with the GPU (remote message 21): the finished picture read back from the back buffer, so
+// the frames show what the player sees (FSR and all): the whole picture at half size, or a 1:1
+// 1920x1080 crop (g_recCrop).
+#define REC_RING 3
+#define REC_QUEUE 8
+static struct {
+	ID3D11Texture2D *src; ID3D11ShaderResourceView *srcV; int srcW, srcH;   // the picture, copied where a shader can read it
+	ID3D11Texture2D *rt; ID3D11RenderTargetView *rtV; ID3D11ShaderResourceView *rtS; int rtW, rtH; // half size
+	ID3D11Texture2D *st[REC_RING]; int stW, stH, ring; double stMs[REC_RING]; BOOL stUsed[REC_RING];
+	struct { DWORD *px; int w, h, n; double ms; } q[REC_QUEUE];
+	volatile LONG qHead, qTail; HANDLE ev; int dropped, taken;
+} g_rec;
+static DWORD WINAPI rec_writer(void *unused)
+{
+	char dir[MAX_PATH];
+	if (!GetTempPathA(sizeof dir, dir)) lstrcpynA(dir, g_gameDir, sizeof dir);
+	for (;;) {
+		WaitForSingleObject(g_rec.ev, 200);
+		while (g_rec.qTail != g_rec.qHead) {
+			int k = g_rec.qTail % REC_QUEUE;
+			char path[MAX_PATH];
+			snprintf(path, sizeof path, "%s\\lords2hd-rec-%05d-%07.0f.bmp", dir, g_rec.q[k].n, g_rec.q[k].ms);
+			FILE *o = fopen(path, "wb");
+			if (o) {
+				int w = g_rec.q[k].w, h = g_rec.q[k].h;
+				BITMAPFILEHEADER fh = { 0x4d42, sizeof fh + sizeof(BITMAPINFOHEADER) + w * h * 4, 0, 0, sizeof fh + sizeof(BITMAPINFOHEADER) };
+				BITMAPINFOHEADER ih = { sizeof ih, w, -h, 1, 32, BI_RGB };
+				fwrite(&fh, sizeof fh, 1, o); fwrite(&ih, sizeof ih, 1, o); fwrite(g_rec.q[k].px, 4, (size_t)w * h, o);
+				fclose(o);
+			}
+			InterlockedIncrement(&g_rec.qTail);
+		}
+	}
+	return 0;
+}
+// Recording with the GPU (remote message 21): the finished picture as the player sees it (FSR and
+// all), shrunk to half size by the card (or a 1:1 1920x1080 crop, g_recCrop), read back two frames
+// later so nothing waits for the card, and written by a thread of its own: the recording barely
+// slows the game (reading back and writing 15 MB a frame here took it to 15 frames a second).
+static void gpu_record(ID3D11Texture2D *back, const RECT *v)
+{
+	if (!g_recFps) {
+		for (int i = 0; i < REC_RING; i++) g_rec.stUsed[i] = FALSE;
+		if (g_rec.taken && g_rec.dropped) logf_("recording: %d frames dropped (the writer fell behind)", g_rec.dropped);
+		g_rec.taken = 0;
+		return;
+	}
+	LARGE_INTEGER t, f;
+	QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
+	if (!g_rec.taken) { g_recT0 = t; g_rec.dropped = 0; g_recN = 0; }
+	else if ((t.QuadPart - g_recLast.QuadPart) * g_recFps < f.QuadPart) return;
+	g_rec.taken++;
+	g_recLast = t;
+	if (!g_rec.ev) {
+		g_rec.ev = CreateEventA(NULL, FALSE, FALSE, NULL);
+		HANDLE th = CreateThread(NULL, 0, rec_writer, NULL, 0, NULL);
+		if (th) CloseHandle(th);
+	}
+	int vw = v->right - v->left, vh = v->bottom - v->top;
+	LONG crop = g_recCrop;
+	int cx = crop & 0xffff, cy = (crop >> 16) & 0xffff, ow = crop ? 1920 : vw / 2, oh = crop ? 1080 : vh / 2;
+	if (crop) { cx = max(0, min(vw - ow, cx)); cy = max(0, min(vh - oh, cy)); }
+	D3D11_TEXTURE2D_DESC td;
+	memset(&td, 0, sizeof td);
+	td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+	if (ow != g_rec.stW || oh != g_rec.stH) {
+		for (int i = 0; i < REC_RING; i++) { REL(g_rec.st[i]); g_rec.stUsed[i] = FALSE; }
+		td.Width = ow; td.Height = oh; td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		for (int i = 0; i < REC_RING; i++) if (FAILED(ID3D11Device_CreateTexture2D(g_gpu.dev, &td, NULL, &g_rec.st[i]))) { g_rec.stW = 0; return; }
+		g_rec.stW = ow; g_rec.stH = oh;
+	}
+	int slot = g_rec.ring % REC_RING;
+	if (crop) {
+		D3D11_BOX box = { v->left + cx, v->top + cy, 0, v->left + cx + ow, v->top + cy + oh, 1 };
+		ID3D11DeviceContext_CopySubresourceRegion(g_gpu.ctx, (ID3D11Resource *)g_rec.st[slot], 0, 0, 0, 0, (ID3D11Resource *)back, 0, &box);
+	}
+	else {
+		if ((vw != g_rec.srcW || vh != g_rec.srcH) && !gpu_tex(&g_rec.src, &g_rec.srcV, NULL, vw, vh, FALSE)) return;
+		g_rec.srcW = vw; g_rec.srcH = vh;
+		if ((ow != g_rec.rtW || oh != g_rec.rtH) && !gpu_tex(&g_rec.rt, &g_rec.rtS, &g_rec.rtV, ow, oh, FALSE)) return;
+		g_rec.rtW = ow; g_rec.rtH = oh;
+		D3D11_BOX box = { v->left, v->top, 0, v->right, v->bottom, 1 };
+		ID3D11DeviceContext_CopySubresourceRegion(g_gpu.ctx, (ID3D11Resource *)g_rec.src, 0, 0, 0, 0, (ID3D11Resource *)back, 0, &box);
+		gpu_pass(GP_BIL, g_rec.srcV, vw, vh, g_rec.rtV, 0, 0, ow, oh, 0); // each output pixel between four: their average
+		ID3D11ShaderResourceView *none = NULL;
+		ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &none);
+		ID3D11DeviceContext_CopyResource(g_gpu.ctx, (ID3D11Resource *)g_rec.st[slot], (ID3D11Resource *)g_rec.rt);
+	}
+	g_rec.stMs[slot] = (t.QuadPart - g_recT0.QuadPart) * 1000.0 / f.QuadPart;
+	g_rec.stUsed[slot] = TRUE;
+	g_rec.ring++;
+	// the oldest slot (filled two recorded frames ago) to the writer
+	int old = g_rec.ring % REC_RING;
+	if (!g_rec.stUsed[old]) return;
+	if (g_rec.qHead - g_rec.qTail >= REC_QUEUE) { g_rec.dropped++; g_rec.stUsed[old] = FALSE; return; }
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (FAILED(ID3D11DeviceContext_Map(g_gpu.ctx, (ID3D11Resource *)g_rec.st[old], 0, D3D11_MAP_READ, 0, &m))) return;
+	int k = g_rec.qHead % REC_QUEUE;
+	if (!g_rec.q[k].px || g_rec.q[k].w != ow || g_rec.q[k].h != oh) { free(g_rec.q[k].px); g_rec.q[k].px = malloc((size_t)ow * oh * 4); g_rec.q[k].w = ow; g_rec.q[k].h = oh; }
+	if (g_rec.q[k].px) {
+		for (int y = 0; y < oh; y++) memcpy(g_rec.q[k].px + (size_t)y * ow, (BYTE *)m.pData + (size_t)y * m.RowPitch, (size_t)ow * 4);
+		g_rec.q[k].n = g_recN++; g_rec.q[k].ms = g_rec.stMs[old];
+		InterlockedIncrement(&g_rec.qHead);
+		SetEvent(g_rec.ev);
+	}
+	ID3D11DeviceContext_Unmap(g_gpu.ctx, (ID3D11Resource *)g_rec.st[old], 0);
+	g_rec.stUsed[old] = FALSE;
 }
 
 static void shot_save(const DWORD *px, int w, int h)
@@ -3236,6 +4527,7 @@ static BOOL present(void)
 	PALETTEENTRY pal[256];
 	if (g_primary->pal) memcpy(pal, g_primary->pal->e, sizeof pal);
 	else memset(pal, 0, sizeof pal);
+	g_paceReadSeq = g_pacePrimarySeq;
 	LeaveCriticalSection(&g_lock);
 
 	BOOL palSame = memcmp(pal, lastPal, sizeof pal) == 0;
@@ -3261,10 +4553,10 @@ static BOOL present(void)
 	HDC dc = GetDC(g_hwnd);
 	if (!dc) return FALSE;
 	// Black around the picture.
-	PatBlt(dc, 0, 0, c.right, v.top, BLACKNESS);
-	PatBlt(dc, 0, v.bottom, c.right, c.bottom - v.bottom, BLACKNESS);
-	PatBlt(dc, 0, v.top, v.left, v.bottom - v.top, BLACKNESS);
-	PatBlt(dc, v.right, v.top, c.right - v.right, v.bottom - v.top, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, 0, 0, c.right, v.top, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, 0, v.bottom, c.right, c.bottom - v.bottom, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, 0, v.top, v.left, v.bottom - v.top, BLACKNESS);
+	if (!gpu_drawing()) PatBlt(dc, v.right, v.top, c.right - v.right, v.bottom - v.top, BLACKNESS);
 
 	struct { BITMAPINFOHEADER h; RGBQUAD colours[256]; } bi = { { sizeof(BITMAPINFOHEADER) } };
 	bi.h.biPlanes = 1;
@@ -3302,13 +4594,14 @@ static BOOL present(void)
 				fclose(f);
 			}
 		}
-		double_frame(sw);
+		double ct = perf_now(); // Timing=1: each step's share (compose_log)
+		double_frame(sw); ct_add(0, &ct);
 		if (sw == GAME_W && g_showScreens) hd_overlay(pal);
-		if (g_showTiles) screen_sprites(pal, sx, sw);
-		if (g_showTiles) tile_overlay(pal, sx, sw);
-		text_overlay(sx, sw);
+		if (g_showTiles) screen_sprites(pal, sx, sw); ct_add(1, &ct);
+		if (g_showTiles) tile_overlay(pal, sx, sw); ct_add(2, &ct);
+		text_overlay(sx, sw); ct_add(3, &ct);
 		scroll_overlays(sx, sw);
-		cycle_buttons_draw(sx, sw);
+		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
@@ -3341,6 +4634,32 @@ static BOOL present(void)
 	return TRUE;
 }
 
+// A picture must be handed to the swap chain this long before a refresh to reach it: a fullscreen window
+// goes to the display without the compositor (independent flip), and on the player's screen a hand-off
+// 1-4 ms before the refresh missed it, left the refresh empty and blocked the next present 4-8 ms.
+#define SUBMIT_LEAD 5.0  // ms: a new frame that can't be handed over this early gets a repeat first
+#define REPEAT_LEAD 7    // ms before the refresh: no new frame by then, the last picture again
+// The wait for the next refresh after a picture: the display's vertical blank with the GPU path, the
+// compositor's next frame (DwmFlush) on the CPU path.
+static double g_lastVblank; // when the last refresh wait ended
+static void wait_refresh(HRESULT (WINAPI *dwm_flush)(void))
+{
+	double t = perf_now();
+	static int said;
+	if (gpu_drawing() && gpu_wait_vblank()) {
+		if (!said) { said = 1; logf_("refresh wait: the display's vertical blank"); }
+	}
+	else {
+		if (said != 2 && gpu_drawing()) { said = 2; logf_("refresh wait: the compositor (no vertical blank wait)"); }
+		if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
+	}
+	g_lastVblank = perf_now();
+	if (g_timing) { // in the pacing record: W, with how long the wait was
+		int i = g_paceWakeN % PACE_RING;
+		g_paceWake[i].t = perf_now(); g_paceWake[i].seq = g_paceReadSeq; g_paceWake[i].shown = 3; g_paceWake[i].present = perf_now() - t;
+		g_paceWakeN++;
+	}
+}
 // Presents whenever the frame changed, at most once per display refresh: the game copies its
 // frame in pieces (one start-up effect uses 1200 16x16 blocks), and each copy only marks it dirty.
 static DWORD WINAPI presenter(void *unused)
@@ -3351,30 +4670,145 @@ static DWORD WINAPI presenter(void *unused)
 	LARGE_INTEGER freq, t0, t1, since;
 	QueryPerformanceFrequency(&freq);
 	QueryPerformanceCounter(&since);
-	double busy = 0, worst = 0;
+	double busy = 0, worst = 0, flushMs = 0;
 	int presents = 0, skipped = 0;
 
 	for (;;) {
-		WaitForSingleObject(g_dirtyEvent, 50);
+		BOOL bench = g_perf.bench > 0;
+		// Repeats (gpu_repeat): wait for a new frame until just before the next refresh; if none came,
+		// the last picture goes to that refresh again.
+		static double repeatPause; // a repeat could not be drawn (minimised, in the background): wait normally for a while
+		BOOL repeatCap = g_repeatOn && gpu_drawing() && g_gpu.state == 1 && g_gpu.have && !bench && perf_now() >= repeatPause;
+		static int dbgB1, dbgB2, dbgRepFail; static double dbgT; // Timing=1: the repeat paths taken
+		if (g_timing && perf_now() - dbgT > 5000) {
+			logf_("presenter: %d idle repeats, %d repeats before a late frame, %d repeats not drawn; a new picture takes %.1f ms", dbgB1, dbgB2, dbgRepFail, g_presentEma);
+			dbgB1 = dbgB2 = dbgRepFail = 0; dbgT = perf_now();
+		}
+		double nextV = 0, period = 0;
+		DWORD timeout = g_statsOn ? 25 : 50;
+		if (repeatCap) {
+			double n0 = perf_now();
+			nextV = perf_next_refresh(n0); period = g_perf.refresh;
+			if (period > 0) { double ms = nextV - n0 - REPEAT_LEAD; timeout = ms < 0 ? 0 : (DWORD)ms; }
+			else repeatCap = FALSE;
+		}
+		if (!bench) WaitForSingleObject(g_dirtyEvent, timeout);
 		BOOL dirty = InterlockedExchange(&g_dirty, 0) != 0;
-		if (!dirty && !g_dumpPalettes && !g_waveActive) continue; // DumpPalettes: lets a palette that stays put be logged
+		if (repeatCap && !dirty && !g_waveActive && g_perf.lastAny <= nextV - period) {
+			perf_begin();
+			if (gpu_repeat()) {
+				perf_repeat(); if (g_timing) pace_wake(2);
+				if (g_timing) pace_classify();
+				if (g_frameLimit > 0) give_pre_turn(); // (see g_preTurn)
+				wait_refresh(dwm_flush);
+			}
+			else { repeatPause = perf_now() + 250; dbgRepFail++; }
+			dbgB1++;
+			InterlockedExchange(&g_frameTaken, 1); // the game may copy its newest frame for the next refresh
+			continue;
+		}
+		// The overlay's numbers kept fresh on a still screen: redrawn 4 times a second, not counted.
+		static double lastStats;
+		double nowMs = perf_now();
+		BOOL statsOnly = !repeatCap && !dirty && !bench && g_statsOn && nowMs - g_perf.lastShown > 250 && nowMs - lastStats > 250;
+		if (statsOnly) lastStats = nowMs;
+		if (bench || statsOnly) InterlockedExchange(&g_forcePresent, 1);
+		if (!dirty && !bench && !statsOnly && !g_dumpPalettes && !g_waveActive) continue; // DumpPalettes: lets a palette that stays put be logged
+		// A picture for the shore waves alone, while the game has a finished frame on its way (it copies it
+		// within 2 ms of being allowed, pending_copy): that frame is waited for, or it reached the screen a
+		// refresh late (a scrolling map).
+		// (the game may copy only after the refresh, and needs a few ms: up to 6 ms after it, the picture
+		// can still be drawn in time)
+		// (any wake counts: the game's small updates to the screen, the shore waves; what is waited for
+		// is a whole frame copied since the refresh, while one is waiting to be copied)
+		// (only while the game may copy: without its turn there is a copy on the screen surface not read yet,
+		// and waiting for another would wait for this presenter)
+		// (a whole frame copied since the last picture was started, before the refresh too, needs no wait)
+		static double composeT;
+		if (!bench && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank && g_frameCopyT < composeT) {
+			for (;;) {
+				double wait = g_lastVblank + 6 - perf_now();
+				if (wait <= 0 || wait > 6 || g_frameCopyT >= g_lastVblank || !g_copyPending || !g_frameTaken) break;
+				WaitForSingleObject(g_dirtyEvent, (DWORD)(wait + 0.5));
+			}
+			if (InterlockedExchange(&g_dirty, 0)) dirty = TRUE;
+		}
+		// A new frame too late to be drawn before the coming refresh: that refresh gets the last
+		// picture again first (it would otherwise get nothing), and the new one goes to the next.
+		if (repeatCap && dirty) {
+			double n1 = perf_now();
+			if (nextV - n1 < g_presentEma + SUBMIT_LEAD && nextV - n1 > 0 && g_perf.lastAny <= nextV - period) {
+				perf_begin();
+				if (gpu_repeat()) {
+					perf_repeat(); if (g_timing) pace_wake(2);
+					wait_refresh(dwm_flush);
+				}
+				dbgB2++;
+				InterlockedExchange(&g_dirty, 1); // the new frame, at once after the refresh (the event too: the
+				SetEvent(g_dirtyEvent);           // wait would otherwise sleep to the next refresh's edge again)
+				continue;
+			}
+		}
 		QueryPerformanceCounter(&t0);
+		perf_begin();
+		EnterCriticalSection(&g_composeLock); // (see g_composeLock)
+		InterlockedExchange(&g_composing, 1);
+		InterlockedExchange(&g_preTurn, 0);
+		composeT = perf_now();
+		if (g_timing) { // Timing=1: a long wait for the game to finish a copy
+			double lw = (composeT - (t0.QuadPart * 1000.0 / freq.QuadPart));
+			static int lwLogs;
+			if (lw > 6 && lwLogs < 40) { lwLogs++; logf_("presenter: waited %.1f ms for the game's copy to finish", lw); }
+		}
 		BOOL shown = present();
+		InterlockedExchange(&g_composing, 0);
+		LeaveCriticalSection(&g_composeLock);
 		QueryPerformanceCounter(&t1);
-		if (shown) {
+		if (!statsOnly) perf_end(shown, g_outW, g_outH); // (a redraw for the overlay is not a new picture)
+		if (g_timing && !statsOnly && !bench) pace_wake(shown);
+		if (shown && !bench) {
+			InterlockedIncrement(&g_presentCount);
 			double ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
+			// how long a new picture takes (the late check above); a slow one-off (the first picture starts
+			// the GPU, a screenshot reads 58 MB back) is left out, and the estimate stays within 10 ms
+			if (ms < 20) g_presentEma = min(10.0, g_presentEma * 0.9 + ms * 0.1);
+			if (g_timing && ms > 15) { // Timing=1: where a slow picture's time went
+				static int slowLogs;
+				if (slowLogs < 60) { slowLogs++; logf_("presenter: slow picture %.1f ms: compose %.1f, upload %.1f, submit %.1f, present %.1f", ms, g_perf.st[PS_COMPOSE], g_perf.st[PS_SCALE], g_perf.st[PS_SHARPEN], g_perf.st[PS_BLIT]); }
+			}
 			busy += ms;
 			if (ms > worst) worst = ms;
 			presents++;
+			// The game may copy its next frame from now on, while this picture waits for its refresh: a busy
+			// battle picture takes ~8 ms to draw, and a copy allowed only after the refresh came 2-5 ms into it,
+			// too late for the next one (that refresh got the last picture again). Copied before the refresh,
+			// the next picture is drawn as soon as it passes.
+			if (g_repeatOn && gpu_drawing() && g_frameLimit > 0) give_pre_turn(); // (see g_preTurn)
 			// Wait for the compositor's next frame, so the picture changes at most once per refresh.
-			if (!dwm_flush || FAILED(dwm_flush())) Sleep(8);
+			double w0 = perf_now();
+			wait_refresh(dwm_flush);
+			flushMs += perf_now() - w0;
 		}
-		else if (dirty) {
-			skipped++;
-		}
+		// The game may copy its next frame now (h_show_frame): after the refresh, so the copy taken
+		// is its newest, not one made just after the last picture and a refresh old by the time it
+		// is read (changed frames waited unseen behind it).
+		give_turn();
+		if (!shown && dirty) skipped++;
+		if (g_timing) pace_classify();
 		if (g_timing && (t1.QuadPart - since.QuadPart) > 5 * freq.QuadPart) {
-			logf_("timing: %d presents in 5 s, %.1f ms average, %.1f ms worst; %d unchanged frames skipped",
-				presents, presents ? busy / presents : 0.0, worst, skipped);
+			logf_("timing: %d presents in 5 s, %.1f ms average, %.1f ms worst; %d unchanged frames skipped; %ld frame copies; %.1f ms average wait for the compositor",
+				presents, presents ? busy / presents : 0.0, worst, skipped, (long)InterlockedExchange(&g_dirtyCount, 0), presents ? flushMs / presents : 0.0);
+			flushMs = 0;
+			if (g_ct[5] > 0 || g_ct[6] > 0) {
+				logf_("timing: battle ground cells in 5 s: game's drawing %.0f ms, HD stamping %.0f ms (worst cell %.2f / %.2f)", g_ct[5], g_ct[6], g_ctWorst[5], g_ctWorst[6]);
+				g_ct[5] = g_ct[6] = g_ctWorst[5] = g_ctWorst[6] = 0;
+			}
+			if (g_ctN) {
+				int n = g_ctN;
+				logf_("timing: map picture %d: double %.2f (%.1f), sprites %.2f (%.1f), tiles %.2f (%.1f), letters %.2f (%.1f), scrolls %.2f (%.1f) ms average (worst)",
+					n, g_ct[0] / n, g_ctWorst[0], g_ct[1] / n, g_ctWorst[1], g_ct[2] / n, g_ctWorst[2], g_ct[3] / n, g_ctWorst[3], g_ct[4] / n, g_ctWorst[4]);
+				memset(g_ct, 0, sizeof g_ct); memset(g_ctWorst, 0, sizeof g_ctWorst); g_ctN = 0;
+			}
 			for (int i = 0; i < 2; i++) if (g_draw[i].n) {
 				logf_("timing: %d %s redraws, %.2f ms average, %.1f ms worst%s", g_draw[i].n, i ? "battlefield" : "map", g_draw[i].ms / g_draw[i].n, g_draw[i].worst,
 					i ? "" : g_stampSkipped + g_stampDone ? " (HD stamping skipped as unchanged in some)" : "");
@@ -3395,6 +4829,7 @@ static void start_presenter(void)
 	if (started) return;
 	started = TRUE;
 	g_dirtyEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+	g_turnEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
 	HANDLE t = CreateThread(NULL, 0, presenter, NULL, 0, NULL);
 	if (t) CloseHandle(t);
 }
@@ -3569,6 +5004,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 	for (int y = 0; y < h; y++)
 		memmove(dst->bits + (dy + y) * dst->pitch + dx, src->bits + (sy + y) * src->pitch + sx, w);
 	if (dst->primary && src == g_back && dy == sy) {
+		g_pacePrimarySeq = g_paceCopying;
 		text_publish(dy, dy + h);
 		bt_publish(dy, dy + h);
 		spr_publish(dy, dy + h);
@@ -3581,7 +5017,7 @@ static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWOR
 	SELF(Surface);
 	Surface *src = src_;
 	RECT d = dr ? *dr : (RECT){ -self->org, 0, self->w - self->org, self->h }; // no rectangle: the whole surface
-	if (self->primary) EnterCriticalSection(&g_lock);
+	if (self->primary) { EnterCriticalSection(&g_composeLock); EnterCriticalSection(&g_lock); } // (not while the presenter builds a picture from the HD layers)
 	if (flags & DDBLT_COLORFILL) {
 		BYTE colour = fx ? (BYTE)fx->dwFillColor : 0;
 		OffsetRect(&d, self->org, 0);
@@ -3610,7 +5046,7 @@ static HRESULT WINAPI surf_blt(void *this_, RECT *dr, void *src_, RECT *sr, DWOR
 		}
 	}
 	if (self->primary) {
-		LeaveCriticalSection(&g_lock);
+		LeaveCriticalSection(&g_lock); LeaveCriticalSection(&g_composeLock);
 		mark_dirty();
 	}
 	return DD_OK;
@@ -3623,10 +5059,10 @@ static HRESULT WINAPI surf_blt_fast(void *this_, DWORD x, DWORD y, void *src_, R
 	if (!src) return DDERR_INVALIDPARAMS;
 	if (trans & (DDBLTFAST_SRCCOLORKEY | DDBLTFAST_DESTCOLORKEY)) unexpected("BltFast with a colour key");
 	RECT s = sr ? *sr : (RECT){ -src->org, 0, src->w - src->org, src->h };
-	if (self->primary) EnterCriticalSection(&g_lock);
+	if (self->primary) { EnterCriticalSection(&g_composeLock); EnterCriticalSection(&g_lock); } // (not while the presenter builds a picture from the HD layers)
 	copy_rect(self, (int)x, (int)y, src, s.left, s.top, s.right - s.left, s.bottom - s.top);
 	if (self->primary) {
-		LeaveCriticalSection(&g_lock);
+		LeaveCriticalSection(&g_lock); LeaveCriticalSection(&g_composeLock);
 		mark_dirty();
 	}
 	return DD_OK;
@@ -3952,6 +5388,7 @@ static int g_fakeEdge;
 static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
+	if (n == 2 || n == 4 || n == 5) perf_input(); // the driver's clicks and keys: latency as a player's
 	if (n == 0x10) {
 		music_status(); // sound is muted in remote mode: the log says whether the music stream is playing
 		logf_("view: map column %d, first x %d, selected county %d", *(int *)0x005651b4, *(int *)0x0052afdc, *(int *)0x0057c93c);
@@ -3988,11 +5425,32 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		logf_("select object %d: screen %d", (int)wp, *(BYTE *)0x004eac50);
 		return 0;
 	}
-	if (n == 21) { // testing: recording, wParam frames a second (0 stops)
+	if (n == 21) { // testing: recording, wParam frames a second (0 stops); lParam as g_recCrop
 		if (wp) g_recN = 0;
+		if (wp) InterlockedExchange(&g_recCrop, (LONG)lp);
 		InterlockedExchange(&g_recFps, (LONG)wp);
 		InterlockedExchange(&g_forcePresent, 1);
 		logf_("recording: %s", wp ? "on" : "off");
+		return 0;
+	}
+	if (n == 22) { // testing: benchmark wParam pictures shown back to back (perf_end logs the averages)
+		memset(g_perf.benchSt, 0, sizeof g_perf.benchSt);
+		g_perf.benchTotal = g_perf.benchWorst = 0; g_perf.benchDone = 0;
+		InterlockedExchange(&g_perf.bench, (LONG)(wp ? wp : 120));
+		mark_dirty();
+		return 0;
+	}
+	if (n == 23) { // testing: upscaling (wParam 0 bilinear, 1 Catmull-Rom, 2 FSR; +4 EASU final; lParam sharpness x100, or -1 none)
+		g_upscaleCR = (int)(wp & 3) % 3;
+		g_fsrFinal = (wp & 4) != 0;
+		g_rcasSharp = (int)lp / 100.0f;
+		logf_("upscaling: %s, sharpness %.2f%s", upscale_name(), g_rcasSharp, g_fsrFinal ? ", EASU final" : "");
+		InterlockedExchange(&g_forcePresent, 1); mark_dirty();
+		return 0;
+	}
+	if (n == 24) { // testing: the FPS counter: 0 off, 1 simple, 2 detailed
+		InterlockedExchange(&g_statsOn, (LONG)(wp > 2 ? 2 : wp));
+		InterlockedExchange(&g_forcePresent, 1); mark_dirty();
 		return 0;
 	}
 	if (n == 20) { // testing: the army panel's frame kind
@@ -4095,6 +5553,23 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static void remote_hide(HWND hwnd)
 {
+	// [Debug] RemoteVisible=1: the window stays on screen (a fullscreen window goes to the display
+	// without the compositor, as for a player: frame pacing can only be measured so), still taking its
+	// input from the driver only.
+	if (GetPrivateProfileIntA("Debug", "RemoteVisible", 0, g_iniPath)) {
+		// RemoteVisible=2: also in front, as a player's game is (only then may the window go to the display
+		// directly; behind another window it is composed)
+		if (GetPrivateProfileIntA("Debug", "RemoteVisible", 0, g_iniPath) == 2) {
+			BOOL ok = SetForegroundWindow(hwnd);
+			logf_("remote testing mode: visible, in front: %s", ok ? "yes" : "refused");
+		}
+		else logf_("remote testing mode: visible");
+		char path[MAX_PATH];
+		snprintf(path, sizeof path, "%s\\lords2hd-remote.txt", g_gameDir);
+		FILE *f = fopen(path, "w");
+		if (f) { fprintf(f, "%lu %lu\n", (unsigned long)(ULONG_PTR)hwnd, GetCurrentProcessId()); fclose(f); }
+		return;
+	}
 	HMODULE dwm = LoadLibraryA("dwmapi.dll");
 	HRESULT (WINAPI *set_attr)(HWND, DWORD, const void *, DWORD) = dwm ? (void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
 	BOOL cloak = TRUE;
@@ -4107,12 +5582,28 @@ static void remote_hide(HWND hwnd)
 	if (f) { fprintf(f, "%lu %lu\n", (unsigned long)(ULONG_PTR)hwnd, GetCurrentProcessId()); fclose(f); }
 }
 
+// Running in the background ([Game] RunInBackground): 0 = the game pauses when another window is
+// active (original), 1 = it always keeps running, 2 = it keeps running in a multiplayer game only
+// (DAT_00553030 is 1 while a DirectPlay session is open), where a paused player stalls everyone.
+static int g_runBackground = 2;
+static BOOL keep_running(void)
+{
+	if (g_runBackground == 1) return TRUE;
+	if (g_runBackground != 2) return FALSE;
+	if (*(int *)0x00553030) return TRUE;
+	// A replacement multiplayer layer (Wolfe's dplayx.dll) knows about its lobby too.
+	static BOOL (__cdecl *sessionOpen)(void); static BOOL looked;
+	if (!looked) { HMODULE m = GetModuleHandleA("dplayx.dll"); if (m) sessionOpen = (BOOL (__cdecl *)(void))GetProcAddress(m, "LF_NetSessionOpen"); looked = TRUE; }
+	return sessionOpen && sessionOpen();
+}
+
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+	if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || (msg == WM_KEYDOWN && !(lp & 0x40000000))) perf_input(); // latency (perf_end)
 	if (g_remote) {
 		if (msg > WM_REMOTE && msg <= WM_REMOTE + 0x20) return remote_message(hwnd, msg, wp, lp);
 		if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-		if (msg == WM_ACTIVATEAPP) wp = TRUE;            // the game would pause, thinking it is in the background
+		if (msg == WM_ACTIVATEAPP && lp != 0x4C32) wp = TRUE; // the game would pause, thinking it is in the background (0x4C32: a test's real one)
 		if (msg == WM_ACTIVATE) wp = WA_ACTIVE;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) return 0; // only the driver's mouse
 	}
@@ -4151,6 +5642,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	else if (msg == WM_PAINT || msg == WM_SIZE || msg == WM_ACTIVATEAPP) {
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+	}
+	if (msg == WM_SIZE && wp == SIZE_MINIMIZED && keep_running()) wp = SIZE_RESTORED; // see h_IsIconic
+	if (msg == WM_ACTIVATEAPP && !wp && keep_running()) {
+		// The game clears its active flag (DAT_004e65a8) and its main loop then only sleeps
+		// (Sleep(200) instead of a frame), so in multiplayer every other player waits too.
+		LRESULT r = CallWindowProcA(g_gameProc, hwnd, msg, wp, lp);
+		*(int *)0x004e65a8 = 1;
+		return r;
 	}
 	return CallWindowProcA(g_gameProc, hwnd, msg, wp, lp);
 }
@@ -4386,7 +5885,11 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 // Remote mode: the game believes it is in front, and never brings itself there.
 static HWND (WINAPI *o_GetForegroundWindow)(void);
 static BOOL (WINAPI *o_SetForegroundWindow)(HWND);
-static HWND WINAPI h_GetForegroundWindow(void) { return g_remote && g_hwnd ? g_hwnd : o_GetForegroundWindow(); }
+static HWND WINAPI h_GetForegroundWindow(void) { return (g_remote || keep_running()) && g_hwnd ? g_hwnd : o_GetForegroundWindow(); }
+// Running in the background also covers a minimised window: the game's WM_SIZE / WM_MOVE and
+// activation handlers ask IsIconic and, minimised, stop instead of setting their active flag.
+static BOOL (WINAPI *o_IsIconic)(HWND);
+static BOOL WINAPI h_IsIconic(HWND hwnd) { return hwnd && hwnd == g_hwnd && keep_running() ? FALSE : o_IsIconic(hwnd); }
 static BOOL WINAPI h_SetForegroundWindow(HWND hwnd) { return g_remote ? TRUE : o_SetForegroundWindow(hwnd); }
 // ... and its window is hidden from the moment it exists, never taking the focus.
 static HWND (WINAPI *o_CreateWindowExA)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
@@ -5393,11 +6896,17 @@ static void menu_scroll_draw(void)
 	if (savedScreen == 0x1c || savedScreen == 0x1f) *(BYTE *)0x004eac50 = 0;
 	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
 	ctext("Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
-	for (int k = 0; k < MENU_TABS; k++) { // the open tab red and underlined
-		int cx = x0 + MS_W / 2 + (k ? 80 : -80), w = width(kMenuTab[k], body);
-		ctext(kMenuTab[k], cx - 75, y0 + 44, 150, body, k == g_menuTab ? red : ink);
-		if (k == g_menuTab) { line(cx - w / 2, y0 + 57, cx + w / 2, y0 + 57, red); line(cx - w / 2, y0 + 58, cx + w / 2, y0 + 58, red); }
-		SetRect(&g_menuTabRect[k], cx - 75, y0 + 42, cx + 75, y0 + 61);
+	{ // the tabs side by side, spaced by their own widths; the open one red and underlined
+		int tw[MENU_TABS], total = 0, gap = 18;
+		for (int k = 0; k < MENU_TABS; k++) { tw[k] = width(kMenuTab[k], body); total += tw[k] + (k ? gap : 0); }
+		int tx = x0 + (MS_W - total) / 2;
+		for (int k = 0; k < MENU_TABS; k++) {
+			int w = tw[k], cx = tx + w / 2;
+			ctext(kMenuTab[k], cx - w / 2 - 4, y0 + 44, w + 8, body, k == g_menuTab ? red : ink);
+			if (k == g_menuTab) { line(cx - w / 2, y0 + 57, cx + w / 2, y0 + 57, red); line(cx - w / 2, y0 + 58, cx + w / 2, y0 + 58, red); }
+			SetRect(&g_menuTabRect[k], cx - w / 2 - gap / 2, y0 + 42, cx + w / 2 + gap / 2, y0 + 61);
+			tx += w + gap;
+		}
 	}
 	line(x0 + 24, y0 + 64, x0 + MS_W - 24, y0 + 64, ink);
 	int n = menu_tab_count(g_menuTab);
@@ -5534,7 +7043,10 @@ static void __cdecl h_battle_draw(int col, int row)
 	if (col > 0x41 - g_battleK) BATTLE_COL = col = 0x41 - g_battleK;
 	if (row > 0x42 - g_battleR) BATTLE_ROW = row = 0x42 - g_battleR;
 	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+	g_btDefer = battle_zoom_on() && g_btLayer && g_btShadow && g_btValid; // the stamps batched (bt_queue)
 	o_battle_draw(col, row);
+	g_btDefer = FALSE;
+	bt_flush();
 	if (g_timing) draw_timed(1, t0);
 }
 
@@ -5800,22 +7312,40 @@ static void __cdecl h_box(int x, int y, int w, int h, int colour)
 		if (x == left) frame[r * pitch + left] = (BYTE)colour;
 		frame[r * pitch + right] = (BYTE)colour;
 	}
+	// The box is erased by redrawing the cells under it next frame: FUN_0041298a marks them
+	// (FUN_0046c4a3) for its height cut at row 472, so in the taller view the box's lower part stayed
+	// on the field. The cells under the whole box are marked here too.
+	if (zoomed) {
+		int size = ((int (__cdecl *)(void))0x004bc505)();
+		if (size > 0) {
+			int cx = BATTLE_COL + ((int (__cdecl *)(int))0x004bc2a5)(left), cy = BATTLE_ROW + ((int (__cdecl *)(int))0x004bc2c5)(top);
+			((void (__cdecl *)(int, int, int, int))0x0046c4a3)(cx, cy, (right - left + 1) / size + 2, (bottom - top + 1) / size + 2);
+		}
+	}
 }
 
 typedef void (__cdecl *cell_32_t)(const BYTE *);
 static cell_32_t o_cell_32;
 static void __cdecl h_cell_32(const BYTE *buf)
 {
-	if (g_btValid && battle_zoom_on() && g_back) {
+	if (g_btValid && battle_zoom_on() && g_back && g_btDefer) { // queued, in order with the stamps (bt_flush)
+		bt_queue(NULL, NULL, BLOCK_X + g_back->org, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70);
+		rows_dirty(g_btDirty, BLOCK_Y, BLOCK_Y + *(short *)0x005aeb70);
+	}
+	else if (g_btValid && battle_zoom_on() && g_back) {
 		int x = BLOCK_X + g_back->org, y = BLOCK_Y, w = *(short *)0x005c9258, h = *(short *)0x005aeb70;
 		for (int r = max(y, 0); r < min(y + h, g_frameH); r++) {
 			int x0 = max(x, 0), x1 = min(x + w, g_frameW);
 			if (x1 > x0) memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
 		}
+		rows_dirty(g_btDirty, y, y + h);
 	}
 	int x = BLOCK_X, y = BLOCK_Y, frame = TILE_FRAME;
+	double t = g_timing ? perf_now() : 0;
 	o_cell_32(buf);
+	if (g_timing) ct_add(5, &t);
 	if (battle_zoom_on()) stamp_sprite(buf, frame, x, y); // the ground itself
+	if (g_timing) ct_add(6, &t);
 }
 
 // The three letter blitters (FUN_004b41b7 and its two clipped versions; only text uses them).
@@ -5903,6 +7433,7 @@ static void __cdecl h_redraw_map(void)
 			if (!g_sprLayer) continue;
 			memcpy(g_sprShadow + y * MAX_W + x0, g_sprShadow + y * MAX_W + x0 + shift, strip);
 			memcpy(g_sprValid + y * MAX_W + x0, g_sprValid + y * MAX_W + x0 + shift, strip);
+			g_sprDirty[y] = 1;
 			for (int r = 0; r < 2; r++) {
 				DWORD *o = g_sprLayer + (2 * y + r) * (2 * MAX_W) + 2 * x0;
 				memcpy(o, o + 2 * shift, strip * 2 * sizeof(DWORD));
@@ -6059,7 +7590,97 @@ static void __cdecl h_show_frame(int force)
 	stream_hold_tick();
 	army_panel_keep();
 	menu_scroll_keep();
-	o_show_frame(force);
+	// Old-game limit: unforced copies (the battle loop's, FUN_004b0000's and FUN_00430000's) go to the
+	// screen only once 50 ms have passed since the last (DAT_004eabe8), so battles showed at most 20
+	// frames a second while the game drew ~80. With the frame limit on, every frame goes: the copy is
+	// a memcpy here and the presenter shows at most one picture per refresh.
+	// Forced only once the presenter has taken the last copy (g_frameTaken): the game draws ~140 frames
+	// a second, the screen shows 60, and each copy carries the HD layers' changed rows (a scroll
+	// changes them all), so copies nobody would see only slowed the game and held the presenter up.
+	if (g_timing && !IN_BATTLE_NOW() && g_back) { // elsewhere: the change count for the pacing check only
+		static DWORD lastHashM;
+		DWORD h = 2166136261u;
+		const DWORD *p = (const DWORD *)g_back->bits; int words = g_back->pitch * g_frameH / 4;
+		for (int i = 0; i < words; i++) h = (h ^ p[i]) * 16777619u;
+		if (h != lastHashM && *(int *)0x0050d09c > 0) pace_change(); // (only what the game has marked for the screen)
+		lastHashM = h;
+	}
+	if (g_timing && IN_BATTLE_NOW() && g_back) { // what makes a battle picture change: steps, animation ticks, scrolls
+		static DWORD lastHash, lastAnim, lastScroll, t0; static int n[3][2]; // [0 nothing, 1 step, 2 tick or scroll only][changed]
+		static int lastCol, lastRow, moves; static LONG lastPresents;
+		if (BATTLE_COL != lastCol || BATTLE_ROW != lastRow) { moves++; lastCol = BATTLE_COL; lastRow = BATTLE_ROW; }
+		DWORD h = 2166136261u;
+		const DWORD *p = (const DWORD *)g_back->bits; int words = g_back->pitch * g_frameH / 4;
+		for (int i = 0; i < words; i++) h = (h ^ p[i]) * 16777619u; // every word: a change of one pixel counts
+		if (h != lastHash && *(int *)0x0050d09c > 0) { pace_change(); pace_event('H', g_paceChangeSeq); } // (changes the game has not marked for the screen are never shown, even by the original)
+		DWORD anim = *(DWORD *)0x004e5b10, scroll = *(DWORD *)0x004e5b14;
+		int kind = g_frameSteps ? 1 : (anim != lastAnim || scroll != lastScroll) ? 2 : 0;
+		n[kind][h != lastHash]++;
+		lastHash = h; lastAnim = anim; lastScroll = scroll; g_frameSteps = 0;
+		DWORD now = GetTickCount();
+		if (!t0) t0 = now;
+		if (now - t0 >= 1000) { // per second: changed game frames, pictures shown, view moves (a scroll step)
+			LONG pr = g_presentCount;
+			logf_("timing: battle 1 s: %d changed frames of %d (steps %d/%d, tick or scroll %d/%d, neither %d/%d), %ld shown, %d view moves",
+				n[0][1] + n[1][1] + n[2][1], n[0][0] + n[0][1] + n[1][0] + n[1][1] + n[2][0] + n[2][1],
+				n[1][1], n[1][0] + n[1][1], n[2][1], n[2][0] + n[2][1], n[0][1], n[0][0] + n[0][1], (long)(pr - lastPresents), moves);
+			memset(n, 0, sizeof n); t0 = now; moves = 0; lastPresents = pr;
+		}
+	}
+	// The presenter is building a picture from this frame's HD layers: an unforced copy now would only
+	// wait for it (g_composeLock), and nobody would see that frame; the next call copies.
+	static int sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy; static double sfT; // Timing=1: why copies did or did not happen
+	if (g_timing) {
+		sfCalls++;
+		if (perf_now() - sfT > 1000) {
+			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies",
+				sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy, g_pendingCopies);
+			sfCalls = sfCompSkip = sfOurs = sfOursNoCopy = sfOther = sfOtherCopy = 0; g_pendingCopies = 0; sfT = perf_now();
+		}
+	}
+	if (!force && g_composing) { g_copyPending = 1; sfCompSkip++; pace_event('K', g_paceChangeSeq); return; }
+	BOOL ours = FALSE;
+	LONG hadTurn = 0;
+	if (g_frameLimit > 0 && !force) { hadTurn = InterlockedExchange(&g_frameTaken, 0); if (hadTurn || g_preTurn) force = ours = 1; } // (g_preTurn: see there)
+	LONG seq = g_copySeq;
+	g_paceCopying = g_paceChangeSeq; // the change this copy carries (copy_rect: g_pacePrimarySeq)
+	if (g_timing) {
+		static double sum, worst, t0; static int n;
+		double a = perf_now();
+		o_show_frame(force);
+		double b = perf_now(), ms = b - a;
+		sum += ms; n++; if (ms > worst) worst = ms;
+		if (!t0) t0 = b;
+		if (b - t0 > 5000) { logf_("timing: %d frame copies, %.2f ms average, %.1f ms worst (game thread)", n, sum / n, worst); sum = worst = 0; n = 0; t0 = b; }
+	}
+	else o_show_frame(force);
+	// nothing was copied (nothing changed, or the game's own gate): the presenter's turn is kept
+	if (ours && g_copySeq == seq && hadTurn) InterlockedExchange(&g_frameTaken, 1);
+	if (ours) { sfOurs++; if (g_copySeq == seq) sfOursNoCopy++; } else { sfOther++; if (g_copySeq != seq) sfOtherCopy++; }
+	if (g_timing) {
+		pace_event(g_copySeq != seq ? 'C' : ours ? 'c' : 'N', g_paceChangeSeq);
+		static int gateLogs;
+		if (ours && g_copySeq == seq && *(int *)0x0050d09c > 0 && gateLogs < 30) { // marked for the screen, our turn, and still no copy: the copy routine's own gates
+			gateLogs++;
+			logf_("copy refused: marks %d, 4df28c %d, 56d650 %d, 553008 %d, eabe8 %d, 5651ac %d", *(int *)0x0050d09c, *(int *)0x004df28c, *(int *)0x0056d650, *(int *)0x00553008, *(int *)0x004eabe8, *(int *)0x005651ac);
+		}
+	}
+	g_copyPending = g_copySeq == seq && g_frameLimit > 0; // a finished frame not on the screen yet (pending_copy)
+	if (g_copySeq != seq) g_frameCopyT = perf_now();
+}
+// From the frame limiter's wait (h_game_frame): the last finished frame copied once the presenter
+// is ready for it. The game is between frames there, so its back buffer is complete.
+static void pending_copy(void)
+{
+	if (!g_copyPending || !(g_frameTaken || g_preTurn) || g_composing || !*(void **)0x004eabd0) return;
+	LONG hadTurn = InterlockedExchange(&g_frameTaken, 0);
+	if (!hadTurn && !g_preTurn) return;
+	g_copyPending = 0;
+	LONG seq = g_copySeq;
+	g_paceCopying = g_paceChangeSeq;
+	o_show_frame(1);
+	if (g_copySeq == seq) { if (hadTurn) InterlockedExchange(&g_frameTaken, 1); } // (nothing to copy after all)
+	else { g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq); }
 }
 
 // Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
@@ -6107,7 +7728,10 @@ static char __cdecl h_game_frame(void)
 		DWORD gateLast[5] = { *(DWORD *)0x004e5b0c, *(DWORD *)0x004e5b14, *(DWORD *)0x004e5b10, *(DWORD *)0x004e59f0, *(DWORD *)0x004e59ec };
 		int gateWait[5] = { -1, -1, 20, 20, 30 };
 		int slow = (100 - *(int *)0x0053f230) / 10;
-		if (slow >= 0 && slow < 10 && (slow != 0 || *(int *)0x00553030 == 0)) gateWait[0] = slow * 10 + 2;
+		// At speed 10 in a multiplayer game the stock pacer skips its 2 ms gate; a multiplayer fix
+		// that patches that skip out (jmp at 0x4bbb92, Wolfe's dplayx) puts the gate back.
+		BOOL fastGated = *(int *)0x00553030 == 0 || *(BYTE *)0x004bbb92 == 0xE9;
+		if (slow >= 0 && slow < 10 && (slow != 0 || fastGated)) gateWait[0] = slow * 10 + 2;
 		int scroll = (100 - *(int *)0x0053f234) / 10;
 		if (scroll >= 0 && scroll < 10) gateWait[1] = (scroll + (SCREEN_ID == 0x10 ? 2 : 0)) * 12 + 2;
 		DWORD t = timeGetTime();
@@ -6128,7 +7752,13 @@ static char __cdecl h_game_frame(void)
 				if (stepIn != INT_MAX && stepIn - frameIn < periodMs) frameIn = INT_MAX; // the step is close: wait for it
 				else if (now.QuadPart >= next.QuadPart) break;
 				int ms = min(stepIn, frameIn) - 1;
-				Sleep(ms > 0 ? ms : 0);
+				// In slices of 2 ms: a finished frame the presenter has not had (it was busy when the
+				// frame was made) goes to the screen as soon as the presenter is ready, not when the
+				// next logic step wakes the game (up to 12 ms later, one refresh late).
+				// (a finished frame waiting: woken by the presenter's turn, g_turnEvent)
+				if (g_copyPending && g_turnEvent && !g_composing) { if (!g_frameTaken && !g_preTurn) WaitForSingleObject(g_turnEvent, ms > 0 ? ms : 0); }
+				else Sleep(ms > 2 ? 2 : ms > 0 ? ms : 0);
+				pending_copy();
 			}
 		}
 		// the next slot is a frame period after this frame, whatever woke it
@@ -6147,8 +7777,10 @@ static int __cdecl h_logic_steps(void)
 {
 	// Old-game habit: "Exit the game?" (screen 30) does not pause a battle (its entry in the
 	// pause table 0x4e31b0 is 0): the armies fight on behind the question. No steps while it is up.
-	if (*(BYTE *)0x004eac50 == 0x1e && *(int *)0x0057c8fc == 2) return 0;
+	// Not in a multiplayer game (DAT_00553030): there a player who stops stepping stalls everyone.
+	if (*(BYTE *)0x004eac50 == 0x1e && *(int *)0x0057c8fc == 2 && !*(int *)0x00553030) return 0;
 	int n = o_logic_steps();
+	g_frameSteps += n > 0 ? n : 0;
 	if (!g_timing) return n;
 	static DWORD t0; static int steps, frames;
 	DWORD now = GetTickCount();
@@ -6162,8 +7794,380 @@ static int __cdecl h_logic_steps(void)
 	return n;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Multiplayer safe mode: the game fixes below change what happens in the game, and nothing checks that
+// every player runs them, so in a multiplayer game (DAT_00553030) they stay off unless every player
+// has [Game] MultiplayerFixes=1; a player with the original game, or other settings, would drift apart.
+static BOOL g_mpFixes;
+static BOOL fix_on(BOOL fix) { return fix && (g_mpFixes || !*(int *)0x00553030); }
+
+// Mop-Up fix. Mop-Up (FUN_0047a76d) marks each unit's group as hunting (DAT_0056654a, the flag the
+// AI's charge FUN_0048c8af also sets) and puts the unit in the chase state 8. The chase handler
+// FUN_00483e55 looks for a new enemy only when the unit has no target, and only afterwards checks
+// whether the target is dying (state 2); a unit whose target falls drops it and goes idle (state 5),
+// so after its first kill it stands still. For a hunting group the dying target is let go first, so
+// the handler's own search (FUN_004954dd: nearest live, non-siege enemy) picks the next one.
+// Figures: 80 slots of 0x1b0 bytes from index 1; side at 0x005544ac (0 = empty slot), state at
+// 0x005544b1, target slot at 0x005545f4, group at 0x005545f8; a group's hunting flag is
+// 0x0056654a + group * 0x34.
+#define FIG_B(i, addr) (*(BYTE *)((addr) + (i) * 0x1b0))
+#define FIG_CUR        (*(int *)0x0053e8f8)
+static BOOL g_fixMopUp;
+typedef void (__cdecl *chase_t)(void);
+static chase_t o_chase;
+
+static void __cdecl h_chase(void)
+{
+	int me = FIG_CUR;
+	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
+		int group = *(short *)(0x005545f8 + me * 0x1b0);
+		int target = FIG_B(me, 0x005545f4);
+		if (group >= 0 && *(BYTE *)(0x0056654a + group * 0x34) && target > 0 && target < 0x51 &&
+			FIG_B(target, 0x005544ac) && FIG_B(target, 0x005544b1) == 2) {
+			FIG_B(me, 0x005545f4) = 0;
+			static int logged;
+			if (logged < 5) logged++, logf_("Mop-Up fix: unit %d (side %d) let go of fallen target %d", me,
+				FIG_B(me, 0x005544ac), target);
+		}
+	}
+	o_chase();
+}
+
+// AI castle cap. A computer lord's building step (FUN_0049edc7(player)) starts a castle
+// (FUN_00436d02(county, kind)) in each of its counties that has none, is big enough and while
+// its count of castles under construction (player record +0x4d, 0x0057bf4d + player * 0x160) is
+// below its difficulty's limit. That count is only rebuilt at the end of the season (FUN_004508de),
+// so a start doesn't raise it and one pass starts a castle in every eligible county at once (the
+// Bishop's rash of royal castles). Each start made by that step now adds one to the count.
+static BOOL g_fixCastleCap;
+static int g_aiBuilding;   // the player whose building step is running, 0 = none
+typedef void (__cdecl *ai_build_t)(unsigned);
+typedef void (__cdecl *castle_start_t)(int, int);
+static ai_build_t o_ai_build;
+static castle_start_t o_castle_start;
+
+static int g_aiStarts;
+
+static void __cdecl h_ai_build(unsigned player)
+{
+	int before = player < 6 ? *(BYTE *)(0x0057bf4d + player * 0x160) : 0;
+	g_aiBuilding = player;
+	g_aiStarts = 0;
+	o_ai_build(player);
+	g_aiBuilding = 0;
+	static int logged;
+	if (g_aiStarts && logged < 10) {
+		int level = *(BYTE *)(0x0057bf07 + player * 0x160); // the limit table's row (1 and up)
+		logged++, logf_("AI player %u started %d castle(s); %d were building, limit %d", player, g_aiStarts, before,
+			level >= 1 ? *(int *)(0x004d8ae8 + (level * 3 - 3) * 0x50) : -1);
+	}
+}
+
+static void __cdecl h_castle_start(int county, int kind)
+{
+	o_castle_start(county, kind);
+	if (g_aiBuilding > 0 && g_aiBuilding < 6) {
+		g_aiStarts++;
+		BYTE *building = (BYTE *)(0x0057bf4d + g_aiBuilding * 0x160);
+		if (fix_on(g_fixCastleCap) && *building < 255) ++*building;
+	}
+}
+
+// Wheat fix. Each spring a county plants one grain pile (0x0053fbf4 + county * 0x300) and notes its
+// wheat fields twice: 0x0053fbb2 (kept as planted) and 0x0053fbb6 (kept in step with the pile).
+// Whenever a wheat field is lost (FUN_00469e5b, FUN_0046965a) the game takes that field's share
+// out of the pile and lowers 0x0053fbb6. Tending and harvesting (FUN_0044d15a, FUN_0044d1e5) then
+// scale the pile by FUN_0044d281: wheat fields now (0x0053fbb1) over 0x0053fbb2, as planted, so a
+// lost field is charged twice, and painting one more wheat field brings back grain it never
+// grew. Measured against 0x0053fbb6 instead, only a field taken without its share is counted.
+static BOOL g_fixWheat;
+typedef int (__cdecl *wheat_scale_t)(int, int);
+static wheat_scale_t o_wheat_scale;
+
+static int __cdecl h_wheat_scale(int county, int grain)
+{
+	if (!fix_on(g_fixWheat)) return o_wheat_scale(county, grain);
+	BYTE now = *(BYTE *)(0x0053fbb1 + county * 0x300), live = *(BYTE *)(0x0053fbb6 + county * 0x300);
+	int asWas = o_wheat_scale(county, grain);
+	if (now < live) grain = grain * (now * 100 / live) / 100; // the game's own percent steps (FUN_00404dc1, FUN_00404d6b)
+	static int logged, lastCounty, lastGrain;
+	if (grain != asWas && logged < 5 && (county != lastCounty || grain != lastGrain))
+		logged++, lastCounty = county, lastGrain = grain, logf_("wheat fix: county %d, %d wheat fields (%d as planted, %d with grain): %d grain counted, %d before",
+		county, now, *(BYTE *)(0x0053fbb2 + county * 0x300), live, grain, asWas);
+	return grain;
+}
+
+// Besieged castles. The game's rule (Readme, "Besieged Castles"): no army may enter a castle or
+// strengthen its garrison until the siege is lifted. The human order checks it (FUN_004a9372 refuses
+// when the garrison army's besieger link 0x0052f24a is set), but the arrival itself, FUN_004a79a3
+// (army, county), which every army stepping onto its own castle goes through, only checks room. So
+// a computer lord's reinforcements (FUN_0049f12f, FUN_004a6270, FUN_004a64ca) merged into a
+// besieged garrison. Now the arrival is turned away there as when the castle is full.
+static BOOL g_fixSiegeGarrison;
+typedef void (__cdecl *castle_enter_t)(unsigned, int);
+static castle_enter_t o_castle_enter;
+
+static BOOL county_besieged(int county)
+{
+	int garrison = *(int *)(0x0053fb6c + county * 0x300);
+	return garrison > 0 && garrison < 0x97 && *(BYTE *)(0x0052f24a + garrison * 0x1a4) != 0;
+}
+
+// The computer's garrison steps (reinforce FUN_0049f12f, pick a castle FUN_004a07f2, march there
+// FUN_004a6270) skip a county whose 0x0053fb72 is set, a flag the game never sets. For their length it
+// is set on besieged counties, so they neither raise troops for a castle they can't enter (with
+// room that never fills, a new army every turn) nor march there.
+static int g_inUpgrade; // the season's castle step (FUN_004508de): a finished upgrade's garrison is raised inside
+typedef int (__cdecl *county_step_t)(unsigned, int);
+static county_step_t o_ai_reinforce, o_ai_pick_castle, o_ai_march;
+typedef void (__cdecl *season_castles_t)(void);
+static season_castles_t o_season_castles;
+
+static int siege_marks(BYTE *saved)
+{
+	int n = *(int *)0x0056d5dc, marked = 0;
+	for (int c = 1; c <= n && c < 64; c++) {
+		saved[c] = *(BYTE *)(0x0053fb72 + c * 0x300);
+		if (county_besieged(c)) *(BYTE *)(0x0053fb72 + c * 0x300) = 1, marked++;
+	}
+	return marked;
+}
+static void siege_unmark(const BYTE *saved)
+{
+	int n = *(int *)0x0056d5dc;
+	for (int c = 1; c <= n && c < 64; c++) *(BYTE *)(0x0053fb72 + c * 0x300) = saved[c];
+}
+static int marked_call(county_step_t f, unsigned a, int b)
+{
+	if (!fix_on(g_fixSiegeGarrison)) return f(a, b);
+	BYTE saved[64];
+	int marked = siege_marks(saved), r = f(a, b);
+	if (marked) siege_unmark(saved);
+	return r;
+}
+static int __cdecl h_ai_reinforce(unsigned player, int unused) { return marked_call(o_ai_reinforce, player, unused); }
+static int __cdecl h_ai_pick_castle(unsigned player, int army) { return marked_call(o_ai_pick_castle, player, army); }
+static int __cdecl h_ai_march(unsigned army, int unused) { return marked_call(o_ai_march, army, unused); }
+static void __cdecl h_season_castles(void) { g_inUpgrade++; o_season_castles(); g_inUpgrade--; }
+
+static void __cdecl h_castle_enter(unsigned army, int county)
+{
+	if (fix_on(g_fixSiegeGarrison) && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
+		if (county_besieged(county) && (unsigned)*(int *)(0x0053fb6c + county * 0x300) != army) {
+			*(BYTE *)(0x0052f200 + army * 0x1a4) = 1;   // as the full-castle branch leaves it
+			*(BYTE *)(0x0052f0ca + army * 0x1a4) = 2;
+			*(BYTE *)(0x0052f1fc + army * 0x1a4) = 0;
+			static int logged;
+			if (logged < 5) logged++, logf_("besieged castle: army %u kept out of county %d's castle", army, county);
+			return;
+		}
+	}
+	o_castle_enter(army, county);
+}
+
+// Multiplayer checks ([Debug] SyncLog=1): three seconds after each change of season (DAT_0057c92c,
+// DAT_0057c934) the log gets a checksum of the county records, the army table and the player records,
+// so two players' logs can be compared line by line; the first line that differs is where they
+// drifted apart.
+static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
+{
+	for (size_t i = 0; i < n; i++) { h ^= p[i]; for (int k = 0; k < 8; k++) h = (h >> 1) ^ (0xEDB88320u & (0u - (h & 1))); }
+	return h;
+}
+// Multiplayer session logs ([Debug] MpLogs=1, the default): each multiplayer game (DAT_00553030 set)
+// gets a folder lords2hd-mp\<date and time>\ that a player can zip and post when something goes wrong:
+//   session.txt  versions (this DLL, the exe, a replacement dplayx.dll) and the settings that matter
+//   sync.txt     per-season checksums of the county, army and player records (compare two players')
+//   copies of lords2hd.log and, if present, dplayx.log and desync.txt, refreshed each season and at the end
+// Only the ten newest folders are kept.
+static BOOL g_mpLogs = TRUE, g_syncLog;
+static DWORD crc_file(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) return 0;
+	BYTE buf[65536]; size_t n; DWORD h = ~0u;
+	while ((n = fread(buf, 1, sizeof buf, f)) > 0) h = crc_block(h, buf, n);
+	fclose(f);
+	return ~h;
+}
+static void mp_copy_logs(const char *dir)
+{
+	static const char *names[] = { "lords2hd.log", "dplayx.log", "desync.txt" };
+	char from[MAX_PATH], to[MAX_PATH];
+	for (int i = 0; i < 3; i++) {
+		snprintf(from, sizeof from, "%s\\%s", g_gameDir, names[i]);
+		snprintf(to, sizeof to, "%s\\%s", dir, names[i]);
+		if (GetFileAttributesA(from) != INVALID_FILE_ATTRIBUTES) CopyFileA(from, to, FALSE);
+	}
+}
+static void mp_prune(const char *root)
+{
+	char pat[MAX_PATH], names[64][MAX_PATH]; int n = 0;
+	snprintf(pat, sizeof pat, "%s\\*", root);
+	WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(pat, &fd);
+	if (h == INVALID_HANDLE_VALUE) return;
+	do { if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.' && n < 64) lstrcpynA(names[n++], fd.cFileName, MAX_PATH); } while (FindNextFileA(h, &fd));
+	FindClose(h);
+	while (n > 10) { // names are dates: the smallest is the oldest
+		int old = 0;
+		for (int i = 1; i < n; i++) if (strcmp(names[i], names[old]) < 0) old = i;
+		char dir[MAX_PATH], file[MAX_PATH];
+		snprintf(dir, sizeof dir, "%s\\%s", root, names[old]);
+		snprintf(pat, sizeof pat, "%s\\*", dir);
+		h = FindFirstFileA(pat, &fd);
+		if (h != INVALID_HANDLE_VALUE) {
+			do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) { snprintf(file, sizeof file, "%s\\%s", dir, fd.cFileName); DeleteFileA(file); } } while (FindNextFileA(h, &fd));
+			FindClose(h);
+		}
+		RemoveDirectoryA(dir);
+		lstrcpynA(names[old], names[--n], MAX_PATH);
+	}
+}
+static void mp_session_start(char *dir, size_t size)
+{
+	char root[MAX_PATH], path[MAX_PATH];
+	snprintf(root, sizeof root, "%s\\lords2hd-mp", g_gameDir);
+	CreateDirectoryA(root, NULL);
+	SYSTEMTIME t; GetLocalTime(&t);
+	snprintf(dir, size, "%s\\%04d-%02d-%02d_%02d-%02d-%02d", root, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	CreateDirectoryA(dir, NULL);
+	mp_prune(root);
+	snprintf(path, sizeof path, "%s\\session.txt", dir);
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	char me[MAX_PATH], exe[MAX_PATH];
+	HMODULE self = NULL;
+	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)mp_session_start, &self);
+	GetModuleFileNameA(self, me, sizeof me);
+	GetModuleFileNameA(NULL, exe, sizeof exe);
+	fprintf(f, "Lords of the Realm II HD multiplayer session, %04d-%02d-%02d %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	fprintf(f, "ddraw.dll (HD): built %s %s, crc %08lx\n", __DATE__, __TIME__, (unsigned long)crc_file(me));
+	fprintf(f, "Lords2.exe: crc %08lx\n", (unsigned long)crc_file(exe));
+	HMODULE dp = GetModuleHandleA("dplayx.dll");
+	if (dp) {
+		char dpPath[MAX_PATH]; GetModuleFileNameA(dp, dpPath, sizeof dpPath);
+		BOOL repl = GetProcAddress(dp, "LF_NetSessionOpen") != NULL;
+		fprintf(f, "dplayx.dll: %s, crc %08lx (%s)\n", dpPath, (unsigned long)crc_file(dpPath), repl ? "replacement multiplayer layer" : "Windows DirectPlay");
+	}
+	fprintf(f, "game fixes in this game: %s (MultiplayerFixes=%d)\n", g_mpFixes ? "on" : "off (multiplayer safe mode)", g_mpFixes);
+	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
+		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
+	fprintf(f, "this player: %d; game speed %d\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
+	fclose(f);
+	logf_("multiplayer session log: %s", dir);
+}
+
+static DWORD WINAPI sync_log_thread(LPVOID unused)
+{
+	(void)unused;
+	int lastSeason = -1; DWORD changed = 0; int pending = 0, n = 0;
+	char req[MAX_PATH], mpDir[MAX_PATH] = "";
+	BOOL inSession = FALSE;
+	snprintf(req, sizeof req, "%s\\lords2hd-sync.req", g_gameDir);
+	for (;;) {
+		Sleep(250);
+		BOOL mp = *(int *)0x00553030 != 0;
+		if (g_mpLogs && mp && !inSession) { mp_session_start(mpDir, sizeof mpDir); n = 0; lastSeason = -1; }
+		if (inSession && !mp && mpDir[0]) { mp_copy_logs(mpDir); logf_("multiplayer session ended"); }
+		inSession = mp;
+		// On request (a test drops lords2hd-sync.req, holding a name): every record's checksum to lords2hd-sync-<name>.txt
+		FILE *rq = fopen(req, "r");
+		if (rq) {
+			char name[64] = "x";
+			if (fscanf(rq, "%63s", name) != 1) strcpy(name, "x");
+			fclose(rq); DeleteFileA(req);
+			char path[MAX_PATH];
+			snprintf(path, sizeof path, "%s\\lords2hd-sync-%s.txt", g_gameDir, name);
+			FILE *f = fopen(path, "w");
+			if (f) {
+				int counties = *(int *)0x0056d5dc;
+				if (counties < 1 || counties > 60) counties = 0;
+				fprintf(f, "season %d/%d\n", *(int *)0x0057c92c, *(int *)0x0057c934);
+				for (int i = 1; i <= counties; i++) {
+					fprintf(f, "county %d %08lx", i, (unsigned long)crc_block(~0u, (const BYTE *)(0x0053f9b0 + i * 0x300), 0x300));
+					for (int k = 0; k < 0x300; k += 0x40) fprintf(f, " %08lx", (unsigned long)crc_block(~0u, (const BYTE *)(0x0053f9b0 + i * 0x300 + k), 0x40));
+					fprintf(f, "\n  head");
+					for (int k = 0; k < 0x40; k++) fprintf(f, " %02x", *(const BYTE *)(0x0053f9b0 + i * 0x300 + k));
+					fprintf(f, "\n");
+				}
+				for (int i = 1; i <= 0x96; i++) fprintf(f, "army %d %08lx\n", i, (unsigned long)crc_block(~0u, (const BYTE *)(0x0052f0b0 + i * 0x1a4), 0x1a4));
+				for (int i = 1; i <= 5; i++) {
+					fprintf(f, "player %d %08lx", i, (unsigned long)crc_block(~0u, (const BYTE *)(0x0057bf00 + i * 0x160), 0x160));
+					for (int k = 0; k < 0x160; k += 0x20) fprintf(f, " %08lx", (unsigned long)crc_block(~0u, (const BYTE *)(0x0057bf00 + i * 0x160 + k), 0x20));
+					fprintf(f, "\n");
+				}
+				fclose(f);
+			}
+		}
+		int season =*(int *)0x0057c92c * 16 + *(int *)0x0057c934;
+		if (season != lastSeason) { lastSeason = season; changed = GetTickCount(); pending = 1; }
+		if (!pending || GetTickCount() - changed < 3000) continue;
+		pending = 0;
+		int counties = *(int *)0x0056d5dc;
+		if (counties < 1 || counties > 60) continue;
+		DWORD c = crc_block(~0u, (const BYTE *)(0x0053f9b0 + 0x300), (size_t)counties * 0x300);
+		DWORD a = crc_block(~0u, (const BYTE *)(0x0052f0b0 + 0x1a4), (size_t)0x96 * 0x1a4);
+		DWORD p = crc_block(~0u, (const BYTE *)(0x0057bf00 + 0x160), (size_t)5 * 0x160);
+		++n;
+		if (g_syncLog) logf_("sync %d: season %d/%d, counties %08lx, armies %08lx, players %08lx, multiplayer %d", n,
+			*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p, *(int *)0x00553030);
+		if (inSession && mpDir[0]) {
+			char path[MAX_PATH]; snprintf(path, sizeof path, "%s\\sync.txt", mpDir);
+			FILE *f = fopen(path, "a");
+			if (f) {
+				SYSTEMTIME t; GetLocalTime(&t);
+				fprintf(f, "%02d:%02d:%02d  check %d  season %d/%d  counties %08lx  armies %08lx  players %08lx\n", t.wHour, t.wMinute, t.wSecond, n,
+					*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p);
+				fclose(f);
+			}
+			mp_copy_logs(mpDir);
+		}
+	}
+	return 0;
+}
+
+static void install_game_fixes(void)
+{
+	g_syncLog = GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath) != 0;
+	g_mpLogs = GetPrivateProfileIntA("Debug", "MpLogs", 1, g_iniPath) != 0;
+	if (g_syncLog || g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
+	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
+	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
+	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
+		kStep18[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,n
+	if (!hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter) ||
+		!hook_code((BYTE *)0x004508de, kStep1C, sizeof kStep1C, h_season_castles, &o_season_castles) ||
+		!hook_code((BYTE *)0x0049f12f, kStep1C, sizeof kStep1C, h_ai_reinforce, &o_ai_reinforce) ||
+		!hook_code((BYTE *)0x004a07f2, kStep10, sizeof kStep10, h_ai_pick_castle, &o_ai_pick_castle) ||
+		!hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march))
+		g_fixSiegeGarrison = FALSE;
+	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
+	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
+	g_mpFixes = GetPrivateProfileIntA("Game", "MultiplayerFixes", 0, g_iniPath) != 0;
+	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
+	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
+		g_fixWheat = FALSE;
+	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
+
+	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
+	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
+	if ((!hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) ||
+		!hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start)))
+		g_fixCastleCap = FALSE;
+	logf_("castle cap fix %s", g_fixCastleCap ? "on" : "off");
+
+	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
+	static const BYTE kChasePrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
+	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
+		g_fixMopUp = FALSE;
+	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
+}
+
 static void install(void)
 {
+	install_game_fixes();
 	static const BYTE kStepsPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,18h
 	hook_code((BYTE *)0x004bb978, kStepsPrologue, sizeof kStepsPrologue, h_logic_steps, &o_logic_steps);
 	if (memcmp((BYTE *)0x0040e8bb, kBlockPrologue, sizeof kBlockPrologue) == 0)
@@ -6181,6 +8185,7 @@ static void install(void)
 	}
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
 	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
+	hook_import("USER32.dll", "IsIconic", h_IsIconic, &o_IsIconic);
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);
 	hook_import("USER32.dll", "CreateWindowExA", h_CreateWindowExA, &o_CreateWindowExA);
 	hook_import("USER32.dll", "ShowWindow", h_ShowWindow, &o_ShowWindow);
@@ -6255,6 +8260,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	snprintf(g_logPath, sizeof g_logPath, "%s\\lords2hd.log", g_gameDir);
 	DeleteFileA(g_logPath);
 	InitializeCriticalSection(&g_lock);
+	InitializeCriticalSection(&g_composeLock);
 	InitializeCriticalSection(&g_recentLock);
 	load_real_ddraw();
 

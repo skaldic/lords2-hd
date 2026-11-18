@@ -4,13 +4,20 @@ An unofficial fan patch for the GOG and Steam versions of **Lords of the Realm I
 game fill a modern monitor and shows its art at double detail. You need your own copy of the game; the patch
 changes none of its files.
 
-Current version: **1.3.0**.
+Current version: **1.4.0**.
 
-**New in 1.3.0:** an installer, restored voices, the disc-quality videos, an army scroll, WASD
-scrolling, `,` and `.` to jump between your counties and armies, fresh diplomatic letters, and the
-settings on **F10** as one of the game's scrolls.
+**New in 1.4.0:** the graphics card draws the picture and upscales it with AMD FSR 1, a locked 60
+frames a second in battles and on the map, an FPS counter and a Performance tab on F10, four game
+fixes (Mop-Up, the computer's castles, wheat, besieged castles), and the community's LotR2 Fix
+multiplayer layer included.
 
-[Watch the 40-second video of what's new](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.3.0.mp4)
+[Watch a heavy battle at a locked 60 fps](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.4.0.mp4)
+
+**Join the Lords of the Realm II community on Discord:** [discord.gg/uBzaMGjUR](https://discord.gg/uBzaMGjUR). It's
+where players find multiplayer games, the multiplayer layer is made, and bugs and ideas for this
+patch are talked through.
+
+![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 
 ![The F10 settings](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg)
 
@@ -33,7 +40,11 @@ The screenshots are hosted on the release: this repository holds no game art.
   widened
 - Battles can zoom out to show four times the field
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels and lettering
-- Sharp Catmull-Rom upscaling, with the AI art or without it (the original art, scaled cleanly)
+- Drawn by the graphics card (Direct3D 11) and upscaled with AMD FidelityFX Super Resolution 1, with
+  the AI art or without it (the original art, scaled cleanly); Catmull-Rom and drawing on the
+  processor are still there
+- A locked 60 frames a second in battles and while scrolling the map, with the game's own speed
+  unchanged; an FPS counter on Ctrl+F10
 - An in-game settings panel on F10, drawn as one of the game's scrolls
 - The dialogue and unit voices restored to full quality (with Lords2Resounded; see below)
 - An army scroll beside the side panel while one of your armies is selected: its troops and men
@@ -49,19 +60,54 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Plays the disc-quality videos (included), and the hi-fi soundtrack if you add it (below)
 - Every feature can be switched off, in the F10 panel or in `lords2hd.ini`
 
+## Game fixes
+
+Four bugs of the original game are fixed in single player, each with its own switch under `[Game]`
+in `lords2hd.ini`:
+
+- **Mop-Up:** your troops keep fighting after their first kill instead of standing idle
+- **The computer's castles:** a computer lord no longer starts a castle in every county at once
+  (the Bishop's royal castles everywhere)
+- **Wheat:** a wheat field lost after planting costs its grain once, not twice
+- **Besieged castles:** no army can enter or strengthen a castle under siege (the game's own rule,
+  which the computer's reinforcements slipped past)
+
+In multiplayer they stay off, so everyone plays the same rules, unless every player sets
+`MultiplayerFixes=1`.
+
+## Multiplayer
+
+The download includes `dplayx.dll`, the LotR2 Fix multiplayer layer by Wolfe and Socius of the
+Lords of the Realm II community. It replaces Windows' DirectPlay with its own network code over TCP
+port 47700, checks every turn that all players' games agree and repairs them if not, and fixes the
+game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
+
+- The host allows the Windows Firewall prompt; the others must reach the host's TCP port 47700 (same
+  network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose Connect
+  to a game and type the host's address.
+- The game keeps running when you switch windows, so nobody waits for you.
+- **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
+  game's folder. It holds what's needed to debug the session: the versions of the patch, the game and
+  `dplayx.dll`, the settings, checksums of every player's game each season (to see where two games
+  went apart), and copies of the logs. If a game desyncs or crashes, **every player** zips their
+  folder for that game and posts it on the [community Discord](https://discord.gg/uBzaMGjUR) or in an issue. The ten
+  newest games are kept.
+
 ## Install
 
-Download `Lords2-HD-1.3.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.4.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and run it. It finds the GOG or Steam game by itself (or asks for the folder holding `Lords2.exe`),
 adds the patch, and leaves the game's own files alone. Uninstall it from Windows' Apps list. Close the game
 first. Windows may warn that the publisher is unknown: the installer is not code-signed.
 
-The patch is a `ddraw.dll` the game loads by itself, an ini with the settings, and `lords2hd.pak`,
-one file with the HD art, the restored voices and the videos. If the game folder already holds a `ddraw.dll`
-from another wrapper, this one replaces it. Updating from an older version: run the installer over
-it; your settings are kept and the loose art folders of the zip versions are removed.
+The patch is a `ddraw.dll` the game loads by itself, the multiplayer layer `dplayx.dll`, an ini with
+the settings, and `lords2hd.pak`, one file with the HD art, the restored voices and the videos. If
+the game folder already holds a `ddraw.dll` or `dplayx.dll` from another wrapper or multiplayer fix,
+these replace them. Updating from an older version: run the installer over it; your settings are
+kept (switch to AMD FSR 1 on F10's Performance tab) and the loose art folders of the zip versions
+are removed.
 
-Rather unzip by hand? `Lords2-HD-1.3.0.zip` holds the same files: unzip it into the game's folder.
+Rather unzip by hand? `Lords2-HD-1.4.0.zip` holds the same files: unzip it into the game's folder.
 
 ## Videos and music
 
@@ -95,11 +141,14 @@ files in `lords2hd\music`.
 game's sound files; it fetches the composer's recordings and edits them for seamless loops. Copy the
 music WAVs it makes (`Battle1.wav`, `Scroll3.wav`, ...) into `lords2hd\music`; the patch plays them
 as they are.
+
 ## Settings
 
-Press **F10** in the game: a scroll lists the settings on two tabs, Display and Quality of life (Tab
-switches them); click a line (or use the arrow keys and Enter) to change it, right-click to close.
-Most changes apply at once; those marked * (widescreen, battle zoom-out) after a restart.
+Press **F10** in the game: a scroll lists the settings on three tabs, Display, Performance and
+Quality of life (Tab switches them); click a line (or use the arrow keys and Enter) to change it,
+right-click to close. Most changes apply at once; those marked * (widescreen, battle zoom-out,
+drawing on the graphics card or the processor) after a restart. **Ctrl+F10** switches the FPS
+counter: off, frames a second, or detailed timings.
 Everything is saved in `lords2hd.ini` next to the exe; [hd/INSTALL.txt](hd/INSTALL.txt) lists all
 its keys and is also the readme that comes with the patch.
 
@@ -107,6 +156,10 @@ its keys and is also the readme that comes with the patch.
 
 - The GOG or Steam version of Lords of the Realm II (they share the same game files)
 - Windows, and a screen of 720p (1280x720) or larger; it fills any size from there up
+- For drawing on the graphics card: Direct3D 11 (feature level 11.0) graphics from any maker, such as
+  NVIDIA GeForce GTX 400 or newer, AMD Radeon HD 5000 or newer, or Intel HD Graphics 4000 or newer.
+  AMD FSR 1 is not limited to AMD cards. On older graphics (Intel HD 2000/3000, for example) the patch
+  draws on the processor by itself, and FSR still works there, on the processor
 
 ## About the art
 
@@ -126,6 +179,9 @@ videos are the game's own disc versions, unchanged. See [NOTICE.md](NOTICE.md).
   it a star.
 - The member of the GOG community who shared the disc-quality videos in the SMK_HIGH thread.
 - Keith Zizza, for publishing the original recordings of his soundtrack.
+- **Wolfe** and **Socius**, for the LotR2 Fix multiplayer layer included as `dplayx.dll` (built from
+  `multiplayer/`, see its `CREDITS.md`).
+- AMD, for FidelityFX Super Resolution 1 (MIT license, see [NOTICE.md](NOTICE.md)).
 
 ## Building it yourself
 
@@ -137,7 +193,8 @@ The repository holds only original code: nothing extracted from the game is in i
   `likeness.ps1` and `build_rooms.ps1` make the art in `<game>\lords2hd`
 - `tools/expand_sides.ps1` and `expand_all.ps1` paint the sides of the widened screens
 - `tools/make_pak.ps1` packs the art into `lords2hd.pak`; `tools/make_release.ps1 -Version x.y.z`
-  makes the installer (Inno Setup 6, `tools/lords2hd.iss`) and the zip
+  makes the installer (Inno Setup 6, `tools/lords2hd.iss`) and the zip, with `dplayx.dll` built from
+  `multiplayer/` (`multiplayer/dplayx/build.ps1`)
 - External tools (llvm-mingw, Real-ESRGAN, stable-diffusion.cpp and its models) are found through
   the `L2HD_TOOLS` environment variable, or `tools\external`
 - `NOTES.md` holds the reverse-engineering notes
@@ -147,7 +204,9 @@ it never takes the mouse or the speakers.
 
 ## Bugs
 
-After a crash, keep `lords2hd.log` from the game's folder straight away: it is rewritten at each
+Report bugs in an issue or on the [community Discord](https://discord.gg/uBzaMGjUR). For a multiplayer problem,
+every player sends their `lords2hd-mp` folder of that game (see Multiplayer). After a crash, keep
+`lords2hd.log` from the game's folder straight away: it is rewritten at each
 start. Say which monitor you use and whether another `ddraw.dll` wrapper or an overlay is running.
 
 ## License

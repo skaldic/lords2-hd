@@ -71,7 +71,20 @@ foreach ($step in $Steps) {
         'centre' { Post 18 ([int]$arg) 0 }   # testing: centre the view on map object n
         'objects' { Post 17 0 0 }   # testing: log the map objects
         'select' { Post 19 ([int]$arg) 0 }   # testing: select army n as a click on it does
-        'rec' { Post 21 ([int]$arg) 0 }   # testing: record frames (rec:15 starts at 15 a second, rec:0 stops)
+        'rec' {   # testing: record frames (rec:15 starts at 15 a second, rec:0 stops; with the GPU rec:30,x,y records a 1:1 1920x1080 crop at x,y of the picture)
+            $p = $arg -split ','; $l = 0; if ($p.Count -ge 3) { $l = ([long][int]$p[2] -shl 16) -bor ([int]$p[1] -band 0xffff); if ($l -eq 0) { $l = 1 } }
+            Post 21 ([int]$p[0]) $l }
+        'bench' {   # benchmark n pictures back to back; prints the averages from the log
+            $log = Join-Path $game "lords2hd.log"; $done = @(Select-String -Path $log -Pattern "bench: ").Count
+            Post 22 ([int]$arg) 0; $t = 0
+            while (@(Select-String -Path $log -Pattern "bench: ").Count -le $done -and $t -lt 600) { Start-Sleep -Milliseconds 100; $t++ }
+            (Select-String -Path $log -Pattern "bench: " | Select-Object -Last 1).Line
+        }
+        'upscale' {   # upscale:<mode>[,<sharpness x100>]  mode 0 bilinear, 1 Catmull-Rom, 2 FSR, 6 FSR with EASU final
+            $m, $s = $arg -split ','; if (-not $s) { $s = 20 }
+            Post 23 ([int]$m) ([int]$s); Start-Sleep -Milliseconds 300
+        }
+        'stats' { Post 24 ([int]$arg) 0 }   # the frame-timing overlay: 1 on, 0 off
         'apstyle' { Post 20 ([int]$arg) 0 }   # testing: the army panel's frame kind (0, 1, 2)
         'wasd' { Post 15 ([int]$arg) 0 }   # WASD held: 1 A, 2 D, 4 W, 8 S, 0 released
         'battleend' { Post 11 ([int]$arg) 0 }   # (battleend:1 leaves it where the game puts it)   # testing: show the end-of-battle scroll and video over a running battle
