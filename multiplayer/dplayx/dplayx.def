@@ -2,10 +2,5 @@ LIBRARY dplayx
 EXPORTS
 DirectPlayCreate @1
 DirectPlayEnumerateA @2
-LF_NetMenu @3
-LF_NetMenuGet @4
-LF_NetMenuMsg @5
-LF_NetFind @6
-LF_NetFindGet @7
 LF_NetSessionOpen @8
 LF_NetLogDir @9

@@ -344,9 +344,10 @@ static int parse_port(const char *t, const char *what)
 }
 /* The address typed into our Connect box (ask_join), used for this run even when lotr2net.ini cannot be written. */
 static char g_ask_host[128];
-/* ddraw's in-game Multiplayer menu (ddraw/mpmenu.c, 2026-10-06): mode 1 = the next Connect joins g_menu_host with no
- * Win32 window at all (no address box; the session list stays invisible and its first session is taken, or it is
- * cancelled with g_menu_msg saying why), mode 2 = the next Create (nothing to do here). Game thread only. */
+/* Menu join (GameRanger auto-setup, gra_title): g_menu 1 = the next Connect joins g_menu_host with no Win32 window at
+ * all (no address box; the session list stays invisible and its first session is taken, or it is cancelled with
+ * g_menu_msg saying why). It began for the LotR2 Fix ddraw's title-menu screens, which Lords2HD does not ship.
+ * Game thread only. */
 static int g_menu, g_menu_tries;
 static DWORD g_menu_seq, g_menu_t0;   /* menu_enum: last enum round counted, when this menu join began (#15) */
 static volatile LONG g_enum_gen;       /* bumped per menu join: an older round is never taken for a newer join */
@@ -1909,44 +1910,9 @@ static DPHR menu_enum(DPSD2 *want, ENUMSESS_CB cb, void *ctx, HWND lb, HWND dlg)
     return DP_OK;
 }
 
-__declspec(dllexport) void WINAPI LF_NetMenu(int mode, const char *host, int port)
-{
-    char val[160];
-    g_menu = mode;
-    g_menu_tries = 0;
-    g_menu_seq = 0;
-    g_menu_t0 = GetTickCount();
-    InterlockedIncrement(&g_enum_gen);
-    g_menu_msg[0] = 0;
-    if (mode == 1 && host) {
-        if (port < 1024 || port > 65535) { logf_("menu join: port %d out of range 1024-65535 - using %d", port, PORT_DEFAULT); port = PORT_DEFAULT; }   /* F9 */
-        if (port == PORT_DEFAULT) snprintf(val, sizeof val, "%s", host);
-        else snprintf(val, sizeof val, "%s:%d", host, port);
-        lstrcpynA(g_menu_host, val, sizeof g_menu_host);
-        lstrcpynA(g_ask_host, val, sizeof g_ask_host);
-        logf_("menu join %s (%s)", val, ini_set_host(val) ? "saved to lotr2net.ini" : "lotr2net.ini NOT writable, this run only");
-    } else logf_("menu mode %d", mode);
-}
-/* The address the menu shows first: what Connect would use now (env, last typed, ini); empty if none. */
-__declspec(dllexport) void WINAPI LF_NetMenuGet(char *host, int n, int *port)
-{
-    char h[128], *e = getenv("LOTR2NET_HOST");
-    int m = g_menu;
-    g_menu = 0;
-    h[0] = 0;
-    if ((e && *e) || g_ask_host[0] || ini_get("host", h, 120)) get_target(h, port);
-    else *port = PORT_DEFAULT;
-    g_menu = m;
-    lstrcpynA(host, h, n);
-}
-__declspec(dllexport) int WINAPI LF_NetMenuMsg(char *buf, int n)
-{
-    lstrcpynA(buf, g_menu_msg, n);
-    g_menu_msg[0] = 0;
-    return buf[0] != 0;
-}
-
 /* ---------------------------------------------------------------- local search (2026-10-06, Matthew: "Search local")
+ * Used by gr_join (a joiner inside GameRanger finds its host with no typed address); the LotR2 Fix title menu's
+ * "Search local games" screen that it was made for is not part of Lords2HD.
  * Host: while a session is open, a UDP socket on the game port answers "L2FIND1" with "L2HERE1" + port, PROTO, players,
  * max, locked, computer name. Searcher: sends "L2FIND1" to the directed broadcast of every up IPv4 adapter that can
  * broadcast (LAN, Wi-Fi, Hamachi, TAP VPNs), plus 255.255.255.255 and 127.0.0.1, three times over 1.5 s, and lists every
@@ -2245,7 +2211,7 @@ static DWORD WINAPI find_thread(LPVOID a)
 }
 
 /* start != 0: begin a search (results cleared). Returns -1 while searching, else how many were found. */
-__declspec(dllexport) int WINAPI LF_NetFind(int start)
+static int net_find(int start)
 {
     if (start && !InterlockedCompareExchange(&g_finding, 1, 0)) {
         HANDLE th;
@@ -2259,23 +2225,6 @@ __declspec(dllexport) int WINAPI LF_NetFind(int start)
     return g_finding ? -1 : g_nfound;
 }
 
-/* Result i: a label for the menu, the address and port to connect to. state: 0 joinable, 1 started, 2 other version. */
-__declspec(dllexport) int WINAPI LF_NetFindGet(int i, char *label, int ln, char *host, int hn, int *port, int *state)
-{
-    int ok = 0;
-    EnterCriticalSection(&findcs);
-    if (i >= 0 && i < g_nfound) {
-        Found *f = &g_found[i];
-        snprintf(label, ln, "%d/%d  %s", f->players, f->maxpl, f->name);
-        lstrcpynA(host, f->host, hn);
-        *port = f->port;
-        *state = f->proto != PROTO ? 2 : f->locked ? 1 : 0;
-        ok = 1;
-    }
-    LeaveCriticalSection(&findcs);
-    return ok;
-}
-
 /* Connect inside GameRanger: search (up to ~2 s, on the game thread like the address box it replaces) and take the
  * joinable host of this build, preferring one at a GameRanger room address. 0 = none found: the box is shown. */
 static int gr_join(void)
@@ -2285,8 +2234,8 @@ static int gr_join(void)
     DWORD t0 = GetTickCount();
     if (!gr_mode()) return 0;
     np = gr_peers(peers, 16);
-    LF_NetFind(1);
-    while ((n = LF_NetFind(0)) < 0 && GetTickCount() - t0 < 3000) Sleep(50);
+    net_find(1);
+    while ((n = net_find(0)) < 0 && GetTickCount() - t0 < 3000) Sleep(50);
     if (n < 0) n = 0;
     EnterCriticalSection(&findcs);
     for (i = 0; i < g_nfound; i++) {
@@ -2307,7 +2256,7 @@ static int gr_join(void)
 }
 
 /* ---- GameRanger auto-setup (2026-10-28): inside GameRanger the menus always take the same answers, so the title's
- * Multiplayer path runs by itself, the way ddraw's mpmenu drives it: the title screen's own input code (gra_patch,
+ * Multiplayer path runs by itself, the way the LotR2 Fix ddraw's title menu (mpmenu) drove it: the title screen's own input code (gra_patch,
  * where the game starts Multiplayer by itself when launched from a DirectPlay lobby) calls the game's Multiplayer
  * handler FUN_00432b05 on the first title frame, with its dialogs answered in DialogBoxParamA: Connect or Create (0x6c) by GameRanger's hosting flag, the session name
  * (0x74) default. The connection method list picks GameRanger's line (dp EnumerateA); a joiner first finds the host
@@ -2409,7 +2358,7 @@ static int __cdecl gra_title(void)
         g_menu_t0 = GetTickCount();
     }
     rd = RD32(A_REDRAW);
-    *(volatile DWORD *)0x59154c = 2; *(volatile DWORD *)0x591550 = 0; *(volatile DWORD *)0x591558 = 0;   /* as mpmenu run() */
+    *(volatile DWORD *)0x59154c = 2; *(volatile DWORD *)0x591550 = 0; *(volatile DWORD *)0x591558 = 0;   /* as LotR2 Fix mpmenu's run() */
     ((void (__cdecl *)(void))0x432b05)();
     g_gra = 0;
     g_menu = 0;
