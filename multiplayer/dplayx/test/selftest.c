@@ -59,8 +59,9 @@
  *       ping; a ping to another joiner is relayed; one claiming another player's id is not answered; a host heartbeat
  *       writes no per-message line while another message still does
  *   T36 (v12 session folders, LOTR2NET_TEST_MPLOGS; last: it moves dplayx.log away from log_has) a host with no joiner
- *       makes no folder; the first joiner makes mp_logs\direct_*, the log moves there and goes on; the next session
- *       makes a second folder; LF_NetLogDir names it; with 12 older folders there mp_logs keeps the 10 newest, ours included
+ *       makes no folder; the first joiner makes lords2hd-mp\<time>, the log moves there and goes on; the next session
+ *       makes a second folder; LF_NetLogSession names it; with 12 older folders there the 10 newest are kept, ours
+ *       included; a host alone gets a folder when LF_NetLogSession asks; after Close it names none
  *   T37 (v12 settings) a lotr2net.ini beside the DLL at load moves into lords2hd.ini [Multiplayer]: keys lords2hd.ini
  *       lacks are copied, its own (ghost=1) win, other sections stay, the old file becomes lotr2net.ini.old
  */
@@ -1352,15 +1353,16 @@ int main(int argc, char **argv)
         char ep[MAX_PATH], *sl, pat[MAX_PATH + 32], lg[MAX_PATH + 96], first[MAX_PATH] = "";
         int empty, one, moved, kept = 0, grew = 0, rootgone, two, k, oldleft, firstleft, dirok;
         typedef int (WINAPI *LOGDIR)(char *, int);
-        LOGDIR logdir = (LOGDIR)GetProcAddress(m, "LF_NetLogDir");
-        char ld[MAX_PATH + 96] = "";
+        LOGDIR logdir = (LOGDIR)GetProcAddress(m, "LF_NetLogSession");
+        char ld[MAX_PATH + 96] = "", ld2[MAX_PATH + 96] = "";
+        int solo, closed;
         WIN32_FIND_DATAA fd;
         HANDLE fh;
         GetModuleFileNameA(NULL, ep, MAX_PATH);
         sl = strrchr(ep, '\\');
         if (sl) sl[1] = 0; else ep[0] = 0;
         #define COUNT_DIRS(out) do { out = 0; fh = FindFirstFileA(pat, &fd); if (fh != INVALID_HANDLE_VALUE) { do { if (!first[0]) lstrcpyA(first, fd.cFileName); out++; } while (FindNextFileA(fh, &fd)); FindClose(fh); } } while (0)
-        sprintf(pat, "%smp_logs\\direct_*", ep);
+        sprintf(pat, "%slords2hd-mp\\20*", ep);
         SetEnvironmentVariableA("LOTR2NET_TEST_MPLOGS", "1");
         hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
         ((CPL)dp->vt[6])(dp, &me36, &nm, NULL, NULL, 0, 0);
@@ -1370,7 +1372,7 @@ int main(int argc, char **argv)
         make_player(ja, "a36");
         Sleep(400);
         COUNT_DIRS(one);
-        sprintf(lg, "%smp_logs\\%s\\dplayx.log", ep, first);
+        sprintf(lg, "%slords2hd-mp\\%s\\dplayx.log", ep, first);
         moved = GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
         sprintf(pat, "%sdplayx.log", ep);
         rootgone = GetFileAttributesA(pat) == INVALID_FILE_ATTRIBUTES;
@@ -1389,7 +1391,7 @@ int main(int argc, char **argv)
         Sleep(1100);         /* the folder name has one-second steps */
         for (k = 0; k < 12; k++) {   /* older sessions, one file each: pruned before the next folder is made */
             FILE *of;
-            sprintf(lg, "%smp_logs\\direct_2000-01-01_00-00-%02d", ep, k);
+            sprintf(lg, "%slords2hd-mp\\2000-01-01_00-00-%02d", ep, k);
             CreateDirectoryA(lg, NULL);
             lstrcatA(lg, "\\dplayx.log");
             if ((of = fopen(lg, "w")) != NULL) { fputs("old\n", of); fclose(of); }
@@ -1399,21 +1401,27 @@ int main(int argc, char **argv)
         hello(proto, 2, info, &ja);
         make_player(ja, "b36");
         Sleep(400);
-        sprintf(pat, "%smp_logs\\direct_*", ep);
+        sprintf(pat, "%slords2hd-mp\\20*", ep);
         COUNT_DIRS(two);
-        sprintf(pat, "%smp_logs\\direct_2000-*", ep);
+        sprintf(pat, "%slords2hd-mp\\2000-*", ep);
         COUNT_DIRS(oldleft);
-        sprintf(lg, "%smp_logs\\%s", ep, first);
+        sprintf(lg, "%slords2hd-mp\\%s", ep, first);
         firstleft = GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
         if (logdir) logdir(ld, sizeof ld);
         sprintf(lg, "%sdplayx.log", ld);
-        dirok = strstr(ld, "mp_logs\\direct_") && !strstr(ld, "direct_2000") && !strstr(ld, first) && GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
+        dirok = strstr(ld, "lords2hd-mp\\") && !strstr(ld, "\\2000-") && !strstr(ld, first) && GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
         closesocket(ja);
         ((CLOSE)dp->vt[4])(dp);
+        /* a host playing only computer lords: no joiner, the HD ddraw asks at the game's start */
+        hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
+        ((CPL)dp->vt[6])(dp, &me36, &nm, NULL, NULL, 0, 0);
+        solo = logdir && logdir(ld2, sizeof ld2) > 0 && strstr(ld2, "lords2hd-mp\\") && strcmp(ld2, ld);
+        ((CLOSE)dp->vt[4])(dp);
+        closed = logdir && logdir(ld2, sizeof ld2) == 0;
         SetEnvironmentVariableA("LOTR2NET_TEST_MPLOGS", NULL);
-        sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogDir '%.60s' ok %d",
-                empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok);
-        result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok, buf);
+        sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogSession '%.60s' ok %d, host alone %d, after Close none %d",
+                empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok, solo, closed);
+        result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok && solo && closed, buf);
     }
     printf("%s (%d failed)\n", fails ? "SOME FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;

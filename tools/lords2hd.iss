@@ -58,7 +58,6 @@ Type: files; Name: "{app}\desync.txt"
 Type: files; Name: "{app}\lotr2net.ini"
 Type: files; Name: "{app}\lotr2net.ini.old"
 Type: filesandordirs; Name: "{app}\lords2hd-mp"
-Type: filesandordirs; Name: "{app}\mp_logs"
 ; the folders, if nothing of the player's own is left in them (MP3s and music they added stay)
 Type: dirifempty; Name: "{app}\lords2hd\music"
 Type: dirifempty; Name: "{app}\lords2hd"

@@ -3,4 +3,4 @@ EXPORTS
 DirectPlayCreate @1
 DirectPlayEnumerateA @2
 LF_NetSessionOpen @8
-LF_NetLogDir @9
+LF_NetLogSession @9
