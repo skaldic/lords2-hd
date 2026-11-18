@@ -168,6 +168,7 @@ static void logf_(const char *fmt, ...)
 	fflush(f);
 }
 
+static BOOL g_smoothScroll = TRUE;   // see present_battle
 static void read_settings(void)
 {
 	char s[32];
@@ -180,6 +181,7 @@ static void read_settings(void)
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
 	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 	g_battleZoom = g_wantWide && GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
+	g_smoothScroll = GetPrivateProfileIntA("Display", "SmoothScroll", 0, g_iniPath) != 0;   // (off until the scroll's frame rate is fixed)
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
@@ -4319,11 +4321,40 @@ static void bt_double_job(int band, int me)
 		}
 	}
 }
+// Smooth scrolling ([Display] SmoothScroll=1). The game scrolls the battlefield a whole cell (32 of its
+// pixels) at a time, 16-34 times a second, which on a 60 Hz screen is an uneven judder: the view moves on
+// one refresh and waits two or three on others. When the view steps one cell between two pictures, the
+// new picture is shown shifted back by that cell and the shift slides to zero over about the time
+// between the game's steps (measured), drawn on every refresh meanwhile; the strip the shift uncovers
+// comes from the previous picture, which held it. Only the battlefield part of the picture moves (not
+// the bar above it or the side panel), and longer jumps (the minimap) are not slid. The game's view and
+// everything it does are unchanged: this is the picture only.
+static struct { const DWORD *cur, *old; DWORD *out; int w, rowTop, rowEnd, colEnd, dx, dy, ox, oy; } g_ss;
+static void ss_rows_job(int band, int me)
+{
+	(void)me;
+	int y0 = band * BT_BAND, y1 = min(g_ss.rowEnd, y0 + BT_BAND);
+	int w = g_ss.w;
+	for (int y = max(y0, g_ss.rowTop); y < y1; y++) {
+		DWORD *o = g_ss.out + (size_t)y * w;
+		for (int x = 0; x < g_ss.colEnd; x++) {
+			int sx = x - g_ss.dx, sy = y - g_ss.dy;   // where this pixel of the world is in the new picture
+			if (sx >= 0 && sx < g_ss.colEnd && sy >= g_ss.rowTop && sy < g_ss.rowEnd) o[x] = g_ss.cur[(size_t)sy * w + sx];
+			else {   // uncovered: in the previous picture, one cell over
+				int px = sx + g_ss.ox, py = sy + g_ss.oy;
+				px = max(0, min(g_ss.colEnd - 1, px)); py = max(g_ss.rowTop, min(g_ss.rowEnd - 1, py));
+				o[x] = g_ss.old[(size_t)py * w + px];
+			}
+		}
+	}
+}
+
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 {
-	static DWORD *pic, *pic2;
+	static DWORD *pic, *pic2, *picB, *pic2B, *ssOut;
 	static BYTE *copy, *shown;
 	static RECT lastView;
+	static int flip;
 	int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
 	int fh = g_primary->h, pitch = g_primary->pitch;
 	if (!pic) {
@@ -4332,6 +4363,12 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		copy = malloc(pitch * fh);
 		shown = malloc(pitch * fh);
 		if (!pic || !pic2 || !copy || !shown) return FALSE;
+		if (g_smoothScroll) {
+			picB = malloc(lw * lh * 4);
+			pic2B = malloc(lw * 2 * lh * 2 * 4);
+			ssOut = malloc(lw * 2 * lh * 2 * 4);
+			if (!picB || !pic2B || !ssOut) g_smoothScroll = FALSE;
+		}
 	}
 	EnterCriticalSection(&g_lock);
 	memcpy(copy, g_primary->bits, pitch * fh);
@@ -4343,13 +4380,23 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	if (!forced && palSame && memcmp(copy, shown, pitch * fh) == 0) return FALSE;
 	memcpy(shown, copy, pitch * fh);
 	lastView = v;
+	// Smooth scroll: when the view has stepped since the last picture, the new one is built into the other
+	// of two sets, so the last picture of the old view stays whole for the uncovered strip while it slides.
+	DWORD *prevPic = NULL, *prevPic2 = NULL;
+	if (g_smoothScroll) {
+		static int builtCol = -9999, builtRow = -9999;
+		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
+		if (col != builtCol || row != builtRow) { flip ^= 1; builtCol = col; builtRow = row; }
+		prevPic = flip ? pic : picB; prevPic2 = flip ? pic2 : pic2B;
+	}
+	DWORD *curPic = g_smoothScroll && flip ? picB : pic, *curPic2 = g_smoothScroll && flip ? pic2B : pic2;
 
 	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
 	g_bt.btL = g_btLayerS ? g_btLayerS : g_btLayer;
 	g_bt.btS = g_btLayerS ? g_btShadowS : g_btShadow; g_bt.btV = g_btLayerS ? g_btValidS : g_btValid;
 	g_bt.btOn = g_bt.btL && g_bt.btS && g_bt.btV && g_showTiles; // all three, or the HD battle layer is left out of this picture
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
-	g_bt.pic = pic; g_bt.pic2 = pic2; g_bt.copy = copy; g_bt.frame = copy + g_off; // the game's x = 0
+	g_bt.pic = curPic; g_bt.pic2 = curPic2; g_bt.copy = copy; g_bt.frame = copy + g_off; // the game's x = 0
 	g_bt.pitch = pitch; g_bt.lw = lw; g_bt.lh = lh; g_bt.mapW = mapW;
 	// An open drop-down: doubled from its corner like the bar above it (it covers its 1:1 self).
 	g_bt.mx0 = g_bt.mx1 = g_bt.my1 = 0; // its doubled rectangle in this picture, rows 48 .. my1
@@ -4372,13 +4419,13 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	bi.biPlanes = 1;
 	bi.biBitCount = 32;
 	bi.biCompression = BI_RGB;
-	const DWORD *src = pic;
+	const DWORD *src = curPic;
 	int sw = lw, sh = lh;
 	if (g_bt.big) {
 		// (the doubling stays bilinear even with Catmull-Rom: at 3392x1920 two Catmull-Rom passes
 		// took 25-44 ms a picture; the final stretch is Catmull-Rom). With FSR on the CPU: EASU,
 		// then the HD layer stamped.
-		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(pic, lw, lh, lw, pic2, 2 * lw, 2 * lh, 2 * lw);
+		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(curPic, lw, lh, lw, curPic2, 2 * lw, 2 * lh, 2 * lw);
 		InterlockedExchange(&g_btMiss, 0);
 		pool_run((lh + BT_BAND - 1) / BT_BAND, bt_double_job);
 		if (g_timing) { // pictures where many HD pixels fell back to 1x (a flicker)
@@ -4390,15 +4437,55 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			if (!t0) t0 = now;
 			if (now - t0 > 1000) { if (bad || worst > 5000) logf_("timing: battle HD art: %d of %d pictures with over 20000 pixels shown 1x (worst %ld)", bad, n, (long)worst); n = bad = 0; worst = 0; t0 = now; }
 		}
-		src = pic2;
+		src = curPic2;
 		sw = lw * 2;
 		sh = lh * 2;
+	}
+	BOOL big = src == curPic2;
+	if (g_smoothScroll) {
+		// the view's steps since the last picture (one cell slides; anything else snaps)
+		static int lastCol = -9999, lastRow = -9999;
+		static double offX, offY, lastT, lastStepT, stepGap = 50;
+		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
+		double now = perf_now();
+		int dc = col - lastCol, dr = row - lastRow;
+		static int stepX, stepY;
+		if (lastCol == -9999 || abs(dc) > 1 || abs(dr) > 1) offX = offY = 0;
+		else if (dc || dr) {
+			if (lastStepT) stepGap = max(25.0, min(90.0, 0.7 * stepGap + 0.3 * (now - lastStepT)));
+			lastStepT = now;
+			// the picture shown so far lags the new view by the step, plus what was still sliding
+			offX = max(-32.0, min(32.0, offX + 32.0 * dc));
+			offY = max(-32.0, min(32.0, offY + 32.0 * dr));
+			stepX = dc; stepY = dr;
+		}
+		else if (lastT) {   // slide toward the new view: a cell per step gap
+			double d = 32.0 * (now - lastT) / stepGap;
+			offX = offX > 0 ? max(0.0, offX - d) : min(0.0, offX + d);
+			offY = offY > 0 ? max(0.0, offY - d) : min(0.0, offY + d);
+		}
+		lastCol = col; lastRow = row; lastT = now;
+		int scale = big ? 2 : 1;
+		int ox = (int)(offX * scale + (offX >= 0 ? 0.5 : -0.5)), oy = (int)(offY * scale + (offY >= 0 ? 0.5 : -0.5));
+		if ((ox || oy) && prevPic) {
+			g_ss.cur = src; g_ss.old = big ? prevPic2 : prevPic; g_ss.out = ssOut; g_ss.w = sw;
+			g_ss.rowTop = 48 * scale; g_ss.rowEnd = sh; g_ss.colEnd = min(sw, mapW * scale);
+			g_ss.dx = ox; g_ss.dy = oy;   // screen x shows new-picture x - ox
+			g_ss.ox = 32 * scale * stepX; g_ss.oy = 32 * scale * stepY;   // new-picture coordinates to the old one's
+			memcpy(ssOut, src, (size_t)sw * g_ss.rowTop * 4);   // the bar above stays
+			for (int y = g_ss.rowTop; y < sh; y++)   // the side panel stays
+				memcpy(ssOut + (size_t)y * sw + g_ss.colEnd, src + (size_t)y * sw + g_ss.colEnd, (size_t)(sw - g_ss.colEnd) * 4);
+			pool_run((sh + BT_BAND - 1) / BT_BAND, ss_rows_job);
+			src = ssOut;
+			InterlockedExchange(&g_forcePresent, 1);   // next refresh: the slide goes on
+			mark_dirty();
+		}
 	}
 	if (entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
-	put_picture(dc, &v, src, sw, sh, src == pic2 ? COLORONCOLOR : HALFTONE);
+	put_picture(dc, &v, src, sw, sh, big ? COLORONCOLOR : HALFTONE);
 	ReleaseDC(g_hwnd, dc);
 	return TRUE;
 }
