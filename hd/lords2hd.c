@@ -6095,11 +6095,24 @@ static void cycle_buttons_draw(int sx, int sw)
 		}
 	}
 }
+// In a battle the battlefield starts left of the game's x = 0 (wide and zoomed-out views), but the mouse
+// was held at x >= 1 so that x = 0 could mean "scroll left": a selection box started on the left jumped
+// to x = 1 and units there couldn't be clicked. In a battle the real position now goes through, down to
+// the view's left edge (DAT_004e6558), and the edge scroll (FUN_00432221, the only reader of the raw
+// x at DAT_004e6594) is told about the left edge separately (g_battleLeftEdge).
+static BOOL g_battleLeftEdge;
+static int battle_left_x(void)
+{
+	return g_off && IN_BATTLE_NOW() && *(int *)0x0052af94 == 3 ? min(1, *(int *)0x004e6558) : 1;
+}
+
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
+	int leftX = battle_left_x();
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
 		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
-		p->x = max(1, min(right - 1, g_fake.x));
+		p->x = max(leftX, min(right - 1, g_fake.x));
+		g_battleLeftEdge = (g_fakeEdge & 1) != 0;
 		p->y = max(1, min(bottom - 1, g_fake.y));
 		if (g_fakeEdge & 1) p->x = 0;
 		if (g_fakeEdge & 2) p->x = right;
@@ -6119,9 +6132,10 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		client_to_game(&x, &y);
 		if (g_off) {
 			int right = max(2, SCROLL_EDGE_W - 1);
-			if (cx <= v.left) x = 0;
+			g_battleLeftEdge = cx <= v.left;
+			if (cx <= v.left) x = leftX < 1 ? leftX : 0;
 			else if (cx >= v.right - 1) x = right;
-			else x = max(1, min(right - 1, x));
+			else x = max(leftX, min(right - 1, x));
 			// The same for the bottom edge, measured against the frame's height (DAT_004ea838).
 			int bottom = max(2, *(int *)0x004ea838 - 1), cy = p->y;
 			if (cy <= v.top) y = 0;
@@ -7292,6 +7306,18 @@ static void __cdecl h_battle_view(void *a, void *b, void *c, int mapW, int d, in
 typedef void (__cdecl *battle_clamp_t)(void);
 static battle_clamp_t o_battle_clamp;
 #define BATTLE_COL (*(int *)0x0055ce70)
+typedef int (__cdecl *edge_scroll_t)(void);
+static edge_scroll_t o_edge_scroll;
+static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x
+{
+	if (battle_left_x() >= 1) return o_edge_scroll();
+	int saved = *(int *)0x004e6594;
+	*(int *)0x004e6594 = g_battleLeftEdge ? 0 : max(1, saved);
+	int r = o_edge_scroll();
+	*(int *)0x004e6594 = saved;
+	return r;
+}
+
 static void __cdecl h_battle_clamp(void)
 {
 	o_battle_clamp();
@@ -7816,6 +7842,8 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00426b92, kBlockPrologue, sizeof kBlockPrologue, h_stream_play, &o_stream_play);
 	hook_code((BYTE *)0x004bc020, kBlockPrologue, sizeof kBlockPrologue, h_battle_view, &o_battle_view);
 	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
+	static const BYTE kEdgePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }; // push ebp; mov ebp,esp; sub esp,10h
+	hook_code((BYTE *)0x00432221, kEdgePrologue, sizeof kEdgePrologue, h_edge_scroll, &o_edge_scroll);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
