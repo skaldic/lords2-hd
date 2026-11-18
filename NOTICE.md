@@ -22,6 +22,13 @@ restored with [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded), use
 permission: the LavaSR AI model rebuilds the high frequencies the game's 11 kHz files lost, and the
 DPDFNet model removes hiss from the dialogue. The sound effects and the music are the game's own.
 
+## The multiplayer layer
+
+`dplayx.dll` is built from the LotR2 Fix multiplayer source in `multiplayer/`, by members of the
+Lords of the Realm II community: Wolfe (the replacement DirectPlay layer, the per-turn sync check and
+repair, the host checks and the game's multiplayer desync fixes) and Socius (GameRanger support). It
+is included with Socius's permission; see `multiplayer/CREDITS.md`.
+
 ## The videos
 
 The disc-quality videos are the game's own, as on its original CD, unchanged: the GOG release has

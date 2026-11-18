@@ -1,14 +1,34 @@
-Lords of the Realm II HD 1.3.0: an unofficial fan patch for the GOG version of the game.
+Lords of the Realm II HD 1.4.0: an unofficial fan patch for the GOG and Steam versions of the game.
 You need your own copy of the game.
 
 INSTALL
-Run Lords2-HD-1.3.0-setup.exe with the game closed: it finds the GOG game (or asks for the folder
-holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
-ddraw.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
+Run Lords2-HD-1.4.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
+folder holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
+ddraw.dll, dplayx.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
 UNINSTALL
-From Windows' Apps list; or delete ddraw.dll, lords2hd.ini, lords2hd.pak, lords2hd.log and the
-lords2hd folder. Your game files are not changed.
+From Windows' Apps list; or delete ddraw.dll, dplayx.dll, lords2hd.ini, lords2hd.pak, lords2hd.log
+and the lords2hd folder. Your game files are not changed.
+
+MULTIPLAYER
+- dplayx.dll is the LotR2 Fix multiplayer layer by Wolfe and Socius (see lords2hd\MULTIPLAYER-CREDITS.md):
+  it replaces Windows' DirectPlay with its own network code over TCP port 47700, checks every turn
+  that all players' games agree and repairs them if not, and fixes the game's own multiplayer
+  desyncs. Every player needs the same dplayx.dll (this patch's, or the same build from the Discord).
+- Host: allow the Firewall prompt; the other players need to reach your TCP port 47700 (same network,
+  a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose Connect to a game
+  and type the host's address.
+- The patch's own game fixes (Mop-Up, the computer's castles, wheat, besieged castles) are switched
+  off in multiplayer, so players with different setups stay in step; set MultiplayerFixes=1 only if
+  every player does. The game keeps running when you switch windows, so nobody waits for you.
+- Each multiplayer game writes a folder lords2hd-mp\<date and time>\: if a game goes wrong, zip that
+  folder and post it on the community Discord.
+
+GAME FIXES (single player; lords2hd.ini [Game])
+- Mop-Up: your troops keep fighting after their first kill instead of standing idle
+- The computer no longer starts a castle in every county at once (the Bishop's royal castles)
+- A wheat field lost after planting costs its grain once, not twice
+- No army can enter or strengthen a castle under siege (the game's own rule)
 
 WHAT IT DOES
 - Runs fullscreen at your monitor's resolution, without switching its display mode
@@ -55,8 +75,9 @@ ABOUT THE ART
 The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.
 
 REQUIREMENTS
-The GOG version of the game, Windows, and a screen of 720p (1280x720) or larger.
+The GOG or Steam version of the game, Windows, and a screen of 720p (1280x720) or larger.
 
 BUGS
 After a crash, keep lords2hd.log from the game's folder straight away: it is rewritten at each start.
+For multiplayer problems, send the lords2hd-mp folder of that game (see MULTIPLAYER).
 Say which monitor you use and whether another ddraw.dll wrapper or an overlay is running.

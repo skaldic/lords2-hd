@@ -40,6 +40,8 @@ Type: filesandordirs; Name: "{app}\lords2hd\sprites"
 [Files]
 Source: "..\dist\stage\ddraw.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\stage\lords2hd.pak"; DestDir: "{app}"; Flags: ignoreversion
+; the multiplayer layer (LotR2 Fix dplayx.dll by Wolfe and Socius): everyone in a game needs the same one
+Source: "..\dist\stage\dplayx.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; the settings are the player's: kept on an update
 Source: "..\dist\stage\lords2hd.ini"; DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "..\dist\stage\lords2hd\*"; DestDir: "{app}\lords2hd"; Flags: ignoreversion recursesubdirs
@@ -49,6 +51,12 @@ Type: files; Name: "{app}\lords2hd.log"
 Type: files; Name: "{app}\lords2hd.ini"
 Type: files; Name: "{app}\lords2hd-remote.txt"
 Type: files; Name: "{app}\lords2hd-muted.txt"
+; the multiplayer layer's own files, and the multiplayer session logs
+Type: files; Name: "{app}\dplayx.log"
+Type: files; Name: "{app}\dplayx.prev.log"
+Type: files; Name: "{app}\desync.txt"
+Type: files; Name: "{app}\lotr2net.ini"
+Type: filesandordirs; Name: "{app}\lords2hd-mp"
 ; the folders, if nothing of the player's own is left in them (MP3s and music they added stay)
 Type: dirifempty; Name: "{app}\lords2hd\music"
 Type: dirifempty; Name: "{app}\lords2hd"
