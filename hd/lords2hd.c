@@ -286,6 +286,7 @@ static volatile BOOL g_mapSticky; // the wide map view carries on under dialogs 
 
 static volatile LONG g_dirtyCount; // Timing=1: frame copies a second
 static volatile LONG g_frameTaken = 1; // the presenter has read the frame since the last copy (h_show_frame)
+static HANDLE g_turnEvent; // set with g_frameTaken: wakes the frame limiter's wait to copy a finished frame at once (pending_copy)
 static int g_frameSteps;               // Timing=1: logic steps since the last frame copy
 static volatile LONG g_presentCount;   // pictures shown (Timing=1)
 static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
@@ -844,6 +845,23 @@ static void pace_event(char k, LONG seq)
 	LONG n = InterlockedIncrement(&g_paceEvN) - 1;
 	int i = n % PACE_RING;
 	g_paceEv[i].t = perf_now(); g_paceEv[i].k = k; g_paceEv[i].seq = seq;
+}
+// The game may copy its next frame (h_show_frame, pending_copy); a finished frame waiting in the frame
+// limiter is copied at once (it slept in 2 ms slices and came 3-5 ms into the refresh, too late for it).
+static void give_turn(void)
+{
+	InterlockedExchange(&g_frameTaken, 1); pace_event('T', 0);
+	if (g_turnEvent) SetEvent(g_turnEvent);
+}
+// While a picture waits for its refresh, every frame the game finishes is copied, each replacing the
+// last, until the next picture is started (g_preTurn cleared): a busy battle picture takes ~8 ms, so the
+// frame must be in before the refresh, and on the map a copy that used up the turn early left the newer
+// frame finished just before the refresh out (a refresh late).
+static volatile LONG g_preTurn;
+static void give_pre_turn(void)
+{
+	InterlockedExchange(&g_preTurn, 1); pace_event('T', 0);
+	if (g_turnEvent) SetEvent(g_turnEvent);
 }
 static void pace_trace(double from, double to, double base)
 {
@@ -1543,7 +1561,8 @@ static BYTE *g_sprShadow;
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
 static BOOL g_ownScroll; // the settings scroll is being drawn: its HD art is stamped whatever the palette
 static BYTE *g_txt, *g_txtShadow, *g_txtValid;     // the sharp letters' layer (text_overlay)
-static BYTE *g_txtS, *g_txtShadowS, *g_txtValidS;  // ... as of the frame on screen
+static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  // ... as of the frame on screen (volatile: g_txtS is read first, set last)
+static int g_txtW, g_txtH; // the size all of them were made for (the back buffer's then)
 static BYTE g_tilePal[768];
 
 static BOOL wave_is_water(DWORD p)
@@ -2995,7 +3014,7 @@ static void bt_publish(int y0, int y1)
 static void text_publish(int y0, int y1)
 {
 	if (!g_txt || !g_back) return;
-	int W = g_back->w, H = g_back->h;
+	int W = g_txtW, H = g_txtH;
 	if (!g_txtS) {
 		BYTE *l = malloc(W * H * 4), *s = calloc(W, H), *v = calloc(W, H); // (set last, as in spr_publish)
 		if (!l || !s || !v) { free(l); free(s); free(v); return; }
@@ -3044,7 +3063,9 @@ static void text_stamp(const BYTE *src, int w, int h, int x, int y, int colour, 
 		g_txtShadow = malloc(W * H);
 		g_txtValid = calloc(W, H);
 		if (!g_txt || !g_txtShadow || !g_txtValid) { g_hdText = FALSE; return; }
+		g_txtW = W; g_txtH = H;
 	}
+	if (W != g_txtW || H > g_txtH) return; // (a back buffer of another size: the layers are not its)
 #define ON(c, r) ((c) >= 0 && (r) >= 0 && (c) < w && (r) < h && src[(r) * w + (c)] != 0)
 	rows_dirty(g_txtDirty, y, y + h);
 	for (int r = 0; r < h; r++) {
@@ -3100,6 +3121,7 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 {
 	if (!map_lut()) return;
 	int W = g_back->w;
+	if (g_txt && W != g_txtW) return; // (text layers made for another back buffer size)
 	const BYTE *tx = g_txtS ? g_txtS : g_txt, *tsh = g_txtS ? g_txtShadowS : g_txtShadow, *tv = g_txtS ? g_txtValidS : g_txtValid;
 	for (int r = 0; r < s->h; r++) {
 		int y = s->y + r;
@@ -3168,7 +3190,8 @@ static void scroll_overlays(int sx, int sw)
 static void text_overlay(int sx, int sw)
 {
 	if (!g_txt || !g_hdText) return;
-	int W = g_back->w;
+	int W = g_txtW;
+	if (sx < 0 || sx + sw > W || GAME_H > g_txtH || W != g_back->w) return; // (layers made for another back buffer size)
 	// what the frame on screen had (see text_publish); the live layer until the first copy
 	const BYTE *g_txt_ = g_txtS ? g_txtS : g_txt, *shadow = g_txtS ? g_txtShadowS : g_txtShadow, *valid = g_txtS ? g_txtValidS : g_txtValid;
 	for (int y = 0; y < GAME_H; y++) {
@@ -3570,6 +3593,8 @@ static void gpu_teardown(int state)
 	g_gpu.bufW = g_gpu.bufH = 0; g_gpu.qn = 0; g_gpu.gpuMs = 0;
 	InterlockedExchange(&g_forcePresent, 1);
 }
+static BOOL gpu_tex(ID3D11Texture2D **t, ID3D11ShaderResourceView **v, ID3D11RenderTargetView **r, int w, int h, BOOL dynamic);
+static void gpu_pass(int ps, ID3D11ShaderResourceView *srv, int sw, int sh, ID3D11RenderTargetView *rtv, int x, int y, int w, int h, float rcas);
 static BOOL gpu_init(int cw, int ch)
 {
 	typedef HRESULT (WINAPI *create_t)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *, UINT, UINT,
@@ -3633,6 +3658,26 @@ static BOOL gpu_init(int cw, int ch)
 		ID3D11Device_CreateQuery(g_gpu.dev, &qd, &g_gpu.qd[i]);
 		ID3D11Device_CreateQuery(g_gpu.dev, &qt, &g_gpu.qa[i]);
 		ID3D11Device_CreateQuery(g_gpu.dev, &qt, &g_gpu.qb[i]);
+	}
+	// Every shader drawn once into a small texture now: the driver finishes a shader at its first draw,
+	// and the first Catmull-Rom picture (a battle's zoomed-out view) took 110 ms (six empty refreshes).
+	{
+		double w0 = perf_now();
+		ID3D11Texture2D *wt = NULL, *ws = NULL; ID3D11ShaderResourceView *wv = NULL, *wsv = NULL; ID3D11RenderTargetView *wr = NULL;
+		if (gpu_tex(&wt, &wv, &wr, 16, 16, FALSE) && gpu_tex(&ws, &wsv, NULL, 16, 16, TRUE)) {
+			ID3D11DeviceContext_IASetPrimitiveTopology(g_gpu.ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			ID3D11DeviceContext_IASetInputLayout(g_gpu.ctx, NULL);
+			ID3D11DeviceContext_VSSetShader(g_gpu.ctx, g_gpu.vs, NULL, 0);
+			ID3D11DeviceContext_PSSetConstantBuffers(g_gpu.ctx, 0, 1, &g_gpu.cb);
+			ID3D11DeviceContext_PSSetSamplers(g_gpu.ctx, 0, 1, &g_gpu.lin);
+			for (int i = 0; i < GP_N; i++) gpu_pass(i, wsv, 16, 16, wr, 0, 0, 16, 16, 0.5f);
+			ID3D11ShaderResourceView *none = NULL;
+			ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &none);
+			ID3D11DeviceContext_OMSetRenderTargets(g_gpu.ctx, 0, NULL, NULL);
+			ID3D11DeviceContext_Flush(g_gpu.ctx);
+		}
+		REL(wr); REL(wv); REL(wt); REL(wsv); REL(ws);
+		logf_("GPU shaders warmed up in %.1f ms", perf_now() - w0);
 	}
 	g_gpu.bufW = cw; g_gpu.bufH = ch;
 	g_gpu.state = 1;
@@ -3710,6 +3755,7 @@ static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
 		g_gpu.lastV = *v; g_gpu.have = TRUE;
 	}
 	perf_mark(PS_SCALE); // (the upload)
+	double tSub0 = perf_now(), tSub1, tSub2; // Timing=1: a slow draw's parts
 	ID3D11Texture2D *back = NULL;
 	ID3D11RenderTargetView *bv = NULL;
 	if (FAILED(hr = IDXGISwapChain_GetBuffer(g_gpu.sc, 0, &kIID_Tex2D, (void **)&back)) ||
@@ -3724,6 +3770,7 @@ static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
 	ID3D11DeviceContext_PSSetConstantBuffers(g_gpu.ctx, 0, 1, &g_gpu.cb);
 	ID3D11DeviceContext_PSSetSamplers(g_gpu.ctx, 0, 1, &g_gpu.lin);
 	int mode = g_upscaleCR;
+	tSub1 = perf_now();
 	if (mode == 2) { // FSR: EASU (Catmull-Rom when not enlarging) into a window-sized texture, RCAS onto the screen
 		if ((vw != g_gpu.midW || vh != g_gpu.midH) && !gpu_tex(&g_gpu.mid, &g_gpu.midV, &g_gpu.midR, vw, vh, FALSE)) { REL(bv); REL(back); gpu_fail("texture", 0); return FALSE; }
 		g_gpu.midW = vw; g_gpu.midH = vh;
@@ -3731,6 +3778,7 @@ static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
 		gpu_pass(GP_RCAS, g_gpu.midV, vw, vh, bv, v->left, v->top, vw, vh, g_rcasSharp >= 0 ? exp2f(-g_rcasSharp) : 0);
 	}
 	else gpu_pass(mode ? GP_CR : GP_BIL, g_gpu.srcV, sw, sh, bv, v->left, v->top, vw, vh, 0);
+	tSub2 = perf_now();
 	if (g_statsOn) { // the overlay: drawn by GDI into a small bitmap, magenta where it is see-through
 		int ow = min(vw, max(640, vw * 6 / 10)), oh = min(vh, max(120, vh / 7));
 		if (ow != g_gpu.ovlW || oh != g_gpu.ovlH) {
@@ -3750,6 +3798,7 @@ static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
 	}
 	ID3D11ShaderResourceView *none = NULL;
 	ID3D11DeviceContext_PSSetShaderResources(g_gpu.ctx, 0, 1, &none);
+	if (g_timing && perf_now() - tSub0 > 30) logf_("gpu: slow draw: back buffer %.1f, passes %.1f, overlay %.1f ms (view %dx%d, source %dx%d)", tSub1 - tSub0, tSub2 - tSub1, perf_now() - tSub2, vw, vh, sw, sh);
 	if (g_gpu.qd[q]) { ID3D11DeviceContext_End(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qb[q]); ID3D11DeviceContext_End(g_gpu.ctx, (ID3D11Asynchronous *)g_gpu.qd[q]); }
 	g_gpu.qn++;
 	if (g_shotViewWanted && InterlockedExchange(&g_shotViewWanted, 0)) { // testing: the picture as on screen, read back
@@ -3786,6 +3835,19 @@ static BOOL gpu_present(const RECT *v, const DWORD *src, int sw, int sh)
 	hr = IDXGISwapChain_Present(g_gpu.sc, 0, 0);
 	perf_mark(PS_BLIT);
 	if (FAILED(hr)) { gpu_fail("present", hr); return TRUE; }
+	if (g_timing && g_gpu.flip) { // Timing=1: whether pictures go to the display directly or through the compositor
+		static const GUID kIID_SCMedia = { 0xdd95b90b, 0xf05f, 0x4f6a, { 0xbd, 0x65, 0x25, 0xbf, 0xb2, 0x64, 0xbd, 0x84 } };
+		typedef struct { UINT presentCount, presentRefreshCount, syncRefreshCount; LARGE_INTEGER syncQPC; UINT syncGPU, mode, approved; } stats_t;
+		typedef struct { void *qi; void *addRef; ULONG (WINAPI *release)(void *); HRESULT (WINAPI *stats)(void *, stats_t *); } media_vt;
+		static void *media; static BOOL tried; static int lastMode = -1;
+		if (!tried) { tried = TRUE; if (FAILED(IDXGISwapChain_QueryInterface(g_gpu.sc, &kIID_SCMedia, &media))) media = NULL; }
+		stats_t st;
+		if (media && SUCCEEDED((*(media_vt **)media)->stats(media, &st)) && (int)st.mode != lastMode) {
+			static const char *const names[] = { "composed", "overlay", "independent flip", "composition failure" };
+			logf_("display mode: %s", st.mode < 4 ? names[st.mode] : "?");
+			lastMode = st.mode;
+		}
+	}
 	// the card's time for a frame drawn a few frames ago (its queries are read without waiting)
 	if (g_gpu.qn >= GPU_Q) {
 		int r = g_gpu.qn % GPU_Q; // the oldest
@@ -3925,7 +3987,7 @@ static void bt_row(int sy)
 	}
 	int from = sy < 48 ? 0 : mapW;
 	// Letters in the doubled top bar and side panel.
-	if (g_txt && g_hdText) {
+	if (g_txt && g_hdText && g_back->w == g_txtW) {
 		int W = g_back->w;
 		const BYTE *tv = g_txtS ? g_txtValidS : g_txtValid, *ts = g_txtS ? g_txtShadowS : g_txtShadow, *tx = g_txtS ? g_txtS : g_txt;
 		int gy = sy < 48 ? sy / 2 : 24 + (sy - 48) / 2;
@@ -3955,7 +4017,7 @@ static void bt_row(int sy)
 			DWORD p = g_lut[v8];
 			int q = (sy & 1) * 2 + ((sx - g_bt.mx0) & 1);
 			if (g_bt.btOn && gx < g_frameW) { int f = gy * g_frameW + gx; if (g_bt.btV[f] && g_bt.btS[f] == v8) p = g_bt.btL[f * 4 + q]; }
-			if (g_txt && g_hdText && W && gx < W) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
+			if (g_txt && g_hdText && W && W == g_txtW && gx < W && gy < g_txtH) { int f = gy * W + gx; if ((g_txtS ? g_txtValidS : g_txtValid)[f] && v8 == (g_txtS ? g_txtShadowS : g_txtShadow)[f]) p = g_lut[(g_txtS ? g_txtS : g_txt)[f * 4 + q]]; }
 			o[sx] = p;
 		}
 	}
@@ -4637,11 +4699,12 @@ static DWORD WINAPI presenter(void *unused)
 			if (gpu_repeat()) {
 				perf_repeat(); if (g_timing) pace_wake(2);
 				if (g_timing) pace_classify();
+				if (g_frameLimit > 0) give_pre_turn(); // (see g_preTurn)
 				wait_refresh(dwm_flush);
 			}
 			else { repeatPause = perf_now() + 250; dbgRepFail++; }
 			dbgB1++;
-			InterlockedExchange(&g_frameTaken, 1); pace_event('T', 0); // the game may copy its newest frame for the next refresh
+			InterlockedExchange(&g_frameTaken, 1); // the game may copy its newest frame for the next refresh
 			continue;
 		}
 		// The overlay's numbers kept fresh on a still screen: redrawn 4 times a second, not counted.
@@ -4660,7 +4723,9 @@ static DWORD WINAPI presenter(void *unused)
 		// is a whole frame copied since the refresh, while one is waiting to be copied)
 		// (only while the game may copy: without its turn there is a copy on the screen surface not read yet,
 		// and waiting for another would wait for this presenter)
-		if (!bench && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank) {
+		// (a whole frame copied since the last picture was started, before the refresh too, needs no wait)
+		static double composeT;
+		if (!bench && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank && g_frameCopyT < composeT) {
 			for (;;) {
 				double wait = g_lastVblank + 6 - perf_now();
 				if (wait <= 0 || wait > 6 || g_frameCopyT >= g_lastVblank || !g_copyPending || !g_frameTaken) break;
@@ -4688,6 +4753,13 @@ static DWORD WINAPI presenter(void *unused)
 		perf_begin();
 		EnterCriticalSection(&g_composeLock); // (see g_composeLock)
 		InterlockedExchange(&g_composing, 1);
+		InterlockedExchange(&g_preTurn, 0);
+		composeT = perf_now();
+		if (g_timing) { // Timing=1: a long wait for the game to finish a copy
+			double lw = (composeT - (t0.QuadPart * 1000.0 / freq.QuadPart));
+			static int lwLogs;
+			if (lw > 6 && lwLogs < 40) { lwLogs++; logf_("presenter: waited %.1f ms for the game's copy to finish", lw); }
+		}
 		BOOL shown = present();
 		InterlockedExchange(&g_composing, 0);
 		LeaveCriticalSection(&g_composeLock);
@@ -4700,9 +4772,18 @@ static DWORD WINAPI presenter(void *unused)
 			// how long a new picture takes (the late check above); a slow one-off (the first picture starts
 			// the GPU, a screenshot reads 58 MB back) is left out, and the estimate stays within 10 ms
 			if (ms < 20) g_presentEma = min(10.0, g_presentEma * 0.9 + ms * 0.1);
+			if (g_timing && ms > 15) { // Timing=1: where a slow picture's time went
+				static int slowLogs;
+				if (slowLogs < 60) { slowLogs++; logf_("presenter: slow picture %.1f ms: compose %.1f, upload %.1f, submit %.1f, present %.1f", ms, g_perf.st[PS_COMPOSE], g_perf.st[PS_SCALE], g_perf.st[PS_SHARPEN], g_perf.st[PS_BLIT]); }
+			}
 			busy += ms;
 			if (ms > worst) worst = ms;
 			presents++;
+			// The game may copy its next frame from now on, while this picture waits for its refresh: a busy
+			// battle picture takes ~8 ms to draw, and a copy allowed only after the refresh came 2-5 ms into it,
+			// too late for the next one (that refresh got the last picture again). Copied before the refresh,
+			// the next picture is drawn as soon as it passes.
+			if (g_repeatOn && gpu_drawing() && g_frameLimit > 0) give_pre_turn(); // (see g_preTurn)
 			// Wait for the compositor's next frame, so the picture changes at most once per refresh.
 			double w0 = perf_now();
 			wait_refresh(dwm_flush);
@@ -4711,7 +4792,7 @@ static DWORD WINAPI presenter(void *unused)
 		// The game may copy its next frame now (h_show_frame): after the refresh, so the copy taken
 		// is its newest, not one made just after the last picture and a refresh old by the time it
 		// is read (changed frames waited unseen behind it).
-		InterlockedExchange(&g_frameTaken, 1); pace_event('T', 0);
+		give_turn();
 		if (!shown && dirty) skipped++;
 		if (g_timing) pace_classify();
 		if (g_timing && (t1.QuadPart - since.QuadPart) > 5 * freq.QuadPart) {
@@ -4748,6 +4829,7 @@ static void start_presenter(void)
 	if (started) return;
 	started = TRUE;
 	g_dirtyEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+	g_turnEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
 	HANDLE t = CreateThread(NULL, 0, presenter, NULL, 0, NULL);
 	if (t) CloseHandle(t);
 }
@@ -5475,7 +5557,13 @@ static void remote_hide(HWND hwnd)
 	// without the compositor, as for a player: frame pacing can only be measured so), still taking its
 	// input from the driver only.
 	if (GetPrivateProfileIntA("Debug", "RemoteVisible", 0, g_iniPath)) {
-		logf_("remote testing mode: visible");
+		// RemoteVisible=2: also in front, as a player's game is (only then may the window go to the display
+		// directly; behind another window it is composed)
+		if (GetPrivateProfileIntA("Debug", "RemoteVisible", 0, g_iniPath) == 2) {
+			BOOL ok = SetForegroundWindow(hwnd);
+			logf_("remote testing mode: visible, in front: %s", ok ? "yes" : "refused");
+		}
+		else logf_("remote testing mode: visible");
 		char path[MAX_PATH];
 		snprintf(path, sizeof path, "%s\\lords2hd-remote.txt", g_gameDir);
 		FILE *f = fopen(path, "w");
@@ -7525,7 +7613,8 @@ static void __cdecl h_show_frame(int force)
 	}
 	if (!force && g_composing) { g_copyPending = 1; sfCompSkip++; pace_event('K', g_paceChangeSeq); return; }
 	BOOL ours = FALSE;
-	if (g_frameLimit > 0 && !force && InterlockedExchange(&g_frameTaken, 0)) force = ours = 1;
+	LONG hadTurn = 0;
+	if (g_frameLimit > 0 && !force) { hadTurn = InterlockedExchange(&g_frameTaken, 0); if (hadTurn || g_preTurn) force = ours = 1; } // (g_preTurn: see there)
 	LONG seq = g_copySeq;
 	g_paceCopying = g_paceChangeSeq; // the change this copy carries (copy_rect: g_pacePrimarySeq)
 	if (g_timing) {
@@ -7539,7 +7628,7 @@ static void __cdecl h_show_frame(int force)
 	}
 	else o_show_frame(force);
 	// nothing was copied (nothing changed, or the game's own gate): the presenter's turn is kept
-	if (ours && g_copySeq == seq) InterlockedExchange(&g_frameTaken, 1);
+	if (ours && g_copySeq == seq && hadTurn) InterlockedExchange(&g_frameTaken, 1);
 	if (ours) { sfOurs++; if (g_copySeq == seq) sfOursNoCopy++; } else { sfOther++; if (g_copySeq != seq) sfOtherCopy++; }
 	if (g_timing) {
 		pace_event(g_copySeq != seq ? 'C' : ours ? 'c' : 'N', g_paceChangeSeq);
@@ -7556,13 +7645,14 @@ static void __cdecl h_show_frame(int force)
 // is ready for it. The game is between frames there, so its back buffer is complete.
 static void pending_copy(void)
 {
-	if (!g_copyPending || !g_frameTaken || g_composing || !*(void **)0x004eabd0) return;
-	if (!InterlockedExchange(&g_frameTaken, 0)) return;
+	if (!g_copyPending || !(g_frameTaken || g_preTurn) || g_composing || !*(void **)0x004eabd0) return;
+	LONG hadTurn = InterlockedExchange(&g_frameTaken, 0);
+	if (!hadTurn && !g_preTurn) return;
 	g_copyPending = 0;
 	LONG seq = g_copySeq;
 	g_paceCopying = g_paceChangeSeq;
 	o_show_frame(1);
-	if (g_copySeq == seq) InterlockedExchange(&g_frameTaken, 1); // (nothing to copy after all)
+	if (g_copySeq == seq) { if (hadTurn) InterlockedExchange(&g_frameTaken, 1); } // (nothing to copy after all)
 	else { g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq); }
 }
 
@@ -7635,7 +7725,9 @@ static char __cdecl h_game_frame(void)
 				// In slices of 2 ms: a finished frame the presenter has not had (it was busy when the
 				// frame was made) goes to the screen as soon as the presenter is ready, not when the
 				// next logic step wakes the game (up to 12 ms later, one refresh late).
-				Sleep(ms > 2 ? 2 : ms > 0 ? ms : 0);
+				// (a finished frame waiting: woken by the presenter's turn, g_turnEvent)
+				if (g_copyPending && g_turnEvent && !g_composing) { if (!g_frameTaken && !g_preTurn) WaitForSingleObject(g_turnEvent, ms > 0 ? ms : 0); }
+				else Sleep(ms > 2 ? 2 : ms > 0 ? ms : 0);
 				pending_copy();
 			}
 		}
