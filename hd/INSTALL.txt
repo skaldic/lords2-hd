@@ -22,8 +22,8 @@ MULTIPLAYER
   off in multiplayer, so players with different setups stay in step; set MultiplayerFixes=1 only if
   every player does. The game keeps running when you switch windows, so nobody waits for you.
 - MULTIPLAYER LOGS: each multiplayer game writes a folder lords2hd-mp\<date and time>\ with what is
-  needed to debug the session (versions, settings, every player's checksums each season, and all
-  the logs). If a game desyncs or crashes, every player zips their folder for that game and posts it
+  needed to debug the session (versions, settings, all the logs and a summary of the session; the
+  logs of all players share one clock, so they line up). If a game desyncs or crashes, every player zips their folder for that game and posts it
   on the community Discord (https://discord.gg/uBzaMGjUR). The ten newest games are kept.
 
 COMMUNITY

@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DLL_VERSION 12  /* 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
+#define DLL_VERSION 13  /* 13: session clock - the host's T_PONG carries its session time, every log line is stamped [S <s>] in it, on every PC (diag.c; a v12 peer would send 16-byte pings, so v12 is refused), a summary per session in session.txt, desync.txt gone (the summary and dplayx.log have it), settings in lords2hd.ini; 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
 /* PROTO digits: thousands = DLL_VERSION, hundreds = pace patch applied (0/1), tens = 2*exe_ok + slowlink (0..3),
  * units = mpfix (0/1). g_exe_ok / g_pace_ok / g_mpfix are set in exepatch.c, g_slowlink once at load from
  * LOTR2NET_SLOWLINK. DLL_VERSION 7 carries resync wire version RS_VER 1 (a peer of another DLL version is refused). */
@@ -151,7 +151,6 @@ static int log_capped;
 static int log_force;   /* sync.c sets it around SYNC/DESYNC lines (see logf_) */
 static int g_log_hb;    /* log_heartbeats=1: per-message 0x0a lines too (diag.c) */
 static volatile LONG g_msg_stopped;   /* per-message lines have stopped at the log cap; a new session folder resets it (sesslog.c) */
-static const char *lf_dir(void);      /* sesslog.c: where a session's own files go */
 static void lf_copy_all(void);
 
 /* ------------------------------------------------------------------ logging */
@@ -253,13 +252,17 @@ static void log_flush_exit(void)
     }
 }
 
+static int clk_now_ms(DWORD *ms);   /* diag.c: the session clock */
+/* [S 123.456] = the session clock (the host's, on every PC: diag.c); [  123.456] = since this DLL loaded (no session
+ * clock yet: before a session, or a joiner before the host's first answer) */
 static void logf_(const char *fmt, ...)
 {
     char b[600];
-    DWORD n, t = GetTickCount() - t0;
-    int r;
+    DWORD n, t;
+    int r, s = clk_now_ms(&t);
     va_list ap;
-    n = (DWORD)sprintf(b, "[%6lu.%03lu] %s ", t / 1000, t % 1000, G.host ? "H" : "J");
+    if (!s) t = GetTickCount() - t0;
+    n = (DWORD)sprintf(b, "[%s%6lu.%03lu] %s ", s ? "S " : "  ", t / 1000, t % 1000, G.host ? "H" : "J");
     va_start(ap, fmt);
     r = _vsnprintf(b + n, sizeof(b) - n - 2, fmt, ap);
     va_end(ap);
@@ -711,9 +714,11 @@ static SOCKET dial(DWORD ms) { char host[128]; int port; get_target(host, &port)
 /* ---- state helpers (cs held) ---- */
 static int pl_count(void) { int i, n = 0; for (i = 0; i < MAXPL; i++) n += G.pl[i].used; return n; }
 static Player *pl_find(DPID id) { int i; for (i = 0; i < MAXPL; i++) if (G.pl[i].used && G.pl[i].id == id) return &G.pl[i]; return NULL; }
+static void dg_roster_add(DPID id, const char *name);   /* diag.c: the session summary's player list */
 static Player *pl_add(DPID id, const char *name, int conn)
 {
     int i;
+    dg_roster_add(id, name);
     for (i = 0; i < MAXPL; i++) if (!G.pl[i].used) {
         G.pl[i].used = 1; G.pl[i].id = id; G.pl[i].conn = conn; G.pl[i].lord = 0; G.pl[i].hello_t = 0; G.pl[i].hello_n = 0; G.pl[i].cp_next = 0; G.pl[i].cp_n = G.pl[i].cp_h = 0; memset(&G.pl[i].tr, 0, sizeof G.pl[i].tr);
         lstrcpynA(G.pl[i].name, name ? name : "", 32);
@@ -1467,6 +1472,7 @@ static void do_close(int may_ghost)
     EnterCriticalSection(&cs);
     if (G.ghost) { LeaveCriticalSection(&cs); return; }   /* v10: hub for the last game; nothing of this game is left */
     if (G.open && G.host && G.locked && ghost_ok && ghost_go()) {
+        lf_snapshot("the host's game left; this PC keeps relaying for the other players (ghost hub)");
         for (i = 0; i < MAXCONN; i++) if (G.conns[i].used) {   /* R12-2: hold each link until DESTROY + T_HOST have left */
             InterlockedIncrement(&G.conns[i].o->refs);
             os[no++] = G.conns[i].o;
@@ -1484,11 +1490,13 @@ static void do_close(int may_ghost)
             Sleep(5);
         }
         for (i = 0; i < no; i++) out_release(os[i]);
+        lf_summary();
         ghost_title(   /* R13-2: skipped inside if the last player left during the wait */
             "Lords of the Realm II - still hosting the last game for the other players: keep this window open");
         return;
     }
     if (G.open) {
+        lf_snapshot(!G.host && !G.connected ? "the link to the host was lost" : "the game closed the session");
         G.gen++;
         if (G.host) {
             if (G.lsock != INVALID_SOCKET) closesocket(G.lsock);
@@ -1601,6 +1609,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.lsock = l; G.jsock = INVALID_SOCKET;
         G.host = 1; G.open = 1; G.locked = 0; G.nextid = 0x1000; G.myid = 0;
         G.gen++;
+        clk_open(1);
         aa->s = l; aa->gen = aagen = G.gen;
         LeaveCriticalSection(&cs);
         InterlockedIncrement(&g_live);   /* before the thread runs: a Close right now must still wait for it */
@@ -1658,6 +1667,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.sname[63] = 0;
         G.jsock = s; G.jout = jo; G.lsock = INVALID_SOCKET; G.host = 0; G.open = 1; G.connected = 1; G.myid = 0;
         G.gen++;
+        clk_open(0);
         ja->s = s; ja->gen = jagen = G.gen; ja->o = jo;
         if (!G.evPid) G.evPid = CreateEventA(NULL, FALSE, FALSE, NULL);
         LeaveCriticalSection(&cs);

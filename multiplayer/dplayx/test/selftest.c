@@ -56,12 +56,15 @@
  *       link closes and the new session's Send works
  *   T33 (v10 joiner side) a hub names another player, then this one twice: the game gets exactly one DPSYS_HOST (0x101)
  *   T35 (v12 diag, LOTR2NET_TEST_DIAG) the host pings a joiner and logs its answer as a rtt; the host answers a joiner's
- *       ping; a ping to another joiner is relayed; one claiming another player's id is not answered; a host heartbeat
+ *       ping with its session clock (v13); a joiner's pong relayed to another loses any clock it claims; a ping to another joiner is relayed; one claiming another player's id is not answered; a host heartbeat
  *       writes no per-message line while another message still does
  *   T36 (v12 session folders, LOTR2NET_TEST_MPLOGS; last: it moves dplayx.log away from log_has) a host with no joiner
  *       makes no folder; the first joiner makes lords2hd-mp\<time>, the log moves there and goes on; the next session
  *       makes a second folder; LF_NetLogSession names it; with 12 older folders there the 10 newest are kept, ours
- *       included; a host alone gets a folder when LF_NetLogSession asks; after Close it names none
+ *       included; a host alone gets a folder when LF_NetLogSession asks; after Close it names none; Close appends the
+ *       session summary (v13) to session.txt
+ *   T38 (v13 session clock, joiner side) a fake host answers the DLL's pings with its own clock: LF_NetClock has none
+ *       before the first answer, then the host's time within 150 ms, and log lines are stamped [S ...]
  *   T37 (v12 settings) a lotr2net.ini beside the DLL at load moves into lords2hd.ini [Multiplayer]: keys lords2hd.ini
  *       lacks are copied, its own (ghost=1) win, other sections stay, the old file becomes lotr2net.ini.old
  */
@@ -308,6 +311,47 @@ static DWORD WINAPI fake_host3(LPVOID p)
     return 0;
 }
 
+/* T38: a host that announces its own player 0x1001 and answers the DLL's pings with a session clock it controls:
+ * 5 s at g38_t0, running since */
+static volatile LONG g38_answers;
+static DWORD g38_t0;
+static DWORD WINAPI fake_host_clk(LPVOID p)
+{
+    SOCKET l = (SOCKET)p, s = accept(l, NULL, NULL);
+    BYTE in[64], f[97], d[41], rb[300], fr[33];
+    int got = 0, r, ty;
+    DWORD t0 = GetTickCount(), to = 500, q[7];
+    if (s == INVALID_SOCKET) return 0;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&to, sizeof to);
+    recv(s, (char *)in, 21, 0);
+    memset(f, 0, sizeof f);
+    *(DWORD *)f = 93; f[4] = 2;                       /* T_INFO */
+    *(DWORD *)(f + 9) = 4;
+    strcpy((char *)f + 33, "fake");
+    send(s, (char *)f, 97, 0);
+    while (got < 37 && (r = recv(s, (char *)f + got, 37 - got, 0)) > 0) got += r;   /* T_CREATEPL */
+    *(DWORD *)d = 5; d[4] = 5; *(DWORD *)(d + 5) = 0x1002;                            /* T_PLAYERID */
+    send(s, (char *)d, 9, 0);
+    memset(d, 0, sizeof d);
+    *(DWORD *)d = 37; d[4] = 6; *(DWORD *)(d + 5) = 0x1001; strcpy((char *)d + 9, "host38");   /* T_SYS_CREATE */
+    send(s, (char *)d, 41, 0);
+    while (GetTickCount() - t0 < 8000) {
+        ty = readframe(s, rb, sizeof rb);
+        if (ty != 13) { if (!ty && WSAGetLastError() != WSAETIMEDOUT) break; continue; }
+        memcpy(q, rb, 28);
+        if (q[1] != 0x1001) continue;
+        {
+            unsigned long long ss = 5000000ull + (unsigned long long)(GetTickCount() - g38_t0) * 1000ull;
+            q[4] = (DWORD)ss; q[5] = (DWORD)(ss >> 32); q[6] = 1;
+        }
+        *(DWORD *)fr = 29; fr[4] = 14; memcpy(fr + 5, q, 28);
+        send(s, (char *)fr, 33, 0);
+        InterlockedIncrement(&g38_answers);
+    }
+    closesocket(s);
+    return 0;
+}
+
 static volatile LONG g_live_bytes;
 /* T9: a joiner that keeps reading (counts bytes until its socket closes) */
 static DWORD WINAPI live_reader(LPVOID p)
@@ -417,9 +461,9 @@ int main(int argc, char **argv)
          * holds no per-message lines at all, and the heartbeat check needs them. In a session of its own, then re-hosted */
         SOCKET ja = INVALID_SOCKET, jb = INVALID_SOCKET;
         NAME_ nm = {sizeof nm, 0, "host35", NULL};
-        DWORD ida, idb, t35, f[4], me35 = 0;
-        BYTE hb[8] = {0x0a, 4, 0x35, 1, 0, 0, 0, 0}, other[8] = {0x0b, 4, 0x35, 1, 0, 0, 0, 0}, rb[64], fr[21];
-        int ty35, ping = 0, answered = 0, relayed = 0, spoof = 0, rtt, hbline, otherline, close_ok;
+        DWORD ida, idb, t35, f[7], me35 = 0;   /* DgPing: from, to, seq, us, ss_lo, ss_hi, ok (28 bytes, v13) */
+        BYTE hb[8] = {0x0a, 4, 0x35, 1, 0, 0, 0, 0}, other[8] = {0x0b, 4, 0x35, 1, 0, 0, 0, 0}, rb[64], fr[33];
+        int ty35, ping = 0, answered = 0, relayed = 0, spoof = 0, rtt, hbline, otherline, close_ok, clock = 0, relay_clear = 0;
         ((CLOSE)dp->vt[4])(dp);
         SetEnvironmentVariableA("LOTR2NET_TEST_DIAG", "1");
         hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
@@ -428,34 +472,44 @@ int main(int argc, char **argv)
         ida = make_player(ja, "a35");
         hello(proto, 2, info, &jb);
         idb = make_player(jb, "b35");
-        *(DWORD *)fr = 17;
+        *(DWORD *)fr = 29;
         /* the host's ping reaches a joiner within its second; the answer becomes that peer's rtt */
         for (t35 = GetTickCount(); !ping && GetTickCount() - t35 < 4000; ) {
             ty35 = readframe(ja, rb, sizeof rb);
             if (ty35 != 13) continue;
-            memcpy(f, rb, 16);
+            memcpy(f, rb, 28);
             if (f[0] == me35 && f[1] == ida) ping = 1;
         }
-        fr[4] = 14; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        fr[4] = 14; memcpy(fr + 5, f, 28); send(ja, (char *)fr, 33, 0);
         rtt = log_has("n=1 sent=", 4000);
         /* the joiner pings the host; a stamp of ours comes back untouched */
-        fr[4] = 13; f[0] = ida; f[1] = me35; f[2] = 7; f[3] = 123; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        memset(f, 0, sizeof f);
+        fr[4] = 13; f[0] = ida; f[1] = me35; f[2] = 7; f[3] = 123; memcpy(fr + 5, f, 28); send(ja, (char *)fr, 33, 0);
         /* the joiner pings the other joiner, through the host */
-        f[1] = idb; f[2] = 9; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        f[1] = idb; f[2] = 9; memcpy(fr + 5, f, 28); send(ja, (char *)fr, 33, 0);
         /* the joiner claims to be the other joiner: dropped, so seq 11 never comes back */
-        f[0] = idb; f[1] = me35; f[2] = 11; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        f[0] = idb; f[1] = me35; f[2] = 11; memcpy(fr + 5, f, 28); send(ja, (char *)fr, 33, 0);
         for (t35 = GetTickCount(); GetTickCount() - t35 < 2500; ) {
             ty35 = readframe(ja, rb, sizeof rb);
             if (ty35 != 14) continue;
-            memcpy(f, rb, 16);
-            if (f[2] == 7 && f[3] == 123) answered = 1;
+            memcpy(f, rb, 28);
+            if (f[2] == 7 && f[3] == 123) { answered = 1; clock = f[6] == 1 && (f[4] || f[5]); }   /* the host's clock in it */
             if (f[2] == 11) spoof = 1;
         }
         for (t35 = GetTickCount(); !relayed && GetTickCount() - t35 < 4000; ) {
             ty35 = readframe(jb, rb, sizeof rb);
             if (ty35 != 13) continue;
-            memcpy(f, rb, 16);
+            memcpy(f, rb, 28);
             if (f[0] == ida && f[1] == idb && f[2] == 9) relayed = 1;
+        }
+        /* jb answers that ping claiming a session clock: the host relays the pong with the clock cleared */
+        f[4] = 0x12345678; f[5] = 0; f[6] = 1;
+        fr[4] = 14; memcpy(fr + 5, f, 28); send(jb, (char *)fr, 33, 0);
+        for (t35 = GetTickCount(); !relay_clear && GetTickCount() - t35 < 3000; ) {
+            ty35 = readframe(ja, rb, sizeof rb);
+            if (ty35 != 14) continue;
+            memcpy(f, rb, 28);
+            if (f[2] == 9) relay_clear = f[6] == 0 && f[4] == 0x12345678 ? 1 : -1;
         }
         ((SEND)dp->vt[26])(dp, me35, 0, 0, hb, 8);
         ((SEND)dp->vt[26])(dp, me35, 0, 0, other, 8);
@@ -467,9 +521,9 @@ int main(int argc, char **argv)
         ((CLOSE)dp->vt[4])(dp);
         close_ok = GetTickCount() - t35 < 3500;
         SetEnvironmentVariableA("LOTR2NET_TEST_DIAG", NULL);
-        sprintf(buf, "open hr=%08lx ping %d rtt line %d answered %d relayed %d spoof answered %d, hb line %d other line %d, close ok %d",
-                (unsigned long)hr, ping, rtt, answered, relayed, spoof, hbline, otherline, close_ok);
-        result("T35 diag pings and heartbeat lines", hr == 0 && ping && rtt && answered && relayed && !spoof && !hbline && otherline && close_ok, buf);
+        sprintf(buf, "open hr=%08lx ping %d rtt line %d answered %d with clock %d relayed %d relayed pong clock cleared %d spoof answered %d, hb line %d other line %d, close ok %d",
+                (unsigned long)hr, ping, rtt, answered, clock, relayed, relay_clear, spoof, hbline, otherline, close_ok);
+        result("T35 diag pings and heartbeat lines", hr == 0 && ping && rtt && answered && clock && relayed && relay_clear == 1 && !spoof && !hbline && otherline && close_ok, buf);
         hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
     }
 
@@ -1346,6 +1400,45 @@ int main(int argc, char **argv)
         WaitForSingleObject(th, 10000);
         closesocket(l);
     }
+    {   /* T38 (v13 joiner side): the session clock follows the host's answers */
+        SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in a;
+        HANDLE th;
+        DWORD id = 0, ms = 0, want = 0, k;
+        long err = 99999;
+        int before, have = 0, line;
+        NAME_ nm = {sizeof nm, 0, "j38", NULL};
+        typedef int (WINAPI *CLOCK)(DWORD *);
+        CLOCK clk = (CLOCK)GetProcAddress(m, "LF_NetClock");
+        memset(&a, 0, sizeof a);
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = inet_addr("127.0.0.1");
+        a.sin_port = htons(47704);
+        bind(l, (struct sockaddr *)&a, sizeof a);
+        listen(l, 1);
+        SetEnvironmentVariableA("LOTR2NET_TEST_DIAG", "1");
+        g38_t0 = GetTickCount();
+        th = CreateThread(NULL, 0, fake_host_clk, (LPVOID)l, 0, NULL);
+        _putenv("LOTR2NET_HOST=127.0.0.1:47704");
+        hr = ((OPEN)dp->vt[24])(dp, &sd, 1);
+        ((CPL)dp->vt[6])(dp, &id, &nm, NULL, NULL, 0, 0);
+        before = clk && clk(&ms);   /* no clock until the host answers */
+        for (k = 0; k < 50 && !have; k++) { Sleep(100); have = clk && clk(&ms); }
+        if (have) {
+            Sleep(300);
+            clk(&ms);
+            want = 5000 + (GetTickCount() - g38_t0);
+            err = (long)ms - (long)want;
+        }
+        line = log_has("session clock: set from the host's answer", 1000) && log_has("[S ", 500);
+        ((CLOSE)dp->vt[4])(dp);
+        SetEnvironmentVariableA("LOTR2NET_TEST_DIAG", NULL);
+        WaitForSingleObject(th, 10000);
+        closesocket(l);
+        sprintf(buf, "open hr=%08lx player %08lx, clock before an answer %d, host answers %ld, clock %d: %lu ms (want %lu, off %ld), log line %d",
+                (unsigned long)hr, id, before, g38_answers, have, ms, want, err, line);
+        result("T38 joiner takes the host's session clock", hr == 0 && !before && g38_answers > 0 && have && err > -150 && err < 150 && line, buf);
+    }
     {   /* T36 (v12): session folders. Last: from here on dplayx.log is not beside the exe, so log_has finds nothing */
         SOCKET ja = INVALID_SOCKET;
         NAME_ nm = {sizeof nm, 0, "host36", NULL};
@@ -1355,7 +1448,7 @@ int main(int argc, char **argv)
         typedef int (WINAPI *LOGDIR)(char *, int);
         LOGDIR logdir = (LOGDIR)GetProcAddress(m, "LF_NetLogSession");
         char ld[MAX_PATH + 96] = "", ld2[MAX_PATH + 96] = "";
-        int solo, closed;
+        int solo, closed, summ = 0;
         WIN32_FIND_DATAA fd;
         HANDLE fh;
         GetModuleFileNameA(NULL, ep, MAX_PATH);
@@ -1388,6 +1481,20 @@ int main(int argc, char **argv)
             }
         }
         ((CLOSE)dp->vt[4])(dp);
+        {   /* v13: Close appended the session summary to session.txt */
+            FILE *sf;
+            char ln[300];
+            sprintf(lg, "%slords2hd-mp\\%s\\session.txt", ep, first);
+            if ((sf = fopen(lg, "r")) != NULL) {
+                while (fgets(ln, sizeof ln, sf)) {
+                    if (strstr(ln, "session summary (this PC: host")) summ |= 1;
+                    if (strstr(ln, "ended: S ") && strstr(ln, "the game closed the session")) summ |= 2;
+                    if (strstr(ln, "'a36'")) summ |= 4;
+                    if (strstr(ln, "sync checks: 0 ok, 0 desync(s), 0 resync(s)")) summ |= 8;
+                }
+                fclose(sf);
+            }
+        }
         Sleep(1100);         /* the folder name has one-second steps */
         for (k = 0; k < 12; k++) {   /* older sessions, one file each: pruned before the next folder is made */
             FILE *of;
@@ -1419,9 +1526,9 @@ int main(int argc, char **argv)
         ((CLOSE)dp->vt[4])(dp);
         closed = logdir && logdir(ld2, sizeof ld2) == 0;
         SetEnvironmentVariableA("LOTR2NET_TEST_MPLOGS", NULL);
-        sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogSession '%.60s' ok %d, host alone %d, after Close none %d",
-                empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok, solo, closed);
-        result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok && solo && closed, buf);
+        sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogSession '%.60s' ok %d, host alone %d, after Close none %d, summary %d (want 15)",
+                empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok, solo, closed, summ);
+        result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok && solo && closed && summ == 15, buf);
     }
     printf("%s (%d failed)\n", fails ? "SOME FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;

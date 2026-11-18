@@ -3,8 +3,9 @@
  *
  * Starts when a second player is there (host: a joiner made its player; joiner: Open succeeded), or when the HD ddraw
  * asks for it at the start of a multiplayer game (LF_NetLogSession: a host playing only computer lords), so single
- * player and an empty lobby leave no folders. dplayx.log moves in and goes on there; desync.txt is written there
- * (lf_dir). The HD ddraw writes session.txt and sync.txt into it. Copied in, only if this run touched them, so an old
+ * player and an empty lobby leave no folders. dplayx.log moves in and goes on there. The HD ddraw writes session.txt
+ * into it at each game's start; at Close this file appends the session's summary to it (lf_summary: how it ended,
+ * the players and their round trips, sync checks, desyncs and resyncs). Copied in, only if this run touched them, so an old
  * file never passes for this game's: status.txt (the game) and lords2hd.log (HD). Copied at Close, at process exit and
  * every 30 s while diag runs, so a crash still leaves recent ones. The LF_KEEP (10) newest folders are kept.
  * [Multiplayer] MpLogs=0 in lords2hd.ini (or env LOTR2NET_MP_LOGS=0) keeps dplayx.log beside the exe and makes no
@@ -19,8 +20,6 @@ static FILETIME lf_start;
 static CRITICAL_SECTION lfcs;    /* lf_begin, which the reader (cs held) and the HD ddraw's thread may both call. Order: cs -> lfcs -> logwr */
 
 static void lf_init(void) { GetSystemTimeAsFileTime(&lf_start); InitializeCriticalSection(&lfcs); }   /* DllMain */
-
-static const char *lf_dir(void) { return g_lf_open ? g_lf_dir : exedir; }
 
 static int lf_enabled(void)
 {
@@ -162,10 +161,86 @@ __declspec(dllexport) int WINAPI LF_NetLogSession(char *buf, int cap)
     return n;
 }
 
+/* ---- v13 session summary, appended to session.txt. lf_snapshot copies the numbers under cs in do_close (sy_reset clears
+ * them right after); lf_summary writes them with no lock held */
+typedef struct {
+    int have, host, clk;
+    DPID me;
+    DWORD end_ms, oks, desyncs, resyncs, pump_max_us;
+    ULONGLONG held_us;
+    char first[200], why[120];
+    DgRoster ro[MAXPL];
+} LfSum;
+static LfSum g_lf_sum;
+
+static void lf_snapshot(const char *why)   /* cs held */
+{
+    LfSum *m = &g_lf_sum;
+    int i, k;
+    if (!g_lf_open) return;
+    memset(m, 0, sizeof *m);
+    m->have = 1;
+    m->host = G.host;
+    m->me = G.myid;
+    m->clk = clk_now_ms(&m->end_ms);
+    m->oks = (DWORD)sy_oks; m->desyncs = (DWORD)sy_desyncs; m->resyncs = sy_epoch;
+    lstrcpynA(m->first, sy_first, sizeof m->first);
+    lstrcpynA(m->why, why, sizeof m->why);
+    EnterCriticalSection(&dgcs);
+    memcpy(m->ro, DS.ro, sizeof m->ro);
+    m->held_us = DS.held_all_us; m->pump_max_us = DS.pump_max_all_us;
+    LeaveCriticalSection(&dgcs);
+    for (i = 0; i < MAXPL; i++) if (G.pl[i].used && G.pl[i].id != G.myid) {   /* still here but never measured (diag off) */
+        k = 0;
+        while (k < MAXPL && m->ro[k].id != G.pl[i].id) k++;
+        if (k < MAXPL) continue;
+        k = 0;
+        while (k < MAXPL && m->ro[k].id) k++;
+        if (k < MAXPL) { m->ro[k].id = G.pl[i].id; lstrcpynA(m->ro[k].name, G.pl[i].name, sizeof m->ro[k].name); }
+    }
+}
+
+static void lf_summary(void)   /* no lock held */
+{
+    LfSum *m = &g_lf_sum;
+    char p[LF_PATH + 16];
+    FILE *f;
+    int i;
+    if (!m->have || !g_lf_dir[0]) return;
+    m->have = 0;
+    snprintf(p, sizeof p, "%ssession.txt", g_lf_dir);
+    if (!(f = fopen(p, "a"))) return;
+    fprintf(f, "---- dplayx.dll v%d session summary (this PC: %s, %s)\n", DLL_VERSION, m->host ? "host" : "joiner",
+            GetModuleHandleA("GameRanger.dll") ? "GameRanger" : "direct connection");
+    if (m->clk) fprintf(f, "ended: S %lu.%03lu (%lu min %lu s into the session): %s\n", m->end_ms / 1000, m->end_ms % 1000,
+                        m->end_ms / 60000, m->end_ms / 1000 % 60, m->why);
+    else fprintf(f, "ended (no session clock: the host never answered): %s\n", m->why);
+    fprintf(f, "players (round trip min / avg / max over the session):\n");
+    for (i = 0; i < MAXPL; i++) if (m->ro[i].id) {
+        DgRoster *r = &m->ro[i];
+        fprintf(f, "  %08lx '%s'%s", (unsigned long)r->id, r->name, r->id == m->me ? " (this PC)" : "");
+        if (r->n) {
+            DWORD avg = (DWORD)(r->sum_us / r->n);
+            fprintf(f, "  %lu.%lu / %lu.%lu / %lu.%lu ms, %lu answers", DG_MS(r->min_us), DG_MS(avg), DG_MS(r->max_us), r->n);
+        } else if (r->id != m->me) fprintf(f, "  no round trips measured");
+        if (r->first_ms && r->id != m->me) fprintf(f, ", joined S %lu.%03lu", r->first_ms / 1000, r->first_ms % 1000);
+        if (r->n && r->last_ms) fprintf(f, ", last answer S %lu.%03lu", r->last_ms / 1000, r->last_ms % 1000);
+        fputc('\n', f);
+    }
+    fprintf(f, "sync checks: %lu ok, %lu desync(s), %lu resync(s)\n", m->oks, m->desyncs, m->resyncs);
+    if (m->first[0]) fprintf(f, "first desync: %s (the DESYNC lines in dplayx.log have every one)\n", m->first);
+    if (m->pump_max_us)   /* measured by diag (dg_on_pump); without it there is nothing to say */
+        fprintf(f, "held at the pace limit: %lu.%lu s in all; longest game-loop gap %lu.%lu ms\n",
+                (unsigned long)(m->held_us / 1000000u), (unsigned long)(m->held_us / 100000u % 10u), DG_MS(m->pump_max_us));
+    fputc('\n', f);
+    fclose(f);
+}
+
 /* do_close, its threads gone: the next session gets a folder of its own; lines until then stay in this one */
 static void lf_end(void)
 {
     if (!g_lf_open) return;
+    lf_summary();
     lf_copy_all();
     InterlockedExchange(&g_lf_open, 0);
 }

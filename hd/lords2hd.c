@@ -151,6 +151,9 @@ static BOOL menu_key(int vk);
 static void menu_click(int wx, int wy, int gx, int gy);
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
+// [S 123.456] = the multiplayer session clock: the host's time since it opened the session, the same on every
+// player's PC and in dplayx.log (dplayx.dll's LF_NetClock), so all logs of a game line up. Else ms since the
+// patch started, as before.
 static void logf_(const char *fmt, ...)
 {
 	static FILE *f;
@@ -158,7 +161,11 @@ static void logf_(const char *fmt, ...)
 	if (!f) return;
 	static DWORD t0;
 	if (!t0) t0 = GetTickCount();
-	fprintf(f, "%6lu  ", GetTickCount() - t0); // ms since the patch started
+	static int (WINAPI *netClock)(DWORD *);
+	if (!netClock) { HMODULE dp = GetModuleHandleA("dplayx.dll"); if (dp) netClock = (int (WINAPI *)(DWORD *))GetProcAddress(dp, "LF_NetClock"); }
+	DWORD ms;
+	if (netClock && netClock(&ms)) fprintf(f, "[S %6lu.%03lu] ", ms / 1000, ms % 1000);
+	else fprintf(f, "%6lu  ", GetTickCount() - t0); // ms since the patch started
 	va_list ap;
 	va_start(ap, fmt);
 	vfprintf(f, fmt, ap);
@@ -7976,12 +7983,13 @@ static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
 }
 // Multiplayer session logs ([Multiplayer] MpLogs=1, the default): each multiplayer game has one folder
 // lords2hd-mp\<date and time>\ that a player can zip and post when something goes wrong. dplayx.dll owns it
-// (multiplayer/dplayx/sesslog.c): it makes it once a second player is in the lobby, writes dplayx.log and
-// desync.txt there, copies lords2hd.log and status.txt in, and keeps the ten newest. When the game starts
-// (DAT_00553030 set) this DLL asks for it (LF_NetLogSession, which also makes it for a host with no joiner) and adds:
-//   session.txt  versions (this DLL, the exe, dplayx.dll) and the settings that matter, one block per game
-//   sync.txt     per-season checksums of the county, army and player records (compare two players')
-static BOOL g_mpLogs = TRUE, g_syncLog;
+// (multiplayer/dplayx/sesslog.c): it makes it once a second player is in the lobby, writes dplayx.log there,
+// copies lords2hd.log and status.txt in, and keeps the ten newest. When the game starts (DAT_00553030 set) this
+// DLL asks for it (LF_NetLogSession, which also makes it for a host with no joiner) and starts session.txt with the
+// versions (this DLL, the exe, dplayx.dll), the connection and the settings that matter, one block per game; at
+// the session's end dplayx appends its summary (players, round trips, sync checks, desyncs). The per-turn sync
+// check is dplayx's (sync.c); this DLL's per-season checksums (sync.txt, [Debug] SyncLog) went with dplayx v13.
+static BOOL g_mpLogs = TRUE;
 static DWORD crc_file(const char *path)
 {
 	FILE *f = fopen(path, "rb");
@@ -8029,14 +8037,13 @@ static void mp_session_start(char *dir, size_t size)
 static DWORD WINAPI sync_log_thread(LPVOID unused)
 {
 	(void)unused;
-	int lastSeason = -1; DWORD changed = 0; int pending = 0, n = 0;
 	char req[MAX_PATH], mpDir[MAX_PATH] = "";
 	BOOL inSession = FALSE;
 	snprintf(req, sizeof req, "%s\\lords2hd-sync.req", g_gameDir);
 	for (;;) {
 		Sleep(250);
 		BOOL mp = *(int *)0x00553030 != 0;
-		if (g_mpLogs && mp && !inSession) { mp_session_start(mpDir, sizeof mpDir); n = 0; lastSeason = -1; }
+		if (g_mpLogs && mp && !inSession) mp_session_start(mpDir, sizeof mpDir);
 		if (inSession && !mp && mpDir[0]) logf_("multiplayer session ended");
 		inSession = mp;
 		// On request (a test drops lords2hd-sync.req, holding a name): every record's checksum to lords2hd-sync-<name>.txt
@@ -8068,37 +8075,14 @@ static DWORD WINAPI sync_log_thread(LPVOID unused)
 				fclose(f);
 			}
 		}
-		int season =*(int *)0x0057c92c * 16 + *(int *)0x0057c934;
-		if (season != lastSeason) { lastSeason = season; changed = GetTickCount(); pending = 1; }
-		if (!pending || GetTickCount() - changed < 3000) continue;
-		pending = 0;
-		int counties = *(int *)0x0056d5dc;
-		if (counties < 1 || counties > 60) continue;
-		DWORD c = crc_block(~0u, (const BYTE *)(0x0053f9b0 + 0x300), (size_t)counties * 0x300);
-		DWORD a = crc_block(~0u, (const BYTE *)(0x0052f0b0 + 0x1a4), (size_t)0x96 * 0x1a4);
-		DWORD p = crc_block(~0u, (const BYTE *)(0x0057bf00 + 0x160), (size_t)5 * 0x160);
-		++n;
-		if (g_syncLog) logf_("sync %d: season %d/%d, counties %08lx, armies %08lx, players %08lx, multiplayer %d", n,
-			*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p, *(int *)0x00553030);
-		if (inSession && mpDir[0]) {
-			char path[MAX_PATH]; snprintf(path, sizeof path, "%s\\sync.txt", mpDir);
-			FILE *f = fopen(path, "a");
-			if (f) {
-				SYSTEMTIME t; GetLocalTime(&t);
-				fprintf(f, "%02d:%02d:%02d  check %d  season %d/%d  counties %08lx  armies %08lx  players %08lx\n", t.wHour, t.wMinute, t.wSecond, n,
-					*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p);
-				fclose(f);
-			}
-		}
 	}
 	return 0;
 }
 
 static void install_game_fixes(void)
 {
-	g_syncLog = GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath) != 0;
 	g_mpLogs = GetPrivateProfileIntA("Multiplayer", "MpLogs", 1, g_iniPath) != 0;
-	if (g_syncLog || g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
+	if (g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
 	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },

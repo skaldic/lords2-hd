@@ -88,8 +88,9 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 - The game keeps running when you switch windows, so nobody waits for you.
 - **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
   game's folder, from the moment a second player joins the lobby. It holds what's needed to debug the
-  session: the versions of the patch, the game and `dplayx.dll`, the settings, checksums of every
-  player's game each season (to see where two games went apart), and all the logs. If a game desyncs or crashes, **every player** zips their
+  session: the versions of the patch, the game and `dplayx.dll`, the connection, the settings, all the
+  logs, and a summary of the session (players, connection times, sync checks, desyncs). Every log line
+  carries the same session clock on every player's PC, so the players' logs line up. If a game desyncs or crashes, **every player** zips their
   folder for that game and posts it on the [community Discord](https://discord.gg/uBzaMGjUR) or in an issue. The ten
   newest games are kept.
 

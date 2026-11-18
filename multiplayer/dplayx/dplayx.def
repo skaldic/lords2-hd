@@ -4,3 +4,4 @@ DirectPlayCreate @1
 DirectPlayEnumerateA @2
 LF_NetSessionOpen @8
 LF_NetLogSession @9
+LF_NetClock @10

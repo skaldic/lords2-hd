@@ -7,7 +7,7 @@ per-game session logs. Port 47700. Same target as the rest of the mod: the GOG /
 
 It ships only as part of Lords2HD (`tools/make_release.ps1` builds and stages it). The HD ddraw provides what the
 LotR2 Fix ddraw modules used to (the game keeps running when unfocused: `RunInBackground`), and calls two exports:
-`LF_NetSessionOpen` and `LF_NetLogSession`.
+`LF_NetSessionOpen`, `LF_NetLogSession` and `LF_NetClock`.
 
 ## Building
 
