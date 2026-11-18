@@ -5594,6 +5594,7 @@ HRESULT WINAPI hd_DirectDrawCreate(GUID *guid, void **out, IUnknown *outer)
 // ---------------------------------------------------------------------------------------------
 // Input: the game sees a 640x480 window at the top-left of the screen.
 
+static BOOL g_fieldDrag, g_lastOnField;   // zoomed-out battle: a left-button drag that began on the battlefield
 static void client_to_game(int *x, int *y)
 {
 	RECT v;
@@ -5604,6 +5605,15 @@ static void client_to_game(int *x, int *y)
 		int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
 		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
 		int mx0 = g_menuX - (PANEL_X - mapW), fy0 = max(24, g_menuY);
+		// A drag that began on the battlefield stays on it: crossing into the doubled side panel or
+		// the top bar switched to their halved coordinates and the selection box collapsed to a line.
+		if (g_fieldDrag && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) g_fieldDrag = FALSE;
+		g_lastOnField = !menu_doubled() && sy >= 48 && sx < mapW;
+		if (g_fieldDrag) {
+			sx = min(sx, mapW - 1); sy = max(sy, 48);
+			*x = PANEL_X - mapW + sx; *y = 24 + sy - 48;
+			return;
+		}
 		if (menu_doubled() && sy >= 48 && sx >= mx0 && sx < mx0 + 2 * MENU_W && sy < 48 + 2 * (g_menuY + MENU_H - fy0)) {
 			*x = g_menuX + (sx - mx0) / 2; *y = fy0 + (sy - 48) / 2; // over the doubled drop-down
 		}
@@ -5884,7 +5894,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-		client_to_game(&x, &y);
+		if (msg == WM_LBUTTONUP) { client_to_game(&x, &y); g_fieldDrag = FALSE; }   // the release still counts on the field
+		else {
+			client_to_game(&x, &y);
+			if (msg == WM_LBUTTONDOWN) g_fieldDrag = battle_zoom_on() && g_lastOnField;
+		}
 		// the < > buttons on the name plate: theirs, not the game's
 		static BOOL btnDown;
 		int btn = cycle_button_at(x, y);
