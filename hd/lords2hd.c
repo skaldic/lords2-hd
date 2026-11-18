@@ -5588,7 +5588,13 @@ static void remote_hide(HWND hwnd)
 static int g_runBackground = 2;
 static BOOL keep_running(void)
 {
-	return g_runBackground == 1 || (g_runBackground == 2 && *(int *)0x00553030 != 0);
+	if (g_runBackground == 1) return TRUE;
+	if (g_runBackground != 2) return FALSE;
+	if (*(int *)0x00553030) return TRUE;
+	// A replacement multiplayer layer (Wolfe's dplayx.dll) knows about its lobby too.
+	static BOOL (__cdecl *sessionOpen)(void); static BOOL looked;
+	if (!looked) { HMODULE m = GetModuleHandleA("dplayx.dll"); if (m) sessionOpen = (BOOL (__cdecl *)(void))GetProcAddress(m, "LF_NetSessionOpen"); looked = TRUE; }
+	return sessionOpen && sessionOpen();
 }
 
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -5637,6 +5643,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
 	}
+	if (msg == WM_SIZE && wp == SIZE_MINIMIZED && keep_running()) wp = SIZE_RESTORED; // see h_IsIconic
 	if (msg == WM_ACTIVATEAPP && !wp && keep_running()) {
 		// The game clears its active flag (DAT_004e65a8) and its main loop then only sleeps
 		// (Sleep(200) instead of a frame), so in multiplayer every other player waits too.
@@ -5878,7 +5885,11 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 // Remote mode: the game believes it is in front, and never brings itself there.
 static HWND (WINAPI *o_GetForegroundWindow)(void);
 static BOOL (WINAPI *o_SetForegroundWindow)(HWND);
-static HWND WINAPI h_GetForegroundWindow(void) { return g_remote && g_hwnd ? g_hwnd : o_GetForegroundWindow(); }
+static HWND WINAPI h_GetForegroundWindow(void) { return (g_remote || keep_running()) && g_hwnd ? g_hwnd : o_GetForegroundWindow(); }
+// Running in the background also covers a minimised window: the game's WM_SIZE / WM_MOVE and
+// activation handlers ask IsIconic and, minimised, stop instead of setting their active flag.
+static BOOL (WINAPI *o_IsIconic)(HWND);
+static BOOL WINAPI h_IsIconic(HWND hwnd) { return hwnd && hwnd == g_hwnd && keep_running() ? FALSE : o_IsIconic(hwnd); }
 static BOOL WINAPI h_SetForegroundWindow(HWND hwnd) { return g_remote ? TRUE : o_SetForegroundWindow(hwnd); }
 // ... and its window is hidden from the moment it exists, never taking the focus.
 static HWND (WINAPI *o_CreateWindowExA)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
@@ -7717,7 +7728,10 @@ static char __cdecl h_game_frame(void)
 		DWORD gateLast[5] = { *(DWORD *)0x004e5b0c, *(DWORD *)0x004e5b14, *(DWORD *)0x004e5b10, *(DWORD *)0x004e59f0, *(DWORD *)0x004e59ec };
 		int gateWait[5] = { -1, -1, 20, 20, 30 };
 		int slow = (100 - *(int *)0x0053f230) / 10;
-		if (slow >= 0 && slow < 10 && (slow != 0 || *(int *)0x00553030 == 0)) gateWait[0] = slow * 10 + 2;
+		// At speed 10 in a multiplayer game the stock pacer skips its 2 ms gate; a multiplayer fix
+		// that patches that skip out (jmp at 0x4bbb92, Wolfe's dplayx) puts the gate back.
+		BOOL fastGated = *(int *)0x00553030 == 0 || *(BYTE *)0x004bbb92 == 0xE9;
+		if (slow >= 0 && slow < 10 && (slow != 0 || fastGated)) gateWait[0] = slow * 10 + 2;
 		int scroll = (100 - *(int *)0x0053f234) / 10;
 		if (scroll >= 0 && scroll < 10) gateWait[1] = (scroll + (SCREEN_ID == 0x10 ? 2 : 0)) * 12 + 2;
 		DWORD t = timeGetTime();
@@ -7763,7 +7777,8 @@ static int __cdecl h_logic_steps(void)
 {
 	// Old-game habit: "Exit the game?" (screen 30) does not pause a battle (its entry in the
 	// pause table 0x4e31b0 is 0): the armies fight on behind the question. No steps while it is up.
-	if (*(BYTE *)0x004eac50 == 0x1e && *(int *)0x0057c8fc == 2) return 0;
+	// Not in a multiplayer game (DAT_00553030): there a player who stops stepping stalls everyone.
+	if (*(BYTE *)0x004eac50 == 0x1e && *(int *)0x0057c8fc == 2 && !*(int *)0x00553030) return 0;
 	int n = o_logic_steps();
 	g_frameSteps += n > 0 ? n : 0;
 	if (!g_timing) return n;
@@ -8061,6 +8076,7 @@ static void install(void)
 	}
 	hook_import("USER32.dll", "GetCursorPos", h_GetCursorPos, &o_GetCursorPos);
 	hook_import("USER32.dll", "GetForegroundWindow", h_GetForegroundWindow, &o_GetForegroundWindow);
+	hook_import("USER32.dll", "IsIconic", h_IsIconic, &o_IsIconic);
 	hook_import("USER32.dll", "SetForegroundWindow", h_SetForegroundWindow, &o_SetForegroundWindow);
 	hook_import("USER32.dll", "CreateWindowExA", h_CreateWindowExA, &o_CreateWindowExA);
 	hook_import("USER32.dll", "ShowWindow", h_ShowWindow, &o_ShowWindow);
