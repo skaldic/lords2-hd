@@ -7,7 +7,7 @@
  * lotr2fix-ddraw.log and the Mod Menu's two logs for this pid (ddraw). Copied at Close, at process exit and every 30 s
  * while diag runs, so a crash still leaves recent ones. The LF_KEEP (10) newest folders are kept. The HD ddraw finds the
  * current one through the export LF_NetLogDir and copies dplayx.log and desync.txt into its own lords2hd-mp\ folder.
- * gameranger = GameRanger.dll is loaded in this process. mp_logs=0 in lotr2net.ini (or env LOTR2NET_MP_LOGS=0) keeps
+ * gameranger = GameRanger.dll is loaded in this process. mp_logs=0 in lords2hd.ini (or env LOTR2NET_MP_LOGS=0) keeps
  * everything beside the exe. Without the known exe (selftest) only LOTR2NET_TEST_MPLOGS=1 turns it on. If the folder cannot
  * be made, the log simply stays where it is. */
 #define LF_PATH (MAX_PATH + 64)   /* exedir + mp_logs\<prefix>_<time>_<n>\, with room to spare: nothing here is cut short */

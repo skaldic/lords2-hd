@@ -1,7 +1,7 @@
 /* diag.c - one line per second of network and pacing numbers in dplayx.log (v12). Included by dplayx.c. Our own code. ASCII only.
  *
  * Why: the heartbeat lines could only show THAT a game ran slowly, not why (is it the link, the hard stop or this PC?),
- * and a frozen peer writes up to 140 of them per second. These numbers replace them; log_heartbeats=1 in lotr2net.ini
+ * and a frozen peer writes up to 140 of them per second. These numbers replace them; log_heartbeats=1 in lords2hd.ini
  * (or env LOTR2NET_LOG_HEARTBEATS=1) brings the per-message heartbeat lines back. diag=0 / LOTR2NET_DIAG=0 turns this off.
  *
  *   DIAG sim=<SimTick> ticks=<advanced> ov=<overlay> pump n=<count> avg=<ms> max=<ms> lead=<low>..<high> held=<ms> by lord <l, 0 none>

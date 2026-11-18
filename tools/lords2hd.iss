@@ -56,6 +56,7 @@ Type: files; Name: "{app}\dplayx.log"
 Type: files; Name: "{app}\dplayx.prev.log"
 Type: files; Name: "{app}\desync.txt"
 Type: files; Name: "{app}\lotr2net.ini"
+Type: files; Name: "{app}\lotr2net.ini.old"
 Type: filesandordirs; Name: "{app}\lords2hd-mp"
 Type: filesandordirs; Name: "{app}\mp_logs"
 ; the folders, if nothing of the player's own is left in them (MP3s and music they added stay)

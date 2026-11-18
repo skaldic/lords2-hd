@@ -61,6 +61,8 @@
  *   T36 (v12 session folders, LOTR2NET_TEST_MPLOGS; last: it moves dplayx.log away from log_has) a host with no joiner
  *       makes no folder; the first joiner makes mp_logs\direct_*, the log moves there and goes on; the next session
  *       makes a second folder; LF_NetLogDir names it; with 12 older folders there mp_logs keeps the 10 newest, ours included
+ *   T37 (v12 settings) a lotr2net.ini beside the DLL at load moves into lords2hd.ini [Multiplayer]: keys lords2hd.ini
+ *       lacks are copied, its own (ghost=1) win, other sections stay, the old file becomes lotr2net.ini.old
  */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -343,8 +345,28 @@ int main(int argc, char **argv)
     /* loopback only: a listener on every address makes Windows Firewall ask for permission (Matthew 2026-10-06) */
     SetEnvironmentVariableA("LOTR2NET_BIND", "127.0.0.1");
     _putenv("LOTR2NET_BIND=127.0.0.1");
+    {   /* T37 setup: the files must be there before the DLL loads */
+        FILE *f37 = fopen("lotr2net.ini", "w");
+        if (f37) { fputs("; host= unset\nhost = 127.0.0.1\nghost=0 ; would end T32's ghost hub\ndiag=1\n", f37); fclose(f37); }
+        f37 = fopen("lords2hd.ini", "w");
+        if (f37) { fputs("[Display]\nEnabled=1\n[Multiplayer]\nghost=1\n", f37); fclose(f37); }
+        DeleteFileA("lotr2net.ini.old");
+    }
     m = LoadLibraryA(".\\dplayx.dll");
     if (!m) { printf("FAIL load dplayx.dll (%lu)\n", GetLastError()); return 1; }
+    {   /* T37 (v12): lotr2net.ini moved into lords2hd.ini [Multiplayer] at load */
+        char ini[MAX_PATH], h37[32], g37[8], d37[8], e37[8];
+        int gone, old37;
+        GetFullPathNameA("lords2hd.ini", MAX_PATH, ini, NULL);
+        GetPrivateProfileStringA("Multiplayer", "host", "", h37, sizeof h37, ini);
+        GetPrivateProfileStringA("Multiplayer", "ghost", "", g37, sizeof g37, ini);
+        GetPrivateProfileStringA("Multiplayer", "diag", "", d37, sizeof d37, ini);
+        GetPrivateProfileStringA("Display", "Enabled", "", e37, sizeof e37, ini);
+        gone = GetFileAttributesA("lotr2net.ini") == INVALID_FILE_ATTRIBUTES;
+        old37 = GetFileAttributesA("lotr2net.ini.old") != INVALID_FILE_ATTRIBUTES;
+        sprintf(buf, "host '%s' ghost '%s' (want 1) diag '%s' [Display] Enabled '%s', lotr2net.ini gone %d, .old %d", h37, g37, d37, e37, gone, old37);
+        result("T37 lotr2net.ini moved to lords2hd.ini", !strcmp(h37, "127.0.0.1") && !strcmp(g37, "1") && !strcmp(d37, "1") && !strcmp(e37, "1") && gone && old37, buf);
+    }
     ((CREATE)GetProcAddress(m, "DirectPlayCreate"))(NULL, (void **)&dp1, NULL);
     ((QI)dp1->vt[0])(dp1, &IID_IUnknown_, (void **)&dp);
 

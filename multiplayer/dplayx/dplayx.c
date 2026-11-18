@@ -298,42 +298,57 @@ static void ensure_init(void)
     wsa_ok = 1;
 }
 
-/* lotr2net.ini beside Lords2.exe: "key=value" lines; returns 1 and the trimmed value when key is present */
+/* Settings: [Multiplayer] in lords2hd.ini beside Lords2.exe, shared with the HD ddraw. Returns 1 and the value when key
+ * is there (an empty value too). The profile API reads ANSI, UTF-8 and UTF-16 files alike. */
+#define INI_SEC "Multiplayer"
+static void ini_path(char *p, int cap) { snprintf(p, cap, "%slords2hd.ini", exedir); }
+
 static int ini_get(const char *key, char *out, int cap)
 {
-    char p[MAX_PATH + 16], line[512];
+    char p[MAX_PATH + 16];
+    int n;
+    ini_path(p, sizeof p);
+    GetPrivateProfileStringA(INI_SEC, key, "\x01", out, cap, p);
+    if (out[0] == 1) { out[0] = 0; return 0; }   /* the default: no such key */
+    { char *c = strpbrk(out, ";#"); if (c) *c = 0; }   /* F9: "mpfix=off ; rig" is "off" (no value here holds ; or #) */
+    n = (int)strlen(out);
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = 0;
+    return 1;
+}
+
+/* Up to v12 the settings were key=value lines in lotr2net.ini. Once, at load: each key lords2hd.ini does not have yet is
+ * copied into [Multiplayer] (lords2hd.ini wins), then the file becomes lotr2net.ini.old. DllMain, before any ini_get */
+static void ini_migrate(void)
+{
+    char p[MAX_PATH + 16], old[MAX_PATH + 16], ini[MAX_PATH + 16], line[512], v[8];
     FILE *f;
-    int kl = (int)strlen(key), found = 0, first = 1;
-    lstrcpynA(p, exedir, MAX_PATH);
-    lstrcatA(p, "lotr2net.ini");
-    f = fopen(p, "r");
-    if (!f) return 0;
-    while (!found && fgets(line, sizeof line, f)) {
-        char *s = line;
-        if (first) {   /* review tb2 F9: Notepad's "UTF-8" adds a BOM; "Unicode" (UTF-16) cannot be read as ASCII at all */
-            static int warned;
+    int n = 0, first = 1;
+    snprintf(p, sizeof p, "%slotr2net.ini", exedir);
+    if (!(f = fopen(p, "r"))) return;
+    ini_path(ini, sizeof ini);
+    while (fgets(line, sizeof line, f)) {
+        char *s = line, *eq, *e;
+        if (first) {
             first = 0;
-            if ((BYTE)s[0] == 0xFF || (BYTE)s[0] == 0xFE) {
-                if (!warned++) logf_("lotr2net.ini is saved as Unicode (UTF-16) - it is IGNORED; save it as ANSI or UTF-8");
-                break;
-            }
+            if ((BYTE)s[0] == 0xFF || (BYTE)s[0] == 0xFE) { logf_("lotr2net.ini is saved as Unicode (UTF-16) - not moved"); fclose(f); return; }
             if ((BYTE)s[0] == 0xEF && (BYTE)s[1] == 0xBB && (BYTE)s[2] == 0xBF) s += 3;
         }
         while (*s == ' ' || *s == '\t') s++;
-        if (_strnicmp(s, key, kl)) continue;
-        s += kl;
-        while (*s == ' ' || *s == '\t') s++;
-        if (*s != '=') continue;
-        s++;
-        while (*s == ' ' || *s == '\t') s++;
-        lstrcpynA(out, s, cap);
-        { char *c = strpbrk(out, ";#"); if (c) *c = 0; }   /* F9: "mpfix=off ; rig" is "off" (no value here holds ; or #) */
-        int n = (int)strlen(out);
-        while (n > 0 && (out[n - 1] == '\r' || out[n - 1] == '\n' || out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = 0;
-        found = 1;
+        if (*s == ';' || *s == '#' || *s == '[' || !(eq = strchr(s, '='))) continue;
+        e = eq;
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t')) e--;
+        *e = 0;
+        e = eq + 1;
+        while (*e == ' ' || *e == '\t') e++;
+        { int k = (int)strlen(e); while (k > 0 && (e[k - 1] == '\r' || e[k - 1] == '\n' || e[k - 1] == ' ' || e[k - 1] == '\t')) e[--k] = 0; }
+        if (!*s || ini_get(s, v, sizeof v)) continue;
+        if (WritePrivateProfileStringA(INI_SEC, s, e, ini)) n++;
     }
     fclose(f);
-    return found;
+    if (first) return;   /* nothing was read: an empty or unreadable file stays */
+    snprintf(old, sizeof old, "%slotr2net.ini.old", exedir);
+    logf_("lotr2net.ini: %d setting(s) moved to lords2hd.ini [%s]; the file is now lotr2net.ini.old%s", n, INI_SEC,
+          MoveFileExA(p, old, MOVEFILE_REPLACE_EXISTING) ? "" : " - NOT renamed");
 }
 
 static int parse_port(const char *t, const char *what)
@@ -342,7 +357,7 @@ static int parse_port(const char *t, const char *what)
     if (v < 1024 || v > 65535) { logf_("%s port '%s' out of range - using %d", what, t, PORT_DEFAULT); return PORT_DEFAULT; }
     return v;
 }
-/* The address typed into our Connect box (ask_join), used for this run even when lotr2net.ini cannot be written. */
+/* The address typed into our Connect box (ask_join), used for this run even when lords2hd.ini cannot be written. */
 static char g_ask_host[128];
 /* Menu join (GameRanger auto-setup, gra_title): g_menu 1 = the next Connect joins g_menu_host with no Win32 window at
  * all (no address box; the session list stays invisible and its first session is taken, or it is cancelled with
@@ -812,7 +827,7 @@ static int jsend(BYTE type, const void *p, DWORD n)
  * process keeps relaying for the joiners instead of ending the game for all of them: no traffic to or from its own
  * game, no sync compare, resync or trust work (trust would drop the new game host's host-only messages), and the
  * lowest remaining player id is sent T_HOST so its DLL hands its game DPSYS_HOST. Ends when the last joiner leaves.
- * Off with ghost=0 in lotr2net.ini or LOTR2NET_GHOST=0. cs held unless said. */
+ * Off with ghost=0 in lords2hd.ini or LOTR2NET_GHOST=0. cs held unless said. */
 static volatile LONG g_ghost_done;   /* the hub closed: a reader thread resets the window title outside cs */
 static int ghost_enabled(void)   /* cs NOT held (ini read) */
 {
@@ -1729,7 +1744,7 @@ static DPHR WINAPI dp2_DestroyPlayer(Obj *t, DPID id)
  * The game's session list is a Win32 dialog (FUN_004b85b7): WM_INITDIALOG calls EnumSessions once with ctx = its
  * list box, then WM_TIMER every 3 s calls it again. The first EnumSessions after each DirectPlayCreate (one per
  * Connect press) shows this box on the game thread, before the list is visible. OK saves host=addr[:port] into
- * lotr2net.ini (other lines kept) and uses it at once; Cancel presses the session dialog's own Cancel (id 2, which
+ * lords2hd.ini (other lines kept) and uses it at once; Cancel presses the session dialog's own Cancel (id 2, which
  * releases the DirectPlay object and goes back a screen). Skipped when LOTR2NET_HOST is set or the ini has ask=0
  * (rig and agent automation). */
 #define ID_AHOST 101
@@ -1745,43 +1760,11 @@ static int ask_enabled(void)
     return 1;
 }
 
-/* Replace (or add) host= in lotr2net.ini, keeping every other line; drops the installer's "; host= unset" note. */
 static int ini_set_host(const char *val)
 {
-    char p[MAX_PATH + 16], q[MAX_PATH + 16], line[512];
-    FILE *f, *o;
-    int done = 0;
-    lstrcpynA(p, exedir, MAX_PATH);
-    lstrcatA(p, "lotr2net.ini");
-    lstrcpynA(q, exedir, MAX_PATH);
-    lstrcatA(q, "lotr2net.ini.tmp");
-    o = fopen(q, "w");
-    if (!o) return 0;
-    f = fopen(p, "r");
-    if (f) {
-        int first = 1;
-        while (fgets(line, sizeof line, f)) {
-            char *s = line;
-            if (first && (BYTE)s[0] == 0xEF && (BYTE)s[1] == 0xBB && (BYTE)s[2] == 0xBF) memmove(line, line + 3, strlen(line + 3) + 1);   /* F9: written back as plain ASCII */
-            first = 0;
-            while (*s == ' ' || *s == '\t') s++;
-            if (*s == ';') {
-                char *c = s + 1;
-                while (*c == ' ' || *c == '\t') c++;
-                if (!_strnicmp(c, "host=", 5) && strstr(c, "unset")) continue;
-            } else if (!_strnicmp(s, "host", 4)) {
-                char *c = s + 4;
-                while (*c == ' ' || *c == '\t') c++;
-                if (*c == '=') { if (!done) fprintf(o, "host=%s\n", val); done = 1; continue; }
-            }
-            fputs(line, o);
-            if (line[0] && line[strlen(line) - 1] != '\n') fputc('\n', o);
-        }
-        fclose(f);
-    }
-    if (!done) fprintf(o, "host=%s\n", val);
-    if (fclose(o) || !MoveFileExA(q, p, MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(q); return 0; }
-    return 1;
+    char p[MAX_PATH + 16];
+    ini_path(p, sizeof p);
+    return WritePrivateProfileStringA(INI_SEC, "host", val, p) != 0;
 }
 
 static INT_PTR CALLBACK ask_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
@@ -1815,7 +1798,7 @@ static INT_PTR CALLBACK ask_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
         if (port == PORT_DEFAULT) snprintf(val, sizeof val, "%s", a);
         else snprintf(val, sizeof val, "%s:%d", a, port);
         lstrcpynA(g_ask_host, val, sizeof g_ask_host);
-        logf_("join address box: %s (%s)", val, ini_set_host(val) ? "saved to lotr2net.ini" : "lotr2net.ini NOT writable, this run only");
+        logf_("join address box: %s (%s)", val, ini_set_host(val) ? "saved to lords2hd.ini" : "lords2hd.ini NOT writable, this run only");
         EndDialog(d, IDOK);
         return TRUE;
     }
@@ -2801,6 +2784,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
         dp2obj.vt = dp2_vt;
         dp1obj.vt = dp1_vt;
         logf_("---- dplayx.dll v%d loaded (pid %lu)", DLL_VERSION, GetCurrentProcessId());
+        ini_migrate();
         exe_patch_all();
         victory_patch();
         gra_patch();

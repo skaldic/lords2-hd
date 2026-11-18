@@ -7974,7 +7974,7 @@ static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
 	for (size_t i = 0; i < n; i++) { h ^= p[i]; for (int k = 0; k < 8; k++) h = (h >> 1) ^ (0xEDB88320u & (0u - (h & 1))); }
 	return h;
 }
-// Multiplayer session logs ([Debug] MpLogs=1, the default): each multiplayer game (DAT_00553030 set)
+// Multiplayer session logs ([Multiplayer] MpLogs=1, the default): each multiplayer game (DAT_00553030 set)
 // gets a folder lords2hd-mp\<date and time>\ that a player can zip and post when something goes wrong:
 //   session.txt  versions (this DLL, the exe, a replacement dplayx.dll) and the settings that matter
 //   sync.txt     per-season checksums of the county, army and player records (compare two players')
@@ -8137,7 +8137,7 @@ static DWORD WINAPI sync_log_thread(LPVOID unused)
 static void install_game_fixes(void)
 {
 	g_syncLog = GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath) != 0;
-	g_mpLogs = GetPrivateProfileIntA("Debug", "MpLogs", 1, g_iniPath) != 0;
+	g_mpLogs = GetPrivateProfileIntA("Multiplayer", "MpLogs", 1, g_iniPath) != 0;
 	if (g_syncLog || g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
