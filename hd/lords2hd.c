@@ -8219,7 +8219,7 @@ static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
-static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots;
+static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback;
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -8410,8 +8410,9 @@ static void battle_second(const fig_snap *n)
 				break;
 			}
 	}
-	blog("idle-close %d | archers standing %d, with an enemy in range %d, shots %d", idleClose, archIdle, archInRange, g_bshots);
-	g_bshots = 0;
+	blog("idle-close %d | archers standing %d, with an enemy in range %d, shots %d, stepped back %d", idleClose, archIdle, archInRange,
+		g_bshots, g_bstepback);
+	g_bshots = 0; g_bstepback = 0;
 	unsigned h = 2166136261u;   // a hash of every figure, to compare two runs of the same battle
 	for (int i = 1; i < 0x51; i++) {
 		int v[6] = { n[i].live, n[i].x, n[i].y, n[i].state, n[i].men, n[i].target };
@@ -8747,6 +8748,7 @@ static void chase_progress(int me)
 
 // State 5 (idle): a melee unit in a Mop-Up group goes back to chasing.
 static void engage_idle(int me);
+static void archer_idle(int me);
 static void __cdecl h_idle(void)
 {
 	o_idle();
@@ -8758,7 +8760,10 @@ static void __cdecl h_idle(void)
 		f[0x31] = 8; f[0x174] = 0;
 		g_bwake++;
 	}
-	if (fix_on(g_fixEngage) && f[0x2c] && f[0x31] == 5) engage_idle(me);
+	if (fix_on(g_fixEngage) && f[0x2c] && f[0x31] == 5) {
+		if (f[0x16a]) archer_idle(me);
+		else engage_idle(me);
+	}
 }
 
 // FUN_00479e90(group, x, y, target, fire, formation) carries out an order. Called from your move/attack
@@ -8884,6 +8889,61 @@ static void engage_idle(int me)
 		g_eAnchorX[me], g_eAnchorY[me]);
 }
 
+// Archers save themselves: an idle archer or crossbowman with an enemy foot soldier or knight marching
+// or charging at it within 2 cells steps back about 3 cells, away from it, then shoots again. It stays
+// within 5 cells of where it stood, steps back at most once every 3 seconds, and stands and fights when
+// there's no free cell behind it. Both sides.
+static unsigned g_aNext[81];
+static void archer_idle(int me)
+{
+	BYTE *f = FIG(me);
+	if (!f[0x16a] || f[0x12] >= 7 || g_btick < g_aNext[me]) return;
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), g = FIG_S(me, 0x178);
+	if (x < 0 || x > 79 || y < 0 || y > 79 || BCELL(x, y)[4] != 0) return;   // on a wall: stays
+	short gx = g >= 0 && g < 80 ? *(short *)(0x00566542 + g * 0x34) : -1, gy = g >= 0 && g < 80 ? *(short *)(0x00566544 + g * 0x34) : -1;
+	if (!g_eAnchorOk[me] || gx != g_eGroupX[me] || gy != g_eGroupY[me]) {
+		g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eGroupX[me] = gx; g_eGroupY[me] = gy; g_eAnchorOk[me] = 1;
+	}
+	if ((unsigned)(me + g_btick) % 4) return;
+	int threat = 0, td = 99;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x16a] || t[0x12] >= 7) continue;
+		if (t[0x31] != 3 && t[0x31] != 8) continue;   // only one coming at it
+		int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
+		if (d <= 2 && d < td) { td = d; threat = e; }
+	}
+	if (!threat || td < 1) return;
+	int ex = FIG_S(threat, 0x20), ey = FIG_S(threat, 0x22);
+	int sx = (x > ex) - (x < ex), sy = (y > ey) - (y < ey);
+	// straight away, then the two directions beside it; 3 cells, then 2
+	static const int turn[3][2] = { { 0, 0 }, { 1, 0 }, { -1, 0 } };
+	for (int dist = 3; dist >= 2; dist--)
+		for (int k = 0; k < 3; k++) {
+			int dx = sx, dy = sy;
+			if (k == 1) { if (!dx) dx = 1; else if (!dy) dy = 1; else dy = 0; }
+			if (k == 2) { if (!dx) dx = -1; else if (!dy) dy = -1; else dx = 0; }
+			(void)turn;
+			int nx = x + dx * dist, ny = y + dy * dist;
+			if (nx < 1 || nx > 78 || ny < 1 || ny > 78) continue;
+			if (cheb(g_eAnchorX[me], g_eAnchorY[me], nx, ny) > ENG_LEASH + 1) continue;
+			BYTE *c = BCELL(nx, ny);
+			if (c[5] || (c[1] & (0x90 | 0x40 | 0x08 | 0x20)) || c[4] != BCELL(x, y)[4]) continue;
+			g_dmMaxDepth = dist + 2;
+			int d = dm_from(me, ny * 80 + nx);
+			g_dmMaxDepth = 0x7fff;
+			if (d == DM_FAR || d > dist + 1) continue;
+			FIG_S(me, 0x24) = nx; FIG_S(me, 0x26) = ny;
+			f[0x164] = 0;
+			f[0x31] = 3;
+			g_aNext[me] = g_btick + 246;
+			g_bstepback++;
+			if (g_blog && g_battleLog >= 1) blog("step back fig %d (archer, side %d) from enemy %d at %d cells: %d,%d -> %d,%d", me, f[0x2c], threat, td, x, y, nx, ny);
+			return;
+		}
+	g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
+}
+
 // Called from h_chase for a unit that engaged from idle: leash and letting retreaters go.
 static BOOL engage_chase(int me)
 {
@@ -8919,7 +8979,7 @@ static void battle_reset(void)
 {
 	g_btick = 0;
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
-	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil);
+	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
 	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
