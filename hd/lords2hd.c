@@ -8026,70 +8026,8 @@ static DWORD WINAPI sync_log_thread(LPVOID unused)
 	return 0;
 }
 
-// Economy fixes ([Game] EconomyFixes=1; off in multiplayer unless MultiplayerFixes=1).
-// - Tax happiness: each county's tax penalty (0x0053f9c6, 0 at rates below 20, down to -15 at 50) is
-//   added up per lord in a signed byte (0x0057bf28 + lord * 0x160, FUN_0044b99a), and each county's
-//   tax happiness (0x0053f9be) is 5 - its rate plus that sum, another signed byte (FUN_0044b59b).
-//   With about nine counties taxed hard the sum passes -128 and wraps to a large bonus. Both are now
-//   held at the ends of a signed byte instead (identical whenever nothing overflowed).
-// - Health: the happiness tier of a county's health comes from FUN_00404e4b(health, 0x4d6520, 5,
-//   fallback); the thresholds run below 10, 35, 65, 90 and 100, so exactly 100 falls to the fallback,
-//   3, one below the top tier 4. The fallback (the push at 0x44beab) becomes 4.
-// - Starting grain: the "medium" starting county (record 1 of 0x4dc0d0: grain, cattle, people, health,
-//   happiness) has 0 grain, between 10 and 500 for the others; it gets 250.
-static BOOL g_fixEconomy;
-typedef void (__cdecl *tax_sum_t)(unsigned);
-typedef void (__cdecl *void_fn_t)(void);
-static tax_sum_t o_tax_sum;
-static void_fn_t o_tax_step, o_start_counties;
-
-static void economy_bytes(void)
-{
-	BOOL on = fix_on(g_fixEconomy);
-	BYTE health = on ? 4 : 3; LONG grain = on ? 250 : 0;
-	BYTE *h = (BYTE *)0x0044beac; LONG *g = (LONG *)0x004dc0e4;
-	DWORD old;
-	if (*h != health && (*h == 3 || *h == 4) && VirtualProtect(h, 1, PAGE_EXECUTE_READWRITE, &old)) {
-		*h = health; VirtualProtect(h, 1, old, &old); FlushInstructionCache(GetCurrentProcess(), h, 1);
-	}
-	if (*g != grain && (*g == 0 || *g == 250) && VirtualProtect(g, 4, PAGE_READWRITE, &old)) { *g = grain; VirtualProtect(g, 4, old, &old); }
-}
-static int clamp_s8(int v) { return v < -128 ? -128 : v > 127 ? 127 : v; }
-static void __cdecl h_tax_sum(unsigned lord)
-{
-	if (!fix_on(g_fixEconomy) || lord > 5) { o_tax_sum(lord); return; }
-	int sum = 0;
-	for (int c = 1; c <= *(int *)0x0056d5dc; c++)
-		if (*(BYTE *)(0x0053f9b5 + c * 0x300) == lord) sum += *(signed char *)(0x0053f9c6 + c * 0x300);
-	*(signed char *)(0x0057bf28 + lord * 0x160) = (signed char)clamp_s8(sum);
-}
-static void __cdecl h_tax_step(void)
-{
-	economy_bytes();
-	o_tax_step();
-	if (!fix_on(g_fixEconomy)) return;
-	for (int c = 1; c <= *(int *)0x0056d5dc; c++) {
-		unsigned lord = *(BYTE *)(0x0053f9b5 + c * 0x300);
-		if (lord > 5) continue;
-		int v = 5 - *(BYTE *)(0x0053fa69 + c * 0x300) + *(signed char *)(0x0057bf28 + lord * 0x160);
-		*(signed char *)(0x0053f9be + c * 0x300) = (signed char)clamp_s8(v);
-	}
-}
-static void __cdecl h_start_counties(void) { economy_bytes(); o_start_counties(); }
-
 static void install_game_fixes(void)
 {
-	g_fixEconomy = GetPrivateProfileIntA("Game", "EconomyFixes", 1, g_iniPath) != 0;
-	{
-		static const BYTE kP04[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }, kP18[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 },
-			kP10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };
-		if (!hook_code((BYTE *)0x0044b99a, kP04, sizeof kP04, h_tax_sum, &o_tax_sum) ||
-			!hook_code((BYTE *)0x0044b59b, kP18, sizeof kP18, h_tax_step, &o_tax_step) ||
-			!hook_code((BYTE *)0x0049bd99, kP10, sizeof kP10, h_start_counties, &o_start_counties))
-			g_fixEconomy = FALSE;
-		else economy_bytes();
-		logf_("economy fixes %s", g_fixEconomy ? "on" : "off");
-	}
 	if (GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath)) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
