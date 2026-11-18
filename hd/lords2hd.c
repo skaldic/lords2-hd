@@ -7852,8 +7852,70 @@ static void __cdecl h_castle_enter(unsigned army, int county)
 	o_castle_enter(army, county);
 }
 
+// Multiplayer checks ([Debug] SyncLog=1): three seconds after each change of season (DAT_0057c92c,
+// DAT_0057c934) the log gets a checksum of the county records, the army table and the player records,
+// so two players' logs can be compared line by line; the first line that differs is where they
+// drifted apart.
+static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
+{
+	for (size_t i = 0; i < n; i++) { h ^= p[i]; for (int k = 0; k < 8; k++) h = (h >> 1) ^ (0xEDB88320u & (0u - (h & 1))); }
+	return h;
+}
+static DWORD WINAPI sync_log_thread(LPVOID unused)
+{
+	(void)unused;
+	int lastSeason = -1; DWORD changed = 0; int pending = 0, n = 0;
+	char req[MAX_PATH];
+	snprintf(req, sizeof req, "%s\\lords2hd-sync.req", g_gameDir);
+	for (;;) {
+		Sleep(250);
+		// On request (a test drops lords2hd-sync.req, holding a name): every record's checksum to lords2hd-sync-<name>.txt
+		FILE *rq = fopen(req, "r");
+		if (rq) {
+			char name[64] = "x";
+			if (fscanf(rq, "%63s", name) != 1) strcpy(name, "x");
+			fclose(rq); DeleteFileA(req);
+			char path[MAX_PATH];
+			snprintf(path, sizeof path, "%s\\lords2hd-sync-%s.txt", g_gameDir, name);
+			FILE *f = fopen(path, "w");
+			if (f) {
+				int counties = *(int *)0x0056d5dc;
+				if (counties < 1 || counties > 60) counties = 0;
+				fprintf(f, "season %d/%d\n", *(int *)0x0057c92c, *(int *)0x0057c934);
+				for (int i = 1; i <= counties; i++) {
+					fprintf(f, "county %d %08lx", i, (unsigned long)crc_block(~0u, (const BYTE *)(0x0053f9b0 + i * 0x300), 0x300));
+					for (int k = 0; k < 0x300; k += 0x40) fprintf(f, " %08lx", (unsigned long)crc_block(~0u, (const BYTE *)(0x0053f9b0 + i * 0x300 + k), 0x40));
+					fprintf(f, "\n  head");
+					for (int k = 0; k < 0x40; k++) fprintf(f, " %02x", *(const BYTE *)(0x0053f9b0 + i * 0x300 + k));
+					fprintf(f, "\n");
+				}
+				for (int i = 1; i <= 0x96; i++) fprintf(f, "army %d %08lx\n", i, (unsigned long)crc_block(~0u, (const BYTE *)(0x0052f0b0 + i * 0x1a4), 0x1a4));
+				for (int i = 1; i <= 5; i++) {
+					fprintf(f, "player %d %08lx", i, (unsigned long)crc_block(~0u, (const BYTE *)(0x0057bf00 + i * 0x160), 0x160));
+					for (int k = 0; k < 0x160; k += 0x20) fprintf(f, " %08lx", (unsigned long)crc_block(~0u, (const BYTE *)(0x0057bf00 + i * 0x160 + k), 0x20));
+					fprintf(f, "\n");
+				}
+				fclose(f);
+			}
+		}
+		int season =*(int *)0x0057c92c * 16 + *(int *)0x0057c934;
+		if (season != lastSeason) { lastSeason = season; changed = GetTickCount(); pending = 1; }
+		if (!pending || GetTickCount() - changed < 3000) continue;
+		pending = 0;
+		int counties = *(int *)0x0056d5dc;
+		if (counties < 1 || counties > 60) continue;
+		DWORD c = crc_block(~0u, (const BYTE *)(0x0053f9b0 + 0x300), (size_t)counties * 0x300);
+		DWORD a = crc_block(~0u, (const BYTE *)(0x0052f0b0 + 0x1a4), (size_t)0x96 * 0x1a4);
+		DWORD p = crc_block(~0u, (const BYTE *)(0x0057bf00 + 0x160), (size_t)5 * 0x160);
+		logf_("sync %d: season %d/%d, counties %08lx, armies %08lx, players %08lx, multiplayer %d", ++n,
+			*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p, *(int *)0x00553030);
+	}
+	return 0;
+}
+
 static void install_game_fixes(void)
 {
+	if (GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath)) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
 	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
