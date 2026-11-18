@@ -5630,6 +5630,7 @@ static void client_to_game(int *x, int *y)
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
 static int g_fakeEdge;
 static volatile int g_testMopUp;   // remote testing: run Mop-Up for this side at the next battle step
+static volatile int g_testOrder;   // remote testing: march every human group to a cell
 static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
@@ -5728,6 +5729,10 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	if (n == 25) { // testing: Mop-Up for side w (the game's FUN_0047a76d), run at the next battle step
 		g_testMopUp = (int)wp;
+		return 0;
+	}
+	if (n == 26) { // testing: order every human group to march to cell (x = low word, y = high word of w)
+		g_testOrder = (int)wp | 0x40000000;
 		return 0;
 	}
 	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
@@ -8180,16 +8185,78 @@ static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81]
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
 static int g_bretarget, g_bwake, g_bdropTarget;
+static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
+static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
+
+// The battle log never writes to disk on the game's thread: lines go into a 32 MB memory buffer and a
+// background thread writes them out twice a second (a full buffer drops lines rather than wait).
+#define BLOG_BUF (32 << 20)
+static char *g_blogBuf, *g_blogOut;
+static volatile LONG g_blogLen;
+static CRITICAL_SECTION g_blogLock;
+static HANDLE g_blogFile = INVALID_HANDLE_VALUE;
+
+static DWORD WINAPI blog_writer(LPVOID unused)
+{
+	(void)unused;
+	for (;;) {
+		Sleep(500);
+		EnterCriticalSection(&g_blogLock);
+		LONG n = g_blogLen;
+		char *t = g_blogBuf; g_blogBuf = g_blogOut; g_blogOut = t;   // swap the buffers
+		g_blogLen = 0;
+		LeaveCriticalSection(&g_blogLock);
+		DWORD w;
+		if (n > 0 && g_blogFile != INVALID_HANDLE_VALUE) WriteFile(g_blogFile, g_blogOut, (DWORD)n, &w, NULL);
+	}
+	return 0;
+}
+
+static void blog_vput(const char *fmt, va_list ap, BOOL stamp)
+{
+	char line[1024];
+	int k = stamp ? snprintf(line, sizeof line, "%6u ", g_btick) : 0;
+	int m = vsnprintf(line + k, sizeof line - k - 1, fmt, ap);
+	if (m < 0) return;
+	k += m < (int)(sizeof line - k - 1) ? m : (int)(sizeof line - k - 2);
+	line[k++] = '\n';
+	EnterCriticalSection(&g_blogLock);
+	if (g_blogLen + k <= BLOG_BUF) { memcpy(g_blogBuf + g_blogLen, line, k); g_blogLen += k; }
+	LeaveCriticalSection(&g_blogLock);
+}
 
 static void blog(const char *fmt, ...)
 {
 	if (!g_blog) return;
-	fprintf(g_blog, "%6u ", g_btick);
 	va_list ap;
 	va_start(ap, fmt);
-	vfprintf(g_blog, fmt, ap);
+	blog_vput(fmt, ap, TRUE);
 	va_end(ap);
-	fputc('\n', g_blog);
+}
+
+static void blogf(const char *fmt, ...)   // without the step stamp (headers, maps)
+{
+	if (!g_blog) return;
+	va_list ap;
+	va_start(ap, fmt);
+	blog_vput(fmt, ap, FALSE);
+	va_end(ap);
+}
+
+static BOOL blog_open(void)
+{
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\lords2hd-battle.txt", g_gameDir);
+	g_blogBuf = (char *)VirtualAlloc(NULL, BLOG_BUF, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	g_blogOut = (char *)VirtualAlloc(NULL, BLOG_BUF, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!g_blogBuf || !g_blogOut) return FALSE;
+	g_blogFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (g_blogFile == INVALID_HANDLE_VALUE) return FALSE;
+	InitializeCriticalSection(&g_blogLock);
+	HANDLE t = CreateThread(NULL, 0, blog_writer, NULL, 0, NULL);
+	if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); }
+	g_blog = (FILE *)1;   // "open" marker for the callers' checks
+	return TRUE;
 }
 
 static void fig_take(int i, fig_snap *s)
@@ -8208,29 +8275,25 @@ static void battle_start(void)
 {
 	char path[MAX_PATH];
 	g_bnum++;
-	if (!g_blog) {
-		snprintf(path, sizeof path, "%s\\lords2hd-battle.txt", g_gameDir);
-		g_blog = fopen(path, "w");
-		if (!g_blog) return;
-	}
+	if (!g_blog && !blog_open()) return;
 	g_bsecTick = g_btick;
 	memset(g_twitch, 0, sizeof g_twitch); memset(g_twitchSec, 0, sizeof g_twitchSec);
 	memset(g_traceUntil, 0, sizeof g_traceUntil); memset(g_idleSince, 0, sizeof g_idleSince);
 	memset(g_lastMove, 0, sizeof g_lastMove); memset(g_prevX, -1, sizeof g_prevX); memset(g_prevY, -1, sizeof g_prevY);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = 0;
-	fprintf(g_blog, "\n==== battle %d ====\n", g_bnum);
-	fprintf(g_blog, "figures: slot side type human group men x,y dest state ranged range delay\n");
+	blogf("\n==== battle %d ====", g_bnum);
+	blogf("figures: slot side type human group men x,y dest state ranged range delay");
 	for (int i = 1; i < 0x51; i++) {
 		BYTE *f = FIG(i);
 		if (!f[0x2c]) continue;
-		fprintf(g_blog, "  fig %2d side %d type %2d human %d group %2d men %3d at %2d,%2d dest %2d,%2d state %2d ranged %d range %d delay %d\n",
+		blogf("  fig %2d side %d type %2d human %d group %2d men %3d at %2d,%2d dest %2d,%2d state %2d ranged %d range %d delay %d",
 			i, f[0x2c], f[0x12], f[0x13], FIG_S(i, 0x178), FIG_S(i, 0x1a0), FIG_S(i, 0x20), FIG_S(i, 0x22),
 			FIG_S(i, 0x24), FIG_S(i, 0x26), f[0x31], f[0x16a], FIG_S(i, 0x170), f[0x189]);
 	}
 	// The battlefield: one character per cell from the flags (byte +1): # 0x10 blocked, X 0x80 siege
 	// footprint, ~ 0x40 water, m 0x20 moat, g 0x08 gate, else the height digit (+4); then the kind
 	// (+7) and the first byte (+0) as hex rows.
-	fprintf(g_blog, "map (flags: # blocked 0x10, X 0x80, ~ water 0x40, m moat 0x20, g gate 0x08, digit = height):\n");
+	blogf("map (flags: # blocked 0x10, X 0x80, ~ water 0x40, m moat 0x20, g gate 0x08, digit = height):");
 	for (int y = 0; y < 80; y++) {
 		char row[81];
 		for (int x = 0; x < 80; x++) {
@@ -8239,23 +8302,24 @@ static void battle_start(void)
 				(char)('0' + (c[4] % 10));
 		}
 		row[80] = 0;
-		fprintf(g_blog, "  %2d %s\n", y, row);
+		blogf("  %2d %s", y, row);
 	}
 	for (int k = 0; k < 3; k++) {
 		static const int off[3] = { 0, 1, 7 };
 		static const char *name[3] = { "byte+0", "flags+1", "kind+7" };
-		fprintf(g_blog, "map %s (hex):\n", name[k]);
+		blogf("map %s (hex):", name[k]);
 		for (int y = 0; y < 80; y++) {
-			fprintf(g_blog, "  %2d ", y);
-			for (int x = 0; x < 80; x++) fprintf(g_blog, "%02x", BCELL(x, y)[off[k]]);
-			fputc('\n', g_blog);
+			char hex[161];
+			for (int x = 0; x < 80; x++) snprintf(hex + 2 * x, 3, "%02x", BCELL(x, y)[off[k]]);
+			blogf("  %2d %s", y, hex);
 		}
 	}
-	snprintf(path, sizeof path, "%s\\lords2hd-battle%d-map.bin", g_gameDir, g_bnum);
-	FILE *m = fopen(path, "wb");
-	if (m) { fwrite((void *)0x005440e0, 8, 6400, m); fclose(m); }
+	if (g_battleLog >= 2) {
+		snprintf(path, sizeof path, "%s\\lords2hd-battle%d-map.bin", g_gameDir, g_bnum);
+		FILE *m = fopen(path, "wb");
+		if (m) { fwrite((void *)0x005440e0, 8, 6400, m); fclose(m); }
+	}
 	for (int i = 1; i < 0x51; i++) fig_take(i, &g_snap[i]);
-	fflush(g_blog);
 }
 
 static int nearest_enemy(int i, const fig_snap *n)
@@ -8303,9 +8367,12 @@ static void battle_second(const fig_snap *n)
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
 		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, tw, cols);
 	g_bretarget = g_bwake = g_bdropTarget = 0;
+	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
+	blog("cpu units %.1f ms, searches %.1f ms (in the last second)", g_bcpuLoop * 1000.0 / fq.QuadPart,
+		g_bcpuBfs * 1000.0 / fq.QuadPart);
+	g_bcpuLoop = g_bcpuBfs = 0;
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
-	fflush(g_blog);
 }
 
 typedef int (__cdecl *step_check_t)(int);
@@ -8381,8 +8448,9 @@ static int g_lastStep = -1;
 static int __cdecl h_swapq(void)
 {
 	int me = FIG_CUR, b = *(int *)0x0052eff4;
+	// neither unit may swap again within 64 steps of its last swap (three units could rotate places)
 	if (fix_on(g_fixJitter) && me > 0 && me < 0x51 && b > 0 && b < 0x51 &&
-		((g_jSwapWith[me] == b && g_btick - g_jSwapT[me] < 48) || (g_jSwapWith[b] == me && g_btick - g_jSwapT[b] < 48))) {
+		((g_jSwapWith[me] && g_btick - g_jSwapT[me] < 64) || (g_jSwapWith[b] && g_btick - g_jSwapT[b] < 64))) {
 		g_bswapsBlocked++;
 		return 0;   // wait instead of swapping back
 	}
@@ -8486,8 +8554,6 @@ static int __cdecl h_mover(int p1)
 //   (a group on Mop-Up used to ignore every order for the rest of the battle).
 #define DM_FAR 0xFFFF
 static BOOL g_dmapOn;   // the phase-4 hooks are in
-static unsigned short g_dmap[81][6400];
-static BYTE g_dmapOk[81];
 static unsigned g_cSince[81], g_cAvoidUntil[81];
 static int g_cBest[81], g_cTarget[81], g_cAvoid[81];
 typedef int (__cdecl *target_t)(void);
@@ -8499,60 +8565,80 @@ static order_t o_order;
 typedef void (__cdecl *select_t)(unsigned);
 static select_t o_select;
 
+static BOOL dm_height_ok(int from, int to)
+{
+	BYTE ht = ((BYTE *)0x005440e4)[to * 8], hf = ((BYTE *)0x005440e4)[from * 8];
+	return !(ht != hf && ht != 5 && (ht + 1 < hf || hf + 1 < ht));
+}
+
 static BOOL dm_step_ok(int from, int to)
 {
-	BYTE ht = ((BYTE *)0x005440e4)[to * 8], hf = ((BYTE *)0x005440e4)[from * 8], fl = ((BYTE *)0x005440e1)[to * 8];
-	if (ht != hf && ht != 5 && (ht + 1 < hf || hf + 1 < ht)) return FALSE;
-	return (fl & (0x90 | 0x40 | 0x08)) == 0;
+	return dm_height_ok(from, to) && (((BYTE *)0x005440e1)[to * 8] & (0x90 | 0x40 | 0x08)) == 0;
 }
 
-static void dm_build(int e)
+// A search outward from one unit over the game's movement rules: the step count to every cell it can
+// walk to, into g_dscratch. With stop >= 0 it ends as soon as that cell is reached and returns its
+// distance (DM_FAR if it can't be reached). Run only when a unit needs it: a target pick, or every 16
+// steps per chaser to measure progress, so it costs little (a full search is ~0.2 ms).
+static unsigned short g_dscratch[6400];
+static int dm_from(int me, int stop)
 {
 	static int q[6400];
-	unsigned short *m = g_dmap[e];
-	for (int k = 0; k < 6400; k++) m[k] = DM_FAR;
-	g_dmapOk[e] = 0;
-	if (!FIG(e)[0x2c]) return;
-	int x0 = FIG_S(e, 0x20), y0 = FIG_S(e, 0x22);
-	if (x0 < 0 || x0 > 79 || y0 < 0 || y0 > 79) return;
-	int head = 0, tail = 0;
-	m[y0 * 80 + x0] = 0; q[tail++] = y0 * 80 + x0;
-	while (head < tail) {
-		int u = q[head++], ux = u % 80, uy = u / 80;
-		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-			if (!dx && !dy) continue;
-			int vx = ux + dx, vy = uy + dy;
-			if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
-			int v = vy * 80 + vx;
-			if (m[v] != DM_FAR || !dm_step_ok(v, u)) continue;   // reversed: a unit at v steps to u
-			m[v] = m[u] + 1; q[tail++] = v;
+	LARGE_INTEGER t0, t1;
+	QueryPerformanceCounter(&t0);
+	unsigned short *m = g_dscratch;
+	memset(m, 0xff, sizeof g_dscratch);
+	int r = DM_FAR;
+	int x0 = FIG_S(me, 0x20), y0 = FIG_S(me, 0x22);
+	if (x0 >= 0 && x0 < 80 && y0 >= 0 && y0 < 80) {
+		int head = 0, tail = 0;
+		m[y0 * 80 + x0] = 0; q[tail++] = y0 * 80 + x0;
+		while (head < tail) {
+			int u = q[head++], ux = u % 80, uy = u / 80;
+			if (u == stop) { r = m[u]; break; }
+			for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+				if (!dx && !dy) continue;
+				int vx = ux + dx, vy = uy + dy;
+				if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+				int v = vy * 80 + vx;
+				if (m[v] != DM_FAR) continue;
+				// the target's own cell counts as reached from any cell a unit could attack it from
+				if (v == stop ? !dm_height_ok(u, v) : !dm_step_ok(u, v)) continue;
+				m[v] = m[u] + 1; q[tail++] = v;
+			}
 		}
 	}
-	g_dmapOk[e] = 1;
-}
-
-static void dm_refresh(void)
-{
-	for (int e = 1; e < 0x51; e++)
-		if ((unsigned)(e + g_btick) % 16 == 0 || (!g_dmapOk[e] && FIG(e)[0x2c])) dm_build(e);
+	QueryPerformanceCounter(&t1);
+	g_bcpuBfs += t1.QuadPart - t0.QuadPart;
+	return r;
 }
 
 static int dm_dist(int e, int me)
 {
-	if (e < 1 || e > 0x50 || !g_dmapOk[e]) return DM_FAR;
-	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	if (e < 1 || e > 0x50 || !FIG(e)[0x2c]) return DM_FAR;
+	int x = FIG_S(e, 0x20), y = FIG_S(e, 0x22);
 	if (x < 0 || x > 79 || y < 0 || y > 79) return DM_FAR;
-	return g_dmap[e][y * 80 + x];
+	return dm_from(me, y * 80 + x);
 }
 
 static int dm_pick(int me)
 {
 	int best = 0, bestCost = 0x7fffffff;
+	dm_from(me, -1);
 	for (int e = 1; e < 0x51; e++) {
 		BYTE *f = FIG(e);
 		if (!f[0x2c] || f[0x2c] == FIG(me)[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
 		if (g_cAvoid[me] == e && g_btick < g_cAvoidUntil[me]) continue;
-		int d = dm_dist(e, me);
+		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
+		if (ex < 0 || ex > 79 || ey < 0 || ey > 79) continue;
+		// reached from a neighbouring cell it could attack from (its own cell may carry blocking flags)
+		int ec = ey * 80 + ex, d = g_dscratch[ec];
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int nx = ex + dx, ny = ey + dy;
+			if ((!dx && !dy) || nx < 0 || nx > 79 || ny < 0 || ny > 79) continue;
+			int n = ny * 80 + nx, v = g_dscratch[n];
+			if (v != DM_FAR && v + 1 < d && dm_height_ok(n, ec)) d = v + 1;
+		}
 		if (d == DM_FAR) continue;
 		if (f[0x16a]) d /= 2;   // as the game: archers count at half distance
 		int cost = d + (signed char)f[0x175];
@@ -8582,6 +8668,7 @@ static void chase_progress(int me)
 	if (f[0x16a] || f[0x12] >= 7) return;
 	int t = f[0x174];
 	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) { g_cTarget[me] = 0; return; }
+	if (t == g_cTarget[me] && (unsigned)(me + g_btick) % 16) return;   // measured every 16 steps
 	int d = dm_dist(t, me);
 	if (t != g_cTarget[me] || d < g_cBest[me]) { g_cTarget[me] = t; g_cBest[me] = d; g_cSince[me] = g_btick; return; }
 	// only a target that can't be reached, or one close by that it isn't getting to (a far one that
@@ -8602,7 +8689,8 @@ static void __cdecl h_idle(void)
 	int me = FIG_CUR;
 	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50) return;
 	BYTE *f = FIG(me);
-	if (f[0x2c] && f[0x31] == 5 && !f[0x16a] && f[0x12] < 7 && group_hunting(FIG_S(me, 0x178)) && dm_pick(me)) {
+	if (f[0x2c] && f[0x31] == 5 && !f[0x16a] && f[0x12] < 7 && group_hunting(FIG_S(me, 0x178)) &&
+		(unsigned)(me + g_btick) % 16 == 0 && dm_pick(me)) {
 		f[0x31] = 8; f[0x174] = 0;
 		g_bwake++;
 	}
@@ -8672,7 +8760,7 @@ static void battle_reset(void)
 	g_btick = 0;
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
-	memset(g_dmapOk, 0, sizeof g_dmapOk); memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
+	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
 	memset(g_cBest, 0, sizeof g_cBest); memset(g_cTarget, 0, sizeof g_cTarget); memset(g_cAvoid, 0, sizeof g_cAvoid);
 }
 
@@ -8683,7 +8771,7 @@ static void __cdecl h_fig_loop(void)
 	g_lastStep = step;
 	DWORD now = GetTickCount();
 	if (fresh) battle_reset();
-	if (g_battleLog && (fresh || !g_blastCall || now - g_blastCall > 3000)) battle_start();
+	if (g_battleLog && fresh) battle_start();
 	g_blastCall = now;
 	if (g_testMopUp && g_remote) {
 		int side = g_testMopUp;
@@ -8691,8 +8779,20 @@ static void __cdecl h_fig_loop(void)
 		((void (__cdecl *)(unsigned))0x0047a76d)((unsigned)side);
 		if (g_blog) blog("TEST: Mop-Up for side %d", side);
 	}
-	if (g_dmapOn && fix_on(g_fixMopUp)) dm_refresh();
+	if (g_testOrder && g_remote) {
+		int x = g_testOrder & 0xffff, y = (g_testOrder >> 16) & 0x3fff;
+		g_testOrder = 0;
+		for (int g = 1; g < 80; g++)
+			if (*(BYTE *)(0x00566522 + g * 0x34) && *(BYTE *)(0x00566521 + g * 0x34)) {
+				((void (__cdecl *)(int, int, int, int, int, int))0x00479e90)(g, x, y, 0, 0, 0);
+				if (g_blog) blog("TEST: group %d ordered to %d,%d", g, x, y);
+			}
+	}
+	LARGE_INTEGER c0, c1;
+	QueryPerformanceCounter(&c0);
 	o_fig_loop();
+	QueryPerformanceCounter(&c1);
+	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
 	g_btick++;
 	if (!g_blog) return;
 	static fig_snap n[81];
@@ -8739,14 +8839,14 @@ static void __cdecl h_fig_loop(void)
 				twitch = TRUE;
 				blog("BACKSTEP fig %d %d,%d -> %d,%d -> back (state %d, %u steps)", i, c->x, c->y, o->x, o->y, c->state,
 					g_btick - g_lastMove[i]);
-				if (g_traceUntil[i] < g_btick + 60) g_traceUntil[i] = g_btick + 120;
+				if (g_battleLog >= 2 && g_traceUntil[i] < g_btick + 60) g_traceUntil[i] = g_btick + 120;
 			}
 			g_prevX[i] = o->x; g_prevY[i] = o->y; g_lastMove[i] = g_btick;
 		}
 		else if (((c->face - o->face) & 7) == 4) twitch = TRUE;
 		if (twitch) {
 			g_twitch[i]++; g_twitchSec[i]++; g_btwitch++;
-			if (g_twitchSec[i] == 3 && g_traceUntil[i] < g_btick) {
+			if (g_battleLog >= 2 && g_twitchSec[i] == 3 && g_traceUntil[i] < g_btick) {
 				g_traceUntil[i] = g_btick + 164;
 				blog("trace fig %d starts (twitching at %d,%d)", i, c->x, c->y);
 			}
