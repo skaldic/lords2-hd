@@ -13,6 +13,10 @@ multiplayer layer included.
 
 [Watch a heavy battle at a locked 60 fps](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.4.0.mp4)
 
+**Join the Lords of the Realm II community on Discord:** [discord.gg/uBzaMGjUR](https://discord.gg/uBzaMGjUR). It's
+where players find multiplayer games, the multiplayer layer is made, and bugs and ideas for this
+patch are talked through.
+
 ![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 
 ![The F10 settings](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg)
@@ -82,8 +86,12 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
   network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose Connect
   to a game and type the host's address.
 - The game keeps running when you switch windows, so nobody waits for you.
-- Each multiplayer game writes a folder `lords2hd-mp\<date and time>\`: if a game goes wrong, zip it
-  and post it on the community Discord.
+- **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
+  game's folder. It holds what's needed to debug the session: the versions of the patch, the game and
+  `dplayx.dll`, the settings, checksums of every player's game each season (to see where two games
+  went apart), and copies of the logs. If a game desyncs or crashes, **every player** zips their
+  folder for that game and posts it on the [community Discord](https://discord.gg/uBzaMGjUR) or in an issue. The ten
+  newest games are kept.
 
 ## Install
 
@@ -148,8 +156,10 @@ its keys and is also the readme that comes with the patch.
 
 - The GOG or Steam version of Lords of the Realm II (they share the same game files)
 - Windows, and a screen of 720p (1280x720) or larger; it fills any size from there up
-- For drawing on the graphics card: Direct3D 11 (almost any card from 2010 on); without it the patch
-  draws on the processor by itself
+- For drawing on the graphics card: Direct3D 11 (feature level 11.0) graphics from any maker, such as
+  NVIDIA GeForce GTX 400 or newer, AMD Radeon HD 5000 or newer, or Intel HD Graphics 4000 or newer.
+  AMD FSR 1 is not limited to AMD cards. On older graphics (Intel HD 2000/3000, for example) the patch
+  draws on the processor by itself, and FSR still works there, on the processor
 
 ## About the art
 
@@ -194,7 +204,9 @@ it never takes the mouse or the speakers.
 
 ## Bugs
 
-After a crash, keep `lords2hd.log` from the game's folder straight away: it is rewritten at each
+Report bugs in an issue or on the [community Discord](https://discord.gg/uBzaMGjUR). For a multiplayer problem,
+every player sends their `lords2hd-mp` folder of that game (see Multiplayer). After a crash, keep
+`lords2hd.log` from the game's folder straight away: it is rewritten at each
 start. Say which monitor you use and whether another `ddraw.dll` wrapper or an overlay is running.
 
 ## License
