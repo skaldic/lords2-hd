@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DLL_VERSION 11  /* 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
+#define DLL_VERSION 12  /* 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
 /* PROTO digits: thousands = DLL_VERSION, hundreds = pace patch applied (0/1), tens = 2*exe_ok + slowlink (0..3),
  * units = mpfix (0/1). g_exe_ok / g_pace_ok / g_mpfix are set in exepatch.c, g_slowlink once at load from
  * LOTR2NET_SLOWLINK. DLL_VERSION 7 carries resync wire version RS_VER 1 (a peer of another DLL version is refused). */
@@ -93,7 +93,7 @@ enum { T_HELLO = 1, T_INFO, T_REJECT, T_CREATEPL, T_PLAYERID, T_SYS_CREATE, T_SY
 #define MODE_JOIN 2
 static const char MAGIC[8] = {'L', 'O', 'T', 'R', '2', 'N', 'E', 'T'};
 
-typedef struct Msg { struct Msg *next; DPID from, to; DWORD len; BYTE data[4]; } Msg;   /* allocated to fit len */
+typedef struct Msg { struct Msg *next; DPID from, to; DWORD len, t_us; BYTE data[4]; } Msg;   /* allocated to fit len; t_us: when queued (diag.c) */
 typedef struct { int used; DPID id; char name[32]; int conn; DWORD lord, hello_t; int hello_n; BYTE cp_next; DWORD cp_n, cp_h;
     struct { DWORD tk[64], tt[64]; int z_tok; DWORD z_t; long hw_ahead, hw_hb; int hw_infl, hw_tick, b_tok, l_tok; DWORD b_t, l_t, old_r, nd, hb_last, hb_t, wd_n, hb_pre, hb_pre_t; int lead_add; BYTE seq, sq[10], sqi; } tr; } Player;   /* lord, hello_*, cp_*, tr: host only (trust.c) */
 /* One outbound queue + writer thread per socket (review #2): a game thread or reader only appends under oc and never
@@ -109,7 +109,7 @@ typedef struct Out {
     volatile LONG refs, stop, dead, wdone;
     char tag[16];
 } Out;
-typedef struct { int used; SOCKET s; Out *o; int haveplayer, ncreate, sync_n, rs_n, bad_lord, dt_tok, dt_over, dt_rate; DWORD sync_t, rs_t, lord, dt_t; u_long ip; } Conn;   /* ip: the peer's address (F3 per-address caps) */   /* lord: the one lord slot this conn may speak for (resync.c rs_conn_lord) */
+typedef struct { int used; SOCKET s; Out *o; int haveplayer, ncreate, sync_n, rs_n, bad_lord, dt_tok, dt_over, dt_rate, dg_n; DWORD sync_t, rs_t, lord, dt_t, dg_t; u_long ip; } Conn;   /* ip: the peer's address (F3 per-address caps) */   /* lord: the one lord slot this conn may speak for (resync.c rs_conn_lord) */
 
 static CRITICAL_SECTION cs;
 static struct {
@@ -149,6 +149,10 @@ static CRITICAL_SECTION logcs;
 static DWORD log_bytes;
 static int log_capped;
 static int log_force;   /* sync.c sets it around SYNC/DESYNC lines (see logf_) */
+static int g_log_hb;    /* log_heartbeats=1: per-message 0x0a lines too (diag.c) */
+static volatile LONG g_msg_stopped;   /* per-message lines have stopped at the log cap; a new session folder resets it (sesslog.c) */
+static const char *lf_dir(void);      /* sesslog.c: where a session's own files go */
+static void lf_copy_all(void);
 
 /* ------------------------------------------------------------------ logging */
 /* Async log (review #14): logf_ only appends to a 512 KB buffer under logcs; a below-normal-priority thread writes it
@@ -272,9 +276,9 @@ static void logmsg(const char *dir, DPID from, DPID to, const BYTE *d, DWORD len
 {
     /* 5-peer rig 2026-10-07: per-message lines filled the 8 MB cap in ~9 minutes and the later conn-drop line was lost.
      * They stop at LOG_CAP - 2 MB; events (conns, players, TRUST, errors) keep the last 2 MB. */
-    static volatile LONG msg_stopped;
+    if (!g_log_hb && len == 8 && d[0] == 0x0a) return;   /* v12: a frozen peer repeats these up to 140 times a second; the DIAG lines count them */
     if (log_bytes > LOG_CAP - (2u << 20)) {
-        if (!InterlockedExchange(&msg_stopped, 1)) logf_("per-message lines stop here (log at %u MB); events are still logged", (LOG_CAP >> 20) - 2);
+        if (!InterlockedExchange(&g_msg_stopped, 1)) logf_("per-message lines stop here (log at %u MB); events are still logged", (LOG_CAP >> 20) - 2);
         return;
     }
     logf_("MSG %s from=%08lx to=%08lx size=%lu b4=%02x %02x %02x %02x", dir, from, to, len,
@@ -711,6 +715,8 @@ static Player *pl_add(DPID id, const char *name, int conn)
  * sender's order, so copy 0 always arrives first and is always taken. With QSHED messages already waiting, copies
  * 0x40/0x80 are not queued: the game would have dropped them anyway. Copy 0 and system messages are never shed. */
 static DWORD g_qin, g_qout;   /* messages queued to / taken by our game so far (cs; trust.c review7 R7-4) */
+static DWORD dg_us(void);
+static void dg_on_rx(DPID from, const BYTE *d, DWORD len);
 static int qpush(DPID from, DPID to, const BYTE *d, DWORD len, int force)
 {
     Msg *m;
@@ -724,8 +730,9 @@ static int qpush(DPID from, DPID to, const BYTE *d, DWORD len, int force)
     if (len > MAXRECV + 64) len = MAXRECV + 64;
     m = (Msg *)malloc(sizeof(Msg) + len);
     if (!m) { logf_("queue_push: out of memory - message dropped"); return 2; }
-    m->next = NULL; m->from = from; m->to = to; m->len = len;
+    m->next = NULL; m->from = from; m->to = to; m->len = len; m->t_us = dg_us();
     memcpy(m->data, d, len);
+    dg_on_rx(from, d, len);
     if (G.qt) G.qt->next = m; else G.qh = m;
     G.qt = m;
     G.qcount++; g_qin++;
@@ -795,6 +802,8 @@ static int jsend(BYTE type, const void *p, DWORD n)
 #include "sync.c"
 #include "resync.c"
 #include "trust.c"
+#include "diag.c"
+#include "sesslog.c"
 
 /* ---- v10 ghost hub. The game asks for DPSESSION_MIGRATEHOST and handles DPSYS_HOST (FUN_004b8c3a ->
  * FUN_0043e6a2(4): that peer's game takes the host flag 0x553248 and the host duties). Our joiners reach only the hub
@@ -1054,6 +1063,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
     G.conns[ci].lord = 0; G.conns[ci].bad_lord = 0;   /* resync.c: bound at its first record */
     G.conns[ci].sync_n = 0; G.conns[ci].sync_t = 0;
     G.conns[ci].rs_n = 0; G.conns[ci].rs_t = 0;
+    G.conns[ci].dg_n = 0; G.conns[ci].dg_t = 0;
     G.conns[ci].dt_tok = DATA_BURST; G.conns[ci].dt_over = 0; G.conns[ci].dt_t = GetTickCount(); G.conns[ci].dt_rate = data_rate();
     InterlockedIncrement(&g_live);
     tj = GetTickCount();
@@ -1113,6 +1123,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
                 }
                 { BYTE m[36]; *(DWORD *)m = id; memcpy(m + 4, p->name, 32); bcast(ci, T_SYS_CREATE, m, 36); }
                 logf_("player %08lx '%s' created for conn %d", id, p->name, ci);
+                lf_begin();
             } else osend(o, T_PLAYERID, &id, 4);
         } else if (type == T_SYNC && n >= SY_HDR && n <= SY_HDR + SYNC_MAXR * 4) {
             if (G.conns[ci].haveplayer) {   /* compare, relay to the others; a flood is cut at SYNC_PER_S */
@@ -1145,6 +1156,8 @@ static DWORD WINAPI conn_thread(LPVOID a)
                     rs_on_up(ci, cid, f, n);
                 } else if (G.conns[ci].rs_n == RESYNC_PER_S + 1) SLOG("conn %d: over %d resync frames in 1 s - extra dropped", ci, RESYNC_PER_S);
             }
+        } else if ((type == T_PING || type == T_PONG) && G.conns[ci].haveplayer) {
+            dg_on_frame(ci, type, f, n);   /* diag.c: answered or relayed here, never queued for the game */
         } else if (type == T_DESTROYPL && n >= 4) {
             Player *p = pl_find(*(DWORD *)f);
             if (p && p->conn == ci) { host_remove_player(p, ci); G.conns[ci].haveplayer = 0; }
@@ -1349,6 +1362,8 @@ static DWORD join_body(LPVOID a)
             }
         } else if (type == T_SYNC && n >= SY_HDR && n <= SY_HDR + SYNC_MAXR * 4) {
             sy_on_peer(f, n);
+        } else if (type == T_PING || type == T_PONG) {
+            dg_on_frame(-1, type, f, n);
         } else if (type == T_HOST && n >= 4) {   /* v10: the hub's game left; this player plays the game host now */
             DPID id = *(DWORD *)f;
             logf_("game host is now player %08lx%s", (unsigned long)id, id == G.myid ? " - this game (DPSYS_HOST)" : "");
@@ -1492,6 +1507,7 @@ static void do_close(int may_ghost)
     for (i = 0; i < no; i++) { kill_sock(os[i]->s); out_release(os[i]); }
     for (t0 = GetTickCount(); g_live > 0 && GetTickCount() - t0 < 3000;) Sleep(5);
     if (g_live > 0) logf_("Close: %ld network thread(s) still running after 3 s (their sockets close when they exit)", g_live);
+    lf_end();
 }
 
 static DPHR WINAPI dp2_QI(Obj *t, const GUID *iid, void **out)
@@ -1554,6 +1570,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         int port = listen_port();
         SOCKET l;
         CArg *aa = (CArg *)malloc(sizeof *aa);
+        int aagen;
         HANDLE th;
         if (!aa) return DPERR_GENERIC;
         l = open_listener(port);
@@ -1568,7 +1585,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.lsock = l; G.jsock = INVALID_SOCKET;
         G.host = 1; G.open = 1; G.locked = 0; G.nextid = 0x1000; G.myid = 0;
         G.gen++;
-        aa->s = l; aa->gen = G.gen;
+        aa->s = l; aa->gen = aagen = G.gen;
         LeaveCriticalSection(&cs);
         InterlockedIncrement(&g_live);   /* before the thread runs: a Close right now must still wait for it */
         th = CreateThread(NULL, 0, accept_thread, aa, 0, NULL);
@@ -1583,6 +1600,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         logf_("Open(create) listening on %d name='%s' max=%lu", port, G.sname, G.maxpl);
         beacon_start(port);
         grhb_start(port);
+        dg_start(aagen);
         return DP_OK;
     } else {
         SOCKET s;
@@ -1591,6 +1609,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         CArg *ja;
         Out *jo;
         HANDLE th;
+        int jagen;
         s = dial(2500);
         if (s == INVALID_SOCKET) {
             if (g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "Could not reach the host");
@@ -1623,7 +1642,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.sname[63] = 0;
         G.jsock = s; G.jout = jo; G.lsock = INVALID_SOCKET; G.host = 0; G.open = 1; G.connected = 1; G.myid = 0;
         G.gen++;
-        ja->s = s; ja->gen = G.gen; ja->o = jo;
+        ja->s = s; ja->gen = jagen = G.gen; ja->o = jo;
         if (!G.evPid) G.evPid = CreateEventA(NULL, FALSE, FALSE, NULL);
         LeaveCriticalSection(&cs);
         free(f);
@@ -1639,6 +1658,8 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         }
         CloseHandle(th);
         logf_("Open(join) ok, session '%s'", G.sname);
+        lf_begin();
+        dg_start(jagen);
         return DP_OK;
     }
 }
@@ -2617,6 +2638,7 @@ static DPHR WINAPI dp2_Send(Obj *t, DPID from, DPID to, DWORD flags, BYTE *buf, 
         return DPERR_INVALIDOBJECT;
     }
     sync_on_send(buf, size);   /* game thread: our sync check at msgs 0x08/0x0c/0x0a (sync.c) */
+    dg_on_send(buf, size);
     if (rs_test_hold(from, (const BYTE *)buf, size)) return DP_OK;   /* test switch only (test_corrupt mode 8) */
     m = (BYTE *)malloc(8 + size);
     if (!m) { logf_("Send: out of memory"); return DPERR_GENERIC; }
@@ -2658,12 +2680,14 @@ static DPHR WINAPI dp2_Receive(Obj *t, DPID *from, DPID *to, DWORD flags, BYTE *
             logmsg("RECV", m->from, m->to, m->data, m->len);
             if (!(flags & DPRECEIVE_PEEK)) {
                 if (m->from) rs_on_deliver(m->data, m->len);   /* joiner, msg 0x16: rollback bookkeeping (resync.c) */
+                dg_on_take(m->t_us);
                 G.qh = m->next; if (!G.qh) G.qt = NULL; G.qcount--; g_qout++; free(m);
             }
             r = DP_OK;
         }
     }
     LeaveCriticalSection(&cs);
+    if (r == DPERR_NOMESSAGES) dg_on_pump();
     return r;
 }
 
@@ -2823,6 +2847,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
         if (!sl) sl = strrchr(exedir, '/');
         if (sl) sl[1] = 0; else exedir[0] = 0;
         G.lsock = G.jsock = INVALID_SOCKET;
+        dg_init();
+        lf_init();
         dp2obj.vt = dp2_vt;
         dp1obj.vt = dp1_vt;
         logf_("---- dplayx.dll v%d loaded (pid %lu)", DLL_VERSION, GetCurrentProcessId());
@@ -2833,6 +2859,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
     } else if (why == DLL_PROCESS_DETACH) {
         log_flush_exit();   /* write what is buffered; at process exit other threads may have died holding a lock,
                              * so it only tries */
+        lf_copy_all();      /* the game's last status.txt lines come after our Close */
     }
     return TRUE;
 }

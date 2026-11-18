@@ -276,7 +276,7 @@ static void sy_compare(const SyncRec *mine, const SyncRec *peer)
     {
         char p[MAX_PATH + 16], line[512];
         FILE *f;
-        lstrcpynA(p, exedir, MAX_PATH);
+        lstrcpynA(p, lf_dir(), MAX_PATH);
         lstrcatA(p, "desync.txt");
         if (sy_lines <= SY_MAXLINES && (f = fopen(p, "a")) != NULL) {
             snprintf(line, sizeof line, "%s desync, turn %lu, tick %lu, with player %lu: %s%s\n",

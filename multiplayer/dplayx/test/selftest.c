@@ -55,6 +55,12 @@
  *   T34 (v10 R12-1) Open(create) on a locked host game WITHOUT a Close ends the old game (no ghost hub): the joiner's
  *       link closes and the new session's Send works
  *   T33 (v10 joiner side) a hub names another player, then this one twice: the game gets exactly one DPSYS_HOST (0x101)
+ *   T35 (v12 diag, LOTR2NET_TEST_DIAG) the host pings a joiner and logs its answer as a rtt; the host answers a joiner's
+ *       ping; a ping to another joiner is relayed; one claiming another player's id is not answered; a host heartbeat
+ *       writes no per-message line while another message still does
+ *   T36 (v12 session folders, LOTR2NET_TEST_MPLOGS; last: it moves dplayx.log away from log_has) a host with no joiner
+ *       makes no folder; the first joiner makes mp_logs\direct_*, the log moves there and goes on; the next session
+ *       makes a second folder; LF_NetLogDir names it; with 12 older folders there mp_logs keeps the 10 newest, ours included
  */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -327,7 +333,7 @@ int main(int argc, char **argv)
     DPSD2 sd;
     CAPS caps;
     BYTE info[92];
-    char buf[160];
+    char buf[1024];   /* result lines: T29, T32 and T36 run past 300 characters */
     SOCKET keep = INVALID_SOCKET;
     DWORD me = 0;                 /* T18's host-side player, kept for T22/T25: the session allows no more than 4 players */
     WSADATA w;
@@ -383,6 +389,66 @@ int main(int argc, char **argv)
     ((ENUMS)dp->vt[13])(dp, &sd, 1000, cb, NULL, 0);
     sprintf(buf, "callbacks=%d name='%s' %lu ms", g_cb, g_cbname, GetTickCount() - t);
     result("T8 enum by name", g_cb == 1, buf);
+
+    {   /* T35 (v12 diag): pings between the DLLs, never shown to the game. Before the floods below: past 6 MB the log
+         * holds no per-message lines at all, and the heartbeat check needs them. In a session of its own, then re-hosted */
+        SOCKET ja = INVALID_SOCKET, jb = INVALID_SOCKET;
+        NAME_ nm = {sizeof nm, 0, "host35", NULL};
+        DWORD ida, idb, t35, f[4], me35 = 0;
+        BYTE hb[8] = {0x0a, 4, 0x35, 1, 0, 0, 0, 0}, other[8] = {0x0b, 4, 0x35, 1, 0, 0, 0, 0}, rb[64], fr[21];
+        int ty35, ping = 0, answered = 0, relayed = 0, spoof = 0, rtt, hbline, otherline, close_ok;
+        ((CLOSE)dp->vt[4])(dp);
+        SetEnvironmentVariableA("LOTR2NET_TEST_DIAG", "1");
+        hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
+        ((CPL)dp->vt[6])(dp, &me35, &nm, NULL, NULL, 0, 0);
+        hello(proto, 2, info, &ja);
+        ida = make_player(ja, "a35");
+        hello(proto, 2, info, &jb);
+        idb = make_player(jb, "b35");
+        *(DWORD *)fr = 17;
+        /* the host's ping reaches a joiner within its second; the answer becomes that peer's rtt */
+        for (t35 = GetTickCount(); !ping && GetTickCount() - t35 < 4000; ) {
+            ty35 = readframe(ja, rb, sizeof rb);
+            if (ty35 != 13) continue;
+            memcpy(f, rb, 16);
+            if (f[0] == me35 && f[1] == ida) ping = 1;
+        }
+        fr[4] = 14; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        rtt = log_has("n=1 sent=", 4000);
+        /* the joiner pings the host; a stamp of ours comes back untouched */
+        fr[4] = 13; f[0] = ida; f[1] = me35; f[2] = 7; f[3] = 123; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        /* the joiner pings the other joiner, through the host */
+        f[1] = idb; f[2] = 9; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        /* the joiner claims to be the other joiner: dropped, so seq 11 never comes back */
+        f[0] = idb; f[1] = me35; f[2] = 11; memcpy(fr + 5, f, 16); send(ja, (char *)fr, 21, 0);
+        for (t35 = GetTickCount(); GetTickCount() - t35 < 2500; ) {
+            ty35 = readframe(ja, rb, sizeof rb);
+            if (ty35 != 14) continue;
+            memcpy(f, rb, 16);
+            if (f[2] == 7 && f[3] == 123) answered = 1;
+            if (f[2] == 11) spoof = 1;
+        }
+        for (t35 = GetTickCount(); !relayed && GetTickCount() - t35 < 4000; ) {
+            ty35 = readframe(jb, rb, sizeof rb);
+            if (ty35 != 13) continue;
+            memcpy(f, rb, 16);
+            if (f[0] == ida && f[1] == idb && f[2] == 9) relayed = 1;
+        }
+        ((SEND)dp->vt[26])(dp, me35, 0, 0, hb, 8);
+        ((SEND)dp->vt[26])(dp, me35, 0, 0, other, 8);
+        otherline = log_has("b4=0b 04 35 01", 3000);
+        hbline = log_has("b4=0a 04 35 01", 500);
+        closesocket(ja); closesocket(jb);
+        Sleep(200);
+        t35 = GetTickCount();
+        ((CLOSE)dp->vt[4])(dp);
+        close_ok = GetTickCount() - t35 < 3500;
+        SetEnvironmentVariableA("LOTR2NET_TEST_DIAG", NULL);
+        sprintf(buf, "open hr=%08lx ping %d rtt line %d answered %d relayed %d spoof answered %d, hb line %d other line %d, close ok %d",
+                (unsigned long)hr, ping, rtt, answered, relayed, spoof, hbline, otherline, close_ok);
+        result("T35 diag pings and heartbeat lines", hr == 0 && ping && rtt && answered && relayed && !spoof && !hbline && otherline && close_ok, buf);
+        hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
+    }
 
     {   /* T9 (v7): a stalled joiner never blocks the game thread and never starves a live joiner */
         DWORD me = 0, from, to, sz, t9, worst = 0, sends = 0, before, after;
@@ -1256,6 +1322,76 @@ int main(int argc, char **argv)
         ((CLOSE)dp->vt[4])(dp);
         WaitForSingleObject(th, 10000);
         closesocket(l);
+    }
+    {   /* T36 (v12): session folders. Last: from here on dplayx.log is not beside the exe, so log_has finds nothing */
+        SOCKET ja = INVALID_SOCKET;
+        NAME_ nm = {sizeof nm, 0, "host36", NULL};
+        DWORD me36 = 0;
+        char ep[MAX_PATH], *sl, pat[MAX_PATH + 32], lg[MAX_PATH + 96], first[MAX_PATH] = "";
+        int empty, one, moved, kept = 0, grew = 0, rootgone, two, k, oldleft, firstleft, dirok;
+        typedef int (WINAPI *LOGDIR)(char *, int);
+        LOGDIR logdir = (LOGDIR)GetProcAddress(m, "LF_NetLogDir");
+        char ld[MAX_PATH + 96] = "";
+        WIN32_FIND_DATAA fd;
+        HANDLE fh;
+        GetModuleFileNameA(NULL, ep, MAX_PATH);
+        sl = strrchr(ep, '\\');
+        if (sl) sl[1] = 0; else ep[0] = 0;
+        #define COUNT_DIRS(out) do { out = 0; fh = FindFirstFileA(pat, &fd); if (fh != INVALID_HANDLE_VALUE) { do { if (!first[0]) lstrcpyA(first, fd.cFileName); out++; } while (FindNextFileA(fh, &fd)); FindClose(fh); } } while (0)
+        sprintf(pat, "%smp_logs\\direct_*", ep);
+        SetEnvironmentVariableA("LOTR2NET_TEST_MPLOGS", "1");
+        hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
+        ((CPL)dp->vt[6])(dp, &me36, &nm, NULL, NULL, 0, 0);
+        Sleep(300);
+        COUNT_DIRS(empty);
+        hello(proto, 2, info, &ja);
+        make_player(ja, "a36");
+        Sleep(400);
+        COUNT_DIRS(one);
+        sprintf(lg, "%smp_logs\\%s\\dplayx.log", ep, first);
+        moved = GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
+        sprintf(pat, "%sdplayx.log", ep);
+        rootgone = GetFileAttributesA(pat) == INVALID_FILE_ATTRIBUTES;
+        closesocket(ja);
+        Sleep(500);          /* its "conn dropped" line must land in the moved file */
+        {
+            FILE *lf = fopen(lg, "r");
+            char ln[600];
+            if (lf) {
+                if (fgets(ln, sizeof ln, lf) && strstr(ln, " loaded (pid ")) kept = 1;   /* the moved lines are still its start */
+                while (fgets(ln, sizeof ln, lf)) if (strstr(ln, "reader done")) grew = 1;
+                fclose(lf);
+            }
+        }
+        ((CLOSE)dp->vt[4])(dp);
+        Sleep(1100);         /* the folder name has one-second steps */
+        for (k = 0; k < 12; k++) {   /* older sessions, one file each: pruned before the next folder is made */
+            FILE *of;
+            sprintf(lg, "%smp_logs\\direct_2000-01-01_00-00-%02d", ep, k);
+            CreateDirectoryA(lg, NULL);
+            lstrcatA(lg, "\\dplayx.log");
+            if ((of = fopen(lg, "w")) != NULL) { fputs("old\n", of); fclose(of); }
+        }
+        hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
+        ((CPL)dp->vt[6])(dp, &me36, &nm, NULL, NULL, 0, 0);
+        hello(proto, 2, info, &ja);
+        make_player(ja, "b36");
+        Sleep(400);
+        sprintf(pat, "%smp_logs\\direct_*", ep);
+        COUNT_DIRS(two);
+        sprintf(pat, "%smp_logs\\direct_2000-*", ep);
+        COUNT_DIRS(oldleft);
+        sprintf(lg, "%smp_logs\\%s", ep, first);
+        firstleft = GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
+        if (logdir) logdir(ld, sizeof ld);
+        sprintf(lg, "%sdplayx.log", ld);
+        dirok = strstr(ld, "mp_logs\\direct_") && !strstr(ld, "direct_2000") && !strstr(ld, first) && GetFileAttributesA(lg) != INVALID_FILE_ATTRIBUTES;
+        closesocket(ja);
+        ((CLOSE)dp->vt[4])(dp);
+        SetEnvironmentVariableA("LOTR2NET_TEST_MPLOGS", NULL);
+        sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogDir '%.60s' ok %d",
+                empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok);
+        result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok, buf);
     }
     printf("%s (%d failed)\n", fails ? "SOME FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;

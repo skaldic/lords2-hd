@@ -7979,6 +7979,7 @@ static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
 //   session.txt  versions (this DLL, the exe, a replacement dplayx.dll) and the settings that matter
 //   sync.txt     per-season checksums of the county, army and player records (compare two players')
 //   copies of lords2hd.log and, if present, dplayx.log and desync.txt, refreshed each season and at the end
+//                (dplayx v12 keeps those two in its own mp_logs\<session>\ folder: mp_copy_logs asks it where)
 // Only the ten newest folders are kept.
 static BOOL g_mpLogs = TRUE, g_syncLog;
 static DWORD crc_file(const char *path)
@@ -7993,9 +7994,16 @@ static DWORD crc_file(const char *path)
 static void mp_copy_logs(const char *dir)
 {
 	static const char *names[] = { "lords2hd.log", "dplayx.log", "desync.txt" };
-	char from[MAX_PATH], to[MAX_PATH];
+	char from[MAX_PATH], to[MAX_PATH], game[MAX_PATH], dp[MAX_PATH] = "";
+	// dplayx v12 moves dplayx.log and desync.txt into its own mp_logs\<session>\ folder and says which
+	// (LF_NetLogDir, with a trailing backslash); an older dplayx.dll keeps them in the game folder
+	typedef int (WINAPI *LogDirFn)(char *, int);
+	HMODULE dpm = GetModuleHandleA("dplayx.dll");
+	LogDirFn logDir = dpm ? (LogDirFn)GetProcAddress(dpm, "LF_NetLogDir") : NULL;
+	snprintf(game, sizeof game, "%s\\", g_gameDir);
+	if (!logDir || logDir(dp, sizeof dp) <= 0) lstrcpynA(dp, game, sizeof dp);
 	for (int i = 0; i < 3; i++) {
-		snprintf(from, sizeof from, "%s\\%s", g_gameDir, names[i]);
+		snprintf(from, sizeof from, "%s%s", i ? dp : game, names[i]);
 		snprintf(to, sizeof to, "%s\\%s", dir, names[i]);
 		if (GetFileAttributesA(from) != INVALID_FILE_ATTRIBUTES) CopyFileA(from, to, FALSE);
 	}
