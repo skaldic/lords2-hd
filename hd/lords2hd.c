@@ -308,6 +308,7 @@ static volatile LONG g_presentCount;   // pictures shown (Timing=1)
 static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
 static volatile LONG g_copySeq;        // every copy to the screen (h_show_frame: did a forced call copy?)
 static int g_forcedViewCopies;         // Timing: battle frames copied because the view moved and the game didn't
+static double g_lastLogicStepT;        // Timing: when the game last ran a logic step
 static volatile LONG g_copyPending;    // the game's last finished frame was not copied (pending_copy)
 static volatile double g_frameCopyT;   // when the game last copied a whole frame to the screen
 static int g_pendingCopies;            // Timing=1: copies made from the frame limiter's wait
@@ -4574,7 +4575,14 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			mark_dirty();
 		}
 	}
-	if (entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
+	// The half-drawn check (entry_dark) only while a battle is being entered: later, a screen full of
+	// dense forest is dark enough to pass for a half-drawn frame, and every picture over it was held
+	// back - the mini freezes while scrolling over forest.
+	static DWORD enterT, lastCallT;
+	DWORD nowT = GetTickCount();
+	if (nowT - lastCallT > 1000) enterT = nowT;   // the first battle picture after a while: entering
+	lastCallT = nowT;
+	if (nowT - enterT < 2000 && entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
@@ -5210,8 +5218,8 @@ static DWORD WINAPI presenter(void *unused)
 				double gap = lastNewT ? nowF - lastNewT : 0;
 				if (gap > 100 && g_paceReadSeq - lastNewSeq >= 2 && lastNewSeq >= 0 && freezeLogs < 40) {   // frames in between never shown
 					freezeLogs++;
-					logf_("FREEZE: %.0f ms without a new picture (pictures #%ld -> #%ld, game at #%ld), view %d,%d",
-						gap, (long)lastNewSeq, (long)g_paceReadSeq, (long)g_paceChangeSeq, *(int *)0x0055ce70, *(int *)0x005678a0);
+					logf_("FREEZE: %.0f ms without a new picture (pictures #%ld -> #%ld, game at #%ld), view %d,%d, last logic step %.0f ms ago",
+						gap, (long)lastNewSeq, (long)g_paceReadSeq, (long)g_paceChangeSeq, *(int *)0x0055ce70, *(int *)0x005678a0, nowF - g_lastLogicStepT);
 					pace_trace(nowF - gap - 5, nowF, nowF - gap);
 				}
 				lastNewT = nowF; lastNewSeq = g_paceReadSeq;
@@ -8412,14 +8420,22 @@ static int __cdecl h_logic_steps(void)
 	int n = o_logic_steps();
 	g_frameSteps += n > 0 ? n : 0;
 	if (!g_timing) return n;
-	static DWORD t0; static int steps, frames;
+	static DWORD t0; static int steps, frames, burst;
+	static double lastStepT, maxGap;
 	DWORD now = GetTickCount();
+	double nowP = perf_now();
 	if (!t0) t0 = now;
 	steps += n > 0 ? n : 0; frames++;
+	if (n > 0) {   // the longest wait between frames that ran steps, and the most steps run at once
+		if (lastStepT && nowP - lastStepT > maxGap) maxGap = nowP - lastStepT;
+		lastStepT = nowP;
+		if (n > burst) burst = n;
+	}
+	g_lastLogicStepT = lastStepT;
 	if (now - t0 >= 5000) {
-		logf_("timing: %d logic steps in %.1f s over %d frames (battle %d, screen %d)", steps, (now - t0) / 1000.0, frames,
-			*(int *)0x0057c8fc == 2, *(BYTE *)0x004eac50);
-		t0 = now; steps = frames = 0;
+		logf_("timing: %d logic steps in %.1f s over %d frames (battle %d, screen %d); longest gap between steps %.0f ms, most steps in one frame %d",
+			steps, (now - t0) / 1000.0, frames, *(int *)0x0057c8fc == 2, *(BYTE *)0x004eac50, maxGap, burst);
+		t0 = now; steps = frames = 0; maxGap = 0; burst = 0;
 	}
 	return n;
 }
