@@ -307,6 +307,7 @@ static int g_frameSteps;               // Timing=1: logic steps since the last f
 static volatile LONG g_presentCount;   // pictures shown (Timing=1)
 static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
 static volatile LONG g_copySeq;        // every copy to the screen (h_show_frame: did a forced call copy?)
+static int g_forcedViewCopies;         // Timing: battle frames copied because the view moved and the game didn't
 static volatile LONG g_copyPending;    // the game's last finished frame was not copied (pending_copy)
 static volatile double g_frameCopyT;   // when the game last copied a whole frame to the screen
 static int g_pendingCopies;            // Timing=1: copies made from the frame limiter's wait
@@ -4483,9 +4484,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			static int logs;
 			if (g_timing && logs < 60) { logs++; logf_("battle picture held back: %ld pixels would show 1x (view %d,%d, frame view %ld)", (long)g_btMiss,
 				*(int *)0x0055ce70, *(int *)0x005678a0, (long)g_primaryView); }
-			ReleaseDC(g_hwnd, dc);
-			InterlockedExchange(&g_forcePresent, 1);
-			mark_dirty();
+			ReleaseDC(g_hwnd, dc);   // (no retry at once: the next copy from the game brings a matching frame)
 			return FALSE;
 		}
 		badRun = 0;
@@ -5175,6 +5174,18 @@ static DWORD WINAPI presenter(void *unused)
 				continue;
 			}
 		}
+		// Zoomed-out battle: nothing new on the screen surface since the last read (no copy from the game,
+		// same palette, not forced): no read. Woken by the game's small updates, the presenter re-read the
+		// whole surface every 2-3 ms holding the compose lock, so the game's copies of its new frames were
+		// skipped as "composing" again and again: the screen stayed on one picture for several refreshes
+		// (mini freezes while scrolling with units in view, worst over forest).
+		static LONG lastReadSeq = -1;
+		static PALETTEENTRY lastReadPal[256];
+		if (!bench && !statsOnly && battle_zoom_on() && !g_forcePresent && !g_ssSliding && g_pacePrimarySeq == lastReadSeq &&
+			g_primary && g_primary->pal && !memcmp(lastReadPal, g_primary->pal->e, sizeof lastReadPal))
+			continue;
+		if (g_primary && g_primary->pal) memcpy(lastReadPal, g_primary->pal->e, sizeof lastReadPal);
+		lastReadSeq = g_pacePrimarySeq;
 		QueryPerformanceCounter(&t0);
 		perf_begin();
 		EnterCriticalSection(&g_composeLock); // (see g_composeLock)
@@ -5189,6 +5200,23 @@ static DWORD WINAPI presenter(void *unused)
 		BOOL shown = present();
 		InterlockedExchange(&g_composing, 0);
 		LeaveCriticalSection(&g_composeLock);
+		// Freeze detector (Timing=1, battles): more than 100 ms without a new picture while the game has
+		// newer frames: what happened meanwhile (the presenter's reads and the game's copies, from the pace
+		// event ring)
+		if (g_timing && IN_BATTLE_NOW()) {
+			static double lastNewT; static LONG lastNewSeq = -1; static int freezeLogs;
+			double nowF = perf_now();
+			if (shown && g_paceReadSeq != lastNewSeq) {
+				double gap = lastNewT ? nowF - lastNewT : 0;
+				if (gap > 100 && freezeLogs < 40) {
+					freezeLogs++;
+					logf_("FREEZE: %.0f ms without a new picture (pictures #%ld -> #%ld, game at #%ld), view %d,%d",
+						gap, (long)lastNewSeq, (long)g_paceReadSeq, (long)g_paceChangeSeq, *(int *)0x0055ce70, *(int *)0x005678a0);
+					pace_trace(nowF - gap - 5, nowF, nowF - gap);
+				}
+				lastNewT = nowF; lastNewSeq = g_paceReadSeq;
+			}
+		}
 		QueryPerformanceCounter(&t1);
 		if (!statsOnly) perf_end(shown, g_outW, g_outH); // (a redraw for the overlay is not a new picture)
 		if (g_timing && !statsOnly && !bench) pace_wake(shown);
@@ -6312,7 +6340,7 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		p->x = max(leftX, min(right - 1, g_fake.x));
 		g_battleLeftEdge = (g_fakeEdge & 1) != 0;
 		p->y = max(1, min(bottom - 1, g_fake.y));
-		if (g_fakeEdge & 1) p->x = 0;
+		if (g_fakeEdge & 1) p->x = leftX < 1 ? leftX : 0;   // as the real mouse at the left edge
 		if (g_fakeEdge & 2) p->x = right;
 		if (g_fakeEdge & 4) p->y = 0;
 		if (g_fakeEdge & 8) p->y = bottom;
@@ -8206,8 +8234,9 @@ static void __cdecl h_show_frame(int force)
 		lastFrame = nf;
 		sfCalls++;
 		if (perf_now() - sfT > 1000) {
-			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies",
-				sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy, g_pendingCopies);
+			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies, %d view copies the game didn't make",
+				sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy, g_pendingCopies, g_forcedViewCopies);
+			g_forcedViewCopies = 0;
 			sfCalls = sfCompSkip = sfOurs = sfOursNoCopy = sfOther = sfOtherCopy = 0; g_pendingCopies = 0; sfT = perf_now();
 		}
 	}
@@ -8244,6 +8273,24 @@ static void __cdecl h_show_frame(int force)
 			gateLogs++;
 			logf_("copy refused: marks %d, 4df28c %d, 56d650 %d, 553008 %d, eabe8 %d, 5651ac %d", *(int *)0x0050d09c, *(int *)0x004df28c, *(int *)0x0056d650, *(int *)0x00553008, *(int *)0x004eabe8, *(int *)0x005651ac);
 		}
+	}
+	// Over a big forest every cell is the same forest tile: after a scroll step the game found nothing to
+	// mark for the screen and didn't copy the new view, so the screen kept the old picture (mini freezes
+	// while scrolling over forest, 8-30 new pictures a second instead of 60). When the battle view has
+	// moved and the game copied nothing, the whole frame is copied here.
+	// And in the zoomed-out battle the battlefield reaches beyond the game's 640x480 (left and below), which
+	// its copies to the screen never cover: units moving there were drawn but not copied, and the screen
+	// sat on one picture for up to half a second. Every copy there takes the whole frame along.
+	BOOL wholeFrame = g_copySeq != seq && battle_zoom_on();
+	if ((wholeFrame || (g_copySeq == seq && (LONG)(BATTLE_COL + BATTLE_ROW * 256) != g_primaryView)) && IN_BATTLE_NOW() && g_back && g_primary) {
+		EnterCriticalSection(&g_composeLock);
+		EnterCriticalSection(&g_lock);
+		g_paceCopying = g_paceChangeSeq;
+		copy_rect(g_primary, -g_primary->org, 0, g_back, -g_back->org, 0, g_primary->w, min(g_primary->h, g_back->h));
+		LeaveCriticalSection(&g_lock);
+		LeaveCriticalSection(&g_composeLock);
+		mark_dirty();   // (counts the copy: g_copySeq)
+		g_forcedViewCopies++;
 	}
 	g_copyPending = g_copySeq == seq && g_frameLimit > 0; // a finished frame not on the screen yet (pending_copy)
 	if (g_copySeq != seq) { g_frameCopyT = perf_now(); if (IN_BATTLE_NOW()) InterlockedExchange(&g_primaryView, BATTLE_COL + BATTLE_ROW * 256); }
