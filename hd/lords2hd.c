@@ -5208,7 +5208,7 @@ static DWORD WINAPI presenter(void *unused)
 			double nowF = perf_now();
 			if (shown && g_paceReadSeq != lastNewSeq) {
 				double gap = lastNewT ? nowF - lastNewT : 0;
-				if (gap > 100 && freezeLogs < 40) {
+				if (gap > 100 && g_paceReadSeq - lastNewSeq >= 2 && lastNewSeq >= 0 && freezeLogs < 40) {   // frames in between never shown
 					freezeLogs++;
 					logf_("FREEZE: %.0f ms without a new picture (pictures #%ld -> #%ld, game at #%ld), view %d,%d",
 						gap, (long)lastNewSeq, (long)g_paceReadSeq, (long)g_paceChangeSeq, *(int *)0x0055ce70, *(int *)0x005678a0);
