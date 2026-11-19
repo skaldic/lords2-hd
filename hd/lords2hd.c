@@ -4373,6 +4373,31 @@ static void ss_rows_job(int band, int me)
 	}
 }
 
+// The battlefield part of the game's frame (rows 24 down, the field's columns) sampled in 4x4 blocks
+// every 16 pixels: a block is undrawn when its 16 pixels are one colour and that colour is black. Over
+// a quarter of them undrawn: half drawn, held for up to half a second.
+static BOOL battle_half_drawn(const BYTE *frame, int pitch, int fh, const PALETTEENTRY *pal, int mapW)
+{
+	static DWORD since;
+	int x0 = g_off + PANEL_X - mapW, x1 = g_off + PANEL_X - 4, flat = 0, n = 0;
+	for (int y = 32; y + 4 < fh; y += 16)
+		for (int x = max(0, x0); x < x1; x += 16, n++) {
+			const BYTE *b = frame + y * pitch + x;
+			BYTE v = b[0];
+			const PALETTEENTRY *c = &pal[v];
+			if (c->peRed > 12 || c->peGreen > 12 || c->peBlue > 12) continue;   // not black
+			BOOL same = TRUE;
+			for (int r = 0; r < 4 && same; r++) for (int k = 0; k < 4; k++) if (b[r * pitch + k] != v) { same = FALSE; break; }
+			flat += same;
+		}
+	BOOL hold = n && flat * 4 > n;
+	if (g_remote && hold) logf_("half-drawn battle frame: %d of %d blocks flat black", flat, n);
+	if (!hold) { since = 0; return FALSE; }
+	DWORD now = GetTickCount();
+	if (!since) since = now;
+	return now - since < 500;
+}
+
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 {
 	static DWORD *pic, *pic2, *picB, *pic2B, *picC, *pic2C, *ssOut;
@@ -4575,14 +4600,12 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			mark_dirty();
 		}
 	}
-	// The half-drawn check (entry_dark) only while a battle is being entered: later, a screen full of
-	// dense forest is dark enough to pass for a half-drawn frame, and every picture over it was held
-	// back - the mini freezes while scrolling over forest.
-	static DWORD enterT, lastCallT;
-	DWORD nowT = GetTickCount();
-	if (nowT - lastCallT > 1000) enterT = nowT;   // the first battle picture after a while: entering
-	lastCallT = nowT;
-	if (nowT - enterT < 2000 && entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
+	// A half-drawn battle frame (entering a battle the game shows its frame before the battlefield is
+	// drawn into it) is held back. The check looks at the game's own frame for what undrawn really is:
+	// flat blocks of one black colour. Dark pixels in the finished picture were counted before, and a
+	// screen of dense forest passed for half drawn: every picture over it was held (mini freezes while
+	// scrolling over forest). Forest, however dark, is never flat.
+	if (battle_half_drawn(copy, pitch, fh, pal, mapW)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
