@@ -2090,8 +2090,11 @@ static void bt_flush_job(int band, int me)
 	for (int i = 0; i < g_btQN; i++) if (g_btQ[i].y < r1 && g_btQ[i].y + g_btQ[i].h > r0) bt_apply(&g_btQ[i], r0, r1);
 }
 static void pool_run(int bands, void (*job)(int band, int me));
+static int g_btLastQN;          // Timing: stamps in the last flush
+static double g_frameGapMax;     // Timing: longest gap between game frames since the last scroll step
 static void bt_flush(void)
 {
+	g_btLastQN = g_btQN;
 	if (!g_btQN) return;
 	// (marked at queue time too, but a copy to the screen in between would have cleared the marks)
 	for (int i = 0; i < g_btQN; i++) rows_dirty(g_btDirty, g_btQ[i].y, g_btQ[i].y + g_btQ[i].h);
@@ -4330,6 +4333,7 @@ static void bt_double_job(int band, int me)
 // the bar above it or the side panel), and longer jumps (the minimap) are not slid. The game's view and
 // everything it does are unchanged: this is the picture only.
 static volatile int g_scrollTrace = 120;   // Timing=1: lines of "scroll trace" left
+static volatile LONG g_primaryView = -1;   // battle view (col + row * 256) of the frame last copied to the screen surface
 static double g_ssRemSum, g_ssRemMax; static int g_ssSteps;   // smooth scroll: what was left at each step
 static volatile LONG g_ssSliding;   // the last battle picture was a sliding one (the next is due at once)
 // cur: the new picture; old1/old2: the pictures of the one and two views before (each a step away,
@@ -4395,6 +4399,14 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	RECT v, c;
 	view_rect(&v);
 	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
+	// A big forest is one forest tile over and over: scrolled a cell over it, the game's frame can come
+	// out byte for byte the same while the HD trees moved, and the picture was skipped as unchanged (the
+	// view froze over forest, then jumped). A view that moved is always a new picture.
+	{
+		static LONG shownView = -1;
+		LONG view = g_primaryView;   // the view of the frame on the screen surface (set at each copy)
+		if (view != shownView) { forced = TRUE; shownView = view; }
+	}
 	if (g_timing && g_scrollTrace > 0) {   // Timing=1, while the view moves: what each read finds (100 lines)
 		static int lastCol = -1, lastRow = -1, quiet;
 		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
@@ -4462,6 +4474,21 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(curPic, lw, lh, lw, curPic2, 2 * lw, 2 * lh, 2 * lw);
 		InterlockedExchange(&g_btMiss, 0);
 		pool_run((lh + BT_BAND - 1) / BT_BAND, bt_double_job);
+		// A picture with most of the battlefield in the 1x art (the HD layer not matching this frame for a
+		// moment, seen while scrolling over forest, where it shows as a flash or tear) is not shown: the last
+		// good picture stays and the next refresh tries again (at most 3 in a row, so it can't freeze).
+		static int badRun;
+		if (g_bt.btOn && g_btMiss > 250000 && badRun < 3) {
+			badRun++;
+			static int logs;
+			if (g_timing && logs < 60) { logs++; logf_("battle picture held back: %ld pixels would show 1x (view %d,%d, frame view %ld)", (long)g_btMiss,
+				*(int *)0x0055ce70, *(int *)0x005678a0, (long)g_primaryView); }
+			ReleaseDC(g_hwnd, dc);
+			InterlockedExchange(&g_forcePresent, 1);
+			mark_dirty();
+			return FALSE;
+		}
+		badRun = 0;
 		if (g_timing) { // pictures where many HD pixels fell back to 1x (a flicker)
 			static int n, bad; static double t0; static LONG worst;
 			LONG m = g_btMiss; n++;
@@ -7517,11 +7544,27 @@ static void __cdecl h_battle_draw(int col, int row)
 	if (col > 0x41 - g_battleK) BATTLE_COL = col = 0x41 - g_battleK;
 	if (row > 0x42 - g_battleR) BATTLE_ROW = row = 0x42 - g_battleR;
 	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+	double a = perf_now();
 	g_btDefer = battle_zoom_on() && g_btLayer && g_btShadow && g_btValid; // the stamps batched (bt_queue)
 	o_battle_draw(col, row);
+	double b = perf_now();
 	g_btDefer = FALSE;
 	bt_flush();
+	double c = perf_now();
 	if (g_timing) draw_timed(1, t0);
+	// Timing=1: each scroll step (the view moved), with the forest cells in view (blocked, not water)
+	static int lc = -1, lr = -1, stepLogs; static double lastStep;
+	if (g_timing && (col != lc || row != lr) && stepLogs < 400) {
+		int forest = 0, cols = 43, rows = 29;
+		for (int y = row; y < row + rows && y < 80; y++) for (int x = col - g_battleK; x < col - g_battleK + cols && x < 80; x++)
+			if (x >= 0 && y >= 0 && (((BYTE *)0x005440e1)[(y * 80 + x) * 8] & 0x50) == 0x10) forest++;
+		stepLogs++;
+		logf_("scroll step: view %d,%d, %.1f ms since the last, forest cells in view %d, game's redraw %.1f ms, HD stamps %.1f ms, longest frame gap %.1f ms, queued stamps %d",
+			col, row, lastStep ? a - lastStep : 0.0, forest, b - a, c - b, g_frameGapMax, g_btLastQN);
+		g_frameGapMax = 0;
+		lastStep = a;
+	}
+	lc = col; lr = row;
 }
 
 // The view as the game set it, while it is widened for one call.
@@ -8157,6 +8200,10 @@ static void __cdecl h_show_frame(int force)
 	// wait for it (g_composeLock), and nobody would see that frame; the next call copies.
 	static int sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy; static double sfT; // Timing=1: why copies did or did not happen
 	if (g_timing) {
+		static double lastFrame;   // the gap between the game's frames (for the scroll step log)
+		double nf = perf_now();
+		if (lastFrame && nf - lastFrame > g_frameGapMax) g_frameGapMax = nf - lastFrame;
+		lastFrame = nf;
 		sfCalls++;
 		if (perf_now() - sfT > 1000) {
 			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies",
@@ -8199,7 +8246,7 @@ static void __cdecl h_show_frame(int force)
 		}
 	}
 	g_copyPending = g_copySeq == seq && g_frameLimit > 0; // a finished frame not on the screen yet (pending_copy)
-	if (g_copySeq != seq) g_frameCopyT = perf_now();
+	if (g_copySeq != seq) { g_frameCopyT = perf_now(); if (IN_BATTLE_NOW()) InterlockedExchange(&g_primaryView, BATTLE_COL + BATTLE_ROW * 256); }
 }
 // From the frame limiter's wait (h_game_frame): the last finished frame copied once the presenter
 // is ready for it. The game is between frames there, so its back buffer is complete.
@@ -8213,7 +8260,10 @@ static void pending_copy(void)
 	g_paceCopying = g_paceChangeSeq;
 	show_frame_dots(1);
 	if (g_copySeq == seq) { if (hadTurn) InterlockedExchange(&g_frameTaken, 1); } // (nothing to copy after all)
-	else { g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq); }
+	else {
+		g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq);
+		if (IN_BATTLE_NOW()) InterlockedExchange(&g_primaryView, BATTLE_COL + BATTLE_ROW * 256);
+	}
 }
 
 // Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
