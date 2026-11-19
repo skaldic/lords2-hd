@@ -4331,6 +4331,7 @@ static void bt_double_job(int band, int me)
 // everything it does are unchanged: this is the picture only.
 static volatile int g_scrollTrace = 120;   // Timing=1: lines of "scroll trace" left
 static double g_ssRemSum, g_ssRemMax; static int g_ssSteps;   // smooth scroll: what was left at each step
+static volatile LONG g_ssSliding;   // the last battle picture was a sliding one (the next is due at once)
 // cur: the new picture; old1/old2: the pictures of the one and two views before (each a step away,
 // o1x/o1y and o2x/o2y: from one picture's coordinates to the one before)
 static struct { const DWORD *cur, *old1, *old2; DWORD *out; int w, rowTop, rowEnd, colEnd, dx, dy, o1x, o1y, o2x, o2y; } g_ss;
@@ -4341,7 +4342,16 @@ static void ss_rows_job(int band, int me)
 	int w = g_ss.w, c1 = g_ss.colEnd, r0 = g_ss.rowTop, r1 = g_ss.rowEnd;
 	for (int y = max(y0, r0); y < y1; y++) {
 		DWORD *o = g_ss.out + (size_t)y * w;
+		// the part from the new picture is one run of a row: copied whole; only the uncovered strip
+		// goes pixel by pixel
+		int sy0 = y - g_ss.dy, xa = 0, xb = 0;
+		if (sy0 >= r0 && sy0 < r1) {
+			xa = max(0, g_ss.dx); xb = min(c1, c1 + g_ss.dx);
+			if (xb > xa) memcpy(o + xa, g_ss.cur + (size_t)sy0 * w + (xa - g_ss.dx), (size_t)(xb - xa) * 4);
+			else xa = xb = 0;
+		}
 		for (int x = 0; x < c1; x++) {
+			if (x == xa && xb > xa) { x = xb - 1; continue; }
 			int sx = x - g_ss.dx, sy = y - g_ss.dy;   // where this pixel of the world is in the new picture
 			if (sx >= 0 && sx < c1 && sy >= r0 && sy < r1) { o[x] = g_ss.cur[(size_t)sy * w + sx]; continue; }
 			sx += g_ss.o1x; sy += g_ss.o1y;   // uncovered: in the view before, one step back
@@ -4508,6 +4518,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		lastCol = col; lastRow = row; lastT = now;
 		int scale = big ? 2 : 1;
 		int ox = (int)(offX * scale + (offX >= 0 ? 0.5 : -0.5)), oy = (int)(offY * scale + (offY >= 0 ? 0.5 : -0.5));
+		InterlockedExchange(&g_ssSliding, (ox || oy) && prevPic);
 		if ((ox || oy) && prevPic) {
 			g_ss.cur = src; g_ss.out = ssOut; g_ss.w = sw;
 			g_ss.old1 = big ? prevPic2 : prevPic;
@@ -4516,19 +4527,21 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			g_ss.dx = ox; g_ss.dy = oy;   // screen x shows new-picture x - ox
 			g_ss.o1x = 32 * scale * s1x; g_ss.o1y = 32 * scale * s1y;   // a picture's coordinates to the one before
 			g_ss.o2x = 32 * scale * s2x; g_ss.o2y = 32 * scale * s2y;
+			double ssT0 = perf_now();
 			memcpy(ssOut, src, (size_t)sw * g_ss.rowTop * 4);   // the bar above stays
 			for (int y = g_ss.rowTop; y < sh; y++)   // the side panel stays
 				memcpy(ssOut + (size_t)y * sw + g_ss.colEnd, src + (size_t)y * sw + g_ss.colEnd, (size_t)(sw - g_ss.colEnd) * 4);
 			pool_run((sh + BT_BAND - 1) / BT_BAND, ss_rows_job);
 			src = ssOut;
-			if (g_timing) {   // slide pictures per second
-				static int n; static double t0;
-				n++;
+			if (g_timing) {   // slide pictures per second, and what the slide itself costs
+				static int n; static double t0, ssSum, ssWorst;
+				double ssMs = perf_now() - ssT0;
+				n++; ssSum += ssMs; if (ssMs > ssWorst) ssWorst = ssMs;
 				if (!t0) t0 = now;
 				if (now - t0 >= 1000) {
-					logf_("timing: smooth scroll: %d sliding pictures in 1 s (step gap %.0f ms); jumps at a step: %.1f px average, %.1f worst (%d steps)",
-						n, stepGap, g_ssSteps ? g_ssRemSum / g_ssSteps : 0.0, g_ssRemMax, g_ssSteps);
-					n = 0; t0 = now; g_ssRemSum = g_ssRemMax = 0; g_ssSteps = 0;
+					logf_("timing: smooth scroll: %d sliding pictures in 1 s (step gap %.0f ms); jumps at a step: %.1f px average, %.1f worst (%d steps); sliding %.1f ms average, %.1f worst",
+						n, stepGap, g_ssSteps ? g_ssRemSum / g_ssSteps : 0.0, g_ssRemMax, g_ssSteps, n ? ssSum / n : 0.0, ssWorst);
+					n = 0; t0 = now; g_ssRemSum = g_ssRemMax = 0; g_ssSteps = 0; ssSum = ssWorst = 0;
 				}
 			}
 			InterlockedExchange(&g_forcePresent, 1);   // next refresh: the slide goes on
@@ -4924,6 +4937,7 @@ static BOOL present(void)
 		palDumped = TRUE;
 	}
 
+	InterlockedExchange(&g_ssSliding, 0);   // (present_battle sets it again while it slides)
 	if (battle_zoom_on()) return present_battle(pal, palSame);
 
 	RECT v, c;
@@ -5108,7 +5122,9 @@ static DWORD WINAPI presenter(void *unused)
 		// and waiting for another would wait for this presenter)
 		// (a whole frame copied since the last picture was started, before the refresh too, needs no wait)
 		static double composeT;
-		if (!bench && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank && g_frameCopyT < composeT) {
+		// (not while smooth scrolling slides the picture along: a sliding picture doesn't need the game's newest
+		// frame, and the wait made it miss refreshes)
+		if (!bench && !g_ssSliding && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank && g_frameCopyT < composeT) {
 			for (;;) {
 				double wait = g_lastVblank + 6 - perf_now();
 				if (wait <= 0 || wait > 6 || g_frameCopyT >= g_lastVblank || !g_copyPending || !g_frameTaken) break;
@@ -9366,7 +9382,10 @@ static BOOL engage_chase(int me)
 	int d = cheb(x, y, tx, ty);
 	if (!gone && tt == t) { if (d < g_eBestD[me]) { g_eBestD[me] = d; g_eSince[me] = g_btick; } }
 	BOOL leash = cheb(g_eAnchorX[me], g_eAnchorY[me], x, y) > ENG_LEASH || (!gone && cheb(g_eAnchorX[me], g_eAnchorY[me], tx, ty) > ENG_LEASH + 1);
-	BOOL fled = !gone && tt == t && g_btick - g_eSince[me] >= 82 && d > 1;
+	// let go of an enemy that keeps getting away for 2 s, but not of an archer still inside the leash: its
+	// step back (once in 3 s) is not running away, and chasing it a few cells is right
+	BOOL archerNear = !gone && FIG(tt)[0x16a] && cheb(g_eAnchorX[me], g_eAnchorY[me], tx, ty) <= ENG_LEASH + 1;
+	BOOL fled = !gone && tt == t && g_btick - g_eSince[me] >= 164 && d > 2 && !archerNear;
 	if (gone || tt != t || leash || fled) {
 		if (!gone && (leash || fled)) { g_eIgnore[me] = tt; g_eIgnoreUntil[me] = g_btick + 246; }
 		engage_forget(me);
