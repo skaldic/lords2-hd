@@ -9486,7 +9486,18 @@ static void gr_route(int me)
 
 static void __cdecl h_slot(int x, int y, int fig, int group)
 {
+	// the formation step hands places out again every ~500 steps: a unit still walking its route to
+	// the same place keeps it (planned again from where it had got to, a strung-out group's units went
+	// their own ways, some round the other side of a forest)
+	// (the new place is often a few cells from the old one: kept when within 4, the unit walks the rest)
+	BOOL keep = fix_on(g_fixGroupMove) && fig >= 1 && fig <= 0x50 && FIG(fig)[0x164] && abs(FIG_S(fig, 0x24) - x) <= 4 && abs(FIG_S(fig, 0x26) - y) <= 4;
+	static BYTE wp[300]; short left = 0;
+	if (keep) { memcpy(wp, FIG(fig) + 0x38, 300); left = FIG_S(fig, 0x36); }
 	o_slot(x, y, fig, group);
+	if (keep && FIG(fig)[0x31] == 3) {   // (the game wiped the route for the new place: it goes back)
+		memcpy(FIG(fig) + 0x38, wp, 300); FIG_S(fig, 0x36) = left; FIG(fig)[0x164] = 1;
+		return;
+	}
 	if (!fix_on(g_fixGroupMove) || fig < 1 || fig > 0x50) return;
 	BYTE *f = FIG(fig);
 	if (!f[0x2c] || f[0x31] != 3 || f[0x12] >= 7) return;
