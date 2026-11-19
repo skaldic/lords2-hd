@@ -8812,7 +8812,8 @@ static mover_t o_mover;
 typedef int (__cdecl *swapq_t)(void);
 static swapq_t o_swapq;
 static int g_jWaits[81], g_jSwapWith[81];
-static unsigned g_jSwapT[81], g_jLastMove[81];
+static unsigned g_jSwapT[81], g_jLastMove[81], g_jStillSince[81], g_jGaveWay[81];
+static BOOL dm_step_ok(int from, int to);
 static short g_jPrevX[81], g_jPrevY[81];
 static int g_jSwapB, g_jSwapPrev;
 static int g_lastStep = -1;
@@ -8820,9 +8821,11 @@ static int g_lastStep = -1;
 static int __cdecl h_swapq(void)
 {
 	int me = FIG_CUR, b = *(int *)0x0052eff4;
-	// neither unit may swap again within 64 steps of its last swap (three units could rotate places)
+	// neither unit may swap again within 64 steps of its last swap (three units could rotate places), and
+	// the same two not within 5 s (in a queue that can't move they swapped back each time the 64 ran out)
 	if (fix_on(g_fixJitter) && me > 0 && me < 0x51 && b > 0 && b < 0x51 &&
-		((g_jSwapWith[me] && g_btick - g_jSwapT[me] < 64) || (g_jSwapWith[b] && g_btick - g_jSwapT[b] < 64))) {
+		((g_jSwapWith[me] && g_btick - g_jSwapT[me] < 64) || (g_jSwapWith[b] && g_btick - g_jSwapT[b] < 64) ||
+		 (g_jSwapWith[me] == b && g_btick - g_jSwapT[me] < 410) || (g_jSwapWith[b] == me && g_btick - g_jSwapT[b] < 410))) {
 		g_bswapsBlocked++;
 		return 0;   // wait instead of swapping back
 	}
@@ -8872,6 +8875,7 @@ static int __cdecl h_mover(int p1)
 	if (!f[0x2c]) return r;
 	if (FIG_S(me, 0x20) != x || FIG_S(me, 0x22) != y) {
 		g_jWaits[me] = 0;
+		g_jStillSince[me] = g_btick;
 		// 5. Close to its destination (2 cells) with no path, a unit that steps straight back to the cell it
 		//    left a moment ago stops there: it was dancing round a taken destination.
 		short nx = FIG_S(me, 0x20), ny = FIG_S(me, 0x22);
@@ -9546,6 +9550,7 @@ static void battle_reset(void)
 	g_grQLen = 0; g_grCongGroup = -1;
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
+	memset(g_jStillSince, 0, sizeof g_jStillSince); memset(g_jGaveWay, 0, sizeof g_jGaveWay);
 	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
 	memset(g_cBest, 0, sizeof g_cBest); memset(g_cTarget, 0, sizeof g_cTarget); memset(g_cAvoid, 0, sizeof g_cAvoid);
 }
