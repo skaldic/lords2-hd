@@ -8583,12 +8583,14 @@ static void __cdecl h_show_frame(int force)
 	// sat on one picture for up to half a second. Every copy there takes the whole frame along.
 	BOOL wholeFrame = g_copySeq != seq && battle_zoom_on();
 	if ((wholeFrame || (g_copySeq == seq && (LONG)(BATTLE_COL + BATTLE_ROW * 256) != g_primaryView)) && IN_BATTLE_NOW() && g_back && g_primary) {
+		minimap_dots_paint(); // (this copy carries the minimap too: without the outlines it would wipe them)
 		EnterCriticalSection(&g_composeLock);
 		EnterCriticalSection(&g_lock);
 		g_paceCopying = g_paceChangeSeq;
 		copy_rect(g_primary, -g_primary->org, 0, g_back, -g_back->org, 0, g_primary->w, min(g_primary->h, g_back->h));
 		LeaveCriticalSection(&g_lock);
 		LeaveCriticalSection(&g_composeLock);
+		minimap_dots_restore();
 		mark_dirty();   // (counts the copy: g_copySeq)
 		g_forcedViewCopies++;
 	}
