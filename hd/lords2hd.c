@@ -1159,7 +1159,15 @@ static BYTE *g_btShadow, *g_btValid;
 #define DIRTY_ROWS 4096
 static BYTE g_sprDirty[DIRTY_ROWS], g_txtDirty[DIRTY_ROWS], g_btDirty[DIRTY_ROWS];
 static void rows_dirty(BYTE *d, int y0, int y1) { y0 = max(0, y0); y1 = min(DIRTY_ROWS, y1); if (y1 > y0) memset(d + y0, 1, y1 - y0); }
-static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
+// gone: the frame stopped showing the picture (most of it drawn over). It is not forgotten: the game
+// often puts a screen back from its saved copy without loading the picture again, so it comes back
+// once the frame shows most of it again.
+static struct { BOOL on, seen, gone; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
+// Off-map sprite stamps whose art did not fit the palette yet (stamp_sprite, sprites_retry_late).
+#define MAX_LATE 128
+typedef struct { const BYTE *buf; int index, x, y; } late_stamp;
+static late_stamp g_late[MAX_LATE];
+static int g_lateN;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
 static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
 #define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
@@ -1337,7 +1345,7 @@ static void pak_open(void)
 	else if (got == sizeof head && head[0] == PAK_MAGIC) logf_("art pack: version %lu, not %d: ignored (make it again with tools\\make_pak.ps1)", head[3], PAK_VERSION);
 	CloseHandle(h);
 }// A file of the art: loose, or from the pack (read on demand through its own handle).
-struct AFILE { FILE *f; HANDLE h; DWORD base, size, pos; };
+struct AFILE { FILE *f; HANDLE h; DWORD base, size, pos; const BYTE *mem; };
 static const PAK_ENTRY *pak_find(const char *path)
 {
 	char prefix[MAX_PATH];
@@ -1370,6 +1378,7 @@ static size_t afread(void *buf, size_t sz, size_t n, AFILE *a)
 	if (a->f) return fread(buf, sz, n, a->f);
 	DWORD want = (DWORD)(sz * n), left = a->size - a->pos, got = 0;
 	if (want > left) want = left - left % (DWORD)sz;
+	if (a->mem) { memcpy(buf, a->mem + a->pos, want); a->pos += want; return want / sz; }
 	LONG hi = 0;
 	if (!want || SetFilePointer(a->h, (LONG)(a->base + a->pos), &hi, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(a->h, buf, want, &got, NULL)) return 0;
@@ -1387,12 +1396,71 @@ static int afseek(AFILE *a, long off, int whence)
 static long aftell(AFILE *a) { return a->f ? ftell(a->f) : (long)a->pos; }
 static void afclose(AFILE *a) { if (!a) return; if (a->f) fclose(a->f); if (a->h) CloseHandle(a->h); free(a); }
 
+// The paintings' files (screens\ and wide\, 5-8 MB each) of the last few screens, kept in memory:
+// castle, armoury and merchant are visited again and again, and reading their 11-14 MB from a hard
+// disk took up to 2 s each time, while the screen showed the old 1x picture. Game thread only.
+#define PIC_CACHE 8
+#define PIC_CACHE_BYTES (56 << 20)
+static struct { char path[MAX_PATH]; BYTE *data; DWORD size, used; } g_picCache[PIC_CACHE];
+static DWORD g_picSeq;
+
+// Reads the file into the cache (if it is not there yet). FALSE: no such file.
+static BOOL pic_cache_fetch(const char *path)
+{
+	for (int i = 0; i < PIC_CACHE; i++)
+		if (g_picCache[i].data && !lstrcmpiA(g_picCache[i].path, path)) { g_picCache[i].used = ++g_picSeq; return TRUE; }
+	AFILE *f = afopen(path);
+	if (!f) return FALSE;
+	afseek(f, 0, SEEK_END);
+	long size = aftell(f);
+	afseek(f, 0, SEEK_SET);
+	// Room: the files used longest ago go while the cache would be too big or full.
+	for (;;) {
+		DWORD total = size;
+		int oldest = -1, empty = -1;
+		for (int i = 0; i < PIC_CACHE; i++) {
+			if (!g_picCache[i].data) { if (empty < 0) empty = i; continue; }
+			total += g_picCache[i].size;
+			if (oldest < 0 || g_picCache[i].used < g_picCache[oldest].used) oldest = i;
+		}
+		if (oldest < 0 || (empty >= 0 && total <= PIC_CACHE_BYTES)) break;
+		free(g_picCache[oldest].data);
+		g_picCache[oldest].data = NULL;
+	}
+	int slot = -1;
+	for (int i = 0; i < PIC_CACHE && slot < 0; i++) if (!g_picCache[i].data) slot = i;
+	BYTE *data = slot >= 0 && size > 0 ? malloc(size) : NULL;
+	if (data && afread(data, 1, size, f) == (size_t)size) {
+		g_picCache[slot].data = data;
+		g_picCache[slot].size = size;
+		g_picCache[slot].used = ++g_picSeq;
+		lstrcpynA(g_picCache[slot].path, path, sizeof g_picCache[slot].path);
+	}
+	else free(data);
+	afclose(f);
+	return TRUE;
+}
+
+// The file from the cache if it is there, else from the disk or the pack.
+static AFILE *afopen_pic(const char *path)
+{
+	for (int i = 0; i < PIC_CACHE; i++)
+		if (g_picCache[i].data && !lstrcmpiA(g_picCache[i].path, path)) {
+			AFILE *a = calloc(1, sizeof *a);
+			if (!a) return NULL;
+			a->mem = g_picCache[i].data;
+			a->size = g_picCache[i].size;
+			return a;
+		}
+	return afopen(path);
+}
+
 static void room_load(const char *base)
 {
 	char path[MAX_PATH];
 	g_room.on = FALSE;
 	snprintf(path, sizeof path, "%s\\lords2hd\\wide\\%s.bin", g_gameDir, base);
-	AFILE *f = afopen(path);
+	AFILE *f = afopen_pic(path);
 	if (!f) return;
 	int head[5];
 	if (afread(head, 4, 5, f) == 5 && head[0] > GAME_W && head[0] <= 2 * GAME_W) {
@@ -1463,23 +1531,44 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 		char *d = strrchr(b, '.');
 		if (d) *d = 0;
 		CharLowerA(b);
-		if (rows == GAME_H && g_hdPic.on && !strcmp(b, shownBase) && !memcmp(pic, g_hdPic.shadow, GAME_W * GAME_H)) return;
+		if (rows == GAME_H && g_hdPic.on && !strcmp(b, shownBase) && !memcmp(pic, g_hdPic.shadow, GAME_W * GAME_H)) {
+			EnterCriticalSection(&g_lock);
+			if (g_hdPic.gone) { g_hdPic.gone = FALSE; g_hdPic.seen = FALSE; } // shown again
+			LeaveCriticalSection(&g_lock);
+			return;
+		}
 		lstrcpynA(shownBase, b, sizeof shownBase);
 	}
+	// The files first (from the disk only on a first visit), outside the lock: the presenter goes on
+	// showing the screen as it was meanwhile.
+	char path[MAX_PATH];
+	BOOL have = FALSE;
+	if (rows == GAME_H) {
+		char base[64];
+		lstrcpynA(base, name, sizeof base);
+		char *dot = strrchr(base, '.');
+		if (dot) *dot = 0;
+		CharLowerA(base);
+		snprintf(path, sizeof path, "%s\\lords2hd\\screens\\%s.bin", g_gameDir, base);
+		have = pic_cache_fetch(path);
+		snprintf(path, sizeof path, "%s\\lords2hd\\wide\\%s.bin", g_gameDir, base);
+		if (have) pic_cache_fetch(path);
+	}
+	g_lateN = 0; // a new screen: what waited for the old one's palette is gone
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
 	if (g_sprValid) { memset(g_sprValid, 0, MAX_W * GAME_H); rows_dirty(g_sprDirty, 0, GAME_H); } // a new screen: nothing stamped on it yet
 	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
-	if (rows != GAME_H) return;
-	char base[64], path[MAX_PATH];
+	if (rows != GAME_H || !have) return;
+	char base[64];
 	lstrcpynA(base, name, sizeof base);
 	char *dot = strrchr(base, '.');
 	if (dot) *dot = 0;
 	CharLowerA(base);
 	snprintf(path, sizeof path, "%s\\lords2hd\\screens\\%s.bin", g_gameDir, base);
-	AFILE *f = afopen(path);
+	AFILE *f = afopen_pic(path);
 	if (!f) return;
 	if (!g_hdPic.px) g_hdPic.px = malloc(GAME_W * 2 * GAME_H * 2 * 4);
 	EnterCriticalSection(&g_lock);
@@ -1489,6 +1578,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 		memcpy(g_hdPic.shadow, pic, GAME_W * GAME_H);
 		g_hdPic.on = TRUE;
 		g_hdPic.seen = FALSE;
+		g_hdPic.gone = FALSE;
 		room_load(base);
 	}
 	LeaveCriticalSection(&g_lock);
@@ -1498,11 +1588,13 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 }
 
 // Over the doubled frame, the pixels the painting still owns. The palette is compared index by
-// index. The picture is forgotten once most of the frame is something else.
+// index. The picture is gone while most of the frame is something else, and back when most of it
+// shows again.
 static void hd_overlay(const PALETTEENTRY *pal)
 {
 	EnterCriticalSection(&g_lock);
 	if (g_hdPic.on) {
+		BOOL gone = g_hdPic.gone;
 		BYTE ok[256];
 		for (int i = 0; i < 256; i++)
 			ok[i] = pal[i].peRed >> 2 == g_hdPic.pal[i * 3] && pal[i].peGreen >> 2 == g_hdPic.pal[i * 3 + 1] &&
@@ -1515,7 +1607,7 @@ static void hd_overlay(const PALETTEENTRY *pal)
 			for (int x = 0; x < GAME_W; x++) {
 				if (fr[x] != sh[x]) continue;
 				same++;
-				if (!ok[fr[x]]) continue;
+				if (gone || !ok[fr[x]]) continue;
 				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
 				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
 			}
@@ -1531,9 +1623,13 @@ static void hd_overlay(const PALETTEENTRY *pal)
 			lastSame = same;
 		}
 		// The frame reaches the screen a moment after the load: only a picture that has been seen
-		// can be gone.
-		if (same >= GAME_W * GAME_H / 8) g_hdPic.seen = TRUE;
-		else if (g_hdPic.seen) g_hdPic.on = FALSE;
+		// can be gone. It comes back only for a frame that is mostly the picture again (a screen put
+		// back from the game's copy), never for scattered pixels of another screen.
+		if (gone) {
+			if (same >= GAME_W * GAME_H / 2) { g_hdPic.gone = FALSE; logf_("HD painting back (%d pixels unchanged)", same); mark_dirty(); }
+		}
+		else if (same >= GAME_W * GAME_H / 8) g_hdPic.seen = TRUE;
+		else if (g_hdPic.seen) { g_hdPic.gone = TRUE; logf_("HD painting gone (%d pixels unchanged)", same); }
 	}
 	LeaveCriticalSection(&g_lock);
 }
@@ -1546,8 +1642,13 @@ static void hd_overlay(const PALETTEENTRY *pal)
 // special case: pixels the game did not draw do not match.
 #define TILE_W 58
 #define TILE_H 30
-#define MAX_TILE_SETS 16
-static struct { const BYTE *buf; DWORD *px; BYTE *wave; int frames; } g_tileSets[MAX_TILE_SETS];
+// A set is kept by its file name, not by the buffer: the game loads the same file into a new
+// buffer after most screens (and puts other files into the old one), and a table keyed by buffers
+// filled up with stale entries until no new art loaded - towns stayed 1x until a restart. All 20
+// ground files (49 MB) fit, so a set is only read once; buf is the buffer holding it now (NULL: none).
+#define MAX_TILE_SETS 24
+static struct { const BYTE *buf; DWORD *px; BYTE *wave; int frames; char name[32]; DWORD used; } g_tileSets[MAX_TILE_SETS];
+static DWORD g_setSeq; // load order, for evicting the set used longest ago
 static DWORD *g_layer;
 static BYTE *g_layerShadow, *g_layerValid;
 // Shore waves: each 2x ground pixel's distance to the shore (0 = not water near a shore).
@@ -1559,6 +1660,8 @@ static volatile BOOL g_waveActive;
 static DWORD *g_sprLayer;
 static BYTE *g_sprShadow;
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
+// The game's palette as it will be once any fade is done (8-bit, 0x004ea1b0, from FUN_004b0ab5).
+#define GAME_PAL ((const BYTE *)0x004ea1b0)
 static BOOL g_ownScroll; // the settings scroll is being drawn: its HD art is stamped whatever the palette
 static BYTE *g_txt, *g_txtShadow, *g_txtValid;     // the sharp letters' layer (text_overlay)
 static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  // ... as of the frame on screen (volatile: g_txtS is read first, set last)
@@ -1665,6 +1768,11 @@ static BYTE *wave_build(const DWORD *px, int frames)
 	return out;
 }
 
+static void tiles_forget_buffer(const void *buffer)
+{
+	for (int i = 0; i < MAX_TILE_SETS; i++) if (g_tileSets[i].buf == buffer) { g_tileSets[i].buf = NULL; g_layerGen++; }
+}
+
 static void tiles_loaded(const char *name, void *buffer, int size)
 {
 	if (!g_hdTiles || !buffer || size < 8) return;
@@ -1673,35 +1781,49 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 	char *dot = strrchr(base, '.');
 	if (dot) *dot = 0;
 	CharLowerA(base);
-	int slot = -1;
-	for (int i = 0; i < MAX_TILE_SETS; i++) {
-		if (g_tileSets[i].buf == buffer) { slot = i; break; }
-		if (!g_tileSets[i].buf && slot < 0) slot = i;
-	}
-	if (slot < 0) return;
 	g_layerGen++; // this buffer's art changes (a battle's ground replaces the county's, and back)
-	if (g_tileSets[slot].px) {
+	// Whatever set this buffer held before, it holds this file now.
+	for (int i = 0; i < MAX_TILE_SETS; i++) if (g_tileSets[i].buf == buffer) g_tileSets[i].buf = NULL;
+	// Read before: it only moves to the new buffer.
+	int slot = -1;
+	for (int i = 0; i < MAX_TILE_SETS && slot < 0; i++) if (g_tileSets[i].px && !strcmp(g_tileSets[i].name, base)) slot = i;
+	if (slot < 0) {
+		// A free slot, else the set loaded longest ago that no buffer holds, else the oldest of all.
+		int oldest = -1, oldestFree = -1;
+		for (int i = 0; i < MAX_TILE_SETS; i++) {
+			if (!g_tileSets[i].px) { if (slot < 0) slot = i; continue; }
+			if (!g_tileSets[i].buf && (oldestFree < 0 || g_tileSets[i].used < g_tileSets[oldestFree].used)) oldestFree = i;
+			if (oldest < 0 || g_tileSets[i].used < g_tileSets[oldest].used) oldest = i;
+		}
+		if (slot < 0) slot = oldestFree >= 0 ? oldestFree : oldest;
+		if (g_tileSets[slot].px) logf_("HD tiles %s let go for %s", g_tileSets[slot].name, base);
 		free(g_tileSets[slot].px);
 		free(g_tileSets[slot].wave);
 		g_tileSets[slot].px = NULL;
 		g_tileSets[slot].wave = NULL;
 		g_tileSets[slot].buf = NULL;
+		snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
+		AFILE *f = afopen(path);
+		if (!f) return;
+		afseek(f, 0, SEEK_END);
+		long bytes = aftell(f);
+		afseek(f, 0, SEEK_SET);
+		DWORD *px = malloc(bytes);
+		if (px && afread(px, 1, bytes, f) == (size_t)bytes) {
+			g_tileSets[slot].px = px;
+			g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
+			lstrcpynA(g_tileSets[slot].name, base, sizeof g_tileSets[slot].name);
+			if (g_shoreWaves && !strncmp(base, "base1", 5)) g_tileSets[slot].wave = wave_build(px, g_tileSets[slot].frames);
+		}
+		else {
+			free(px);
+			logf_("HD tiles %s: no memory or a bad file", base);
+		}
+		afclose(f);
+		if (!g_tileSets[slot].px) return;
 	}
-	snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
-	AFILE *f = afopen(path);
-	if (!f) return;
-	afseek(f, 0, SEEK_END);
-	long bytes = aftell(f);
-	afseek(f, 0, SEEK_SET);
-	DWORD *px = malloc(bytes);
-	if (px && afread(px, 1, bytes, f) == (size_t)bytes) {
-		g_tileSets[slot].px = px;
-		g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
-		g_tileSets[slot].buf = buffer;
-		if (g_shoreWaves && !strncmp(base, "base1", 5)) g_tileSets[slot].wave = wave_build(px, g_tileSets[slot].frames);
-	}
-	else free(px);
-	afclose(f);
+	g_tileSets[slot].buf = buffer;
+	g_tileSets[slot].used = ++g_setSeq;
 	if (!g_layer) {
 		g_layer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_waveD = calloc(MAX_W * 2, GAME_H * 2);
@@ -1790,9 +1912,13 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 // HD sprites: lords2hd\sprites\<file>.bin, noted against the buffer the game loaded the file into.
 // Each hooked blitter knows the buffer and frame; afterwards every opaque pixel of the frame that
 // the screen now holds is stamped into the layer. A wrong guess of position only fails the check.
+// Kept by name, like the ground sets: a file loaded again into another buffer only moves its set,
+// and sets no buffer holds stay read for a while (up to SPRITE_SPARE bytes, the oldest go first).
+// key: the file name, or "<file>#<frame>" for a single frame the game read on its own (sprite_frame_loaded).
 #define MAX_SPRITE_SETS 64
+#define SPRITE_SPARE (64 << 20)
 // pal: the palette the 2x art was made with (lords2hd\sprites\<file>.pal, else Base01.256), 6-bit.
-static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[32]; } g_spriteSets[MAX_SPRITE_SETS];
+static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[40]; long bytes; DWORD used; } g_spriteSets[MAX_SPRITE_SETS];
 
 static void read_palette(const char *path, BYTE *pal)
 {
@@ -1801,19 +1927,63 @@ static void read_palette(const char *path, BYTE *pal)
 	if (f) afclose(f);
 }
 
-static void sprites_loaded(const char *name, const void *buffer)
+static void sprite_set_free(int i)
+{
+	free(g_spriteSets[i].data);
+	g_spriteSets[i].data = NULL;
+	g_spriteSets[i].buf = NULL;
+	g_spriteSets[i].bytes = 0;
+	g_spriteSets[i].name[0] = 0;
+}
+
+// Reads the whole set (frame < 0), or that one frame alone as a set of one.
+static BYTE *sprite_set_read(AFILE *f, int frame, long *bytes)
+{
+	afseek(f, 0, SEEK_END);
+	long all = aftell(f);
+	afseek(f, 0, SEEK_SET);
+	if (frame < 0) {
+		BYTE *data = malloc(all);
+		if (data && afread(data, 1, all, f) == (size_t)all) { *bytes = all; return data; }
+		free(data);
+		return NULL;
+	}
+	int count, off;
+	WORD wh[2];
+	if (afread(&count, 4, 1, f) != 1 || frame >= count || afseek(f, 4 + 4 * frame, SEEK_SET) || afread(&off, 4, 1, f) != 1 || off <= 0 ||
+		afseek(f, off, SEEK_SET) || afread(wh, 2, 2, f) != 2)
+		return NULL;
+	long size = 4 + (long)wh[0] * wh[1] * 17; // w, h, the 1x indices, the 2x pixels
+	if (off + size > all) return NULL;
+	BYTE *data = malloc(8 + size);
+	if (!data) return NULL;
+	((int *)data)[0] = 1;
+	((int *)data)[1] = 8;
+	memcpy(data + 8, wh, 4);
+	if (afread(data + 12, 1, size - 4, f) != (size_t)(size - 4)) { free(data); return NULL; }
+	*bytes = 8 + size;
+	return data;
+}
+
+// The game has put file `name` (or its frame `frame`, if >= 0) into `buffer`: that buffer's HD set.
+static void sprite_set_bind(const char *name, int frame, const void *buffer)
 {
 	if (!g_hdTiles) return;
-	for (int i = 0; i < MAX_SPRITE_SETS; i++) // the same file into the same buffer again: already have it
-		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, name)) return;
+	char key[40];
+	if (frame < 0) lstrcpynA(key, name, sizeof key);
+	else snprintf(key, sizeof key, "%s#%d", name, frame);
 	int slot = -1;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
-		if (g_spriteSets[i].buf == buffer) {
-			free(g_spriteSets[i].data);
-			g_spriteSets[i].buf = NULL;
-			g_spriteSets[i].data = NULL;
-		}
-		if (!g_spriteSets[i].buf && slot < 0) slot = i;
+		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, key)) return; // already
+		if (g_spriteSets[i].buf == buffer) g_spriteSets[i].buf = NULL; // it holds this file now
+	}
+	for (int i = 0; i < MAX_SPRITE_SETS && slot < 0; i++)
+		if (g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, key)) slot = i;
+	if (slot >= 0) { // read before: it moves to this buffer
+		g_spriteSets[slot].buf = buffer;
+		g_spriteSets[slot].used = ++g_setSeq;
+		g_layerGen++;
+		return;
 	}
 	char base[32], path[MAX_PATH];
 	lstrcpynA(base, name, sizeof base);
@@ -1823,23 +1993,41 @@ static void sprites_loaded(const char *name, const void *buffer)
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
 	AFILE *f = afopen(path);
 	if (!f) return;
-	afseek(f, 0, SEEK_END);
-	long bytes = aftell(f);
-	afseek(f, 0, SEEK_SET);
-	BYTE *data = slot >= 0 ? malloc(bytes) : NULL;
-	if (data && afread(data, 1, bytes, f) == (size_t)bytes) {
-		g_spriteSets[slot].buf = buffer;
-		g_spriteSets[slot].data = data;
-		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
-		g_layerGen++;
-		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
-		if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-		read_palette(path, g_spriteSets[slot].pal);
-		logf_("HD sprites %s", base);
+	// Room: sets no buffer holds go, oldest first, while they take more than SPRITE_SPARE or no slot is free.
+	for (;;) {
+		long spare = 0;
+		int oldest = -1, empty = -1;
+		for (int i = 0; i < MAX_SPRITE_SETS; i++) {
+			if (!g_spriteSets[i].data) { if (empty < 0) empty = i; continue; }
+			if (g_spriteSets[i].buf) continue;
+			spare += g_spriteSets[i].bytes;
+			if (oldest < 0 || g_spriteSets[i].used < g_spriteSets[oldest].used) oldest = i;
+		}
+		if (oldest < 0 || (empty >= 0 && spare <= SPRITE_SPARE)) { slot = empty; break; }
+		sprite_set_free(oldest);
 	}
-	else free(data);
+	if (slot < 0) { // every slot holds a set in use: the one used longest ago
+		for (int i = 0; i < MAX_SPRITE_SETS; i++) if (slot < 0 || g_spriteSets[i].used < g_spriteSets[slot].used) slot = i;
+		logf_("HD sprites: all %d sets in use, %s let go", MAX_SPRITE_SETS, g_spriteSets[slot].name);
+		sprite_set_free(slot);
+	}
+	long bytes = 0;
+	BYTE *data = sprite_set_read(f, frame, &bytes);
 	afclose(f);
+	if (!data) { logf_("HD sprites %s: no memory or a bad file", key); return; }
+	g_spriteSets[slot].buf = buffer;
+	g_spriteSets[slot].data = data;
+	g_spriteSets[slot].bytes = bytes;
+	g_spriteSets[slot].used = ++g_setSeq;
+	lstrcpynA(g_spriteSets[slot].name, key, sizeof g_spriteSets[slot].name);
+	g_layerGen++;
+	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
+	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+	read_palette(path, g_spriteSets[slot].pal);
+	logf_("HD sprites %s", key);
 }
+
+static void sprites_loaded(const char *name, const void *buffer) { sprite_set_bind(name, -1, buffer); }
 
 // The zoomed-out battle's HD stamping, batched: while the game redraws the battlefield (h_battle_draw)
 // every stamp and every cell's clearing is queued, then all of them are done at the end on all the
@@ -1922,15 +2110,30 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
 	if (!data || index < 0 || index >= *(const int *)data || !g_back) return;
 	// Off the map a sprite may be drawn under another screen's palette than its art was made with
-	// (map portraits in the Armoury's scroll): then it stays as the game drew it.
+	// (map portraits in the Armoury's scroll): then it stays as the game drew it. A new screen is
+	// drawn while it is still faded out (the screen's palette all black), so the palette the game is
+	// fading to (GAME_PAL, set by FUN_004b0ab5) counts too: tested against the black one only, the
+	// castle's picture and the armoury's row of soldiers stayed 1x for the whole visit.
+	BOOL toPal = FALSE; // the stamp fits the palette being faded to, not the one on screen now
 	if (!g_ownScroll && !county_map_on() && !IN_BATTLE_NOW() && g_primary && g_primary->pal) {
 		const PALETTEENTRY *e = g_primary->pal->e;
 		const BYTE *idx0 = data + ((const int *)data)[1 + index] + 4;
 		int w0 = *(const WORD *)(idx0 - 4), h0 = *(const WORD *)(idx0 - 2);
 		BYTE used[256] = { 0 };
 		if (((const int *)data)[1 + index]) for (int i = 0; i < w0 * h0; i++) used[idx0[i]] = 1;
-		for (int i = 1; i < 256; i++)
-			if (used[i] && (e[i].peRed >> 2 != setPal[i * 3] || e[i].peGreen >> 2 != setPal[i * 3 + 1] || e[i].peBlue >> 2 != setPal[i * 3 + 2])) return;
+		BOOL live = TRUE, target = TRUE;
+		for (int i = 1; i < 256 && (live || target); i++) {
+			if (!used[i]) continue;
+			live &= e[i].peRed >> 2 == setPal[i * 3] && e[i].peGreen >> 2 == setPal[i * 3 + 1] && e[i].peBlue >> 2 == setPal[i * 3 + 2];
+			target &= GAME_PAL[i * 3] >> 2 == setPal[i * 3] && GAME_PAL[i * 3 + 1] >> 2 == setPal[i * 3 + 1] && GAME_PAL[i * 3 + 2] >> 2 == setPal[i * 3 + 2];
+		}
+		if (!live && !target) {
+			// Often the screen's palette is not even chosen yet (the castle screen loads it after
+			// drawing): tried again when the game next sets a palette (sprites_retry_late).
+			if (g_lateN < MAX_LATE) g_late[g_lateN++] = (late_stamp){ buf, index, x, y };
+			return;
+		}
+		toPal = !live;
 	}
 	if (!g_sprLayer) { // screens before any map: the layer on its own
 		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
@@ -1938,8 +2141,15 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		g_sprValid = calloc(MAX_W, GAME_H);
 		if (!g_sprLayer || !g_sprShadow || !g_sprValid) return;
 	}
-	// Off the map the screen's own palette is what the sprite was made for (see screen_sprites).
-	if (!county_map_on() && g_primary && g_primary->pal) memcpy(g_sprPal, g_primary->pal->e, sizeof g_sprPal);
+	// Off the map the screen's own palette is what the sprite was made for (see screen_sprites): the
+	// one it will have once faded in, if that is what the stamp was tested against.
+	if (!county_map_on() && g_primary && g_primary->pal) {
+		memcpy(g_sprPal, g_primary->pal->e, sizeof g_sprPal);
+		if (toPal)
+			for (int i = 0; i < 256; i++) {
+				g_sprPal[i].peRed = GAME_PAL[i * 3]; g_sprPal[i].peGreen = GAME_PAL[i * 3 + 1]; g_sprPal[i].peBlue = GAME_PAL[i * 3 + 2];
+			}
+	}
 	int off = ((const int *)data)[1 + index];
 	if (!off) return;
 	const BYTE *p = data + off;
@@ -2180,11 +2390,26 @@ static __inline void wave_px(DWORD *o, int d, int X, int Y, DWORD t)
 	*o = (r << 16) | (g << 8) | b;
 }
 
+// The game set a palette (game thread): the stamps that waited for one are tried again; those that
+// still do not fit wait for the next. The frame still holds what they drew, or the pixel test fails.
+static void sprites_retry_late(void)
+{
+	if (!g_lateN) return;
+	if (county_map_on() || IN_BATTLE_NOW()) { g_lateN = 0; return; }
+	late_stamp list[MAX_LATE];
+	int n = g_lateN;
+	memcpy(list, g_late, n * sizeof *list);
+	g_lateN = 0;
+	for (int i = 0; i < n; i++) stamp_sprite(list[i].buf, list[i].index, list[i].x, list[i].y);
+}
+
 // Off the map (painted screens, scrolls): the HD sprites the screen still shows, while the palette is
 // the one they were drawn under, so a fade shows the smoothed frame.
 static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 {
-	if (!g_sprLayer || county_map_on() || IN_BATTLE_NOW() || memcmp(pal, g_sprPal, sizeof g_sprPal)) return;
+	if (!g_sprLayer || county_map_on() || IN_BATTLE_NOW()) return;
+	for (int i = 1; i < 256; i++) // (colours only, and not 0, which GAME_PAL forces black: g_sprPal may come from it)
+		if (pal[i].peRed != g_sprPal[i].peRed || pal[i].peGreen != g_sprPal[i].peGreen || pal[i].peBlue != g_sprPal[i].peBlue) return;
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * sw;
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
@@ -4503,15 +4728,16 @@ static BOOL present(void)
 	int sx = g_showX, sw = g_showW;
 	// A wider room takes the frame, built from the game's 640 columns.
 	BOOL room = g_room.on && g_hdPic.on && g_showScreens && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
-	if (room && !g_hdPic.seen) {
+	if (room && (!g_hdPic.seen || g_hdPic.gone)) {
 		// The painting's first frame on screen goes wide at once (waiting for hd_overlay to have
-		// seen it showed one narrow frame: a flicker on every painted screen).
+		// seen it showed one narrow frame: a flicker on every painted screen). The same when a gone
+		// picture is put back, with hd_overlay's stricter test for that.
 		int same = 0;
 		for (int y = 0; y < GAME_H; y += 4) {
 			const BYTE *fr = g_primary->bits + y * g_primary->pitch + g_off, *sh = g_hdPic.shadow + y * GAME_W;
 			for (int x = 0; x < GAME_W; x += 4) same += fr[x] == sh[x];
 		}
-		room = same >= (GAME_W / 4) * (GAME_H / 4) / 8;
+		room = same >= (GAME_W / 4) * (GAME_H / 4) / (g_hdPic.gone ? 2 : 8);
 	}
 	int roomW = 0;
 	if (room) {
@@ -4605,7 +4831,7 @@ static BOOL present(void)
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
-		room = room && g_room.on && g_hdPic.on && g_showScreens;
+		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
 		// Below 4x, as at 1080p (2.25x), a plain stretch of the 2x frame drops rows and columns
@@ -4896,6 +5122,8 @@ static HRESULT WINAPI pal_set_entries(void *this_, DWORD flags, DWORD start, DWO
 	BOOL onScreen = g_primary && g_primary->pal == self;
 	LeaveCriticalSection(&g_lock);
 	if (onScreen) mark_dirty();
+	// (the game's own thread, which owns its window: the stamp tables are not locked)
+	if (onScreen && g_hwnd && GetWindowThreadProcessId(g_hwnd, NULL) == GetCurrentThreadId()) sprites_retry_late();
 	return DD_OK;
 }
 static void *vt_palette[] = { no_interface, add_ref, pal_release, pal_get_caps, pal_get_entries,
@@ -6110,13 +6338,30 @@ static const BYTE kLoadPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // p
 typedef int (__cdecl *load_file_t)(const char *, void *, unsigned, long);
 static load_file_t o_load_file;
 
+// One frame read on its own (FUN_0040ae12: the frame's 16-byte record into 0x522d10, then its
+// pixels at their offset into the caller's buffer), as the lords' faces in message scrolls and the
+// castle screen's picture are: the frame whose record was read last.
+#define FRAME_RECORD ((void *)0x00522d10)
+static char g_frameFile[32];
+static int g_frameIndex = -1;
+
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
 	int n = o_load_file(name, buffer, size, offset);
+	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
+		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
 	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
-	if (n > 0 && offset == 0 && (!_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
-		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6)))
-		tiles_loaded(name, buffer, n);
+	if (n > 0 && offset == 0 && tiles) tiles_loaded(name, buffer, n);
+	else if (n > 0 && offset == 0) tiles_forget_buffer(buffer); // another file in a buffer that held ground
+	if (n == 16 && buffer == FRAME_RECORD && offset >= 8 && (offset - 8) % 16 == 0) {
+		lstrcpynA(g_frameFile, name, sizeof g_frameFile);
+		g_frameIndex = (offset - 8) / 16;
+	}
+	else if (n > 0 && offset > 0 && g_frameIndex >= 0 && !lstrcmpiA(name, g_frameFile)) {
+		const short *rec = (const short *)FRAME_RECORD;
+		if ((long)rec[0] * rec[1] == n) sprite_set_bind(name, g_frameIndex, buffer);
+		g_frameIndex = -1;
+	}
 	if (g_logLoads) logf_("load %s -> %p, %d bytes", name, buffer, n);
 	note_load(name);
 	return n;
