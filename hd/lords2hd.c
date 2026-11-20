@@ -2271,6 +2271,51 @@ static void hv_free_file(void)
 	free(g_hv.offs); g_hv.offs = NULL;
 }
 
+// The whole file read ahead once the video opens (into Windows' file cache, nothing kept), so frames
+// are never read from the disk while playing: on a hard disk a cold read stalled the game midway
+// through the credits (129 MB) the first time they played.
+static volatile LONG g_hvGen; // which video the read-ahead serves; a newer one stops it
+struct hv_ahead { char path[MAX_PATH]; DWORD base, size; LONG gen; };
+static DWORD WINAPI hv_read_ahead(void *p)
+{
+	struct hv_ahead *a = p;
+	HANDLE h = CreateFileA(a->path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	BYTE *buf = malloc(1 << 20);
+	double t0 = perf_now();
+	DWORD done = 0;
+	if (h != INVALID_HANDLE_VALUE && buf) {
+		LONG hi = 0;
+		if (SetFilePointer(h, (LONG)a->base, &hi, FILE_BEGIN) != INVALID_SET_FILE_POINTER)
+			while (done < a->size && a->gen == g_hvGen) {
+				DWORD want = min(a->size - done, 1u << 20), got = 0;
+				if (!ReadFile(h, buf, want, &got, NULL) || !got) break;
+				done += got;
+			}
+	}
+	if (g_timing) logf_("HD videos: read ahead %lu of %lu bytes in %.0f ms", done, a->size, perf_now() - t0);
+	if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+	free(buf); free(a);
+	return 0;
+}
+static void hv_start_read_ahead(const char *path)
+{
+	struct hv_ahead *a = calloc(1, sizeof *a);
+	if (!a) return;
+	a->gen = InterlockedIncrement(&g_hvGen);
+	if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) { // a loose file
+		WIN32_FILE_ATTRIBUTE_DATA fa;
+		if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) { free(a); return; }
+		lstrcpynA(a->path, path, sizeof a->path); a->size = fa.nFileSizeLow;
+	}
+	else {
+		const PAK_ENTRY *e = pak_find(path);
+		if (!e) { free(a); return; }
+		lstrcpynA(a->path, g_pakPath, sizeof a->path); a->base = e->off; a->size = e->size;
+	}
+	HANDLE t = CreateThread(NULL, 0, hv_read_ahead, a, 0, NULL);
+	if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); } else free(a);
+}
+
 // The video just opened: its HD frames, if there are any and they fit it.
 static void hv_open(void *s, const char *name, int w, int h, int n)
 {
@@ -2310,6 +2355,7 @@ static void hv_open(void *s, const char *name, int w, int h, int n)
 	g_hv.f = f; g_hv.offs = offs;
 	g_hv.smk = s; g_hv.w = w; g_hv.h = h; g_hv.n = n; g_hv.W = 2 * w; g_hv.H = 2 * h;
 	g_hv.frame = -1; g_hv.dest = NULL;
+	hv_start_read_ahead(path);
 	logf_("video %s: HD frames %dx%d", name, 2 * w, 2 * h);
 }
 
@@ -2479,6 +2525,7 @@ static void __stdcall h_SmackClose(void *s)
 		g_hv.smk = NULL;
 		g_hv.dest = NULL;
 		hv_free_file();
+		InterlockedIncrement(&g_hvGen); // (stops its read-ahead)
 	}
 	o_SmackClose(s);
 	video_handle_close(s);
