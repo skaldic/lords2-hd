@@ -8532,7 +8532,7 @@ static DWORD g_blastCall;
 static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
-static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked;
+static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked, g_bresync;
 static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
@@ -8735,10 +8735,10 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, tw, cols);
-	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = 0;
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = 0;
 	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
 	blog("cpu units %.1f ms, searches %.1f ms (in the last second); selected group %d", g_bcpuLoop * 1000.0 / fq.QuadPart,
 		g_bcpuBfs * 1000.0 / fq.QuadPart, *(int *)0x0053e984);
@@ -8765,6 +8765,19 @@ static int __cdecl h_step_check(int dir)   // FUN_00490616(dir): logged for trac
 
 static BOOL __cdecl h_path_search(int sx, int sy, int dx, int dy)
 {
+	if (g_blog && g_battleLog >= 2) {   // what stopped the route it had (the game dropped it just before)
+		int me = FIG_CUR;
+		short left = me > 0 && me < 0x51 ? FIG_S(me, 0x36) : 0;
+		if (left >= 0 && left < 150) {   // the step just tried popped its waypoint: entry [left]
+			BYTE *f = FIG(me);
+			int nx = f[0x38 + 2 * left], ny = f[0x39 + 2 * left];
+			BYTE *c = nx < 80 && ny < 80 ? BCELL(nx, ny) : NULL;
+			int occ = c ? c[5] : -1;
+			blog("lost route fig %d at %d,%d: next %d,%d (%d left) occ %d (side %d state %d group %d) flags %02x h %d, my h %d", me, sx, sy, nx, ny, left,
+				occ, occ > 0 && occ < 0x51 ? FIG(occ)[0x2c] : -1, occ > 0 && occ < 0x51 ? FIG(occ)[0x31] : -1, occ > 0 && occ < 0x51 ? FIG_S(occ, 0x178) : -1,
+				c ? c[1] : 0, c ? c[4] : 0, sx >= 0 && sx < 80 && sy >= 0 && sy < 80 ? BCELL(sx, sy)[4] : -1);
+		}
+	}
 	BOOL r = o_path_search(sx, sy, dx, dy);
 	if (g_blog) {
 		int me = FIG_CUR;
@@ -8814,6 +8827,11 @@ static swapq_t o_swapq;
 static int g_jWaits[81], g_jSwapWith[81];
 static unsigned g_jSwapT[81], g_jLastMove[81], g_jStillSince[81], g_jGaveWay[81];
 static BOOL dm_step_ok(int from, int to);
+static int gr_plan(int me, int gx, int gy);
+static BOOL g_fixGroupMove, g_grSolo;
+static int g_grAvoid;
+static int *g_grOut, g_grOutMax;
+static unsigned g_jReplanT[81];
 static short g_jPrevX[81], g_jPrevY[81];
 static int g_jSwapB, g_jSwapPrev;
 static int g_lastStep = -1;
@@ -8844,13 +8862,115 @@ static int __cdecl h_mover(int p1)
 	int me = FIG_CUR;
 	if (!fix_on(g_fixJitter) || me < 1 || me > 0x50) return o_mover(p1);
 	BYTE *f = FIG(me);
+	// The mover finishes the walk into a cell and picks the next step in the same call, so the checks below
+	// (which run at a cell centre) missed most arrivals. This call's last bit of walking is done here
+	// first, exactly as FUN_0048f1dd's own first part does it, and the checks see the unit at the centre.
+	if (f[0x2c] && !(f[0x34] & 1) && p1 != 1 && (signed char)(BYTE)(f[0x33] + 1) > (int)f[0x189] && (signed char)(BYTE)(f[0x32] + 2) >= 0x11) {
+		f[0x35] = 1; f[0x33] = 0; f[0x32] = 0; f[0x34] |= 1;
+	}
 	BYTE pathOn = f[0x164];
 	short left = FIG_S(me, 0x36), x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
 	int wx = -1, wy = -1;
 	static BYTE wp[300];
+	// 7. Back on its route: a swap (or a sidestep) moves a unit a cell without touching its waypoints, so
+	//    its next waypoint was two cells off and the step toward it ran into something; the whole route was
+	//    then dropped for the game's edge walk. At a cell centre it now picks up the furthest of its next
+	//    six waypoints that is next to it (or the one it stands on) and goes on from there.
+	if ((f[0x34] & 1) && pathOn && left >= 1 && left <= 150 && x >= 0 && x < 80 && y >= 0 && y < 80) {
+		int nx = f[0x38 + 2 * (left - 1)], ny = f[0x39 + 2 * (left - 1)];
+		if (max(abs(nx - x), abs(ny - y)) != 1) {
+			int best = -1;
+			for (int k = left - 1; k >= 0 && k >= left - 6; k--) {
+				int d = max(abs(f[0x38 + 2 * k] - x), abs(f[0x39 + 2 * k] - y));
+				if (d == 1) best = k + 1;
+				else if (d == 0 && k >= 1) best = k;
+			}
+			if (best >= 1 && best != left) {
+				if (g_blog && g_battleLog >= 1) blog("resync fig %d at %d,%d: next waypoint %d,%d, goes on from %d,%d (%d left, was %d)", me, x, y, nx, ny,
+					f[0x38 + 2 * (best - 1)], f[0x39 + 2 * (best - 1)], best, left);
+				FIG_S(me, 0x36) = left = (short)best;
+				g_bresync++;
+			}
+			else if (best < 1 && max(abs(nx - x), abs(ny - y)) == 2 && left < 150) {
+				// pushed off to the side, away from the way on: one step back next to the route, a free cell
+				// beside both (a taken one if that's all there is)
+				int pick = -1, pickTaken = -1;
+				for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+					int cx = x + dx, cy = y + dy;
+					if ((!dx && !dy) || cx < 0 || cx > 79 || cy < 0 || cy > 79 || max(abs(nx - cx), abs(ny - cy)) != 1) continue;
+					if (!dm_step_ok(y * 80 + x, cy * 80 + cx) || !dm_step_ok(cy * 80 + cx, ny * 80 + nx)) continue;
+					if (!BCELL(cx, cy)[5]) { if (pick < 0) pick = cy * 80 + cx; }
+					else if (pickTaken < 0) pickTaken = cy * 80 + cx;
+				}
+				if (pick < 0) pick = pickTaken;
+				if (pick >= 0) {
+					f[0x38 + 2 * left] = (BYTE)(pick % 80); f[0x39 + 2 * left] = (BYTE)(pick / 80);
+					FIG_S(me, 0x36) = ++left;
+					g_bresync++;
+					if (g_blog && g_battleLog >= 1) blog("resync fig %d at %d,%d: next waypoint %d,%d two cells off, steps to %d,%d first", me, x, y, nx, ny, pick % 80, pick / 80);
+				}
+			}
+		}
+	}
 	if (pathOn && left >= 1 && left <= 150) {
 		wx = f[0x38 + 2 * (left - 1)]; wy = f[0x39 + 2 * (left - 1)];
 		memcpy(wp, f + 0x38, 300);
+	}
+	// 6. At a cell centre, the next cell on its route taken by a friend that is walking too (often of
+	//    another group crossing): the mover would drop the route and search again at once, with the
+	//    game's edge walk, which can lead round the other side of a forest. It waits for the friend to
+	//    pass instead (no enemy beside it; after 10 waits the game's own handling takes over).
+	//    A friend of another group standing there won't move: the unit finds its own way round that cell
+	//    at once (A*, the same side of any forest), and so does one whose waits ran out; at most once in 2 s.
+	if ((f[0x34] & 1) && wx >= 0 && wx < 80 && wy >= 0 && wy < 80 && abs(wx - x) <= 1 && abs(wy - y) <= 1 &&
+		(wx != x || wy != y) && f[0x31] == 3 && x >= 0 && x < 80 && y >= 0 && y < 80) {
+		int occ = BCELL(wx, wy)[5];
+		BYTE ost = occ > 0 && occ < 0x51 ? FIG(occ)[0x31] : 0;
+		BOOL friendHere = occ > 0 && occ < 0x51 && occ != me && FIG(occ)[0x2c] == f[0x2c] && ost != 2;
+		BOOL walking = ost == 3 || ost == 8 || (ost == 1 && (FIG(occ)[0x2f] == 3 || FIG(occ)[0x2f] == 8));
+		BOOL otherGroup = friendHere && FIG_S(occ, 0x178) != FIG_S(me, 0x178);
+		if (friendHere && fix_on(g_fixGroupMove) && g_btick - g_jReplanT[me] >= 164 &&
+			((walking && g_jWaits[me] >= JIT_MAX_WAITS) || (!walking && otherGroup))) {
+			// a short way round that cell back onto its own route ~5 cells on (so it keeps to its side of
+			// a forest), spliced into its waypoints
+			g_jReplanT[me] = g_btick;
+			int T = left - 6 > 0 ? left - 6 : 0;
+			int tx = f[0x38 + 2 * T], ty = f[0x39 + 2 * T];
+			static int det[24];
+			int n = 0;
+			if ((tx != wx || ty != wy) && tx < 80 && ty < 80) {
+				g_grSolo = TRUE; g_grAvoid = wy * 80 + wx; g_grOut = det; g_grOutMax = 14;
+				n = gr_plan(me, tx, ty);
+				g_grSolo = FALSE; g_grAvoid = -1; g_grOut = NULL;
+			}
+			if (n && T + n <= 150) {
+				for (int k = 0; k < n; k++) { f[0x38 + 2 * (T + k)] = (BYTE)(det[k] % 80); f[0x39 + 2 * (T + k)] = (BYTE)(det[k] / 80); }
+				FIG_S(me, 0x36) = (short)(T + n);
+				f[0x164] = 1;
+				g_jWaits[me] = 0;
+				g_bplanned++;
+				if (g_blog && g_battleLog >= 1) blog("detour fig %d at %d,%d round fig %d (%s) at %d,%d: %d cells back to %d,%d", me, x, y, occ, walking ? "walking" : "standing", wx, wy, n, tx, ty);
+				return 1;
+			}
+		}
+		if (friendHere && walking && g_jWaits[me] < JIT_MAX_WAITS) {
+			BOOL enemy = FALSE;
+			BYTE myh = BCELL(x, y)[4];
+			for (int dy = -1; dy <= 1 && !enemy; dy++) for (int dx = -1; dx <= 1; dx++) {
+				int ex = x + dx, ey = y + dy;
+				if ((!dx && !dy) || ex < 0 || ex > 79 || ey < 0 || ey > 79) continue;
+				int e = BCELL(ex, ey)[5];
+				if (e > 0 && e < 0x51 && FIG(e)[0x2c] && FIG(e)[0x2c] != f[0x2c] && FIG(e)[0x31] != 2 && BCELL(ex, ey)[4] == myh) { enemy = TRUE; break; }
+			}
+			if (!enemy) {
+				g_jWaits[me]++;
+				f[0x2f] = 3; f[0x31] = 1;
+				f[0x30] = 1;   // counted down one step in four: ~4 steps
+				g_bheld++;
+				if (g_blog && g_battleLog >= 1) blog("route wait fig %d at %d,%d: next cell %d,%d has walking fig %d (wait %d)", me, x, y, wx, wy, occ, g_jWaits[me]);
+				return 1;
+			}
+		}
 	}
 	// 4. Arriving: one cell from its destination, with a friend standing on it, a unit sidestepped
 	//    right, then left, then right (FUN_004904ec has no memory). It now stops where it is.
@@ -9271,6 +9391,9 @@ static void archer_idle(int me)
 // game's movement rules), costing extra on cells next to the routes its groupmates were already given:
 // the group goes round in parallel lanes. At most 3 routes a logic step (the rest wait their turn).
 #define GR_PER_STEP 3
+// marching, or waiting a moment before it marches on (the game's order puts a unit in state 1 for a
+// few steps first: those units got no route and went their own way)
+#define GR_MARCHING(f) ((f)[0x31] == 3 || ((f)[0x31] == 1 && (f)[0x2f] == 3))
 static BOOL g_fixGroupMove;
 typedef void (__cdecl *slot_t)(int, int, int, int);
 static slot_t o_slot;
@@ -9281,6 +9404,9 @@ static int g_grCongGroup = -1;
 static unsigned g_grCongTick;
 static int g_grQueue[81], g_grQLen;   // units waiting for a route, in order
 static int g_grPlannedThisStep;
+static BOOL g_grSolo;                 // gr_plan for one unit alone: no lane costs, nothing marked
+static int g_grAvoid = -1;            // a cell gr_plan must not use (a friend standing in the way)
+static int *g_grOut, g_grOutMax;      // set: gr_plan only hands back the cells (goal first), at most this many
 
 static BOOL gr_line_clear(int x0, int y0, int x1, int y1)
 {
@@ -9334,7 +9460,8 @@ static int gr_plan(int me, int gx, int gy)
 			if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
 			int v = vy * 80 + vx;
 			if (!dm_step_ok(u, v)) continue;
-			int cost = g[u] + (dx && dy ? 14 : 10) + 3 * g_grCong[v] + (g_grLeaderSet && !g_grCorr[v] ? 10 : 0);
+			if (v == g_grAvoid) continue;
+			int cost = g[u] + (dx && dy ? 14 : 10) + (g_grSolo ? 0 : 3 * g_grCong[v] + (g_grLeaderSet && !g_grCorr[v] ? 10 : 0));
 			if (stamp[v] != cur) { stamp[v] = cur; closed[v] = 0; g[v] = 0x7fffffff; }
 			if (closed[v] || cost >= g[v]) continue;
 			g[v] = cost; from[v] = u;
@@ -9347,6 +9474,11 @@ static int gr_plan(int me, int gx, int gy)
 	static int path[6400];
 	int n = 0;
 	for (int c = t; c != s && n < 6400; c = from[c]) path[n++] = c;   // reversed: path[0] = goal
+	if (g_grOut) {   // only the cells wanted (a detour): the unit's waypoints are left alone
+		if (n > g_grOutMax) return 0;
+		memcpy(g_grOut, path, (size_t)n * sizeof path[0]);
+		return n;
+	}
 	// the waypoint list holds 150: a longer route keeps its first 150 cells (the unit walks on from there)
 	int skip = n > 150 ? n - 150 : 0;
 	int cnt = n - skip;
@@ -9357,6 +9489,7 @@ static int gr_plan(int me, int gx, int gy)
 	}
 	FIG_S(me, 0x36) = (short)cnt;
 	f[0x164] = 1;
+	if (g_grSolo) return n;   // a unit's own new way round: the group's lanes stay as they are
 	if (!g_grLeaderSet) {   // the group's first route sets the corridor the others keep to
 		for (int k = 0; k < n; k++) {
 			int c = path[k], cx = c % 80, cy = c / 80;
@@ -9452,7 +9585,7 @@ static int gr_follow(int me, int ox, int oy, int gx, int gy)
 static void gr_route(int me)
 {
 	BYTE *f = FIG(me);
-	if (!f[0x2c] || f[0x31] != 3 || f[0x12] >= 7) return;
+	if (!f[0x2c] || !GR_MARCHING(f) || f[0x12] >= 7) return;
 	int g = FIG_S(me, 0x178);
 	if (g != g_grCongGroup || g_btick - g_grCongTick > 82) {
 		memset(g_grCong, 0, sizeof g_grCong); memset(g_grCorr, 0, sizeof g_grCorr);
@@ -9494,13 +9627,13 @@ static void __cdecl h_slot(int x, int y, int fig, int group)
 	static BYTE wp[300]; short left = 0;
 	if (keep) { memcpy(wp, FIG(fig) + 0x38, 300); left = FIG_S(fig, 0x36); }
 	o_slot(x, y, fig, group);
-	if (keep && FIG(fig)[0x31] == 3) {   // (the game wiped the route for the new place: it goes back)
+	if (keep && GR_MARCHING(FIG(fig))) {   // (the game wiped the route for the new place: it goes back)
 		memcpy(FIG(fig) + 0x38, wp, 300); FIG_S(fig, 0x36) = left; FIG(fig)[0x164] = 1;
 		return;
 	}
 	if (!fix_on(g_fixGroupMove) || fig < 1 || fig > 0x50) return;
 	BYTE *f = FIG(fig);
-	if (!f[0x2c] || f[0x31] != 3 || f[0x12] >= 7) return;
+	if (!f[0x2c] || !GR_MARCHING(f) || f[0x12] >= 7) return;
 	int x0 = FIG_S(fig, 0x20), y0 = FIG_S(fig, 0x22);
 	if (max(abs(x - x0), abs(y - y0)) < 3 || gr_line_clear(x0, y0, x, y)) return;   // the game's own walk is fine
 	for (int k = 0; k < g_grQLen; k++) if (g_grQueue[k] == fig) return;
@@ -9560,6 +9693,7 @@ static void battle_reset(void)
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
 	g_grQLen = 0; g_grCongGroup = -1;
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
+	memset(g_jReplanT, 0, sizeof g_jReplanT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
 	memset(g_jStillSince, 0, sizeof g_jStillSince); memset(g_jGaveWay, 0, sizeof g_jGaveWay);
 	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
