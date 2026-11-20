@@ -8845,16 +8845,16 @@ static int __cdecl h_swapq(void)
 		((g_jSwapWith[me] && g_btick - g_jSwapT[me] < 64) || (g_jSwapWith[b] && g_btick - g_jSwapT[b] < 64) ||
 		 (g_jSwapWith[me] == b && g_btick - g_jSwapT[me] < 410) || (g_jSwapWith[b] == me && g_btick - g_jSwapT[b] < 410))) {
 		g_bswapsBlocked++;
-		// within 3 cells of its place, behind a groupmate standing at its own: it stops where it is (it
-		// waited and asked again every 8 steps, for as long as the battle went on)
-		BYTE *f = FIG(me), st = FIG(b)[0x31];
+		// within 3 cells of its place, behind a groupmate it may not swap with (standing at its own place,
+		// or itself waiting in the same crowd): it stops where it is. It waited and asked again every 4-8
+		// steps, for as long as the battle went on (a whole group of crossbowmen at a map edge, 26 s).
+		BYTE *f = FIG(me);
 		short x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
-		if (abs(FIG_S(me, 0x24) - x) <= 3 && abs(FIG_S(me, 0x26) - y) <= 3 &&
-			(st == 5 || st == 7 || st == 0x11 || (st == 1 && FIG(b)[0x2f] == 5))) {
+		if (f[0x31] == 3 && abs(FIG_S(me, 0x24) - x) <= 3 && abs(FIG_S(me, 0x26) - y) <= 3 && FIG(b)[0x31] != 8 && FIG(b)[0x31] != 4) {
 			FIG_S(me, 0x24) = x; FIG_S(me, 0x26) = y;
 			f[0x164] = 0;
 			g_bheld++;
-			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d: groupmate %d stands in the way, place was 3 cells or less on", me, x, y, b);
+			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d: groupmate %d (state %d) in the way, place was 3 cells or less on", me, x, y, b, FIG(b)[0x31]);
 		}
 		return 0;   // wait instead of swapping back
 	}
@@ -9349,6 +9349,7 @@ static void engage_idle(int me)
 // within 5 cells of where it stood, steps back at most once every 3 seconds, and stands and fights when
 // there's no free cell behind it. Both sides.
 static unsigned g_aNext[81];
+static BOOL archer_step_away(int me, int threat, const char *why);
 static void archer_idle(int me)
 {
 	BYTE *f = FIG(me);
@@ -9369,6 +9370,16 @@ static void archer_idle(int me)
 		if (d <= 2 && d < td) { td = d; threat = e; }
 	}
 	if (!threat || td < 1) return;
+	if (!archer_step_away(me, threat, "")) g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
+}
+
+// A step about 3 cells straight away from enemy e (or to either side of that), inside the archer's
+// 5-cell leash, onto a free cell it can walk to. Returns FALSE when there's none.
+static BOOL archer_step_away(int me, int threat, const char *why)
+{
+	BYTE *f = FIG(me);
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	int td = cheb(x, y, FIG_S(threat, 0x20), FIG_S(threat, 0x22));
 	int ex = FIG_S(threat, 0x20), ey = FIG_S(threat, 0x22);
 	int sx = (x > ex) - (x < ex), sy = (y > ey) - (y < ey);
 	// straight away, then the two directions beside it; 3 cells, then 2
@@ -9393,10 +9404,47 @@ static void archer_idle(int me)
 			f[0x31] = 3;
 			g_aNext[me] = g_btick + 246;
 			g_bstepback++;
-			if (g_blog && g_battleLog >= 1) blog("step back fig %d (archer, side %d) from enemy %d at %d cells: %d,%d -> %d,%d", me, f[0x2c], threat, td, x, y, nx, ny);
-			return;
+			if (g_blog && g_battleLog >= 1) blog("step back fig %d (archer, side %d%s) from enemy %d at %d cells: %d,%d -> %d,%d", me, f[0x2c], why, threat, td, x, y, nx, ny);
+			return TRUE;
 		}
-	g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
+	return FALSE;
+}
+
+// State 4 (melee) for an archer or crossbowman: once a friendly soldier stands beside its enemy and can
+// take over, it slips out the same way (the enemy's next step finds the friend beside it and fights
+// it). Alone, it keeps fighting: walking away would only get it cut down from behind.
+typedef void (__cdecl *melee_t)(void);
+static melee_t o_melee;
+static void __cdecl h_melee(void)
+{
+	int me = FIG_CUR;
+	if (fix_on(g_fixEngage) && me >= 1 && me <= 0x50) {
+		BYTE *f = FIG(me);
+		int opp = f[0x17e];
+		if (f[0x2c] && f[0x31] == 4 && f[0x16a] && f[0x12] < 7 && g_btick >= g_aNext[me] && (unsigned)(me + g_btick) % 4 == 0 &&
+			opp >= 1 && opp <= 0x50 && FIG(opp)[0x2c] && FIG(opp)[0x2c] != f[0x2c] && FIG(opp)[0x31] == 4) {
+			int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), ox = FIG_S(opp, 0x20), oy = FIG_S(opp, 0x22);
+			int cover = 0;
+			if (x >= 0 && x < 80 && y >= 0 && y < 80 && BCELL(x, y)[4] == 0)
+				for (int k = 1; k < 0x51 && !cover; k++) {
+					BYTE *t = FIG(k);
+					if (k != me && t[0x2c] == f[0x2c] && !t[0x16a] && t[0x12] < 7 && (t[0x31] == 4 || t[0x31] == 8) &&
+						cheb(FIG_S(k, 0x20), FIG_S(k, 0x22), ox, oy) <= 1)
+						cover = k;
+				}
+			if (cover) {
+				// (an archer pushed or ordered away from where it stood counts from here)
+				if (!g_eAnchorOk[me] || cheb(g_eAnchorX[me], g_eAnchorY[me], x, y) > ENG_LEASH) {
+					g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eAnchorOk[me] = 1;
+				}
+				static char why[40];
+				sprintf(why, ", in melee, fig %d takes over", cover);
+				if (archer_step_away(me, opp, why)) return;
+				g_aNext[me] = g_btick + 82;
+			}
+		}
+	}
+	o_melee();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -10201,6 +10249,10 @@ static void install_game_fixes(void)
 			hook_code((BYTE *)0x00479e90, kOrder, sizeof kOrder, h_order, &o_order) &&
 			hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select);
 		logf_("Mop-Up walking distances %s", g_dmapOn ? "on" : "failed");
+		if (g_fixEngage) {
+			static const BYTE kMelee[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
+			logf_("archers leaving melee %s", hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee) ? "on" : "failed");
+		}
 	}
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
