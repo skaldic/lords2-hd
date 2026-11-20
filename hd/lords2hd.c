@@ -178,7 +178,7 @@ static void read_settings(void)
 	g_windowScale = GetPrivateProfileIntA("Display", "WindowScale", 2, g_iniPath);
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
-	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 	g_battleZoom = g_wantWide && GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
@@ -3353,7 +3353,7 @@ static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); menu_scroll_ke
 static void menu_toggle(void)
 {
 	if (!g_menuOpen) {
-		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 		g_battleZoomSet = GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	}
 	InterlockedExchange(&g_menuOpen, !g_menuOpen);

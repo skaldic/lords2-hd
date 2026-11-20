@@ -19,8 +19,8 @@ Copy-Item "$root\hd\ddraw.dll" $stage
 Copy-Item "$root\multiplayer\dplayx\dplayx.dll" $stage
 Copy-Item "$root\multiplayer\CREDITS.md" "$stage\lords2hd\MULTIPLAYER-CREDITS.md"
 $ini = Get-Content "$root\hd\lords2hd.ini" -Raw
-if ($ini -notmatch '(?m)^Wide=0') { throw "the ini template has no Wide=0" }
-Set-Content "$stage\lords2hd.ini" ($ini -replace '(?m)^Wide=0', 'Wide=1') -Encoding ascii -NoNewline
+if ($ini -notmatch '(?m)^Wide=1') { throw "the ini template must ship Wide=1" }
+Set-Content "$stage\lords2hd.ini" $ini -Encoding ascii -NoNewline
 Copy-Item "$root\LICENSE.md", "$root\NOTICE.md" "$stage\lords2hd"
 Copy-Item "$root\hd\INSTALL.txt" "$stage\lords2hd\README.txt"
 # the art: one pack, read by the DLL (tools\make_pak.ps1)
