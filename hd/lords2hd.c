@@ -144,6 +144,7 @@ static int g_repeatOn;          // [Display] RepeatFrames: refreshes with nothin
 static BOOL gpu_drawing(void);  // the GPU draws the window (or is about to try)
 static double gpu_ms(void);     // the card's time for a recent frame
 static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
+static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
 static BOOL g_perfLogOn;        // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
@@ -201,6 +202,7 @@ static void read_settings(void)
 	g_statsOn = GetPrivateProfileIntA("Display", "FpsCounter", 0, g_iniPath);
 	if (g_statsOn < 0 || g_statsOn > 2) g_statsOn = 0;
 	if (GetPrivateProfileIntA("Debug", "Stats", 0, g_iniPath)) g_statsOn = 2;
+	g_miniPop = GetPrivateProfileIntA("Display", "MinimapPop", 0, g_iniPath) != 0;
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -3229,16 +3231,16 @@ static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loade
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_COUNT };
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_COUNT };
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_ZOOM, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_ZOOM, M_MINIPOP, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { (void)i; return FALSE; } // no line is marked "new" at present // marked "new"
+static BOOL menu_new(int i) { return i == M_MINIPOP; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3262,11 +3264,12 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		*restart = g_gpuWantedSet != g_gpuWanted;
 		break;
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
+	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3327,6 +3330,7 @@ static void resound_sample(void)
 		WritePrivateProfileStringA("Display", "Renderer", g_gpuWantedSet ? "gpu" : "cpu", g_iniPath);
 		break;
 	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
+	case M_MINIPOP: g_miniPop = !g_miniPop; ini_set("Display", "MinimapPop", g_miniPop); break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -7584,6 +7588,56 @@ static BOOL known_build(void)
 // its frame copy (FUN_00452160) calls through a null primary surface. Nothing to show yet: skip it.
 typedef void (__cdecl *show_frame_t)(int);
 static show_frame_t o_show_frame;
+
+// The battle minimap's troops ([Display] MinimapPop): the game draws each as a 2x2 dot of its owner's
+// colour (FUN_004bc51a, frames of t2_spri.pl8), and the black player's is mid-grey (index 0x31), the
+// grey of rock and walls. Here every troop gets a one-pixel black ring (black troops: true black with a
+// white ring), painted into the game's frame only for its copy to the screen and taken out right after,
+// so the game's own minimap, which redraws only changed cells, never sees it (no trails).
+static BYTE g_miniSave[200 * 200];
+static int g_miniX, g_miniY, g_miniW, g_miniH; // the saved rectangle (game pixels); g_miniW 0: none
+static void minimap_dots_paint(void)
+{
+	g_miniW = 0;
+	if (!g_miniPop || !IN_BATTLE_NOW() || *(int *)0x004e5d58 != 2) return;
+	BYTE *fb = *(BYTE **)0x004ea1a8, *cells = *(BYTE **)0x004e6574, *spr = *(BYTE **)0x004e5d40;
+	int pitch = *(int *)0x004eb274, stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
+	int ox = *(int *)0x004e5d68, oy = *(int *)0x004e5d60;
+	if (!fb || !cells || !spr || pitch <= 0 || stride <= 0 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
+	int w = 2 * cw, h = 2 * ch;
+	if (ox + w > pitch || oy + h > GAME_H) return;
+	for (int y = 0; y < h; y++) memcpy(g_miniSave + y * w, fb + (oy + y) * pitch + ox, w);
+	g_miniX = ox; g_miniY = oy; g_miniW = w; g_miniH = h;
+	for (int pass = 0; pass < 2; pass++) // rings first, then the dots, so a formation gets one outline
+		for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) {
+			BYTE unit = cells[(r * cw + c) * stride + 5];
+			if (!unit) continue;
+			BYTE owner = *(BYTE *)(0x005544ac + unit * 0x1b0);
+			int frame = owner == 6 ? 6 : *(BYTE *)(0x0057bf0a + owner * 0x160); // as FUN_004bc51a
+			if (frame <= 0 || frame > 6) continue;
+			BYTE col = spr[*(int *)(spr + frame * 16 + 12)], ring = 0x3f; // the frame's colour; black ring
+			if (col == 0x31) { col = 0x3f; ring = 0x20; } // the black player: black, white ring
+			int x0 = 2 * c, y0 = 2 * r, e = pass ? 0 : 1;
+			for (int y = y0 - e; y <= y0 + 1 + e; y++) for (int x = x0 - e; x <= x0 + 1 + e; x++) {
+				if (x < 0 || x >= w || y < 0 || y >= h) continue;
+				BOOL hidden = FALSE; // under the patch's scrolls (settings, army): those must stay as drawn
+				for (int k = 0; k < 2 && !hidden; k++) {
+					const SCROLL_OVL *s = &g_ovl[k];
+					hidden = s->on && ox + x >= s->x && ox + x < s->x + s->w && oy + y >= s->y && oy + y < s->y + s->h;
+				}
+				if (!hidden) fb[(oy + y) * pitch + ox + x] = pass ? col : ring;
+			}
+		}
+}
+static void minimap_dots_restore(void)
+{
+	if (!g_miniW) return;
+	BYTE *fb = *(BYTE **)0x004ea1a8; int pitch = *(int *)0x004eb274;
+	if (fb) for (int y = 0; y < g_miniH; y++) memcpy(fb + (g_miniY + y) * pitch + g_miniX, g_miniSave + y * g_miniW, g_miniW);
+	g_miniW = 0;
+}
+static void show_frame_dots(int force) { minimap_dots_paint(); o_show_frame(force); minimap_dots_restore(); }
+
 static void __cdecl h_show_frame(int force)
 {
 	if (!*(void **)0x004eabd0) return;
@@ -7647,13 +7701,13 @@ static void __cdecl h_show_frame(int force)
 	if (g_timing) {
 		static double sum, worst, t0; static int n;
 		double a = perf_now();
-		o_show_frame(force);
+		show_frame_dots(force);
 		double b = perf_now(), ms = b - a;
 		sum += ms; n++; if (ms > worst) worst = ms;
 		if (!t0) t0 = b;
 		if (b - t0 > 5000) { logf_("timing: %d frame copies, %.2f ms average, %.1f ms worst (game thread)", n, sum / n, worst); sum = worst = 0; n = 0; t0 = b; }
 	}
-	else o_show_frame(force);
+	else show_frame_dots(force);
 	// nothing was copied (nothing changed, or the game's own gate): the presenter's turn is kept
 	if (ours && g_copySeq == seq && hadTurn) InterlockedExchange(&g_frameTaken, 1);
 	if (ours) { sfOurs++; if (g_copySeq == seq) sfOursNoCopy++; } else { sfOther++; if (g_copySeq != seq) sfOtherCopy++; }
@@ -7678,7 +7732,7 @@ static void pending_copy(void)
 	g_copyPending = 0;
 	LONG seq = g_copySeq;
 	g_paceCopying = g_paceChangeSeq;
-	o_show_frame(1);
+	show_frame_dots(1);
 	if (g_copySeq == seq) { if (hadTurn) InterlockedExchange(&g_frameTaken, 1); } // (nothing to copy after all)
 	else { g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq); }
 }
