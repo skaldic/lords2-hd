@@ -236,6 +236,18 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 			(unsigned long)((BYTE *)at - (BYTE *)mod),
 			(unsigned long)ep->ExceptionRecord->ExceptionInformation[0],
 			(unsigned long)ep->ExceptionRecord->ExceptionInformation[1]);
+		// the stack's top words: after a call through a null pointer the first is the caller's return address
+		const DWORD *sp = (const DWORD *)ep->ContextRecord->Esp;
+		MEMORY_BASIC_INFORMATION mi;
+		if (VirtualQuery(sp, &mi, sizeof mi) && mi.State == MEM_COMMIT && (BYTE *)sp + 32 <= (BYTE *)mi.BaseAddress + mi.RegionSize) {
+			HMODULE rm = NULL; char rn[MAX_PATH] = "?";
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)sp[0], &rm))
+				GetModuleFileNameA(rm, rn, sizeof rn);
+			logf_("  return address %08lx: %s +%lx", sp[0], rn, (unsigned long)(sp[0] - (DWORD)rm));
+			logf_("  stack %p: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx (eax %08lx ecx %08lx edx %08lx)", (void *)sp,
+				sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7],
+				ep->ContextRecord->Eax, ep->ContextRecord->Ecx, ep->ContextRecord->Edx);
+		}
 	}
 	return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -6524,7 +6536,9 @@ static void __cdecl h_yesno_draw(void)
 {
 	BOOL wide = g_yesnoWide && *(int *)0x0052af90 != 160;
 	g_drawingLeft = wide;
-	o_yesno_draw();
+	// Not hooked in 4:3 (the wide hooks are installed only with Wide=1): the game's own, unchanged
+	// FUN_0040ccfa. yesno_keep calls here in every mode; calling the empty trampoline crashed.
+	if (o_yesno_draw) o_yesno_draw(); else ((draw_msg_t)0x0040ccfa)();
 	g_drawingLeft = FALSE;
 }
 
