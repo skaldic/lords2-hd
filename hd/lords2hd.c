@@ -19,6 +19,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <wincodec.h>
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -119,6 +120,8 @@ static volatile LONG g_shotWanted, g_shot1xWanted;
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
+static BOOL g_hdVideos = TRUE; // [Display] HDVideos: the videos' 2x frames from lords2hd\videohd (hv_*)
+static BOOL g_showScreens;     // (the F8 panel's HD art switch, defined with it)
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
@@ -180,6 +183,7 @@ static void read_settings(void)
 	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
 	g_battleZoom = g_wantWide && GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
+	g_hdVideos = GetPrivateProfileIntA("Display", "HDVideos", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
@@ -2234,6 +2238,139 @@ static void video_handle_close(void *s)
 {
 	for (int i = 0; i < 4; i++) if (g_vidHandles[i].smk == s) { CloseHandle(g_vidHandles[i].h); g_vidHandles[i].smk = NULL; }
 }
+// HD videos. A video with a file in lords2hd\videohd (<name>.bin, made by tools\build_videos.py: a header,
+// frame offsets, one JPEG per frame at twice the video's size) keeps playing as before - Smacker gives
+// the sound, the timing and the 8-bit frame - and each frame's 2x picture is drawn over it in the
+// doubled picture (hv_overlay), wherever the game's frame still shows what the video put there.
+#define SMK_PALETTE 108   // HSMACK: Palette[772] (8-bit RGB)
+#define SMK_FRAMENUM 884  // HSMACK: FrameNum, the frame last decoded
+#define HV_MAGIC 0x5648324C
+static struct {
+	void *smk;                  // the playing video with HD frames; NULL once closed
+	AFILE *f;
+	DWORD *offs;                // n + 1 offsets of the frames in the file
+	int w, h, n, W, H, frame;   // the video's size, frames; the HD size; the frame last decoded
+	int fx, fy, pitch;          // its place in the game's frame
+	BYTE *dest;                 // where Smacker draws it
+	// The last two frames decoded (the game decodes a frame before it shows the one before it, so the
+	// frame on screen is either), each with what the video put in the game's frame (w x h) and its
+	// palette; and the frame being decoded. Slots swap under g_lock.
+	DWORD *px[2], *back;
+	BYTE *shadow[2], *shadowBack;
+	BYTE pal[2][768], palBack[768];
+	int newest, valid[2];
+	int misses;                // pictures in a row where the frame no longer showed the video
+	volatile LONG on;
+	IWICImagingFactory *wic;
+	BOOL wicTried;
+} g_hv;
+
+static void hv_free_file(void)
+{
+	afclose(g_hv.f); g_hv.f = NULL;
+	free(g_hv.offs); g_hv.offs = NULL;
+}
+
+// The video just opened: its HD frames, if there are any and they fit it.
+static void hv_open(void *s, const char *name, int w, int h, int n)
+{
+	if (!g_hdVideos || !name) return;
+	const char *base = strrchr(name, '\\'), *b2 = strrchr(name, '/');
+	base = max(base, b2); base = base ? base + 1 : name;
+	char stem[64], path[MAX_PATH];
+	lstrcpynA(stem, base, sizeof stem);
+	char *dot = strrchr(stem, '.'); if (dot) *dot = 0;
+	for (char *c = stem; *c; c++) *c = (char)tolower((BYTE)*c);
+	snprintf(path, sizeof path, "%s\\lords2hd\\videohd\\%s.bin", g_gameDir, stem);
+	AFILE *f = afopen(path);
+	if (!f) return;
+	DWORD head[8];
+	if (afread(head, 4, 8, f) != 8 || head[0] != HV_MAGIC || head[1] != 1 || (int)head[4] != n || (int)head[5] != w ||
+		(int)head[6] != h || head[2] != 2u * w || head[3] != 2u * h || n <= 0 || n > 100000) {
+		logf_("video %s: HD frames don't fit this video (%lux%lu, %lu frames), not used", name, head[5], head[6], head[4]);
+		afclose(f); return;
+	}
+	DWORD *offs = malloc((n + 1) * sizeof *offs);
+	size_t px = (size_t)4 * w * h * 4;
+	BOOL ok = offs != NULL;
+	EnterCriticalSection(&g_lock);
+	InterlockedExchange(&g_hv.on, 0);
+	g_hv.valid[0] = g_hv.valid[1] = 0;
+	for (int i = 0; i < 2; i++) {
+		DWORD *p = realloc(g_hv.px[i], px); if (p) g_hv.px[i] = p; else ok = FALSE;
+		BYTE *sh = realloc(g_hv.shadow[i], w * h); if (sh) { g_hv.shadow[i] = sh; memset(sh, 0, w * h); } else ok = FALSE;
+	}
+	LeaveCriticalSection(&g_lock);
+	DWORD *back = realloc(g_hv.back, px); if (back) g_hv.back = back; else ok = FALSE;
+	BYTE *shb = realloc(g_hv.shadowBack, w * h); if (shb) g_hv.shadowBack = shb; else ok = FALSE;
+	if (!ok || afread(offs, 4, n + 1, f) != (size_t)(n + 1)) {
+		free(offs); afclose(f); return;
+	}
+	hv_free_file();
+	g_hv.f = f; g_hv.offs = offs;
+	g_hv.smk = s; g_hv.w = w; g_hv.h = h; g_hv.n = n; g_hv.W = 2 * w; g_hv.H = 2 * h;
+	g_hv.frame = -1; g_hv.dest = NULL;
+	logf_("video %s: HD frames %dx%d", name, 2 * w, 2 * h);
+}
+
+// One JPEG into BGRX pixels (Windows' own decoder).
+static BOOL hv_decode(const BYTE *jpg, DWORD size, DWORD *out, int W, int H)
+{
+	if (!g_hv.wicTried) {
+		g_hv.wicTried = TRUE;
+		HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); (void)hr; // (already set up on this thread is fine)
+		if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&g_hv.wic)))
+			{ g_hv.wic = NULL; logf_("HD videos: no Windows image decoder, off"); }
+	}
+	if (!g_hv.wic) return FALSE;
+	BOOL ok = FALSE;
+	IWICStream *st = NULL; IWICBitmapDecoder *dec = NULL; IWICBitmapFrameDecode *fr = NULL; IWICFormatConverter *cv = NULL;
+	UINT fw = 0, fh = 0;
+	if (SUCCEEDED(IWICImagingFactory_CreateStream(g_hv.wic, &st)) &&
+		SUCCEEDED(IWICStream_InitializeFromMemory(st, (BYTE *)jpg, size)) &&
+		SUCCEEDED(IWICImagingFactory_CreateDecoderFromStream(g_hv.wic, (IStream *)st, NULL, WICDecodeMetadataCacheOnDemand, &dec)) &&
+		SUCCEEDED(IWICBitmapDecoder_GetFrame(dec, 0, &fr)) &&
+		SUCCEEDED(IWICBitmapFrameDecode_GetSize(fr, &fw, &fh)) && (int)fw == W && (int)fh == H &&
+		SUCCEEDED(IWICImagingFactory_CreateFormatConverter(g_hv.wic, &cv)) &&
+		SUCCEEDED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource *)fr, &GUID_WICPixelFormat32bppBGR, WICBitmapDitherTypeNone, NULL, 0, WICBitmapPaletteTypeCustom)) &&
+		SUCCEEDED(IWICFormatConverter_CopyPixels(cv, NULL, W * 4, W * H * 4, (BYTE *)out)))
+		ok = TRUE;
+	if (cv) IWICFormatConverter_Release(cv);
+	if (fr) IWICBitmapFrameDecode_Release(fr);
+	if (dec) IWICBitmapDecoder_Release(dec);
+	if (st) IWICStream_Release(st);
+	return ok;
+}
+
+// After Smacker drew a frame: its HD picture, what it put in the game's frame, and its palette.
+static void hv_frame(void *s)
+{
+	if (!g_hv.dest || !g_hv.f) return;
+	int k = *(int *)((BYTE *)s + SMK_FRAMENUM);
+	static int said;
+	if (k < 0 || k >= g_hv.n) { if (!said++) logf_("HD videos: frame number %d out of range, off for this video", k); hv_free_file(); InterlockedExchange(&g_hv.on, 0); return; }
+	double t0 = perf_now();
+	DWORD size = g_hv.offs[k + 1] - g_hv.offs[k];
+	BYTE *jpg = size && size < 16u << 20 ? malloc(size) : NULL;
+	BOOL ok = jpg && afseek(g_hv.f, (long)g_hv.offs[k], SEEK_SET) == 0 && afread(jpg, 1, size, g_hv.f) == size &&
+		hv_decode(jpg, size, g_hv.back, g_hv.W, g_hv.H);
+	free(jpg);
+	if (!ok) { InterlockedExchange(&g_hv.on, 0); return; }
+	for (int y = 0; y < g_hv.h; y++) memcpy(g_hv.shadowBack + y * g_hv.w, g_hv.dest + y * g_hv.pitch, g_hv.w);
+	memcpy(g_hv.palBack, (BYTE *)s + SMK_PALETTE, 768);
+	EnterCriticalSection(&g_lock);
+	int o = g_hv.newest ^ 1; // the older slot takes the new frame
+	DWORD *t = g_hv.px[o]; g_hv.px[o] = g_hv.back; g_hv.back = t;
+	BYTE *u = g_hv.shadow[o]; g_hv.shadow[o] = g_hv.shadowBack; g_hv.shadowBack = u;
+	memcpy(g_hv.pal[o], g_hv.palBack, 768);
+	g_hv.newest = o; g_hv.valid[o] = 1;
+	g_hv.misses = 0;
+	InterlockedExchange(&g_hv.on, 1);
+	LeaveCriticalSection(&g_lock);
+	g_hv.frame = k;
+	if (g_timing) { static int logs; double ms = perf_now() - t0; if (logs < 20 || ms > 15) { logs++; logf_("HD videos: frame %d decoded in %.1f ms", k, ms); } }
+}
+
 static volatile LONG g_videoOpened; // a video has been opened since launch (the music hold, h_stream_play)
 static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 {
@@ -2292,12 +2429,19 @@ static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 			}
 			else { g_vid.buf = b; g_vid.pub = p; }
 		}
+		else if (!doubled) hv_open(s, name, w, h, *(int *)((BYTE *)s + 12));
 	}
 	return s;
 }
 
 static DWORD __stdcall h_SmackToBuffer(void *s, DWORD x, DWORD y, DWORD pitch, DWORD height, void *buf, DWORD flags)
 {
+	if (s && s == g_hv.smk) {
+		g_hv.dest = (BYTE *)buf + y * pitch + x;
+		g_hv.pitch = (int)pitch;
+		g_hv.fx = g_back && (BYTE *)buf >= g_back->bits ? (int)(((BYTE *)buf - g_back->bits) % pitch) + (int)x : (int)x;
+		g_hv.fy = (int)y;
+	}
 	if (!s || s != g_vid.smk) return o_SmackToBuffer(s, x, y, pitch, height, buf, flags);
 	g_vid.dest = (BYTE *)buf + y * pitch + x;
 	g_vid.pitch = (int)pitch;
@@ -2309,6 +2453,7 @@ static DWORD __stdcall h_SmackToBuffer(void *s, DWORD x, DWORD y, DWORD pitch, D
 static DWORD __stdcall h_SmackDoFrame(void *s)
 {
 	DWORD r = o_SmackDoFrame(s);
+	if (s && s == g_hv.smk) hv_frame(s);
 	if (s && s == g_vid.smk && g_vid.dest) {
 		for (int oy = 0; oy < VID_SLOT_H; oy++) {
 			const BYTE *src = g_vid.buf + (oy * g_vid.h / VID_SLOT_H) * g_vid.w;
@@ -2329,6 +2474,11 @@ static void __stdcall h_SmackClose(void *s)
 		g_vid.smk = NULL;
 		g_vid.dest = NULL;
 		InterlockedExchange(&g_vid.on, 0);
+	}
+	if (s && s == g_hv.smk) { // the last frame stays drawn while the game's frame still shows it (hv_overlay)
+		g_hv.smk = NULL;
+		g_hv.dest = NULL;
+		hv_free_file();
 	}
 	o_SmackClose(s);
 	video_handle_close(s);
@@ -2823,6 +2973,77 @@ static void music_status(void)
 	IDirectSoundBuffer_GetFormat(b, &wf, sizeof wf, &got);
 	logf_("music status: %s, %lu Hz %u-bit, play cursor %lu, file %s", (st & DSBSTATUS_PLAYING) ? "playing" : "stopped",
 		wf.nSamplesPerSec, wf.wBitsPerSample, play, (char *)STREAM_NAMES);
+}
+
+// An HD video frame over the doubled picture (called under g_lock), wherever the game's frame still
+// holds what the video put there. The screen's palette is checked against the video's own: equal,
+// the HD pixel as it is; the same colour darker or lighter (a fade), the HD pixel scaled alike; else
+// the pixel is left as the game drew it.
+static void hv_overlay(const PALETTEENTRY *pal, int sx, int sw)
+{
+	if (!g_hv.on || !g_showScreens) return;
+	int w = g_hv.w, h = g_hv.h, x0 = g_hv.fx - sx;
+	int oy0 = max(0, -g_hv.fy), oy1 = min(h, GAME_H - g_hv.fy), ox0 = max(0, -x0), ox1 = min(w, sw - x0);
+	if (oy1 <= oy0 || ox1 <= ox0) return;
+	// which of the last two frames is on screen: the one more of the game's frame agrees with
+	int best = -1, bestMatch = -1, total = 0;
+	for (int k = 0; k < 2; k++) {
+		int s = g_hv.newest ^ k, m = 0, t = 0;
+		if (!g_hv.valid[s]) continue;
+		for (int oy = oy0; oy < oy1; oy += 3) {
+			const BYTE *fr = g_frame8 + (g_hv.fy + oy) * sw + x0, *sh = g_hv.shadow[s] + oy * w;
+			for (int ox = ox0; ox < ox1; ox += 3) { t++; m += fr[ox] == sh[ox]; }
+		}
+		if (m > bestMatch) { best = s; bestMatch = m; total = t; }
+	}
+	if (best < 0) return;
+	const DWORD *px = g_hv.px[best];
+	const BYTE *shadow = g_hv.shadow[best], *vpal = g_hv.pal[best];
+	int mul[256];
+	static int said;
+	int exact = 0;
+	for (int i = 0; i < 256; i++) {
+		int sr = vpal[3 * i], sg = vpal[3 * i + 1], sb = vpal[3 * i + 2];
+		int pr = pal[i].peRed, pg = pal[i].peGreen, pb = pal[i].peBlue;
+		if (abs(pr - sr) <= 6 && abs(pg - sg) <= 6 && abs(pb - sb) <= 6) { mul[i] = 256; exact++; continue; }
+		int ls = sr + sg + sb, lp = pr + pg + pb;
+		mul[i] = -1;
+		if (ls > 24 && lp <= ls * 2) {
+			int m = lp * 256 / ls;
+			if (abs(pr - sr * m / 256) <= 12 && abs(pg - sg * m / 256) <= 12 && abs(pb - sb * m / 256) <= 12) mul[i] = m;
+		}
+	}
+	if (!said++) logf_("HD videos: %d of 256 colours as in the video's palette", exact);
+	// still the video? (a window or another screen over it: the game's frame no longer matches)
+	if (bestMatch * (g_hv.smk ? 4 : 2) < total) { // under a quarter (half once the video has closed)
+		if (!g_hv.smk && ++g_hv.misses > 2) InterlockedExchange(&g_hv.on, 0);
+		return;
+	}
+	g_hv.misses = 0;
+	int W = g_hv.W;
+	for (int oy = oy0; oy < oy1; oy++) {
+		const BYTE *fr = g_frame8 + (g_hv.fy + oy) * sw + x0, *sh = shadow + oy * w;
+		const DWORD *p0 = px + (2 * oy) * W, *p1 = p0 + W;
+		DWORD *o0 = g_frame2x + (2 * (g_hv.fy + oy)) * (2 * sw) + 2 * x0, *o1 = o0 + 2 * sw;
+		for (int ox = ox0; ox < ox1; ox++) {
+			BYTE c = fr[ox];
+			if (c != sh[ox] || mul[c] < 0) continue;
+			int m = mul[c], X = 2 * ox;
+			if (m == 256) {
+				o0[X] = p0[X] & 0xffffff; o0[X + 1] = p0[X + 1] & 0xffffff;
+				o1[X] = p1[X] & 0xffffff; o1[X + 1] = p1[X + 1] & 0xffffff;
+			}
+			else {
+				const DWORD *q[4] = { p0 + X, p0 + X + 1, p1 + X, p1 + X + 1 };
+				DWORD *d[4] = { o0 + X, o0 + X + 1, o1 + X, o1 + X + 1 };
+				for (int j = 0; j < 4; j++) {
+					DWORD v = *q[j];
+					int r = min(255, (int)((v >> 16) & 255) * m >> 8), g = min(255, (int)((v >> 8) & 255) * m >> 8), b = min(255, (int)(v & 255) * m >> 8);
+					*d[j] = (r << 16) | (g << 8) | b;
+				}
+			}
+		}
+	}
 }
 
 // The large clip over its slot in the doubled picture, wherever the slot still shows its last frame.
@@ -4604,6 +4825,7 @@ static BOOL present(void)
 		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
+		hv_overlay(pal, sx, sw);
 		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on && g_showScreens;
 		if (room) room_compose(pal, roomW);
