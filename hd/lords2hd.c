@@ -8845,6 +8845,17 @@ static int __cdecl h_swapq(void)
 		((g_jSwapWith[me] && g_btick - g_jSwapT[me] < 64) || (g_jSwapWith[b] && g_btick - g_jSwapT[b] < 64) ||
 		 (g_jSwapWith[me] == b && g_btick - g_jSwapT[me] < 410) || (g_jSwapWith[b] == me && g_btick - g_jSwapT[b] < 410))) {
 		g_bswapsBlocked++;
+		// within 3 cells of its place, behind a groupmate standing at its own: it stops where it is (it
+		// waited and asked again every 8 steps, for as long as the battle went on)
+		BYTE *f = FIG(me), st = FIG(b)[0x31];
+		short x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+		if (abs(FIG_S(me, 0x24) - x) <= 3 && abs(FIG_S(me, 0x26) - y) <= 3 &&
+			(st == 5 || st == 7 || st == 0x11 || (st == 1 && FIG(b)[0x2f] == 5))) {
+			FIG_S(me, 0x24) = x; FIG_S(me, 0x26) = y;
+			f[0x164] = 0;
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d: groupmate %d stands in the way, place was 3 cells or less on", me, x, y, b);
+		}
 		return 0;   // wait instead of swapping back
 	}
 	int prev = b > 0 && b < 0x51 ? FIG(b)[0x31] : 0;
@@ -9281,7 +9292,7 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 static short g_eAnchorX[81], g_eAnchorY[81], g_eGroupX[81], g_eGroupY[81];
 static BYTE g_eAnchorOk[81];
 static int g_eTarget[81], g_eIgnore[81], g_eBestD[81];
-static unsigned g_eIgnoreUntil[81], g_eSince[81];
+static unsigned g_eIgnoreUntil[81], g_eSince[81], g_eLastIdle[81];
 
 static int cheb(int x0, int y0, int x1, int y1) { int a = abs(x1 - x0), b = abs(y1 - y0); return a > b ? a : b; }
 
@@ -9295,9 +9306,14 @@ static void engage_idle(int me)
 	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), g = FIG_S(me, 0x178);
 	if (x < 0 || x > 79 || y < 0 || y > 79 || BCELL(x, y)[4] != 0) return;   // on a wall
 	short gx = g >= 0 && g < 80 ? *(short *)(0x00566542 + g * 0x34) : -1, gy = g >= 0 && g < 80 ? *(short *)(0x00566544 + g * 0x34) : -1;
-	if (!g_eAnchorOk[me] || gx != g_eGroupX[me] || gy != g_eGroupY[me]) {
+	// the anchor is where it stands each time it goes idle: a unit stopped by a fight on its way (often
+	// several cells short of its group's place) kept the old one, so an enemy beside it was "past the
+	// leash"; it went for it, was sent straight back, ran into it, and stood there. Every chase still
+	// ends with it walking back here, so it can't be pulled away.
+	if (!g_eAnchorOk[me] || gx != g_eGroupX[me] || gy != g_eGroupY[me] || g_btick - g_eLastIdle[me] > 2) {
 		g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eGroupX[me] = gx; g_eGroupY[me] = gy; g_eAnchorOk[me] = 1;
 	}
+	g_eLastIdle[me] = g_btick;
 	engage_forget(me);
 	if ((unsigned)(me + g_btick) % 8) return;
 	int range = f[0x12] == 6 ? ENG_RANGE_KNIGHT : ENG_RANGE;
@@ -9309,9 +9325,10 @@ static void engage_idle(int me)
 		int r = t[0x16a] ? max(range, ENG_RANGE_ARCHERS) : range;   // archers shooting at us: further
 		if (cheb(x, y, ex, ey) > r || cheb(g_eAnchorX[me], g_eAnchorY[me], ex, ey) > ENG_LEASH + 1) continue;
 		if (g_eIgnore[me] == e && g_btick < g_eIgnoreUntil[me]) continue;
-		int n = 0;   // our units already on it
+		if (g_cAvoid[me] == e && g_btick < g_cAvoidUntil[me]) continue;   // just gave up on it (a crowd round it)
+		int n = 0;   // our units already on it (an enemy right beside it is fought anyway: no bait in that)
 		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
-		if (n >= 2) continue;
+		if (n >= 2 && cheb(x, y, ex, ey) > 1) continue;
 		g_dmMaxDepth = r + 1;
 		int d = dm_dist(e, me);
 		g_dmMaxDepth = 0x7fff;
@@ -9690,6 +9707,7 @@ static void battle_reset(void)
 {
 	g_btick = 0;
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
+	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
 	g_grQLen = 0; g_grCongGroup = -1;
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
