@@ -9326,9 +9326,10 @@ static void engage_idle(int me)
 		if (cheb(x, y, ex, ey) > r || cheb(g_eAnchorX[me], g_eAnchorY[me], ex, ey) > ENG_LEASH + 1) continue;
 		if (g_eIgnore[me] == e && g_btick < g_eIgnoreUntil[me]) continue;
 		if (g_cAvoid[me] == e && g_btick < g_cAvoidUntil[me]) continue;   // just gave up on it (a crowd round it)
-		int n = 0;   // our units already on it (an enemy right beside it is fought anyway: no bait in that)
+		int n = 0;   // our units already on it (an enemy right beside it, or one locked in a fight, is fought
+		             // anyway: no bait in that)
 		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
-		if (n >= 2 && cheb(x, y, ex, ey) > 1) continue;
+		if (n >= 2 && cheb(x, y, ex, ey) > 1 && t[0x31] != 4) continue;
 		g_dmMaxDepth = r + 1;
 		int d = dm_dist(e, me);
 		g_dmMaxDepth = 0x7fff;
