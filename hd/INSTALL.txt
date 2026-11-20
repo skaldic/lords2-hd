@@ -73,6 +73,7 @@ Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
 Wide=0          4:3 instead of widescreen
 BattleZoom=0    battles at normal size
+MinimapPop=1    outlined troops on the battle minimap (easier to see, black especially)
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
 Upscale=fsr     AMD FSR 1 (default); catmullrom = the scaling of 1.3, bilinear = softer still
 Renderer=cpu    the processor draws the picture instead of the graphics card (after a restart)
