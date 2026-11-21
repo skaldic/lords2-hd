@@ -12,8 +12,8 @@ Current version: **1.5.1** · [Download](https://github.com/skaldic/lords2-hd/re
 
 ## Fixed in 1.5.1
 
-- **Zoomed-out battles no longer freeze at the start.** On some PCs a zoomed-out battle stayed on its
-  first picture: the battle never started and the hourglass did nothing.
+- **Zoomed-out battles no longer freeze.** A zoomed-out battle could stay on its first picture while
+  the game ran on behind it: the battle seemed never to start and the hourglass did nothing.
 - **The Town Center window stays still** when you move peasants and its info scrolls open.
 
 ## New in 1.5.0

@@ -41,7 +41,7 @@ GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Bat
 - No army can enter or strengthen a castle under siege (the game's own rule)
 
 FIXED IN 1.5.1
-- Zoomed-out battles no longer freeze at the start on some PCs (the battle never started)
+- Zoomed-out battles no longer freeze on their first picture (the battle seemed never to start)
 - The Town Center window stays still when you move peasants
 
 NEW IN 1.5.0

@@ -8718,7 +8718,11 @@ static void __cdecl h_show_frame(int force)
 	LONG hadTurn = 0;
 	if (g_frameLimit > 0 && !force) { hadTurn = InterlockedExchange(&g_frameTaken, 0); if (hadTurn || g_preTurn) force = ours = 1; } // (g_preTurn: see there)
 	LONG seq = g_copySeq;
-	g_paceCopying = g_paceChangeSeq; // the change this copy carries (copy_rect: g_pacePrimarySeq)
+	// The change this copy carries (copy_rect: g_pacePrimarySeq). Changes are only counted with Timing=1
+	// (pace_change hashes the frame); without it every copy is a new one. (1.5.0 counted them only with
+	// Timing=1: the zoomed battle's presenter, which skips a read with nothing new, then never read
+	// again and the battle stayed on its first picture, unless Timing=1.)
+	g_paceCopying = g_timing ? g_paceChangeSeq : InterlockedIncrement(&g_paceChangeSeq);
 	if (g_timing) {
 		static double sum, worst, t0; static int n;
 		double a = perf_now();
