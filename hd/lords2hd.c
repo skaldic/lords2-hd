@@ -262,8 +262,9 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 // buffers the patch reads on its own, which the game may have freed (the battle minimap's, after a battle).
 static BOOL mem_readable(const void *p, size_t n)
 {
-	const BYTE *a = (const BYTE *)p, *end = a + n;
-	if (!p || end < a) return FALSE;
+	// (the wrap check on integers: as pointers, "a + n < a" can't happen in C and the compiler drops it)
+	if (!p || n > (uintptr_t)-1 - (uintptr_t)p) return FALSE;
+	const BYTE *a = (const BYTE *)p, *end = (const BYTE *)((uintptr_t)p + n);
 	while (a < end) {
 		MEMORY_BASIC_INFORMATION mi;
 		if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
@@ -8516,7 +8517,8 @@ static void minimap_dots_paint(void)
 	BYTE *fb = *(BYTE **)0x004ea1a8, *cells = *(BYTE **)0x004e6574, *spr = *(BYTE **)0x004e5d40;
 	int pitch = *(int *)0x004eb274, stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
 	int ox = *(int *)0x004e5d68, oy = *(int *)0x004e5d60;
-	if (!fb || !cells || !spr || pitch <= 0 || stride <= 0 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
+	// (stride: the game always sets 8, the battlefield's cell records, FUN_004bc020's two callers)
+	if (!fb || !cells || !spr || pitch <= 0 || stride != 8 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
 	int w = 2 * cw, h = 2 * ch;
 	if (ox + w > pitch || oy + h > GAME_H || pitch != g_back->pitch) return;
 	INT_PTR off = fb - g_back->bits; // the game's frame inside the patch's back buffer (for the HD layers)

@@ -6,9 +6,9 @@ minimap crash on freed battle buffers) before a release, with tests that run in 
 ## Status
 
 - **Phase 1 is done:** the harness and 24 core tests, which run in about 2 s.
-- **One finding:** `mem_readable`'s check for a range that wraps round the address space is compiled away, because it
-  compares pointers and C assumes pointer arithmetic never wraps. The test `mem_readable_plain_memory` fails until it is
-  fixed in the patch.
+- **First finding, fixed:** `mem_readable`'s check for a range that wraps round the address space was compiled away,
+  because it compared pointers and C assumes pointer arithmetic never wraps. It now compares integers. The minimap also
+  requires the game's cell stride of 8.
 - **Not tested:** the packer's 4 GB check. Testing it would need a 4 GB file.
 
 ## How it works (proven by a spike on 2026-11-21)
