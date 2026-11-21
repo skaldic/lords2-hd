@@ -193,7 +193,7 @@ static int t_panel(int i)
 	case M_TUTORIAL: return g_tutorialOnce; case M_WASD: return g_wasdOn;      case M_CYCLE: return g_cycleOn;
 	case M_WIDE: return g_wantWideSet;    case M_ZOOM: return g_battleZoomSet;  case M_ARMY: return g_armyPanel;
 	case M_LETTERS: return g_letters;     case M_RESOUND: return g_resounded;   case M_RENDERER: return g_gpuWantedSet;
-	case M_FPS: return g_statsOn;         case M_MINIPOP: return g_miniPop;
+	case M_FPS: return g_statsOn;         case M_MINIPOP: return g_miniPop;     case M_ARROWS: return g_arrowsOn;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }

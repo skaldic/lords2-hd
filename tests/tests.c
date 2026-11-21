@@ -83,6 +83,7 @@ static void t_reset(void)
 #include "t_battle.c"
 #include "t_campaign.c"
 #include "t_settings.c"
+#include "t_input.c"
 #include "t_hooks.c"
 
 __declspec(dllexport) int run_tests(const char *filter, void *gameLo, void *gameHi)
