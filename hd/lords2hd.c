@@ -3784,8 +3784,8 @@ static BOOL g_wantWideSet, g_battleZoomSet;
 enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
 static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
 static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP,
-	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ARROWS, M_COUNT }; // (M_BF_*: in the order of BF_*)
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS,
+	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*, and last)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
@@ -3831,8 +3831,8 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines",
-	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Arrow key scrolling" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
+	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
