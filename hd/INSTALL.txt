@@ -1,8 +1,8 @@
-Lords of the Realm II HD 1.5.0: an unofficial fan patch for the GOG and Steam versions of the game.
+Lords of the Realm II HD 1.5.1: an unofficial fan patch for the GOG and Steam versions of the game.
 You need your own copy of the game.
 
 INSTALL
-Run Lords2-HD-1.5.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
+Run Lords2-HD-1.5.1-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
 folder holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
 ddraw.dll, dplayx.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
@@ -39,6 +39,10 @@ GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Bat
 - The computer no longer starts a castle in every county at once (the Bishop's royal castles)
 - A wheat field lost after planting costs its grain once, not twice
 - No army can enter or strengthen a castle under siege (the game's own rule)
+
+FIXED IN 1.5.1
+- Zoomed-out battles no longer freeze at the start on some PCs (the battle never started)
+- The Town Center window stays still when you move peasants
 
 NEW IN 1.5.0
 - Battles: improved pathfinding, cohesion and engagement (see GAME FIXES), each with its own switch
