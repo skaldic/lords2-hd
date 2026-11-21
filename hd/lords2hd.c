@@ -8899,7 +8899,6 @@ typedef struct { BYTE live, side, type, state, saved, wait, sub, face, frame, pa
 	short x, y, dx, dy, group, men, pathLeft; } fig_snap;
 static fig_snap g_snap[81];
 static unsigned g_btick, g_bsecTick;
-static DWORD g_blastCall;
 static int g_bnum;
 static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
 static short g_prevX[81], g_prevY[81];
@@ -10146,10 +10145,8 @@ static void __cdecl h_fig_loop(void)
 	int step = *(int *)0x0057c998;
 	BOOL fresh = step < g_lastStep || g_lastStep < 0;
 	g_lastStep = step;
-	DWORD now = GetTickCount();
 	if (fresh) battle_reset();
 	if (g_battleLog && fresh) battle_start();
-	g_blastCall = now;
 	if (g_testMopUp && g_remote) {
 		int side = g_testMopUp;
 		g_testMopUp = 0;
