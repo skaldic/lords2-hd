@@ -148,6 +148,8 @@ static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
 static int wasd_letter(WPARAM vk);
 static BOOL wasd_screen(void);
+static BOOL g_battleLeftEdge;
+static int battle_left_x(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr), 2 FSR (fsr_easu, fsr_rcas)
 static int g_fsrFinal;
 static float g_rcasSharp;
@@ -5242,6 +5244,14 @@ static void window_shift(int screen, int sx, int sw)
 	int bx0 = -1, bx1 = -1, by0 = -1, by1 = -1;
 	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
 	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
+	static int lb0, lb1, lt0, lt1;   // the box last moved (frame columns, rows)
+	if (linger) {
+		// After closing, only while what differs is still the window (the same box as last moved): once the
+		// game has redrawn the map there, the differences are waving flags and moving units, and moving
+		// those cut sprites in pieces.
+		BOOL same = bx0 >= 0 && by0 >= 0 && abs(bx0 - lb0) <= 4 && abs(bx1 - lb1) <= 4 && abs(by0 - lt0) <= 4 && abs(by1 - lt1) <= 4;
+		if (!same) { g_winLeftT = 0; g_snapW = 0; g_winLockS = 0; return; }
+	}
 	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
 	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
 	// the kept picture is of somewhere else - then the window stays where the game put it.
@@ -5283,6 +5293,7 @@ static void window_shift(int screen, int sx, int sw)
 		}
 	}
 	g_winX0 = bx0 - x0g; g_winX1 = bx1 - x0g; g_winY0 = by0; g_winY1 = by1;
+	lb0 = bx0; lb1 = bx1; lt0 = by0; lt1 = by1;
 	InterlockedExchange(&g_winShift, s);
 }
 // A click on the picture at game x, y: over the moved window it is the window's own place; over
@@ -6591,7 +6602,11 @@ static void wasd_edges(POINT *p, int right, int bottom)
 {
 	int k = g_wasd;
 	if (!k || !wasd_screen()) return;
-	if (k & 1) p->x = 0; else if (k & 2) p->x = right;
+	// Left: in a battle the field starts left of the game's x = 0 and its edge scroll is told about the
+	// left edge separately (h_edge_scroll); x = 0 alone is the middle of the field there, and A (or the
+	// left arrow) didn't scroll a battle left.
+	if (k & 1) { int lx = battle_left_x(); p->x = lx < 1 ? lx : 0; g_battleLeftEdge = TRUE; }
+	else if (k & 2) p->x = right;
 	if (k & 4) p->y = 0; else if (k & 8) p->y = bottom;
 }
 // , and . cycle through the player's counties and then armies on the county map, centring the
@@ -6750,7 +6765,6 @@ static void cycle_buttons_draw(int sx, int sw)
 // to x = 1 and units there couldn't be clicked. In a battle the real position now goes through, down to
 // the view's left edge (DAT_004e6558), and the edge scroll (FUN_00432221, the only reader of the raw
 // x at DAT_004e6594) is told about the left edge separately (g_battleLeftEdge).
-static BOOL g_battleLeftEdge;
 static int battle_left_x(void)
 {
 	return g_off && IN_BATTLE_NOW() && *(int *)0x0052af94 == 3 ? min(1, *(int *)0x004e6558) : 1;
