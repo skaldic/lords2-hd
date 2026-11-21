@@ -100,6 +100,11 @@ Bugs of the original game are fixed in single player, each with its own switch u
 - **Wheat** (`WheatFix`): a wheat field lost after planting costs its grain once, not twice
 - **Besieged castles** (`SiegeGarrisonFix`): no army can enter or strengthen a castle under siege
 
+Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal is the game's own battle AI.
+On Hard, in field battles, the computer picks attack or defence once instead of switching every few
+seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), and moves its
+soldiers up together and charges together. Legendary is Hard for now.
+
 In multiplayer they stay off, so everyone plays the same rules, unless every player sets
 `MultiplayerFixes=1`.
 
@@ -195,6 +200,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
+| Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
 | Battles | Improved engagement | On, Off | On | `EngageFix` |

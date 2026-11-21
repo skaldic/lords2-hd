@@ -3790,18 +3790,24 @@ static BOOL g_wantWideSet, g_battleZoomSet;
 enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
 static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
 static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
+// Enemy tactics ([Game] BattleAI): 0 Normal (the game's own AI), 1 Hard, 2 Legendary. g_aiLevelSet is the
+// panel's choice, taken at the next battle's start; g_aiOk: its hooks went in at startup.
+#define AI_LEVELS 3
+static int g_aiLevelSet;
+static BOOL g_aiOk;
+static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS,
-	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*, and last)
+	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
-	{ M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
+	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_ARROWS; } // marked "new"
+static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3833,12 +3839,13 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		*restart = g_bfSet[f] && !g_bfOk[f];
 		break;
 	}
+	case M_AI: snprintf(v, n, "%s", kAiLevel[g_aiLevelSet]); *restart = g_aiLevelSet && !g_aiOk; break; // from the next battle
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
-	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
+	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3906,6 +3913,7 @@ static void resound_sample(void)
 		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);
 		break;
 	}
+	case M_AI: g_aiLevelSet = (g_aiLevelSet + 1) % AI_LEVELS; ini_set("Game", "BattleAI", g_aiLevelSet); break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -9100,6 +9108,7 @@ static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81]
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked, g_bresync;
 static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
+static int g_bshotsBy[3];   // shots in the last second by side
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -9377,10 +9386,11 @@ static void battle_second(const fig_snap *n)
 	for (int side = 1; side < 3; side++) {
 		ai_cover c;
 		if (!ai_archer_cover(n, side, &c)) continue;
-		blog("cover side %d (computer): archers %d, own melee within %d cells of each: nearest avg %d max %d | isolated %d (enemy melee within %d, no own melee within %d) | archers in melee %d | men melee %d ranged %d, enemy melee %d ranged %d",
+		blog("cover side %d (computer): archers %d, own melee within %d cells of each: nearest avg %d max %d | isolated %d (enemy melee within %d, no own melee within %d) | archers in melee %d | men melee %d ranged %d, enemy melee %d ranged %d | shots %d, enemy shots %d",
 			side, c.archers, AI_COVER_NEAR, c.archers ? c.ownSum / c.archers : -1, c.ownMax, c.isolated, AI_COVER_THREAT,
-			AI_COVER_NEAR, c.inMelee, c.menMelee, c.menRanged, c.enemyMenMelee, c.enemyMenRanged);
+			AI_COVER_NEAR, c.inMelee, c.menMelee, c.menRanged, c.enemyMenMelee, c.enemyMenRanged, g_bshotsBy[side], g_bshotsBy[3 - side]);
 	}
+	memset(g_bshotsBy, 0, sizeof g_bshotsBy);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -9470,6 +9480,330 @@ static void __cdecl h_group_tick(void)
 		char line[400];
 		ai_think_text(g, &b[g], &a[g], &gb, &ga, line, sizeof line);
 		if (line[0]) blog("%s", line);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Enemy tactics, Hard and Legendary ([Game] BattleAI=1/2; field battles only, Normal = the game's own AI,
+// untouched). Changes how the computer plays, so in multiplayer only with MultiplayerFixes (every player
+// must then use the same level).
+// Steady mode: the game weighs both armies about every 100 steps (FUN_0047fc01: computer x 100 / human
+// - 100, the strength percentage) and in single player adds a random -10..+21 each time; above the
+// threshold (5) its groups run the attack rules, else the defence rules. Close to even, that switches
+// back and forth every few seconds (up to 28 times in 2 minutes, phase 1), sending every group somewhere
+// else. Here the first weighing of a battle decides, random term included, and the mode changes only
+// when the armies really change: from attack to defence when the computer falls AI_MODE_SLACK below the
+// threshold (the random term left out), from defence to attack when it rises AI_MODE_SLACK above it, or,
+// when it's about even (no more than AI_DEF_EVEN below), after AI_DEF_WAIT weighings (about 70 s) of
+// waiting. The percentage the handlers read is held on the chosen side of the threshold.
+#define AI_MODE_SLACK 20
+#define AI_DEF_EVEN 10
+#define AI_DEF_WAIT 60
+static int g_aiLevel;              // the level of this battle (battle_reset)
+static BOOL g_aiDecided, g_aiAttack;
+static int g_aiWeighs;             // weighings since the mode was chosen
+typedef void (__cdecl *ai_fn_t)(void);
+static ai_fn_t o_strength;
+// [Debug] AiParts: which of Hard's rules run, for measuring them one at a time (1 the steady mode, 2 the
+// archers, 4 the melee; default all)
+#define AI_STEADY 1
+#define AI_ARCHERS 2
+#define AI_MELEE 4
+static int g_aiParts = 7;
+
+static BOOL ai_on(void) { return g_aiLevel >= 1 && fix_on(TRUE) && *(int *)0x0053e8fc == 0; }
+static BOOL ai_part(int p) { return (g_aiParts & p) && ai_on(); }
+
+// One weighing: raw = without the random term, rolled = with it; returns the percentage to keep.
+static int ai_mode_step(int raw, int rolled, int thr)
+{
+	if (!g_aiDecided) { g_aiDecided = TRUE; g_aiAttack = rolled > thr; g_aiWeighs = 0; }
+	else if (g_aiAttack && raw < thr - AI_MODE_SLACK) { g_aiAttack = FALSE; g_aiWeighs = 0; }
+	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiWeighs >= AI_DEF_WAIT && raw >= thr - AI_DEF_EVEN))) { g_aiAttack = TRUE; g_aiWeighs = 0; }
+	g_aiWeighs++;
+	return g_aiAttack ? max(raw, thr + 1) : min(raw, thr);
+}
+
+static void __cdecl h_strength(void)
+{
+	o_strength();
+	if (!ai_part(AI_STEADY)) return;
+	int rolled = *(int *)0x004eea98, thr = *(int *)0x0057c8b4;
+	int raw = *(int *)0x00553030 ? rolled : rolled - ((*(int *)0x0058fd7c & 0x1f) - 10);   // (the random term, single player only)
+	BOOL decided = g_aiDecided, attack = g_aiAttack;
+	*(int *)0x004eea98 = ai_mode_step(raw, rolled, thr);
+	if (g_blog && (!decided || attack != g_aiAttack))
+		blog("ai %s: %s %s (strength %+d, with the random term %+d, threshold %d)", kAiLevel[g_aiLevel], decided ? "now" : "decided",
+			g_aiAttack ? "ATTACK" : "DEFEND", raw, rolled, thr);
+}
+
+// Archers that keep their distance (Hard). The game's archer handler (FUN_0048a9d2) waits, then walks its
+// archers half-way at the nearest enemy group whatever stands there, and in defence holds them; once the
+// melee charges they're left alone (phase 1: isolated for 23-71 s of 120 on two of three maps). Here each
+// think (every 200 steps with no member in melee, as the game's) does the first of:
+//   1. enemy melee within AI_ARCH_THREAT of the group's centre and none of its own melee within
+//      AI_ARCH_COVER: step AI_ARCH_STEP cells straight away from it;
+//   2. an enemy group within range (the members' shortest, centre to centre): the game's own fire order
+//      (FUN_0048c974, as its handler gives it);
+//   3. its own melee not charging: stand AI_ARCH_BEHIND cells behind the centre of its side's melee, on the
+//      side away from the enemy's centre;
+//   4. otherwise (no melee left, or the melee charging): walk up until the nearest enemy is 2 inside range.
+// Orders go through the game's order function, writing the group's destination as its own helpers do.
+#define AI_ARCH_THREAT 5
+#define AI_ARCH_COVER 4
+#define AI_ARCH_STEP 4
+#define AI_ARCH_BEHIND 3
+static int cheb(int x0, int y0, int x1, int y1);
+typedef void (__cdecl *ai_order_t)(int, int, int, int, int, int);
+typedef int (__cdecl *ai_grp_t)(int);
+static ai_order_t ai_game_order = (ai_order_t)0x00479e90;   // FUN_00479e90(group, x, y, 0, 0, 0)
+static ai_grp_t ai_game_fire = (ai_grp_t)0x0048c974;        // FUN_0048c974(target group): the current group shoots at it
+static ai_fn_t o_ai_ranged;
+
+// What one computer group sees at its think. Units: live, not dying, not siege engines.
+typedef struct {
+	int side, cx, cy, range;     // the group's side, centre, and its members' shortest range (cells)
+	int ownMelee, omx, omy;      // its side's computer melee units and their centre
+	int enemies, ex, ey;         // the enemy's units and their centre
+	int nearMelee, nmx, nmy;     // the nearest enemy melee unit to the group's centre: cells, and where
+	int nearAny, nax, nay;       // the nearest enemy unit of any kind
+	BOOL cover;                  // a melee unit of its own within AI_ARCH_COVER of the centre
+	BOOL charging;               // a computer melee group of its side is charging
+} ai_view;
+
+static void ai_view_take(int g, ai_view *v)
+{
+	memset(v, 0, sizeof *v);
+	v->side = GRP_B(g, 0x00); v->cx = GRP_S(g, 0x1e); v->cy = GRP_S(g, 0x20);
+	v->range = 99; v->nearMelee = v->nearAny = 999;
+	int osx = 0, osy = 0, esx = 0, esy = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), d = cheb(v->cx, v->cy, x, y);
+		BOOL melee = !f[0x16a];
+		if (f[0x2c] == v->side) {
+			if (FIG_S(i, 0x178) == g && f[0x16a] && FIG_S(i, 0x170) / 8 < v->range) v->range = FIG_S(i, 0x170) / 8;
+			if (melee && !f[0x13]) { v->ownMelee++; osx += x; osy += y; if (d <= AI_ARCH_COVER) v->cover = TRUE; }
+			continue;
+		}
+		v->enemies++; esx += x; esy += y;
+		if (d < v->nearAny) { v->nearAny = d; v->nax = x; v->nay = y; }
+		if (melee && d < v->nearMelee) { v->nearMelee = d; v->nmx = x; v->nmy = y; }
+	}
+	if (v->range == 99) v->range = 8;
+	if (v->ownMelee) { v->omx = osx / v->ownMelee; v->omy = osy / v->ownMelee; }
+	if (v->enemies) { v->ex = esx / v->enemies; v->ey = esy / v->enemies; }
+	for (int h = 1; h < 0x51; h++)
+		if (GRP_B(h, 0x00) == v->side && !GRP_B(h, 0x01) && GRP_B(h, 0x08) >= 2 && GRP_B(h, 0x08) <= 4 && GRP_B(h, 0x02) && GRP_B(h, 0x2a))
+			v->charging = TRUE;
+}
+
+// The nearest enemy group with units, centre to centre, within maxd cells (0 = none); FUN_0048ef45's rule.
+static int ai_nearest_group(int g, int maxd)
+{
+	int best = 0, bd = maxd + 1;
+	for (int h = 1; h < 0x51; h++) {
+		if (!GRP_B(h, 0x00) || GRP_B(h, 0x00) == GRP_B(g, 0x00) || !GRP_B(h, 0x02)) continue;
+		int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+		if (d < bd) { bd = d; best = h; }
+	}
+	return best;
+}
+
+// The cell k cells from a towards b (k < 0: away from b), along the straight line.
+static void ai_toward(int ax, int ay, int bx, int by, int k, int *x, int *y)
+{
+	int d = cheb(ax, ay, bx, by);
+	*x = d ? ax + (bx - ax) * k / d : ax; *y = d ? ay + (by - ay) * k / d : ay;
+}
+
+// Sends group g to x,y (kept inside the field), unless it's already going there; TRUE when sent.
+static BOOL ai_order(int g, int x, int y)
+{
+	x = x < 1 ? 1 : x > 78 ? 78 : x; y = y < 1 ? 1 : y > 78 ? 78 : y;
+	if (cheb(x, y, GRP_S(g, 0x22), GRP_S(g, 0x24)) <= 1) return FALSE;
+	GRP_B(g, 0x10) = 0; GRP_S(g, 0x22) = (short)x; GRP_S(g, 0x24) = (short)y;
+	ai_game_order(g, x, y, 0, 0, 0);
+	return TRUE;
+}
+
+static void ai_archers_think(int g)
+{
+	ai_view v;
+	ai_view_take(g, &v);
+	int x, y, tg;
+	char what[80] = "";
+	if (v.nearMelee <= AI_ARCH_THREAT && !v.cover) {
+		ai_toward(v.cx, v.cy, v.nmx, v.nmy, -AI_ARCH_STEP, &x, &y);
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "step back from enemy melee %d cells away", v.nearMelee);
+	}
+	else if ((tg = ai_nearest_group(g, v.range)) != 0) {
+		ai_game_fire(tg);
+		snprintf(what, sizeof what, "shoot at g%d", tg);
+	}
+	else if (v.ownMelee && !v.charging && v.enemies) {
+		ai_toward(v.omx, v.omy, v.ex, v.ey, -AI_ARCH_BEHIND, &x, &y);
+		if (cheb(x, y, v.cx, v.cy) > 2 && ai_order(g, x, y)) snprintf(what, sizeof what, "behind the melee at %d,%d", v.omx, v.omy);
+	}
+	else if (v.enemies && v.nearAny > v.range) {
+		ai_toward(v.cx, v.cy, v.nax, v.nay, v.nearAny - (v.range - 2), &x, &y);
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "into range (%d), the nearest enemy %d cells away", v.range, v.nearAny);
+	}
+	if (g_blog && what[0]) blog("ai %s g%d archers: %s", kAiLevel[g_aiLevel], g, what);
+}
+
+// A melee that moves and charges together (Hard). The game's melee handlers (FUN_0048acd2 for peasants and
+// pikemen, FUN_0048b02b for maces, swords and knights) walk each group to a set point and charge on a
+// timer (its 10th or 13th think), one group at a time, and in defence the whole side charges at the first
+// hits through the shared aggression. Here, at each group's think (as the game's: every 200 steps, no
+// member in melee):
+//   - once its side charges, it charges too (the game's own charge, FUN_0048c8af); every melee group of
+//     the side then thinks at its next step, so they go together;
+//   - attack: it advances towards the enemy unit nearest its side's melee, AI_ADVANCE_STEP cells a think
+//     and never more than that ahead of the side's rearmost melee group, and stops AI_CHARGE_DIST cells
+//     from the enemy. The side charges when every melee group is in place (within AI_CHARGE_DIST +
+//     AI_LINE_SLACK) and its archers have had AI_VOLLEY_STEPS to shoot (at once without archers), or when
+//     any of its groups is hit, any of its units fights, or after AI_CHARGE_TURNS thinks;
+//   - defence: it holds. The side charges when AI_DEF_UNITS enemy melee units are within AI_DEF_TRIGGER
+//     of its units, as many of its units fight, or it has lost AI_DEF_LOSS percent of its men.
+#define AI_CHARGE_DIST 6
+#define AI_LINE_SLACK 2
+#define AI_ADVANCE_STEP 6
+#define AI_CHARGE_TURNS 25
+#define AI_VOLLEY_STEPS 400
+#define AI_DEF_TRIGGER 6
+#define AI_DEF_UNITS 3
+#define AI_DEF_LOSS 15
+typedef void (__cdecl *ai_grpv_t)(int);
+static ai_grpv_t ai_game_charge = (ai_grpv_t)0x0048c8af;   // FUN_0048c8af(group): its units chase the nearest enemy
+static ai_fn_t o_ai_melee2, o_ai_melee34;
+static BOOL g_aiCharge[3];           // the side's melee charges (per battle)
+static int g_aiMenStart[3];          // the side's computer men at its first AI step
+static unsigned g_aiReadySince[3];   // the step its melee was first in place (0 = not yet)
+
+static int ai_side_men(int side)
+{
+	int men = 0;
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] == side && !FIG(i)[0x13] && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) men += FIG_S(i, 0x1a0);
+	return men;
+}
+static BOOL ai_melee_group(int h, int side)
+{
+	return GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) >= 2 && GRP_B(h, 0x08) <= 4;
+}
+// The distance from (x,y) to the nearest live enemy unit of side, and that unit's cell.
+static int ai_nearest_enemy_at(int side, int x, int y, int *ux, int *uy, BOOL meleeOnly)
+{
+	int best = 999;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x2c] == side || f[0x31] == 2 || f[0x12] >= 7 || (meleeOnly && f[0x16a])) continue;
+		int d = cheb(x, y, FIG_S(i, 0x20), FIG_S(i, 0x22));
+		if (d < best) { best = d; if (ux) { *ux = FIG_S(i, 0x20); *uy = FIG_S(i, 0x22); } }
+	}
+	return best;
+}
+
+static void ai_side_charges(int side, const char *why)
+{
+	g_aiCharge[side] = TRUE;
+	for (int h = 1; h < 0x51; h++)
+		if (ai_melee_group(h, side) && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;   // they all think at their next step
+	if (g_blog) blog("ai %s: side %d charges (%s)", kAiLevel[g_aiLevel], side, why);
+}
+
+static void ai_melee_think(int g)
+{
+	int side = GRP_B(g, 0x00);
+	if (side < 1 || side > 2) return;
+	if (g_aiCharge[side]) { ai_game_charge(g); return; }
+	int farthest = 0, groups = 0, fighting = 0, archers = 0, close = 0, sx = 0, sy = 0, units = 0;
+	BOOL hit = FALSE;
+	for (int h = 1; h < 0x51; h++) {
+		if (GRP_B(h, 0x00) != side || GRP_B(h, 0x01) || !GRP_B(h, 0x02)) continue;
+		int att = GRP_S(h, 0x0a);
+		if (GRP_B(h, 0x0c) && att > 0 && att < 0x51 && GRP_B(att, 0x00) && GRP_B(att, 0x00) != side) hit = TRUE;
+		if (GRP_B(h, 0x08) == 1) archers++;
+		if (!ai_melee_group(h, side)) continue;
+		int d = ai_nearest_enemy_at(side, GRP_S(h, 0x1e), GRP_S(h, 0x20), NULL, NULL, FALSE);
+		if (d < 999 && d > farthest) farthest = d;
+		groups++;
+	}
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (f[0x2c] != side || f[0x13] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		if (f[0x31] == 4) fighting++;
+		if (!f[0x16a]) { sx += FIG_S(i, 0x20); sy += FIG_S(i, 0x22); units++; }
+	}
+	if (*(int *)0x004eea98 > *(int *)0x0057c8b4) {   // attack
+		if (!g_aiReadySince[side] && groups && farthest <= AI_CHARGE_DIST + AI_LINE_SLACK) g_aiReadySince[side] = g_btick ? g_btick : 1;
+		char why[64] = "";
+		if (hit) snprintf(why, sizeof why, "hit");
+		else if (fighting) snprintf(why, sizeof why, "%d units fighting", fighting);
+		else if (GRP_S(g, 0x1a) >= AI_CHARGE_TURNS) snprintf(why, sizeof why, "think %d", GRP_S(g, 0x1a));
+		else if (g_aiReadySince[side] && (!archers || g_btick - g_aiReadySince[side] >= AI_VOLLEY_STEPS))
+			snprintf(why, sizeof why, "in place, %d cells away", farthest);
+		if (why[0]) { ai_side_charges(side, why); ai_game_charge(g); return; }
+		int tx, ty, x, y;
+		if (!units || ai_nearest_enemy_at(side, sx / units, sy / units, &tx, &ty, FALSE) >= 999) return;
+		int d = ai_nearest_enemy_at(side, GRP_S(g, 0x1e), GRP_S(g, 0x20), NULL, NULL, FALSE);
+		int line = max(AI_CHARGE_DIST, farthest - AI_ADVANCE_STEP), want = max(line, d - AI_ADVANCE_STEP);
+		if (want >= d) return;
+		ai_toward(GRP_S(g, 0x1e), GRP_S(g, 0x20), tx, ty, d - want, &x, &y);
+		if (ai_order(g, x, y) && g_blog) blog("ai %s g%d %s: advance to %d,%d (%d cells from the enemy, the rearmost %d)", kAiLevel[g_aiLevel], g,
+			ai_kind_name(GRP_B(g, 0x08)), x, y, want, farthest);
+		return;
+	}
+	for (int i = 1; i < 0x51; i++) {   // defence: enemy melee units close to any of the side's units
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x2c] == side || f[0x31] == 2 || f[0x12] >= 7 || f[0x16a]) continue;
+		for (int j = 1; j < 0x51; j++) {
+			BYTE *o = FIG(j);
+			if (o[0x2c] == side && !o[0x13] && o[0x31] != 2 && o[0x12] < 7 &&
+				cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(j, 0x20), FIG_S(j, 0x22)) <= AI_DEF_TRIGGER) { close++; break; }
+		}
+	}
+	int men = ai_side_men(side), lost = g_aiMenStart[side] ? 100 - men * 100 / g_aiMenStart[side] : 0;
+	char why[64] = "";
+	if (close >= AI_DEF_UNITS) snprintf(why, sizeof why, "%d enemy units close", close);
+	else if (fighting >= AI_DEF_UNITS) snprintf(why, sizeof why, "%d units fighting", fighting);
+	else if (lost >= AI_DEF_LOSS) snprintf(why, sizeof why, "lost %d%% of its men", lost);
+	if (why[0]) { ai_side_charges(side, why); ai_game_charge(g); }
+}
+
+static void ai_melee_tick(int g)
+{
+	int side = GRP_B(g, 0x00) < 3 ? GRP_B(g, 0x00) : 0;
+	if (!g_aiMenStart[side]) g_aiMenStart[side] = ai_side_men(side);
+	if (++GRP_S(g, 0x1c) > 199 && !GRP_B(g, 0x0d)) {
+		GRP_S(g, 0x1c) = 0;
+		ai_melee_think(g);
+		GRP_S(g, 0x1a)++;
+	}
+}
+static void __cdecl h_ai_melee2(void)   // FUN_0048acd2: peasants and pikemen
+{
+	int g = *(int *)0x00568458;
+	if (!ai_part(AI_MELEE) || g < 1 || g > 80) { o_ai_melee2(); return; }
+	ai_melee_tick(g);
+}
+static void __cdecl h_ai_melee34(void)   // FUN_0048b02b: maces and swords, knights
+{
+	int g = *(int *)0x00568458;
+	if (!ai_part(AI_MELEE) || g < 1 || g > 80) { o_ai_melee34(); return; }
+	ai_melee_tick(g);
+}
+
+static void __cdecl h_ai_ranged(void)   // FUN_0048a9d2, the computer archers' handler (current group 0x568458)
+{
+	int g = *(int *)0x00568458;
+	if (!ai_part(AI_ARCHERS) || g < 1 || g > 80) { o_ai_ranged(); return; }
+	if (++GRP_S(g, 0x1c) > 199 && !GRP_B(g, 0x0d)) {   // a think: every 200 steps, never with a member in melee
+		GRP_S(g, 0x1c) = 0;
+		ai_archers_think(g);
+		GRP_S(g, 0x1a)++;
 	}
 }
 
@@ -10482,6 +10816,8 @@ static void battle_reset(void)
 {
 	g_btick = 0;
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
+	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
+	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
 	// F10, Battles: the fixes switched between battles only, never in the middle of one
 	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
 	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];
@@ -10531,7 +10867,7 @@ static void __cdecl h_fig_loop(void)
 	static fig_snap n[81];
 	for (int i = 1; i < 0x51; i++) {
 		fig_take(i, &n[i]);
-		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++;   // set to 120 by a shot (FUN_00483337), counted down each step
+		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++, g_bshotsBy[n[i].side < 3 ? n[i].side : 0]++;   // set to 120 by a shot (FUN_00483337), counted down each step
 	}
 	for (int i = 1; i < 0x51; i++) {
 		fig_snap *o = &g_snap[i], *c = &n[i];
@@ -10942,8 +11278,11 @@ static void install_game_fixes(void)
 	g_fixEngage = GetPrivateProfileIntA("Game", "EngageFix", 1, g_iniPath) != 0 && !g_chaseHookFailed;
 	logf_("engage fix %s", g_fixEngage ? "on" : "off");
 	g_fixGroupMove = GetPrivateProfileIntA("Game", "GroupMoveFix", 1, g_iniPath) != 0;
+	g_aiLevelSet = GetPrivateProfileIntA("Game", "BattleAI", 0, g_iniPath);
+	if (g_aiLevelSet < 0 || g_aiLevelSet >= AI_LEVELS) g_aiLevelSet = 0;
+	g_aiParts = GetPrivateProfileIntA("Debug", "AiParts", 7, g_iniPath);
 	BOOL figLoop = FALSE;
-	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage || g_fixGroupMove) {
+	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage || g_fixGroupMove || g_aiLevelSet) {
 		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
 		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
 	}
@@ -10994,6 +11333,16 @@ static void install_game_fixes(void)
 	g_bfSet[BF_ENGAGE] = g_fixEngage; g_bfOk[BF_ENGAGE] = g_fixEngage && g_dmapOn && meleeOk;
 	g_bfSet[BF_MOPUP] = g_fixMopUp; g_bfOk[BF_MOPUP] = !g_chaseHookFailed && g_dmapOn;
 	for (int f = 0; f < BF_COUNT; f++) g_bfOk[f] = g_bfOk[f] && figLoop; // (the choice is taken in battle_reset, from the battle loop's hook)
+	// Enemy tactics: its hooks go in whenever the battle loop's did, so the F10 choice works from the next
+	// battle; at Normal they only run the game's own functions.
+	static const BYTE kStrength[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };   // push ebp; mov ebp,esp; sub esp,10h
+	static const BYTE kRanged[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };     // sub esp,8
+	static const BYTE kMelee2[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };     // sub esp,4 (both melee handlers)
+	g_aiOk = figLoop && hook_code((BYTE *)0x0047fc01, kStrength, sizeof kStrength, h_strength, &o_strength) &&
+		hook_code((BYTE *)0x0048a9d2, kRanged, sizeof kRanged, h_ai_ranged, &o_ai_ranged) &&
+		hook_code((BYTE *)0x0048acd2, kMelee2, sizeof kMelee2, h_ai_melee2, &o_ai_melee2) &&
+		hook_code((BYTE *)0x0048b02b, kMelee2, sizeof kMelee2, h_ai_melee34, &o_ai_melee34);
+	logf_("enemy tactics %s%s", kAiLevel[g_aiLevelSet], g_aiOk ? "" : " (hooks failed: Normal)");
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
 		logf_("battle seed on");

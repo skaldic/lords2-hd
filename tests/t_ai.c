@@ -126,7 +126,9 @@ TEST(ai_second_writes_unit_values_once_and_the_cover)
 	t_snap_all(n);
 	InitializeCriticalSection(&g_blogLock);
 	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	g_bshotsBy[2] = 7; g_bshotsBy[1] = 3;                           // shots in the last second by side
 	battle_second(n);
+	CHECK_EQ(g_bshotsBy[2], 0);                                     // counted afresh each second
 	battle_second(n);                                               // the values only once a battle
 	buf[g_blogLen] = 0;
 	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
@@ -135,7 +137,8 @@ TEST(ai_second_writes_unit_values_once_and_the_cover)
 	const char *first = strstr(buf, "type 6 ");
 	CHECK(first && !strstr(first + 1, "type 6 "));
 	CHECK(strstr(buf, "cover side 2 (computer): archers 1, own melee within 5 cells of each: nearest avg 16 max 16 | isolated 1") != NULL);
-	CHECK(strstr(buf, "men melee 25 ranged 30, enemy melee 32 ranged 0") != NULL);
+	CHECK(strstr(buf, "men melee 25 ranged 30, enemy melee 32 ranged 0 | shots 7, enemy shots 3") != NULL);
+	CHECK(strstr(buf, "| shots 0, enemy shots 0") != NULL);
 	CHECK(!strstr(buf, "cover side 1"));                            // only the computer's side
 }
 
@@ -146,4 +149,249 @@ TEST(ai_group_tick_without_the_log_only_runs_the_game)
 	h_group_tick();
 	CHECK_EQ(t_calls, 1);
 	CHECK_EQ(GROUP_HUNTING(3), 1);
+}
+
+/* ================================ enemy tactics (BattleAI): the steady mode */
+
+/* the game's weighing stand-in: the armies come out at t_raw, plus the random term t_roll (-10..21) */
+static int t_raw, t_roll;
+static void __cdecl t_weigh(void)
+{
+	t_calls++;
+	*(int *)0x0058fd7c = t_roll + 10;                       // the game's random number: term = (n & 31) - 10
+	AI_RATIO = t_raw + t_roll;
+}
+/* a new field battle in single player at `level`, with its hooks in */
+static void t_ai_battle(int level)
+{
+	g_aiOk = TRUE; g_aiLevelSet = level; g_aiParts = 7;
+	*(int *)0x0053e8fc = 0; *(int *)0x00553030 = 0;
+	AI_THRESHOLD = 5;
+	o_strength = t_weigh;
+	battle_reset();
+}
+static int t_weigh_at(int raw, int roll) { t_raw = raw; t_roll = roll; h_strength(); return AI_RATIO; }
+
+TEST(ai_hard_decides_once_and_keeps_to_it)
+{
+	static char buf[1 << 16];
+	InitializeCriticalSection(&g_blogLock);
+	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	t_ai_battle(1);
+	CHECK_EQ(t_weigh_at(0, 12), 6);                         // even, rolled +12: attack, held just above the threshold
+	CHECK_EQ(t_weigh_at(0, -10), 6);                        // the next roll no longer switches it
+	CHECK_EQ(t_weigh_at(-14, 0), 6);                        // a little weaker: still attacking
+	CHECK_EQ(t_weigh_at(-16, 21), -16);                     // 21 below the threshold: defence
+	CHECK_EQ(t_weigh_at(20, 21), 5);                        // stronger again, but not by enough
+	CHECK_EQ(t_weigh_at(26, -10), 26);                      // 21 above: attack
+	buf[g_blogLen] = 0;
+	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
+	DeleteCriticalSection(&g_blogLock);
+	CHECK_EQ(t_calls, 6);                                   // the game's own weighing every time
+	CHECK(strstr(buf, "ai Hard: decided ATTACK (strength +0, with the random term +12, threshold 5)") != NULL);
+	CHECK(strstr(buf, "ai Hard: now DEFEND (strength -16") != NULL);
+	CHECK(strstr(buf, "ai Hard: now ATTACK (strength +26") != NULL);
+}
+
+TEST(ai_hard_defender_attacks_after_a_long_wait_only_when_about_even)
+{
+	t_ai_battle(1);
+	CHECK(t_weigh_at(-5, -10) <= 5);                        // defence
+	for (int i = 1; i < AI_DEF_WAIT; i++) CHECK(t_weigh_at(-5, 21) <= 5);
+	CHECK_EQ(t_weigh_at(-5, 0), 6);                         // about 70 s of waiting: it attacks
+	t_ai_battle(1);
+	CHECK(t_weigh_at(-11, 0) <= 5);                         // clearly weaker: it keeps waiting
+	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-11, 21) <= 5);
+}
+
+TEST(ai_hard_each_battle_decides_afresh)
+{
+	t_ai_battle(1);
+	CHECK_EQ(t_weigh_at(0, 21), 6);
+	t_ai_battle(1);                                         // the next battle (battle_reset)
+	CHECK_EQ(t_weigh_at(0, -10), 0);                        // its own first weighing decides: defence
+	CHECK_EQ(t_weigh_at(0, 21), 0);
+}
+
+TEST(ai_normal_sieges_and_multiplayer_keep_the_games_weighing)
+{
+	t_ai_battle(0);                                         // Normal
+	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
+	t_ai_battle(1); *(int *)0x0053e8fc = 1;                 // a siege
+	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
+	t_ai_battle(1); *(int *)0x00553030 = 1;                 // multiplayer, MultiplayerFixes off
+	g_mpFixes = FALSE;
+	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
+	g_mpFixes = TRUE;                                       // on for every player: Hard (no random term there)
+	CHECK_EQ(t_weigh_at(10, 0), 10); CHECK_EQ(t_weigh_at(-5, 0), 6);
+	g_mpFixes = FALSE;
+	t_ai_battle(1); g_aiOk = FALSE; battle_reset();         // its hooks never went in: Normal
+	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
+	t_ai_battle(1); g_aiParts = AI_ARCHERS | AI_MELEE;      // (measuring the other rules alone)
+	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
+}
+
+/* ================================ enemy tactics: the archers */
+
+static int t_ordG, t_ordX, t_ordY, t_fireAt;
+static void __cdecl t_order6(int g, int x, int y, int a, int b, int c) { (void)a; (void)b; (void)c; t_calls++; t_ordG = g; t_ordX = x; t_ordY = y; }
+static int __cdecl t_fire(int tg) { t_calls++; t_fireAt = tg; return 1; }
+static void t_group(int g, int side, int kind, int count, int cx, int cy)
+{
+	GRP_B(g, 0x00) = (BYTE)side; GRP_B(g, 0x02) = (BYTE)count; GRP_B(g, 0x08) = (BYTE)kind;
+	GRP_S(g, 0x1e) = (short)cx; GRP_S(g, 0x20) = (short)cy;
+}
+/* Hard, with the game's order and fire functions stood in for; the archers' group 2 thinks */
+static void t_ai_think_archers(void)
+{
+	ai_game_order = t_order6; ai_game_fire = t_fire; o_ai_ranged = t_stub_void;
+	t_ordG = t_fireAt = 0; t_calls = 0;
+	*(int *)0x00568458 = 2;
+	G_THINK(2) = 200;
+	h_ai_ranged();
+}
+static BYTE *t_bow(int i, int side, int x, int y, int group, int range) { BYTE *f = t_archer(i, side, x, y, group); FIG_S(i, 0x170) = (short)(range * 8); return f; }
+
+TEST(ai_hard_archers_step_back_from_melee_with_no_cover)
+{
+	t_ai_battle(1);
+	t_bow(1, 2, 40, 40, 2, 15); t_bow(2, 2, 41, 40, 2, 15);   // computer archers, group 2, centre 40,40
+	t_group(2, 2, 1, 2, 40, 40);
+	t_human(t_unit(3, 1, 43, 40, 3)); t_group(3, 1, 3, 1, 43, 40);   // the player's melee 3 cells east
+	t_unit(4, 2, 50, 40, 4); t_group(4, 2, 3, 1, 50, 40);           // its own melee far away
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 2);
+	CHECK_EQ(t_ordX, 36); CHECK_EQ(t_ordY, 40);                     // 4 cells west, away from it
+	CHECK_EQ(GROUP_DEST_X(2), 36);                                  // the destination written as the game's helpers do
+	CHECK_EQ(t_fireAt, 0);
+	CHECK_EQ(G_THINK(2), 0); CHECK_EQ(G_PHASE(2), 1);
+	t_unit(4, 2, 42, 41, 4);                                        // its own melee beside them: they stay and shoot
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 0); CHECK_EQ(t_fireAt, 3);
+}
+
+TEST(ai_hard_archers_stand_behind_their_melee_until_in_range)
+{
+	t_ai_battle(1);
+	t_bow(1, 2, 20, 40, 2, 8); t_group(2, 2, 1, 1, 20, 40);         // crossbowmen at 20,40 (range 8)
+	t_unit(4, 2, 50, 40, 4); t_unit(5, 2, 50, 42, 4); t_group(4, 2, 3, 2, 50, 41);   // their melee round 50,41
+	t_human(t_unit(6, 1, 70, 41, 6)); t_group(6, 1, 3, 1, 70, 41);  // the enemy far east
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 2);
+	CHECK_EQ(t_ordX, 47); CHECK_EQ(t_ordY, 41);                     // 3 cells behind the melee, away from the enemy
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 0);                                            // already going there: no new order
+	GROUP_HUNTING(4) = 1;                                           // the melee charges: walk up into range
+	GRP_S(2, 0x1e) = 47; GRP_S(2, 0x20) = 41; t_unit_at(1, 47, 41);
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 2);
+	CHECK_EQ(t_ordX, 64); CHECK_EQ(t_ordY, 41);                     // the enemy 2 cells inside range: 6 away
+}
+
+/* ================================ enemy tactics: the melee */
+
+static int t_charged[8], t_nCharged;
+static void __cdecl t_charge(int g) { t_calls++; if (t_nCharged < 8) t_charged[t_nCharged++] = g; }
+/* melee group g (computer, Hard) thinks; the game's order and charge stood in for */
+static void t_ai_think_melee(int g)
+{
+	ai_game_order = t_order6; ai_game_charge = t_charge; o_ai_melee34 = t_stub_void; o_ai_melee2 = t_stub_void;
+	t_ordG = 0; t_nCharged = 0; t_calls = 0;
+	*(int *)0x00568458 = g;
+	G_THINK(g) = 200;
+	if (GRP_B(g, 0x08) == 2) h_ai_melee2(); else h_ai_melee34();
+}
+
+TEST(ai_hard_melee_advances_no_further_than_a_step_ahead_of_the_rearmost)
+{
+	t_ai_battle(1); AI_RATIO = 30;                                  // attack
+	t_unit(4, 2, 30, 40, 4); t_group(4, 2, 3, 1, 30, 40);          // a forward group, 20 cells from the enemy
+	t_unit(5, 2, 10, 40, 5); t_group(5, 2, 4, 1, 10, 40);          // knights 40 cells away
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+	t_ai_think_melee(4);
+	CHECK_EQ(t_ordG, 0); CHECK_EQ(t_nCharged, 0);                   // waits for the knights
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 5); CHECK_EQ(t_ordX, 16); CHECK_EQ(t_ordY, 40);   // they come up 6 cells
+	CHECK_EQ(G_PHASE(5), 1);
+}
+
+TEST(ai_hard_melee_in_place_waits_for_the_volleys_then_charges_together)
+{
+	t_ai_battle(1); AI_RATIO = 30;
+	t_unit(4, 2, 44, 40, 4); t_group(4, 2, 3, 1, 44, 40);          // 6 cells from the enemy
+	t_unit(5, 2, 43, 41, 5); t_group(5, 2, 2, 1, 43, 41);          // pikemen 7 cells away: all in place
+	t_bow(1, 2, 40, 40, 2, 15); t_group(2, 2, 1, 1, 40, 40);       // archers behind them
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+	g_btick = 1000;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 0);                   // in place: the archers shoot first
+	g_btick = 1000 + AI_VOLLEY_STEPS - 1;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);
+	G_THINK(5) = 20;
+	g_btick = 1000 + AI_VOLLEY_STEPS;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_charged[0], 4);
+	CHECK(g_aiCharge[2]);
+	CHECK_EQ(G_THINK(5), 199);                                      // the pikemen think at their next step...
+	t_ai_think_melee(5);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_charged[0], 5);             // ...and charge too
+	CHECK_EQ(G_THINK(2), 0);                                        // (not the archers)
+}
+
+TEST(ai_hard_melee_charges_at_once_when_hit_in_attack)
+{
+	t_ai_battle(1); AI_RATIO = 30;
+	t_unit(4, 2, 20, 40, 4); t_group(4, 2, 3, 1, 20, 40);
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 5, 1, 50, 40);
+	t_bow(1, 2, 18, 40, 2, 15); t_group(2, 2, 1, 1, 18, 40);
+	GRP_B(2, 0x0c) = 50; GRP_S(2, 0x0a) = 6;                        // its archers are shot at by group 6
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]);
+}
+
+TEST(ai_hard_defence_holds_until_the_enemy_is_close_or_it_bleeds)
+{
+	t_ai_battle(1); AI_RATIO = 0;                                   // defence
+	for (int i = 1; i <= 3; i++) { t_unit(i, 2, 40, 39 + i, 4); t_men(i, 32); }
+	t_group(4, 2, 3, 3, 40, 41);
+	t_human(t_unit(6, 1, 46, 40, 6)); t_human(t_unit(7, 1, 46, 41, 6)); t_group(6, 1, 3, 2, 46, 40);
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 0);                   // two enemy units close: it holds
+	t_human(t_unit(8, 1, 46, 42, 6));
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);                                        // three: the side charges
+	t_ai_battle(1); AI_RATIO = 0;
+	t_unit_at(6, 70, 40); t_unit_at(7, 70, 41); t_unit_at(8, 70, 42);   // far away now
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);                                        // (its men counted: 96)
+	for (int i = 1; i <= 3; i++) t_men(i, 26);                      // shot down to 78: lost 19%
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
+}
+
+TEST(ai_hard_melee_normal_runs_the_games_handlers)
+{
+	t_ai_battle(0); AI_RATIO = 30;
+	t_unit(4, 2, 20, 40, 4); t_group(4, 2, 2, 1, 20, 40);
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+	t_ai_think_melee(4);
+	CHECK_EQ(t_calls, 1); CHECK_EQ(G_THINK(4), 200);                // the game's (stood-in) handler, nothing else
+	t_ai_battle(1); g_aiParts = AI_STEADY | AI_ARCHERS;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_calls, 1); CHECK_EQ(G_THINK(4), 200);
+}
+
+TEST(ai_hard_archers_wait_while_a_member_fights_and_normal_runs_the_game)
+{
+	t_ai_battle(1);
+	t_bow(1, 2, 40, 40, 2, 15); t_group(2, 2, 1, 1, 40, 40);
+	t_human(t_unit(3, 1, 43, 40, 3)); t_group(3, 1, 3, 1, 43, 40);
+	GRP_B(2, 0x0d) = 1;                                             // a member in melee: no think
+	t_ai_think_archers();
+	CHECK_EQ(t_calls, 0); CHECK_EQ(G_THINK(2), 201);
+	GRP_B(2, 0x0d) = 0;
+	t_ai_battle(0);                                                 // Normal: the game's own handler
+	t_ai_think_archers();
+	CHECK_EQ(t_calls, 1); CHECK_EQ(t_ordG, 0); CHECK_EQ(G_THINK(2), 200);
 }

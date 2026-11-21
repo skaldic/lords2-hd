@@ -194,6 +194,7 @@ static int t_panel(int i)
 	case M_WIDE: return g_wantWideSet;    case M_ZOOM: return g_battleZoomSet;  case M_ARMY: return g_armyPanel;
 	case M_LETTERS: return g_letters;     case M_RESOUND: return g_resounded;   case M_RENDERER: return g_gpuWantedSet;
 	case M_FPS: return g_statsOn;         case M_MINIPOP: return g_miniPop;     case M_ARROWS: return g_arrowsOn;
+	case M_AI: return g_aiLevelSet;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }
@@ -214,7 +215,7 @@ TEST(f10_changes_are_saved_and_read_back)
 {
 	t_shipped_settings();
 	for (int i = 0; i < M_COUNT; i++) {
-		int states = i == M_UPSCALE || i == M_FPS ? 3 : i == M_TUTORIAL ? 2 : 2;
+		int states = i == M_UPSCALE || i == M_FPS || i == M_AI ? 3 : i == M_TUTORIAL ? 2 : 2;
 		int first = t_panel(i);
 		for (int s = 0; s < states; s++) {
 			if (i == M_TUTORIAL && s == 1) break;   // (Every time -> Off is fine; Off -> Once calls the game)

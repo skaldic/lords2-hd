@@ -7,14 +7,16 @@
 #   charges   group thinks that started a charge, and that ended one
 #   isolated  seconds with a computer archer unit that has enemy melee within 8 cells and none of its own within 5
 #   melee     seconds with a computer archer unit in melee
+#   contact   the first second with any unit in melee
+#   shots     the computer's shots (yours in brackets)
 #   men       men left at the end on each side, melee + ranged (start in brackets)
-# The copy's ddraw.dll and lords2hd.ini are put back afterwards. About 2.5 minutes a battle.
+# The copy's ddraw.dll and lords2hd.ini are put back afterwards. About 3.5 minutes a battle.
 param(
     [Parameter(Mandatory = $true)][string]$Game,
     [string]$Dll = "$PSScriptRoot\..\hd\ddraw.dll",
     [string[]]$Maps = @('tb', 'sq', 'lakes'),
     [string[]]$Odds = @('strong', 'even', 'weak'),
-    [int]$Secs = 120,
+    [int]$Secs = 180,
     [string]$Tag = 'run',
     [string[]]$Ini = @()   # extra Section.Key=Value settings for the run, e.g. Game.BattleAI=1
 )
@@ -62,7 +64,13 @@ function Get-AiSummary($file) {
     $cov = @($L | Select-String 'cover side \d \(computer\)')
     $first = $cov | Select-Object -First 1; $last = $cov | Select-Object -Last 1
     $start = ($L | Select-String 'ai groups at the start' | Select-Object -First 1).Line
+    $secs = @($L | Select-String ' sec side1 ')
+    $contact = '-'
+    for ($k = 0; $k -lt $secs.Count; $k++) { if ($secs[$k].Line -match ' melee [1-9]') { $contact = $k + 1; break } }
     [pscustomobject]@{
+        contact  = $contact
+        shots    = "{0} ({1})" -f ($cov | ForEach-Object { Get-Num $_.Line '\| shots (\d+)' } | Measure-Object -Sum).Sum,
+                       ($cov | ForEach-Object { Get-Num $_.Line 'enemy shots (\d+)' } | Measure-Object -Sum).Sum
         start    = if ($start -match 'strength ([+-]\d+)') { $Matches[1] } else { '?' }
         flips    = @($L | Select-String 'ai strength ').Count
         charges  = @($L | Select-String 'did: charge(?! ends)').Count
@@ -93,8 +101,8 @@ try {
             Copy-Item "$Game\lords2hd.log" "$out\$m-$o-$Tag.log" -Force -ErrorAction SilentlyContinue
             if (-not (Test-Path $file)) { "{0,-6} {1,-6} no battle log (did the battle start?)" -f $m, $o; continue }
             $s = Get-AiSummary $file
-            "{0,-6} {1,-6} start {2,4} | flips {3,3} | charges {4,3} ends {5,3} | isolated {6,3} s (max {7}) | archers in melee {8,3} s | computer men {9} | yours {10}" -f
-                $m, $o, $s.start, $s.flips, $s.charges, $s.ends, $s.isolated, $s.maxIso, $s.inMelee, $s.cpu, $s.you
+            "{0,-6} {1,-6} start {2,4} | flips {3,3} | charges {4,3} ends {5,3} | contact {6,3} s | isolated {7,3} s (max {8}) | archers in melee {9,3} s | shots {10} | computer men {11} | yours {12}" -f
+                $m, $o, $s.start, $s.flips, $s.charges, $s.ends, $s.contact, $s.isolated, $s.maxIso, $s.inMelee, $s.shots, $s.cpu, $s.you
         }
     }
 }

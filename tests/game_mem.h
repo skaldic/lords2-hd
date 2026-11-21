@@ -71,6 +71,7 @@ static int __cdecl t_stub_int1(int a) { (void)a; t_calls++; return t_stub_ret; }
 static void t_battle_reset(void)
 {
 	for (int f = 0; f < BF_COUNT; f++) g_bfSet[f] = g_bfOk[f] = TRUE;
+	g_aiOk = FALSE; g_aiLevelSet = 0; g_aiParts = 7;     // enemy tactics: Normal
 	battle_reset();
 	g_mpFixes = FALSE;
 	g_dmMaxDepth = 0x7fff; g_dmFullThisStep = 0;
