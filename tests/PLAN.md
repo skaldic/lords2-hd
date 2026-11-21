@@ -20,6 +20,18 @@ minimap crash on freed battle buffers) before a release, with tests that run in 
   - undoing the stride check
   - a wider engage leash
   - dropping the freed-table guard, whose crash was caught and reported
+- **Phase 3 is done:** 8 settings tests (80 in all, about 5 s). They check:
+  - every setting the code reads (found by scanning the source) is in the shipped ini, apart from four left out on
+    purpose
+  - the code's defaults match the shipped ini
+  - the installer's IniVersion marker
+  - every F10 item is on exactly one tab and has a label
+  - every F10 change is saved under the key the patch reads at start-up and goes back round to its first value
+  - the README's F10 table matches the panel: labels, order, defaults after an install, and the key each one writes
+  - the restart marks
+- **Second finding, open:** the code's default for `[Display] Upscale` is `catmullrom`, but the shipped ini, the README
+  and INSTALL.txt all say FSR. A player whose ini lacks the key gets Catmull-Rom.
+- **Not tested:** the F10 labels' pixel width. It needs the game's own font.
 - **Not tested:** the packer's 4 GB check. Testing it would need a 4 GB file.
 - **Not tested:** `h_order` ending Mop-Up. It depends on the caller's return address in the game.
 
