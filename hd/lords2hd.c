@@ -6695,7 +6695,8 @@ static BOOL cycle_btn_rect(int b, RECT *r)
 	BYTE s = *(BYTE *)0x004eac50;
 	if (s == 16) {
 		if (!panel_army() || player_armies() < 2) return FALSE; // one army: nothing to go to
-		SetRect(r, b ? AP_X + AP_W - 24 : AP_X + 8, AP_Y + AP_H - 40, b ? AP_X + AP_W - 8 : AP_X + 24, AP_Y + AP_H - 22);
+		// (the same smaller arrows as on the name plate, nearer the scroll's edges, beside the men count)
+		SetRect(r, b ? AP_X + AP_W - 18 : AP_X + 6, AP_Y + AP_H - 39, b ? AP_X + AP_W - 6 : AP_X + 18, AP_Y + AP_H - 24);
 		return TRUE;
 	}
 	int c = *(int *)0x0057c93c; // the name plate is up for the player's own county
