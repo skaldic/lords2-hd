@@ -9,6 +9,9 @@ tests\run.ps1 -Filter pak    # only the tests whose name contains "pak"
 tests\run.ps1 -GameExe "D:\L2HD-test\Lords of the Realm II\Lords2.exe"   # with the hook tests (or set L2HD_GAME_EXE)
 ```
 
+`tools\make_release.ps1` runs these first and builds nothing if a test fails; it needs `-GameExe` so the hook tests
+run too, and takes `-Integration` and `-RefDll` for the slow checks.
+
 Before a release, the slow checks too (about 30 minutes, in a COPY of the game, never your own):
 
 ```powershell
