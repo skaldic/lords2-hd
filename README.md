@@ -125,11 +125,12 @@ the settings, and `lords2hd.pak`, one file with the HD art, the restored voices 
 the game folder already holds a `ddraw.dll` or `dplayx.dll` from another wrapper or multiplayer fix,
 these replace them.
 
-**Updating:** run the installer over the old version; your settings are kept. The battle fixes and
-the sharper videos are on at once. If your game still shows 4:3, switch Widescreen on in F10 →
-Display.
+**Updating:** run the installer over the old version. Coming from 1.4.0 or older, your settings go
+back to the 1.5.0 defaults once (widescreen, the battle fixes and the sharper videos on); the old
+ones are kept as `lords2hd-before-1.5.0.ini` beside it. Later updates keep your settings.
 
-Rather unzip by hand? `Lords2-HD-1.5.0.zip` holds the same files: unzip it into the game's folder.
+Rather unzip by hand? `Lords2-HD-1.5.0.zip` holds the same files: unzip it into the game's folder,
+replacing the old files (`lords2hd.ini` too, for the new defaults).
 
 ## Videos and music
 

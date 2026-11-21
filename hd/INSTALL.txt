@@ -48,8 +48,9 @@ NEW IN 1.5.0
   greatest nobles and results screens; the town keeps the original's grain
 - Minimap outlines (F10, Battles): troops on the battle minimap stand out
 - No freezes scrolling over forest in zoomed-out battles; clicks work across the whole battlefield
-- Widescreen on by default (updating? switch it on in F10, Display); 4:3 no longer crashes at a
-  yes/no question
+- Widescreen on by default; 4:3 no longer crashes at a yes/no question (such as Combine armies?)
+- Updating from 1.4.0 or older with the installer: the settings go back to the 1.5.0 defaults once,
+  the old ones kept as lords2hd-before-1.5.0.ini; later updates keep your settings
 
 WHAT IT DOES
 - Runs fullscreen at your monitor's resolution, without switching its display mode
