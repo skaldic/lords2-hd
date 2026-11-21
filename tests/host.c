@@ -10,8 +10,8 @@
 #include <windows.h>
 #include <stdio.h>
 
-#define GAME_LO 0x004e0000   // the game's data the tests may touch (its .data and .bss)
-#define GAME_HI 0x005f0000
+#define GAME_LO 0x00410000   // what the tests may touch: the game's code addresses (hook sites) and data
+#define GAME_HI 0x00600000
 __attribute__((used)) volatile BYTE g_gameSpace[0x00200000];  // .bss right after this exe's few pages of code
 
 int main(int argc, char **argv)

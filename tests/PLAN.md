@@ -9,7 +9,19 @@ minimap crash on freed battle buffers) before a release, with tests that run in 
 - **First finding, fixed:** `mem_readable`'s check for a range that wraps round the address space was compiled away,
   because it compared pointers and C assumes pointer arithmetic never wraps. It now compares integers. The minimap also
   requires the game's cell stride of 8.
+- **Phase 2 is done:** 48 tests on fake game memory (72 in all, about 3 s). They cover:
+  - walking distances
+  - Mop-Up, engagement and archers
+  - group routes and the jitter fixes
+  - the minimap regression
+  - the F10 Battles switches, including `install_game_fixes` run on fake code to check when a restart is needed
+  - the wheat, castle cap and siege fixes
+- **The tests catch real bugs.** Three bugs planted in a copy of the patch were each caught:
+  - undoing the stride check
+  - a wider engage leash
+  - dropping the freed-table guard, whose crash was caught and reported
 - **Not tested:** the packer's 4 GB check. Testing it would need a 4 GB file.
+- **Not tested:** `h_order` ending Mop-Up. It depends on the caller's return address in the game.
 
 ## How it works (proven by a spike on 2026-11-21)
 

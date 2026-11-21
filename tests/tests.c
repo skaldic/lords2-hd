@@ -6,6 +6,7 @@
 #define DllMain l2hd_DllMain_off
 #include "../hd/lords2hd.c"
 #include "t.h"
+#include "game_mem.h"
 #include <shellapi.h>
 
 static BYTE *t_gameLo, *t_gameHi;   // the game's address range the host provides (fake game memory)
@@ -67,9 +68,12 @@ static void t_reset(void)
 	hv_free_file(); g_hv.smk = NULL; g_hv.dest = NULL; InterlockedExchange(&g_hv.on, 0);
 	g_hdVideos = TRUE;
 	t_rand_state = 12345;
+	t_battle_reset();
 }
 
 #include "t_core.c"
+#include "t_battle.c"
+#include "t_campaign.c"
 
 __declspec(dllexport) int run_tests(const char *filter, void *gameLo, void *gameHi)
 {
