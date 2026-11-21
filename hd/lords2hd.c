@@ -3743,7 +3743,7 @@ static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loade
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-// "Better battles" (JitterFix, EngageFix, GroupMoveFix together): g_bfSet is the panel's choice, taken
+// "Improved pathfinding and cohesion" (JitterFix, EngageFix, GroupMoveFix together): g_bfSet is the panel's choice, taken
 // at the next battle's start (battle_reset); g_bf*Ok: that fix's hooks went in at startup (on in the ini).
 static BOOL g_bfSet, g_bfJitterOk, g_bfEngageOk, g_bfGroupOk;
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_BATTLES, M_COUNT };
@@ -3788,7 +3788,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Better battles" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Improved pathfinding and cohesion" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3918,6 +3918,15 @@ static void menu_click(int wx, int wy, int gx, int gy)
 static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 {
 	int fh = max(16, vh / 34), pad = fh, rowH = fh * 3 / 2, labelW = fh * 10, valueW = fh * 12;
+	{ // the label column: wide enough for the open tab's longest label
+		HFONT f = CreateFontA(fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
+		HGDIOBJ o = SelectObject(dc, f);
+		for (int i = 0; i < menu_tab_count(g_menuTab); i++) {
+			const char *s = kMenuLabel[kMenuTabItems[g_menuTab][i]]; SIZE sz;
+			if (GetTextExtentPoint32A(dc, s, lstrlenA(s), &sz)) labelW = max(labelW, sz.cx + fh);
+		}
+		SelectObject(dc, o); DeleteObject(f);
+	}
 	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (MENU_ROWS + 6);
 	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
 	COLORREF cPaper = RGB(222, 196, 140), cHi = RGB(244, 226, 180), cLine = RGB(120, 80, 40);
@@ -7691,7 +7700,7 @@ static void army_panel_keep(void)
 // The settings panel (F10) as one of the game's scrolls: drawn with its own scroll frame and
 // lettering into its picture, like the army scroll, before every flush that would show the place
 // without it. What it covered is kept and put back when it closes.
-#define MS_W (24 * 16)
+#define MS_W (28 * 16) // (wide enough for "Improved pathfinding and cohesion" and its value)
 #define MS_H (17 * 16)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
@@ -7740,6 +7749,8 @@ static void menu_scroll_draw(void)
 	int n = menu_tab_count(g_menuTab);
 	if (g_menuSel >= n) g_menuSel = 0;
 	g_menuRows = n;
+	int vx = 190; // the values' column: clear of the tab's longest label
+	for (int i = 0; i < n; i++) vx = max(vx, 32 + width(kMenuLabel[kMenuTabItems[g_menuTab][i]], small) + 14);
 	for (int i = 0; i < n; i++) {
 		int item = kMenuTabItems[g_menuTab][i], y = y0 + 74 + i * 15, c = i == g_menuSel ? red : ink;
 		char v[64]; BOOL restart;
@@ -7748,7 +7759,7 @@ static void menu_scroll_draw(void)
 		if (i == g_menuSel) // a pointer before the chosen line
 			for (int k = 0; k < 4; k++) line(x0 + 22 + k, y + 4 - (3 - k), x0 + 22 + k, y + 4 + (3 - k), red);
 		text(kMenuLabel[item], x0 + 32, y, small, c); // the small lettering: the body's is too large for a list
-		text(v, x0 + 190, y, small, restart ? red : c);
+		text(v, x0 + vx, y, small, restart ? red : c);
 		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
@@ -10099,7 +10110,7 @@ static BOOL engage_chase(int me)
 static void battle_reset(void)
 {
 	g_btick = 0;
-	// F10 "Better battles": switched between battles only, never in the middle of one
+	// F10 "Improved pathfinding and cohesion": switched between battles only, never in the middle of one
 	g_fixJitter = g_bfSet && g_bfJitterOk; g_fixEngage = g_bfSet && g_bfEngageOk; g_fixGroupMove = g_bfSet && g_bfGroupOk;
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
 	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
@@ -10601,7 +10612,7 @@ static void install_game_fixes(void)
 			logf_("archers leaving melee %s", hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee) ? "on" : "failed");
 		}
 	}
-	g_bfJitterOk = g_fixJitter; g_bfEngageOk = g_fixEngage; g_bfGroupOk = g_fixGroupMove; // (F10 "Better battles")
+	g_bfJitterOk = g_fixJitter; g_bfEngageOk = g_fixEngage; g_bfGroupOk = g_fixGroupMove; // (F10 "Improved pathfinding and cohesion")
 	g_bfSet = g_bfJitterOk || g_bfEngageOk || g_bfGroupOk;
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
