@@ -1,4 +1,5 @@
-# Packs the HD art in <game>\lords2hd (screens, wide, tiles, sprites) into one file, lords2hd.pak,
+# Packs the HD art in <game>\lords2hd (screens, wide, tiles, sprites; sound, videos and the HD video
+# frames in videohd if present) into one file, lords2hd.pak,
 # which the DLL reads (loose files in lords2hd\ still win, for hand-made changes).
 #   .\tools\make_pak.ps1 [-Out <path>]     default: dist\stage\lords2hd.pak
 param([string]$Out = "")

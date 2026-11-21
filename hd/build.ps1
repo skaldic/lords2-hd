@@ -19,7 +19,7 @@ if (-not $cc) { # llvm-mingw's per-target wrapper missing: its clang itself, tol
 if (-not $cc) { throw "i686-w64-mingw32-clang.exe not found: put llvm-mingw on PATH or in the tools folder (tools\tools_dir.ps1)" }
 $out = "$PSScriptRoot\ddraw.dll"
 
-& $cc @target -O2 -Wall -shared -static -o $out "$PSScriptRoot\lords2hd.c" "$PSScriptRoot\lords2hd.def" -luser32 -lgdi32 -lwinmm -lole32 -lmfuuid
+& $cc @target -O2 -Wall -shared -static -o $out "$PSScriptRoot\lords2hd.c" "$PSScriptRoot\lords2hd.def" -luser32 -lgdi32 -lwinmm -lole32 -lmfuuid -lwindowscodecs -luuid
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 "built $out ($((Get-Item $out).Length) bytes)"
 

@@ -1,8 +1,8 @@
-Lords of the Realm II HD 1.4.0: an unofficial fan patch for the GOG and Steam versions of the game.
+Lords of the Realm II HD 1.5.0: an unofficial fan patch for the GOG and Steam versions of the game.
 You need your own copy of the game.
 
 INSTALL
-Run Lords2-HD-1.4.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
+Run Lords2-HD-1.5.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
 folder holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
 ddraw.dll, dplayx.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
@@ -30,18 +30,27 @@ COMMUNITY
 Join the Lords of the Realm II community on Discord: https://discord.gg/uBzaMGjUR
 Multiplayer games, the multiplayer layer, and bugs and ideas for this patch.
 
-GAME FIXES (single player; lords2hd.ini [Game])
-- Mop-Up: your troops keep fighting after their first kill instead of standing idle
+GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Battles tab)
+- Mop-Up fix (MopUpFix): your troops keep fighting after their first kill instead of standing idle
+- Improved pathfinding (JitterFix): no stepping back and forth, no swapping places over and over
+- Group cohesion (GroupMoveFix): groups keep together round obstacles
+- Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away);
+  archers step back from a charge and out of melee
 - The computer no longer starts a castle in every county at once (the Bishop's royal castles)
 - A wheat field lost after planting costs its grain once, not twice
 - No army can enter or strengthen a castle under siege (the game's own rule)
 
-NEW IN 1.4.0
-- The graphics card draws the picture (Direct3D 11) and upscales it with AMD FSR 1: sharper, and the
-  processor is left free
-- A locked 60 frames a second, in battles and while scrolling the map
-- An FPS counter (Ctrl+F10) and a Performance tab on F10
-- Game fixes and the bundled multiplayer layer (below)
+NEW IN 1.5.0
+- Battles: improved pathfinding, cohesion and engagement (see GAME FIXES), each with its own switch
+  on F10's new Battles tab; Mop-Up keeps going until the field is clear
+- Sharper videos: the intro, credits and castle, battle and siege videos with upscaled frames
+- New widened paintings: armoury, castle builder; seamless sides on the custom game, battle setup,
+  greatest nobles and results screens; the town keeps the original's grain
+- Minimap outlines (F10, Battles): troops on the battle minimap stand out
+- No freezes scrolling over forest in zoomed-out battles; clicks work across the whole battlefield
+- Widescreen on by default; 4:3 no longer crashes at a yes/no question (such as Combine armies?)
+- Updating from 1.4.0 or older with the installer: the settings go back to the 1.5.0 defaults once,
+  the old ones kept as lords2hd-before-1.5.0.ini; later updates keep your settings
 
 WHAT IT DOES
 - Runs fullscreen at your monitor's resolution, without switching its display mode
@@ -58,7 +67,8 @@ WHAT IT DOES
   counties and armies; fresh diplomatic letters
 
 VIDEOS AND MUSIC
-- Videos: the disc-quality videos are included (in lords2hd.pak) and play instead of the GOG ones.
+- Videos: the disc-quality videos are included (in lords2hd.pak) and play instead of the GOG ones,
+  with upscaled frames drawn over them (HDVideos=0 turns those off).
 - Music (optional, not included): put the MP3s of the composer's 2020 remastered soundtrack, with their release names
   (for example "07. Scroll 1 (1996, Remastered).mp3"), in lords2hd\music. At the next start the
   patch converts them and cuts each as Lords2Resounded edits the soundtrack, so they loop
@@ -66,14 +76,18 @@ VIDEOS AND MUSIC
   Lords2Resounded tool (github.com/gqzomer/Lords2Resounded) into lords2hd\music.
 
 SETTINGS
-Press F10 in the game for the settings panel (three tabs: Display, Performance and Quality of life;
-Tab switches them; a right-click closes it): most changes apply at once and are saved. F8 is the
+Press F10 in the game for the settings panel (four tabs: Display, Performance, Quality of life and
+Battles; Tab switches them; a right-click closes it): most changes apply at once and are saved, the
+battle fixes from the next battle. F8 is the
 game's own key again. Ctrl+F10 switches the FPS counter. Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
 Wide=0          4:3 instead of widescreen
 BattleZoom=0    battles at normal size
+MinimapPop=1    outlined troops on the battle minimap (easier to see, black especially)
+JitterFix=0, GroupMoveFix=0, EngageFix=0, MopUpFix=0    each battle fix off (F10, Battles)
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
+HDVideos=0      the videos at their original detail
 Upscale=fsr     AMD FSR 1 (default); catmullrom = the scaling of 1.3, bilinear = softer still
 Renderer=cpu    the processor draws the picture instead of the graphics card (after a restart)
 RepeatFrames=0  a refresh with nothing new from the game shows nothing new (the counter then dips)
@@ -88,7 +102,9 @@ Letters=0       diplomatic letters start empty, as the original (default: a fres
 Resounded=0     the game's own voices instead of the ones restored by Lords2Resounded
 
 ABOUT THE ART
-The new sides of the widened paintings were painted by an AI image model; see NOTICE.md.
+The HD art and the videos' frames are the game's own, enlarged with an AI upscaler. Some sides of the
+widened paintings are built from the painting's own pixels, the others were painted by an AI image
+model; see NOTICE.md.
 
 REQUIREMENTS
 The GOG or Steam version of the game, Windows, and a screen of 720p (1280x720) or larger. GPU drawing

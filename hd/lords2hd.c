@@ -19,6 +19,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <wincodec.h>
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -119,6 +120,8 @@ static volatile LONG g_shotWanted, g_shot1xWanted;
 static void shot_save(const DWORD *px, int w, int h);
 static BOOL g_wantWide;
 static BOOL g_hdScreens = TRUE, g_hdTiles = TRUE, g_hdText = TRUE, g_shoreWaves = TRUE;
+static BOOL g_hdVideos = TRUE; // [Display] HDVideos: the videos' 2x frames from lords2hd\videohd (hv_*)
+static BOOL g_showScreens;     // (the F8 panel's HD art switch, defined with it)
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
@@ -144,6 +147,7 @@ static int g_repeatOn;          // [Display] RepeatFrames: refreshes with nothin
 static BOOL gpu_drawing(void);  // the GPU draws the window (or is about to try)
 static double gpu_ms(void);     // the card's time for a recent frame
 static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
+static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
 static BOOL g_perfLogOn;        // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
@@ -167,6 +171,7 @@ static void logf_(const char *fmt, ...)
 	fflush(f);
 }
 
+static BOOL g_smoothScroll = TRUE;   // see present_battle
 static void read_settings(void)
 {
 	char s[32];
@@ -177,9 +182,11 @@ static void read_settings(void)
 	g_windowScale = GetPrivateProfileIntA("Display", "WindowScale", 2, g_iniPath);
 	if (g_windowScale < 1) g_windowScale = 1;
 	g_integerScale = GetPrivateProfileIntA("Display", "IntegerScale", 0, g_iniPath) != 0;
-	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+	g_wantWide = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 	g_battleZoom = g_wantWide && GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
+	g_smoothScroll = GetPrivateProfileIntA("Display", "SmoothScroll", 0, g_iniPath) != 0;   // (off until the scroll's frame rate is fixed)
 	g_hdScreens = GetPrivateProfileIntA("Display", "HDScreens", 1, g_iniPath) != 0;
+	g_hdVideos = GetPrivateProfileIntA("Display", "HDVideos", 1, g_iniPath) != 0;
 	g_hdTiles = GetPrivateProfileIntA("Display", "HDTiles", 1, g_iniPath) != 0;
 	g_hdText = GetPrivateProfileIntA("Display", "SharpText", 1, g_iniPath) != 0;
 	g_shoreWaves = GetPrivateProfileIntA("Display", "ShoreWaves", 1, g_iniPath) != 0;
@@ -201,6 +208,7 @@ static void read_settings(void)
 	g_statsOn = GetPrivateProfileIntA("Display", "FpsCounter", 0, g_iniPath);
 	if (g_statsOn < 0 || g_statsOn > 2) g_statsOn = 0;
 	if (GetPrivateProfileIntA("Debug", "Stats", 0, g_iniPath)) g_statsOn = 2;
+	g_miniPop = GetPrivateProfileIntA("Display", "MinimapPop", 0, g_iniPath) != 0;
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -234,8 +242,36 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 			(unsigned long)((BYTE *)at - (BYTE *)mod),
 			(unsigned long)ep->ExceptionRecord->ExceptionInformation[0],
 			(unsigned long)ep->ExceptionRecord->ExceptionInformation[1]);
+		// the stack's top words: after a call through a null pointer the first is the caller's return address
+		const DWORD *sp = (const DWORD *)ep->ContextRecord->Esp;
+		MEMORY_BASIC_INFORMATION mi;
+		if (VirtualQuery(sp, &mi, sizeof mi) && mi.State == MEM_COMMIT && (BYTE *)sp + 32 <= (BYTE *)mi.BaseAddress + mi.RegionSize) {
+			HMODULE rm = NULL; char rn[MAX_PATH] = "?";
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)sp[0], &rm))
+				GetModuleFileNameA(rm, rn, sizeof rn);
+			logf_("  return address %08lx: %s +%lx", sp[0], rn, (unsigned long)(sp[0] - (DWORD)rm));
+			logf_("  stack %p: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx (eax %08lx ecx %08lx edx %08lx)", (void *)sp,
+				sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7],
+				ep->ContextRecord->Eax, ep->ContextRecord->Ecx, ep->ContextRecord->Edx);
+		}
 	}
 	return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Whether n bytes from p can be read now: every page committed and readable (no guard page). For game
+// buffers the patch reads on its own, which the game may have freed (the battle minimap's, after a battle).
+static BOOL mem_readable(const void *p, size_t n)
+{
+	const BYTE *a = (const BYTE *)p, *end = a + n;
+	if (!p || end < a) return FALSE;
+	while (a < end) {
+		MEMORY_BASIC_INFORMATION mi;
+		if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
+			!(mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+			return FALSE;
+		a = (const BYTE *)mi.BaseAddress + mi.RegionSize;
+	}
+	return TRUE;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -291,6 +327,8 @@ static int g_frameSteps;               // Timing=1: logic steps since the last f
 static volatile LONG g_presentCount;   // pictures shown (Timing=1)
 static double g_presentEma = 6.0;      // presenter: ms a new picture takes, averaged
 static volatile LONG g_copySeq;        // every copy to the screen (h_show_frame: did a forced call copy?)
+static int g_forcedViewCopies;         // Timing: battle frames copied because the view moved and the game didn't
+static double g_lastLogicStepT;        // Timing: when the game last ran a logic step
 static volatile LONG g_copyPending;    // the game's last finished frame was not copied (pending_copy)
 static volatile double g_frameCopyT;   // when the game last copied a whole frame to the screen
 static int g_pendingCopies;            // Timing=1: copies made from the frame limiter's wait
@@ -1159,7 +1197,15 @@ static BYTE *g_btShadow, *g_btValid;
 #define DIRTY_ROWS 4096
 static BYTE g_sprDirty[DIRTY_ROWS], g_txtDirty[DIRTY_ROWS], g_btDirty[DIRTY_ROWS];
 static void rows_dirty(BYTE *d, int y0, int y1) { y0 = max(0, y0); y1 = min(DIRTY_ROWS, y1); if (y1 > y0) memset(d + y0, 1, y1 - y0); }
-static struct { BOOL on, seen; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
+// gone: the frame stopped showing the picture (most of it drawn over). It is not forgotten: the game
+// often puts a screen back from its saved copy without loading the picture again, so it comes back
+// once the frame shows most of it again.
+static struct { BOOL on, seen, gone; BYTE shadow[GAME_W * GAME_H]; BYTE pal[768]; DWORD *px; } g_hdPic;
+// Off-map sprite stamps whose art did not fit the palette yet (stamp_sprite, sprites_retry_late).
+#define MAX_LATE 128
+typedef struct { const BYTE *buf; int index, x, y; } late_stamp;
+static late_stamp g_late[MAX_LATE];
+static int g_lateN;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
 static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
 #define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
@@ -1337,7 +1383,7 @@ static void pak_open(void)
 	else if (got == sizeof head && head[0] == PAK_MAGIC) logf_("art pack: version %lu, not %d: ignored (make it again with tools\\make_pak.ps1)", head[3], PAK_VERSION);
 	CloseHandle(h);
 }// A file of the art: loose, or from the pack (read on demand through its own handle).
-struct AFILE { FILE *f; HANDLE h; DWORD base, size, pos; };
+struct AFILE { FILE *f; HANDLE h; DWORD base, size, pos; const BYTE *mem; };
 static const PAK_ENTRY *pak_find(const char *path)
 {
 	char prefix[MAX_PATH];
@@ -1370,6 +1416,7 @@ static size_t afread(void *buf, size_t sz, size_t n, AFILE *a)
 	if (a->f) return fread(buf, sz, n, a->f);
 	DWORD want = (DWORD)(sz * n), left = a->size - a->pos, got = 0;
 	if (want > left) want = left - left % (DWORD)sz;
+	if (a->mem) { memcpy(buf, a->mem + a->pos, want); a->pos += want; return want / sz; }
 	LONG hi = 0;
 	if (!want || SetFilePointer(a->h, (LONG)(a->base + a->pos), &hi, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(a->h, buf, want, &got, NULL)) return 0;
@@ -1387,12 +1434,71 @@ static int afseek(AFILE *a, long off, int whence)
 static long aftell(AFILE *a) { return a->f ? ftell(a->f) : (long)a->pos; }
 static void afclose(AFILE *a) { if (!a) return; if (a->f) fclose(a->f); if (a->h) CloseHandle(a->h); free(a); }
 
+// The paintings' files (screens\ and wide\, 5-8 MB each) of the last few screens, kept in memory:
+// castle, armoury and merchant are visited again and again, and reading their 11-14 MB from a hard
+// disk took up to 2 s each time, while the screen showed the old 1x picture. Game thread only.
+#define PIC_CACHE 8
+#define PIC_CACHE_BYTES (56 << 20)
+static struct { char path[MAX_PATH]; BYTE *data; DWORD size, used; } g_picCache[PIC_CACHE];
+static DWORD g_picSeq;
+
+// Reads the file into the cache (if it is not there yet). FALSE: no such file.
+static BOOL pic_cache_fetch(const char *path)
+{
+	for (int i = 0; i < PIC_CACHE; i++)
+		if (g_picCache[i].data && !lstrcmpiA(g_picCache[i].path, path)) { g_picCache[i].used = ++g_picSeq; return TRUE; }
+	AFILE *f = afopen(path);
+	if (!f) return FALSE;
+	afseek(f, 0, SEEK_END);
+	long size = aftell(f);
+	afseek(f, 0, SEEK_SET);
+	// Room: the files used longest ago go while the cache would be too big or full.
+	for (;;) {
+		DWORD total = size;
+		int oldest = -1, empty = -1;
+		for (int i = 0; i < PIC_CACHE; i++) {
+			if (!g_picCache[i].data) { if (empty < 0) empty = i; continue; }
+			total += g_picCache[i].size;
+			if (oldest < 0 || g_picCache[i].used < g_picCache[oldest].used) oldest = i;
+		}
+		if (oldest < 0 || (empty >= 0 && total <= PIC_CACHE_BYTES)) break;
+		free(g_picCache[oldest].data);
+		g_picCache[oldest].data = NULL;
+	}
+	int slot = -1;
+	for (int i = 0; i < PIC_CACHE && slot < 0; i++) if (!g_picCache[i].data) slot = i;
+	BYTE *data = slot >= 0 && size > 0 ? malloc(size) : NULL;
+	if (data && afread(data, 1, size, f) == (size_t)size) {
+		g_picCache[slot].data = data;
+		g_picCache[slot].size = size;
+		g_picCache[slot].used = ++g_picSeq;
+		lstrcpynA(g_picCache[slot].path, path, sizeof g_picCache[slot].path);
+	}
+	else free(data);
+	afclose(f);
+	return TRUE;
+}
+
+// The file from the cache if it is there, else from the disk or the pack.
+static AFILE *afopen_pic(const char *path)
+{
+	for (int i = 0; i < PIC_CACHE; i++)
+		if (g_picCache[i].data && !lstrcmpiA(g_picCache[i].path, path)) {
+			AFILE *a = calloc(1, sizeof *a);
+			if (!a) return NULL;
+			a->mem = g_picCache[i].data;
+			a->size = g_picCache[i].size;
+			return a;
+		}
+	return afopen(path);
+}
+
 static void room_load(const char *base)
 {
 	char path[MAX_PATH];
 	g_room.on = FALSE;
 	snprintf(path, sizeof path, "%s\\lords2hd\\wide\\%s.bin", g_gameDir, base);
-	AFILE *f = afopen(path);
+	AFILE *f = afopen_pic(path);
 	if (!f) return;
 	int head[5];
 	if (afread(head, 4, 5, f) == 5 && head[0] > GAME_W && head[0] <= 2 * GAME_W) {
@@ -1463,23 +1569,44 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 		char *d = strrchr(b, '.');
 		if (d) *d = 0;
 		CharLowerA(b);
-		if (rows == GAME_H && g_hdPic.on && !strcmp(b, shownBase) && !memcmp(pic, g_hdPic.shadow, GAME_W * GAME_H)) return;
+		if (rows == GAME_H && g_hdPic.on && !strcmp(b, shownBase) && !memcmp(pic, g_hdPic.shadow, GAME_W * GAME_H)) {
+			EnterCriticalSection(&g_lock);
+			if (g_hdPic.gone) { g_hdPic.gone = FALSE; g_hdPic.seen = FALSE; } // shown again
+			LeaveCriticalSection(&g_lock);
+			return;
+		}
 		lstrcpynA(shownBase, b, sizeof shownBase);
 	}
+	// The files first (from the disk only on a first visit), outside the lock: the presenter goes on
+	// showing the screen as it was meanwhile.
+	char path[MAX_PATH];
+	BOOL have = FALSE;
+	if (rows == GAME_H) {
+		char base[64];
+		lstrcpynA(base, name, sizeof base);
+		char *dot = strrchr(base, '.');
+		if (dot) *dot = 0;
+		CharLowerA(base);
+		snprintf(path, sizeof path, "%s\\lords2hd\\screens\\%s.bin", g_gameDir, base);
+		have = pic_cache_fetch(path);
+		snprintf(path, sizeof path, "%s\\lords2hd\\wide\\%s.bin", g_gameDir, base);
+		if (have) pic_cache_fetch(path);
+	}
+	g_lateN = 0; // a new screen: what waited for the old one's palette is gone
 	EnterCriticalSection(&g_lock);
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
 	if (g_sprValid) { memset(g_sprValid, 0, MAX_W * GAME_H); rows_dirty(g_sprDirty, 0, GAME_H); } // a new screen: nothing stamped on it yet
 	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
-	if (rows != GAME_H) return;
-	char base[64], path[MAX_PATH];
+	if (rows != GAME_H || !have) return;
+	char base[64];
 	lstrcpynA(base, name, sizeof base);
 	char *dot = strrchr(base, '.');
 	if (dot) *dot = 0;
 	CharLowerA(base);
 	snprintf(path, sizeof path, "%s\\lords2hd\\screens\\%s.bin", g_gameDir, base);
-	AFILE *f = afopen(path);
+	AFILE *f = afopen_pic(path);
 	if (!f) return;
 	if (!g_hdPic.px) g_hdPic.px = malloc(GAME_W * 2 * GAME_H * 2 * 4);
 	EnterCriticalSection(&g_lock);
@@ -1489,6 +1616,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 		memcpy(g_hdPic.shadow, pic, GAME_W * GAME_H);
 		g_hdPic.on = TRUE;
 		g_hdPic.seen = FALSE;
+		g_hdPic.gone = FALSE;
 		room_load(base);
 	}
 	LeaveCriticalSection(&g_lock);
@@ -1498,11 +1626,13 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 }
 
 // Over the doubled frame, the pixels the painting still owns. The palette is compared index by
-// index. The picture is forgotten once most of the frame is something else.
+// index. The picture is gone while most of the frame is something else, and back when most of it
+// shows again.
 static void hd_overlay(const PALETTEENTRY *pal)
 {
 	EnterCriticalSection(&g_lock);
 	if (g_hdPic.on) {
+		BOOL gone = g_hdPic.gone;
 		BYTE ok[256];
 		for (int i = 0; i < 256; i++)
 			ok[i] = pal[i].peRed >> 2 == g_hdPic.pal[i * 3] && pal[i].peGreen >> 2 == g_hdPic.pal[i * 3 + 1] &&
@@ -1515,7 +1645,7 @@ static void hd_overlay(const PALETTEENTRY *pal)
 			for (int x = 0; x < GAME_W; x++) {
 				if (fr[x] != sh[x]) continue;
 				same++;
-				if (!ok[fr[x]]) continue;
+				if (gone || !ok[fr[x]]) continue;
 				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
 				o1[2 * x] = h1[2 * x]; o1[2 * x + 1] = h1[2 * x + 1];
 			}
@@ -1531,9 +1661,13 @@ static void hd_overlay(const PALETTEENTRY *pal)
 			lastSame = same;
 		}
 		// The frame reaches the screen a moment after the load: only a picture that has been seen
-		// can be gone.
-		if (same >= GAME_W * GAME_H / 8) g_hdPic.seen = TRUE;
-		else if (g_hdPic.seen) g_hdPic.on = FALSE;
+		// can be gone. It comes back only for a frame that is mostly the picture again (a screen put
+		// back from the game's copy), never for scattered pixels of another screen.
+		if (gone) {
+			if (same >= GAME_W * GAME_H / 2) { g_hdPic.gone = FALSE; logf_("HD painting back (%d pixels unchanged)", same); mark_dirty(); }
+		}
+		else if (same >= GAME_W * GAME_H / 8) g_hdPic.seen = TRUE;
+		else if (g_hdPic.seen) { g_hdPic.gone = TRUE; logf_("HD painting gone (%d pixels unchanged)", same); }
 	}
 	LeaveCriticalSection(&g_lock);
 }
@@ -1546,8 +1680,13 @@ static void hd_overlay(const PALETTEENTRY *pal)
 // special case: pixels the game did not draw do not match.
 #define TILE_W 58
 #define TILE_H 30
-#define MAX_TILE_SETS 16
-static struct { const BYTE *buf; DWORD *px; BYTE *wave; int frames; } g_tileSets[MAX_TILE_SETS];
+// A set is kept by its file name, not by the buffer: the game loads the same file into a new
+// buffer after most screens (and puts other files into the old one), and a table keyed by buffers
+// filled up with stale entries until no new art loaded - towns stayed 1x until a restart. All 20
+// ground files (49 MB) fit, so a set is only read once; buf is the buffer holding it now (NULL: none).
+#define MAX_TILE_SETS 24
+static struct { const BYTE *buf; DWORD *px; BYTE *wave; int frames; char name[32]; DWORD used; } g_tileSets[MAX_TILE_SETS];
+static DWORD g_setSeq; // load order, for evicting the set used longest ago
 static DWORD *g_layer;
 static BYTE *g_layerShadow, *g_layerValid;
 // Shore waves: each 2x ground pixel's distance to the shore (0 = not water near a shore).
@@ -1559,6 +1698,8 @@ static volatile BOOL g_waveActive;
 static DWORD *g_sprLayer;
 static BYTE *g_sprShadow;
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
+// The game's palette as it will be once any fade is done (8-bit, 0x004ea1b0, from FUN_004b0ab5).
+#define GAME_PAL ((const BYTE *)0x004ea1b0)
 static BOOL g_ownScroll; // the settings scroll is being drawn: its HD art is stamped whatever the palette
 static BYTE *g_txt, *g_txtShadow, *g_txtValid;     // the sharp letters' layer (text_overlay)
 static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  // ... as of the frame on screen (volatile: g_txtS is read first, set last)
@@ -1665,6 +1806,11 @@ static BYTE *wave_build(const DWORD *px, int frames)
 	return out;
 }
 
+static void tiles_forget_buffer(const void *buffer)
+{
+	for (int i = 0; i < MAX_TILE_SETS; i++) if (g_tileSets[i].buf == buffer) { g_tileSets[i].buf = NULL; g_layerGen++; }
+}
+
 static void tiles_loaded(const char *name, void *buffer, int size)
 {
 	if (!g_hdTiles || !buffer || size < 8) return;
@@ -1673,35 +1819,49 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 	char *dot = strrchr(base, '.');
 	if (dot) *dot = 0;
 	CharLowerA(base);
-	int slot = -1;
-	for (int i = 0; i < MAX_TILE_SETS; i++) {
-		if (g_tileSets[i].buf == buffer) { slot = i; break; }
-		if (!g_tileSets[i].buf && slot < 0) slot = i;
-	}
-	if (slot < 0) return;
 	g_layerGen++; // this buffer's art changes (a battle's ground replaces the county's, and back)
-	if (g_tileSets[slot].px) {
+	// Whatever set this buffer held before, it holds this file now.
+	for (int i = 0; i < MAX_TILE_SETS; i++) if (g_tileSets[i].buf == buffer) g_tileSets[i].buf = NULL;
+	// Read before: it only moves to the new buffer.
+	int slot = -1;
+	for (int i = 0; i < MAX_TILE_SETS && slot < 0; i++) if (g_tileSets[i].px && !strcmp(g_tileSets[i].name, base)) slot = i;
+	if (slot < 0) {
+		// A free slot, else the set loaded longest ago that no buffer holds, else the oldest of all.
+		int oldest = -1, oldestFree = -1;
+		for (int i = 0; i < MAX_TILE_SETS; i++) {
+			if (!g_tileSets[i].px) { if (slot < 0) slot = i; continue; }
+			if (!g_tileSets[i].buf && (oldestFree < 0 || g_tileSets[i].used < g_tileSets[oldestFree].used)) oldestFree = i;
+			if (oldest < 0 || g_tileSets[i].used < g_tileSets[oldest].used) oldest = i;
+		}
+		if (slot < 0) slot = oldestFree >= 0 ? oldestFree : oldest;
+		if (g_tileSets[slot].px) logf_("HD tiles %s let go for %s", g_tileSets[slot].name, base);
 		free(g_tileSets[slot].px);
 		free(g_tileSets[slot].wave);
 		g_tileSets[slot].px = NULL;
 		g_tileSets[slot].wave = NULL;
 		g_tileSets[slot].buf = NULL;
+		snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
+		AFILE *f = afopen(path);
+		if (!f) return;
+		afseek(f, 0, SEEK_END);
+		long bytes = aftell(f);
+		afseek(f, 0, SEEK_SET);
+		DWORD *px = malloc(bytes);
+		if (px && afread(px, 1, bytes, f) == (size_t)bytes) {
+			g_tileSets[slot].px = px;
+			g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
+			lstrcpynA(g_tileSets[slot].name, base, sizeof g_tileSets[slot].name);
+			if (g_shoreWaves && !strncmp(base, "base1", 5)) g_tileSets[slot].wave = wave_build(px, g_tileSets[slot].frames);
+		}
+		else {
+			free(px);
+			logf_("HD tiles %s: no memory or a bad file", base);
+		}
+		afclose(f);
+		if (!g_tileSets[slot].px) return;
 	}
-	snprintf(path, sizeof path, "%s\\lords2hd\\tiles\\%s.bin", g_gameDir, base);
-	AFILE *f = afopen(path);
-	if (!f) return;
-	afseek(f, 0, SEEK_END);
-	long bytes = aftell(f);
-	afseek(f, 0, SEEK_SET);
-	DWORD *px = malloc(bytes);
-	if (px && afread(px, 1, bytes, f) == (size_t)bytes) {
-		g_tileSets[slot].px = px;
-		g_tileSets[slot].frames = bytes / (TILE_W * 2 * TILE_H * 2 * 4);
-		g_tileSets[slot].buf = buffer;
-		if (g_shoreWaves && !strncmp(base, "base1", 5)) g_tileSets[slot].wave = wave_build(px, g_tileSets[slot].frames);
-	}
-	else free(px);
-	afclose(f);
+	g_tileSets[slot].buf = buffer;
+	g_tileSets[slot].used = ++g_setSeq;
 	if (!g_layer) {
 		g_layer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_waveD = calloc(MAX_W * 2, GAME_H * 2);
@@ -1790,9 +1950,13 @@ static void stamp_tile(const BYTE *buf, int index, int x, int y)
 // HD sprites: lords2hd\sprites\<file>.bin, noted against the buffer the game loaded the file into.
 // Each hooked blitter knows the buffer and frame; afterwards every opaque pixel of the frame that
 // the screen now holds is stamped into the layer. A wrong guess of position only fails the check.
+// Kept by name, like the ground sets: a file loaded again into another buffer only moves its set,
+// and sets no buffer holds stay read for a while (up to SPRITE_SPARE bytes, the oldest go first).
+// key: the file name, or "<file>#<frame>" for a single frame the game read on its own (sprite_frame_loaded).
 #define MAX_SPRITE_SETS 64
+#define SPRITE_SPARE (64 << 20)
 // pal: the palette the 2x art was made with (lords2hd\sprites\<file>.pal, else Base01.256), 6-bit.
-static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[32]; } g_spriteSets[MAX_SPRITE_SETS];
+static struct { const BYTE *buf; BYTE *data; BYTE pal[768]; char name[40]; long bytes; DWORD used; } g_spriteSets[MAX_SPRITE_SETS];
 
 static void read_palette(const char *path, BYTE *pal)
 {
@@ -1801,19 +1965,63 @@ static void read_palette(const char *path, BYTE *pal)
 	if (f) afclose(f);
 }
 
-static void sprites_loaded(const char *name, const void *buffer)
+static void sprite_set_free(int i)
+{
+	free(g_spriteSets[i].data);
+	g_spriteSets[i].data = NULL;
+	g_spriteSets[i].buf = NULL;
+	g_spriteSets[i].bytes = 0;
+	g_spriteSets[i].name[0] = 0;
+}
+
+// Reads the whole set (frame < 0), or that one frame alone as a set of one.
+static BYTE *sprite_set_read(AFILE *f, int frame, long *bytes)
+{
+	afseek(f, 0, SEEK_END);
+	long all = aftell(f);
+	afseek(f, 0, SEEK_SET);
+	if (frame < 0) {
+		BYTE *data = malloc(all);
+		if (data && afread(data, 1, all, f) == (size_t)all) { *bytes = all; return data; }
+		free(data);
+		return NULL;
+	}
+	int count, off;
+	WORD wh[2];
+	if (afread(&count, 4, 1, f) != 1 || frame >= count || afseek(f, 4 + 4 * frame, SEEK_SET) || afread(&off, 4, 1, f) != 1 || off <= 0 ||
+		afseek(f, off, SEEK_SET) || afread(wh, 2, 2, f) != 2)
+		return NULL;
+	long size = 4 + (long)wh[0] * wh[1] * 17; // w, h, the 1x indices, the 2x pixels
+	if (off + size > all) return NULL;
+	BYTE *data = malloc(8 + size);
+	if (!data) return NULL;
+	((int *)data)[0] = 1;
+	((int *)data)[1] = 8;
+	memcpy(data + 8, wh, 4);
+	if (afread(data + 12, 1, size - 4, f) != (size_t)(size - 4)) { free(data); return NULL; }
+	*bytes = 8 + size;
+	return data;
+}
+
+// The game has put file `name` (or its frame `frame`, if >= 0) into `buffer`: that buffer's HD set.
+static void sprite_set_bind(const char *name, int frame, const void *buffer)
 {
 	if (!g_hdTiles) return;
-	for (int i = 0; i < MAX_SPRITE_SETS; i++) // the same file into the same buffer again: already have it
-		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, name)) return;
+	char key[40];
+	if (frame < 0) lstrcpynA(key, name, sizeof key);
+	else snprintf(key, sizeof key, "%s#%d", name, frame);
 	int slot = -1;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
-		if (g_spriteSets[i].buf == buffer) {
-			free(g_spriteSets[i].data);
-			g_spriteSets[i].buf = NULL;
-			g_spriteSets[i].data = NULL;
-		}
-		if (!g_spriteSets[i].buf && slot < 0) slot = i;
+		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, key)) return; // already
+		if (g_spriteSets[i].buf == buffer) g_spriteSets[i].buf = NULL; // it holds this file now
+	}
+	for (int i = 0; i < MAX_SPRITE_SETS && slot < 0; i++)
+		if (g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, key)) slot = i;
+	if (slot >= 0) { // read before: it moves to this buffer
+		g_spriteSets[slot].buf = buffer;
+		g_spriteSets[slot].used = ++g_setSeq;
+		g_layerGen++;
+		return;
 	}
 	char base[32], path[MAX_PATH];
 	lstrcpynA(base, name, sizeof base);
@@ -1823,23 +2031,41 @@ static void sprites_loaded(const char *name, const void *buffer)
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
 	AFILE *f = afopen(path);
 	if (!f) return;
-	afseek(f, 0, SEEK_END);
-	long bytes = aftell(f);
-	afseek(f, 0, SEEK_SET);
-	BYTE *data = slot >= 0 ? malloc(bytes) : NULL;
-	if (data && afread(data, 1, bytes, f) == (size_t)bytes) {
-		g_spriteSets[slot].buf = buffer;
-		g_spriteSets[slot].data = data;
-		lstrcpynA(g_spriteSets[slot].name, name, sizeof g_spriteSets[slot].name);
-		g_layerGen++;
-		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
-		if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-		read_palette(path, g_spriteSets[slot].pal);
-		logf_("HD sprites %s", base);
+	// Room: sets no buffer holds go, oldest first, while they take more than SPRITE_SPARE or no slot is free.
+	for (;;) {
+		long spare = 0;
+		int oldest = -1, empty = -1;
+		for (int i = 0; i < MAX_SPRITE_SETS; i++) {
+			if (!g_spriteSets[i].data) { if (empty < 0) empty = i; continue; }
+			if (g_spriteSets[i].buf) continue;
+			spare += g_spriteSets[i].bytes;
+			if (oldest < 0 || g_spriteSets[i].used < g_spriteSets[oldest].used) oldest = i;
+		}
+		if (oldest < 0 || (empty >= 0 && spare <= SPRITE_SPARE)) { slot = empty; break; }
+		sprite_set_free(oldest);
 	}
-	else free(data);
+	if (slot < 0) { // every slot holds a set in use: the one used longest ago
+		for (int i = 0; i < MAX_SPRITE_SETS; i++) if (slot < 0 || g_spriteSets[i].used < g_spriteSets[slot].used) slot = i;
+		logf_("HD sprites: all %d sets in use, %s let go", MAX_SPRITE_SETS, g_spriteSets[slot].name);
+		sprite_set_free(slot);
+	}
+	long bytes = 0;
+	BYTE *data = sprite_set_read(f, frame, &bytes);
 	afclose(f);
+	if (!data) { logf_("HD sprites %s: no memory or a bad file", key); return; }
+	g_spriteSets[slot].buf = buffer;
+	g_spriteSets[slot].data = data;
+	g_spriteSets[slot].bytes = bytes;
+	g_spriteSets[slot].used = ++g_setSeq;
+	lstrcpynA(g_spriteSets[slot].name, key, sizeof g_spriteSets[slot].name);
+	g_layerGen++;
+	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
+	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+	read_palette(path, g_spriteSets[slot].pal);
+	logf_("HD sprites %s", key);
 }
+
+static void sprites_loaded(const char *name, const void *buffer) { sprite_set_bind(name, -1, buffer); }
 
 // The zoomed-out battle's HD stamping, batched: while the game redraws the battlefield (h_battle_draw)
 // every stamp and every cell's clearing is queued, then all of them are done at the end on all the
@@ -1886,8 +2112,11 @@ static void bt_flush_job(int band, int me)
 	for (int i = 0; i < g_btQN; i++) if (g_btQ[i].y < r1 && g_btQ[i].y + g_btQ[i].h > r0) bt_apply(&g_btQ[i], r0, r1);
 }
 static void pool_run(int bands, void (*job)(int band, int me));
+static int g_btLastQN;          // Timing: stamps in the last flush
+static double g_frameGapMax;     // Timing: longest gap between game frames since the last scroll step
 static void bt_flush(void)
 {
+	g_btLastQN = g_btQN;
 	if (!g_btQN) return;
 	// (marked at queue time too, but a copy to the screen in between would have cleared the marks)
 	for (int i = 0; i < g_btQN; i++) rows_dirty(g_btDirty, g_btQ[i].y, g_btQ[i].y + g_btQ[i].h);
@@ -1922,15 +2151,30 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
 	if (!data || index < 0 || index >= *(const int *)data || !g_back) return;
 	// Off the map a sprite may be drawn under another screen's palette than its art was made with
-	// (map portraits in the Armoury's scroll): then it stays as the game drew it.
+	// (map portraits in the Armoury's scroll): then it stays as the game drew it. A new screen is
+	// drawn while it is still faded out (the screen's palette all black), so the palette the game is
+	// fading to (GAME_PAL, set by FUN_004b0ab5) counts too: tested against the black one only, the
+	// castle's picture and the armoury's row of soldiers stayed 1x for the whole visit.
+	BOOL toPal = FALSE; // the stamp fits the palette being faded to, not the one on screen now
 	if (!g_ownScroll && !county_map_on() && !IN_BATTLE_NOW() && g_primary && g_primary->pal) {
 		const PALETTEENTRY *e = g_primary->pal->e;
 		const BYTE *idx0 = data + ((const int *)data)[1 + index] + 4;
 		int w0 = *(const WORD *)(idx0 - 4), h0 = *(const WORD *)(idx0 - 2);
 		BYTE used[256] = { 0 };
 		if (((const int *)data)[1 + index]) for (int i = 0; i < w0 * h0; i++) used[idx0[i]] = 1;
-		for (int i = 1; i < 256; i++)
-			if (used[i] && (e[i].peRed >> 2 != setPal[i * 3] || e[i].peGreen >> 2 != setPal[i * 3 + 1] || e[i].peBlue >> 2 != setPal[i * 3 + 2])) return;
+		BOOL live = TRUE, target = TRUE;
+		for (int i = 1; i < 256 && (live || target); i++) {
+			if (!used[i]) continue;
+			live &= e[i].peRed >> 2 == setPal[i * 3] && e[i].peGreen >> 2 == setPal[i * 3 + 1] && e[i].peBlue >> 2 == setPal[i * 3 + 2];
+			target &= GAME_PAL[i * 3] >> 2 == setPal[i * 3] && GAME_PAL[i * 3 + 1] >> 2 == setPal[i * 3 + 1] && GAME_PAL[i * 3 + 2] >> 2 == setPal[i * 3 + 2];
+		}
+		if (!live && !target) {
+			// Often the screen's palette is not even chosen yet (the castle screen loads it after
+			// drawing): tried again when the game next sets a palette (sprites_retry_late).
+			if (g_lateN < MAX_LATE) g_late[g_lateN++] = (late_stamp){ buf, index, x, y };
+			return;
+		}
+		toPal = !live;
 	}
 	if (!g_sprLayer) { // screens before any map: the layer on its own
 		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
@@ -1938,8 +2182,15 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		g_sprValid = calloc(MAX_W, GAME_H);
 		if (!g_sprLayer || !g_sprShadow || !g_sprValid) return;
 	}
-	// Off the map the screen's own palette is what the sprite was made for (see screen_sprites).
-	if (!county_map_on() && g_primary && g_primary->pal) memcpy(g_sprPal, g_primary->pal->e, sizeof g_sprPal);
+	// Off the map the screen's own palette is what the sprite was made for (see screen_sprites): the
+	// one it will have once faded in, if that is what the stamp was tested against.
+	if (!county_map_on() && g_primary && g_primary->pal) {
+		memcpy(g_sprPal, g_primary->pal->e, sizeof g_sprPal);
+		if (toPal)
+			for (int i = 0; i < 256; i++) {
+				g_sprPal[i].peRed = GAME_PAL[i * 3]; g_sprPal[i].peGreen = GAME_PAL[i * 3 + 1]; g_sprPal[i].peBlue = GAME_PAL[i * 3 + 2];
+			}
+	}
 	int off = ((const int *)data)[1 + index];
 	if (!off) return;
 	const BYTE *p = data + off;
@@ -2053,6 +2304,7 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 	// The colour each county got for each shade, read back from what was drawn.
 	static short shade[256][4];
 	for (int i = 0; i < 256; i++) shade[i][0] = shade[i][1] = shade[i][2] = shade[i][3] = -1;
+	if (g_back->org + x < 0 || g_back->org + x + 128 > g_back->w) return; // (the read-back below has no column check)
 	for (int r = 0; r < 128; r++) {
 		int fy = y + r;
 		if (fy < 0 || fy >= GAME_H) continue;
@@ -2180,11 +2432,26 @@ static __inline void wave_px(DWORD *o, int d, int X, int Y, DWORD t)
 	*o = (r << 16) | (g << 8) | b;
 }
 
+// The game set a palette (game thread): the stamps that waited for one are tried again; those that
+// still do not fit wait for the next. The frame still holds what they drew, or the pixel test fails.
+static void sprites_retry_late(void)
+{
+	if (!g_lateN) return;
+	if (county_map_on() || IN_BATTLE_NOW()) { g_lateN = 0; return; }
+	late_stamp list[MAX_LATE];
+	int n = g_lateN;
+	memcpy(list, g_late, n * sizeof *list);
+	g_lateN = 0;
+	for (int i = 0; i < n; i++) stamp_sprite(list[i].buf, list[i].index, list[i].x, list[i].y);
+}
+
 // Off the map (painted screens, scrolls): the HD sprites the screen still shows, while the palette is
 // the one they were drawn under, so a fade shows the smoothed frame.
 static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 {
-	if (!g_sprLayer || county_map_on() || IN_BATTLE_NOW() || memcmp(pal, g_sprPal, sizeof g_sprPal)) return;
+	if (!g_sprLayer || county_map_on() || IN_BATTLE_NOW()) return;
+	for (int i = 1; i < 256; i++) // (colours only, and not 0, which GAME_PAL forces black: g_sprPal may come from it)
+		if (pal[i].peRed != g_sprPal[i].peRed || pal[i].peGreen != g_sprPal[i].peGreen || pal[i].peBlue != g_sprPal[i].peBlue) return;
 	for (int y = 0; y < GAME_H; y++) {
 		const BYTE *fr = g_frame8 + y * sw;
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
@@ -2234,6 +2501,188 @@ static void video_handle_close(void *s)
 {
 	for (int i = 0; i < 4; i++) if (g_vidHandles[i].smk == s) { CloseHandle(g_vidHandles[i].h); g_vidHandles[i].smk = NULL; }
 }
+// HD videos. A video with a file in lords2hd\videohd (<name>.bin, made by tools\build_videos.py: a header,
+// frame offsets, one JPEG per frame at twice the video's size) keeps playing as before - Smacker gives
+// the sound, the timing and the 8-bit frame - and each frame's 2x picture is drawn over it in the
+// doubled picture (hv_overlay), wherever the game's frame still shows what the video put there.
+#define SMK_PALETTE 108   // HSMACK: Palette[772] (8-bit RGB)
+#define SMK_FRAMENUM 884  // HSMACK: FrameNum, the frame last decoded
+#define HV_MAGIC 0x5648324C
+static struct {
+	void *smk;                  // the playing video with HD frames; NULL once closed
+	AFILE *f;
+	DWORD *offs;                // n + 1 offsets of the frames in the file
+	int w, h, n, W, H, frame;   // the video's size, frames; the HD size; the frame last decoded
+	int fx, fy, pitch;          // its place in the game's frame
+	BYTE *dest;                 // where Smacker draws it
+	// The last two frames decoded (the game decodes a frame before it shows the one before it, so the
+	// frame on screen is either), each with what the video put in the game's frame (w x h) and its
+	// palette; and the frame being decoded. Slots swap under g_lock.
+	DWORD *px[2], *back;
+	BYTE *shadow[2], *shadowBack;
+	BYTE pal[2][768], palBack[768];
+	int newest, valid[2];
+	int misses;                // pictures in a row where the frame no longer showed the video
+	volatile LONG on;
+	IWICImagingFactory *wic;
+	BOOL wicTried;
+} g_hv;
+
+static void hv_free_file(void)
+{
+	afclose(g_hv.f); g_hv.f = NULL;
+	free(g_hv.offs); g_hv.offs = NULL;
+}
+
+// The whole file read ahead once the video opens (into Windows' file cache, nothing kept), so frames
+// are never read from the disk while playing: on a hard disk a cold read stalled the game midway
+// through the credits (129 MB) the first time they played.
+static volatile LONG g_hvGen; // which video the read-ahead serves; a newer one stops it
+struct hv_ahead { char path[MAX_PATH]; DWORD base, size; LONG gen; };
+static DWORD WINAPI hv_read_ahead(void *p)
+{
+	struct hv_ahead *a = p;
+	HANDLE h = CreateFileA(a->path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	BYTE *buf = malloc(1 << 20);
+	double t0 = perf_now();
+	DWORD done = 0;
+	if (h != INVALID_HANDLE_VALUE && buf) {
+		LONG hi = 0;
+		if (SetFilePointer(h, (LONG)a->base, &hi, FILE_BEGIN) != INVALID_SET_FILE_POINTER)
+			while (done < a->size && a->gen == g_hvGen) {
+				DWORD want = min(a->size - done, 1u << 20), got = 0;
+				if (!ReadFile(h, buf, want, &got, NULL) || !got) break;
+				done += got;
+			}
+	}
+	if (g_timing) logf_("HD videos: read ahead %lu of %lu bytes in %.0f ms", done, a->size, perf_now() - t0);
+	if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+	free(buf); free(a);
+	return 0;
+}
+static void hv_start_read_ahead(const char *path)
+{
+	struct hv_ahead *a = calloc(1, sizeof *a);
+	if (!a) return;
+	a->gen = InterlockedIncrement(&g_hvGen);
+	if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) { // a loose file
+		WIN32_FILE_ATTRIBUTE_DATA fa;
+		if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) { free(a); return; }
+		lstrcpynA(a->path, path, sizeof a->path); a->size = fa.nFileSizeLow;
+	}
+	else {
+		const PAK_ENTRY *e = pak_find(path);
+		if (!e) { free(a); return; }
+		lstrcpynA(a->path, g_pakPath, sizeof a->path); a->base = e->off; a->size = e->size;
+	}
+	HANDLE t = CreateThread(NULL, 0, hv_read_ahead, a, 0, NULL);
+	if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); } else free(a);
+}
+
+// The video just opened: its HD frames, if there are any and they fit it.
+static void hv_open(void *s, const char *name, int w, int h, int n)
+{
+	if (!g_hdVideos || !name) return;
+	const char *base = strrchr(name, '\\'), *b2 = strrchr(name, '/');
+	base = max(base, b2); base = base ? base + 1 : name;
+	char stem[64], path[MAX_PATH];
+	lstrcpynA(stem, base, sizeof stem);
+	char *dot = strrchr(stem, '.'); if (dot) *dot = 0;
+	for (char *c = stem; *c; c++) *c = (char)tolower((BYTE)*c);
+	snprintf(path, sizeof path, "%s\\lords2hd\\videohd\\%s.bin", g_gameDir, stem);
+	AFILE *f = afopen(path);
+	if (!f) return;
+	DWORD head[8];
+	if (afread(head, 4, 8, f) != 8 || head[0] != HV_MAGIC || head[1] != 1 || (int)head[4] != n || (int)head[5] != w ||
+		(int)head[6] != h || head[2] != 2u * w || head[3] != 2u * h || n <= 0 || n > 100000) {
+		logf_("video %s: HD frames don't fit this video (%lux%lu, %lu frames), not used", name, head[5], head[6], head[4]);
+		afclose(f); return;
+	}
+	DWORD *offs = malloc((n + 1) * sizeof *offs);
+	size_t px = (size_t)4 * w * h * 4;
+	BOOL ok = offs != NULL;
+	EnterCriticalSection(&g_lock);
+	InterlockedExchange(&g_hv.on, 0);
+	g_hv.valid[0] = g_hv.valid[1] = 0;
+	for (int i = 0; i < 2; i++) {
+		DWORD *p = realloc(g_hv.px[i], px); if (p) g_hv.px[i] = p; else ok = FALSE;
+		BYTE *sh = realloc(g_hv.shadow[i], w * h); if (sh) { g_hv.shadow[i] = sh; memset(sh, 0, w * h); } else ok = FALSE;
+	}
+	LeaveCriticalSection(&g_lock);
+	DWORD *back = realloc(g_hv.back, px); if (back) g_hv.back = back; else ok = FALSE;
+	BYTE *shb = realloc(g_hv.shadowBack, w * h); if (shb) g_hv.shadowBack = shb; else ok = FALSE;
+	if (!ok || afread(offs, 4, n + 1, f) != (size_t)(n + 1)) {
+		// the buffers may now have this video's size: an HD video still open must stop using them
+		free(offs); afclose(f);
+		hv_free_file(); g_hv.smk = NULL;
+		return;
+	}
+	hv_free_file();
+	g_hv.f = f; g_hv.offs = offs;
+	g_hv.smk = s; g_hv.w = w; g_hv.h = h; g_hv.n = n; g_hv.W = 2 * w; g_hv.H = 2 * h;
+	g_hv.frame = -1; g_hv.dest = NULL;
+	hv_start_read_ahead(path);
+	logf_("video %s: HD frames %dx%d", name, 2 * w, 2 * h);
+}
+
+// One JPEG into BGRX pixels (Windows' own decoder).
+static BOOL hv_decode(const BYTE *jpg, DWORD size, DWORD *out, int W, int H)
+{
+	if (!g_hv.wicTried) {
+		g_hv.wicTried = TRUE;
+		HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); (void)hr; // (already set up on this thread is fine)
+		if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&g_hv.wic)))
+			{ g_hv.wic = NULL; logf_("HD videos: no Windows image decoder, off"); }
+	}
+	if (!g_hv.wic) return FALSE;
+	BOOL ok = FALSE;
+	IWICStream *st = NULL; IWICBitmapDecoder *dec = NULL; IWICBitmapFrameDecode *fr = NULL; IWICFormatConverter *cv = NULL;
+	UINT fw = 0, fh = 0;
+	if (SUCCEEDED(IWICImagingFactory_CreateStream(g_hv.wic, &st)) &&
+		SUCCEEDED(IWICStream_InitializeFromMemory(st, (BYTE *)jpg, size)) &&
+		SUCCEEDED(IWICImagingFactory_CreateDecoderFromStream(g_hv.wic, (IStream *)st, NULL, WICDecodeMetadataCacheOnDemand, &dec)) &&
+		SUCCEEDED(IWICBitmapDecoder_GetFrame(dec, 0, &fr)) &&
+		SUCCEEDED(IWICBitmapFrameDecode_GetSize(fr, &fw, &fh)) && (int)fw == W && (int)fh == H &&
+		SUCCEEDED(IWICImagingFactory_CreateFormatConverter(g_hv.wic, &cv)) &&
+		SUCCEEDED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource *)fr, &GUID_WICPixelFormat32bppBGR, WICBitmapDitherTypeNone, NULL, 0, WICBitmapPaletteTypeCustom)) &&
+		SUCCEEDED(IWICFormatConverter_CopyPixels(cv, NULL, W * 4, W * H * 4, (BYTE *)out)))
+		ok = TRUE;
+	if (cv) IWICFormatConverter_Release(cv);
+	if (fr) IWICBitmapFrameDecode_Release(fr);
+	if (dec) IWICBitmapDecoder_Release(dec);
+	if (st) IWICStream_Release(st);
+	return ok;
+}
+
+// After Smacker drew a frame: its HD picture, what it put in the game's frame, and its palette.
+static void hv_frame(void *s)
+{
+	if (!g_hv.dest || !g_hv.f) return;
+	int k = *(int *)((BYTE *)s + SMK_FRAMENUM);
+	static int said;
+	if (k < 0 || k >= g_hv.n) { if (!said++) logf_("HD videos: frame number %d out of range, off for this video", k); hv_free_file(); InterlockedExchange(&g_hv.on, 0); return; }
+	double t0 = perf_now();
+	DWORD size = g_hv.offs[k + 1] - g_hv.offs[k];
+	BYTE *jpg = size && size < 16u << 20 ? malloc(size) : NULL;
+	BOOL ok = jpg && afseek(g_hv.f, (long)g_hv.offs[k], SEEK_SET) == 0 && afread(jpg, 1, size, g_hv.f) == size &&
+		hv_decode(jpg, size, g_hv.back, g_hv.W, g_hv.H);
+	free(jpg);
+	if (!ok) { InterlockedExchange(&g_hv.on, 0); return; }
+	for (int y = 0; y < g_hv.h; y++) memcpy(g_hv.shadowBack + y * g_hv.w, g_hv.dest + y * g_hv.pitch, g_hv.w);
+	memcpy(g_hv.palBack, (BYTE *)s + SMK_PALETTE, 768);
+	EnterCriticalSection(&g_lock);
+	int o = g_hv.newest ^ 1; // the older slot takes the new frame
+	DWORD *t = g_hv.px[o]; g_hv.px[o] = g_hv.back; g_hv.back = t;
+	BYTE *u = g_hv.shadow[o]; g_hv.shadow[o] = g_hv.shadowBack; g_hv.shadowBack = u;
+	memcpy(g_hv.pal[o], g_hv.palBack, 768);
+	g_hv.newest = o; g_hv.valid[o] = 1;
+	g_hv.misses = 0;
+	InterlockedExchange(&g_hv.on, 1);
+	LeaveCriticalSection(&g_lock);
+	g_hv.frame = k;
+	if (g_timing) { static int logs; double ms = perf_now() - t0; if (logs < 20 || ms > 15) { logs++; logf_("HD videos: frame %d decoded in %.1f ms", k, ms); } }
+}
+
 static volatile LONG g_videoOpened; // a video has been opened since launch (the music hold, h_stream_play)
 static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 {
@@ -2292,12 +2741,19 @@ static void *__stdcall h_SmackOpen(const char *name, DWORD flags, DWORD extra)
 			}
 			else { g_vid.buf = b; g_vid.pub = p; }
 		}
+		else if (!doubled) hv_open(s, name, w, h, *(int *)((BYTE *)s + 12));
 	}
 	return s;
 }
 
 static DWORD __stdcall h_SmackToBuffer(void *s, DWORD x, DWORD y, DWORD pitch, DWORD height, void *buf, DWORD flags)
 {
+	if (s && s == g_hv.smk) {
+		g_hv.dest = (BYTE *)buf + y * pitch + x;
+		g_hv.pitch = (int)pitch;
+		g_hv.fx = g_back && (BYTE *)buf >= g_back->bits ? (int)(((BYTE *)buf - g_back->bits) % pitch) + (int)x : (int)x;
+		g_hv.fy = (int)y;
+	}
 	if (!s || s != g_vid.smk) return o_SmackToBuffer(s, x, y, pitch, height, buf, flags);
 	g_vid.dest = (BYTE *)buf + y * pitch + x;
 	g_vid.pitch = (int)pitch;
@@ -2309,6 +2765,7 @@ static DWORD __stdcall h_SmackToBuffer(void *s, DWORD x, DWORD y, DWORD pitch, D
 static DWORD __stdcall h_SmackDoFrame(void *s)
 {
 	DWORD r = o_SmackDoFrame(s);
+	if (s && s == g_hv.smk) hv_frame(s);
 	if (s && s == g_vid.smk && g_vid.dest) {
 		for (int oy = 0; oy < VID_SLOT_H; oy++) {
 			const BYTE *src = g_vid.buf + (oy * g_vid.h / VID_SLOT_H) * g_vid.w;
@@ -2329,6 +2786,12 @@ static void __stdcall h_SmackClose(void *s)
 		g_vid.smk = NULL;
 		g_vid.dest = NULL;
 		InterlockedExchange(&g_vid.on, 0);
+	}
+	if (s && s == g_hv.smk) { // the last frame stays drawn while the game's frame still shows it (hv_overlay)
+		g_hv.smk = NULL;
+		g_hv.dest = NULL;
+		hv_free_file();
+		InterlockedIncrement(&g_hvGen); // (stops its read-ahead)
 	}
 	o_SmackClose(s);
 	video_handle_close(s);
@@ -2825,6 +3288,77 @@ static void music_status(void)
 		wf.nSamplesPerSec, wf.wBitsPerSample, play, (char *)STREAM_NAMES);
 }
 
+// An HD video frame over the doubled picture (called under g_lock), wherever the game's frame still
+// holds what the video put there. The screen's palette is checked against the video's own: equal,
+// the HD pixel as it is; the same colour darker or lighter (a fade), the HD pixel scaled alike; else
+// the pixel is left as the game drew it.
+static void hv_overlay(const PALETTEENTRY *pal, int sx, int sw)
+{
+	if (!g_hv.on || !g_showScreens) return;
+	int w = g_hv.w, h = g_hv.h, x0 = g_hv.fx - sx;
+	int oy0 = max(0, -g_hv.fy), oy1 = min(h, GAME_H - g_hv.fy), ox0 = max(0, -x0), ox1 = min(w, sw - x0);
+	if (oy1 <= oy0 || ox1 <= ox0) return;
+	// which of the last two frames is on screen: the one more of the game's frame agrees with
+	int best = -1, bestMatch = -1, total = 0;
+	for (int k = 0; k < 2; k++) {
+		int s = g_hv.newest ^ k, m = 0, t = 0;
+		if (!g_hv.valid[s]) continue;
+		for (int oy = oy0; oy < oy1; oy += 3) {
+			const BYTE *fr = g_frame8 + (g_hv.fy + oy) * sw + x0, *sh = g_hv.shadow[s] + oy * w;
+			for (int ox = ox0; ox < ox1; ox += 3) { t++; m += fr[ox] == sh[ox]; }
+		}
+		if (m > bestMatch) { best = s; bestMatch = m; total = t; }
+	}
+	if (best < 0) return;
+	const DWORD *px = g_hv.px[best];
+	const BYTE *shadow = g_hv.shadow[best], *vpal = g_hv.pal[best];
+	int mul[256];
+	static int said;
+	int exact = 0;
+	for (int i = 0; i < 256; i++) {
+		int sr = vpal[3 * i], sg = vpal[3 * i + 1], sb = vpal[3 * i + 2];
+		int pr = pal[i].peRed, pg = pal[i].peGreen, pb = pal[i].peBlue;
+		if (abs(pr - sr) <= 6 && abs(pg - sg) <= 6 && abs(pb - sb) <= 6) { mul[i] = 256; exact++; continue; }
+		int ls = sr + sg + sb, lp = pr + pg + pb;
+		mul[i] = -1;
+		if (ls > 24 && lp <= ls * 2) {
+			int m = lp * 256 / ls;
+			if (abs(pr - sr * m / 256) <= 12 && abs(pg - sg * m / 256) <= 12 && abs(pb - sb * m / 256) <= 12) mul[i] = m;
+		}
+	}
+	if (!said++) logf_("HD videos: %d of 256 colours as in the video's palette", exact);
+	// still the video? (a window or another screen over it: the game's frame no longer matches)
+	if (bestMatch * (g_hv.smk ? 4 : 2) < total) { // under a quarter (half once the video has closed)
+		if (!g_hv.smk && ++g_hv.misses > 2) InterlockedExchange(&g_hv.on, 0);
+		return;
+	}
+	g_hv.misses = 0;
+	int W = g_hv.W;
+	for (int oy = oy0; oy < oy1; oy++) {
+		const BYTE *fr = g_frame8 + (g_hv.fy + oy) * sw + x0, *sh = shadow + oy * w;
+		const DWORD *p0 = px + (2 * oy) * W, *p1 = p0 + W;
+		DWORD *o0 = g_frame2x + (2 * (g_hv.fy + oy)) * (2 * sw) + 2 * x0, *o1 = o0 + 2 * sw;
+		for (int ox = ox0; ox < ox1; ox++) {
+			BYTE c = fr[ox];
+			if (c != sh[ox] || mul[c] < 0) continue;
+			int m = mul[c], X = 2 * ox;
+			if (m == 256) {
+				o0[X] = p0[X] & 0xffffff; o0[X + 1] = p0[X + 1] & 0xffffff;
+				o1[X] = p1[X] & 0xffffff; o1[X + 1] = p1[X + 1] & 0xffffff;
+			}
+			else {
+				const DWORD *q[4] = { p0 + X, p0 + X + 1, p1 + X, p1 + X + 1 };
+				DWORD *d[4] = { o0 + X, o0 + X + 1, o1 + X, o1 + X + 1 };
+				for (int j = 0; j < 4; j++) {
+					DWORD v = *q[j];
+					int r = min(255, (int)((v >> 16) & 255) * m >> 8), g = min(255, (int)((v >> 8) & 255) * m >> 8), b = min(255, (int)(v & 255) * m >> 8);
+					*d[j] = (r << 16) | (g << 8) | b;
+				}
+			}
+		}
+	}
+}
+
 // The large clip over its slot in the doubled picture, wherever the slot still shows its last frame.
 static void video_overlay(const PALETTEENTRY *pal, int sx, int sw)
 {
@@ -3225,20 +3759,27 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 3
+#define MENU_TABS 4
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_COUNT };
+// The Battles tab's fixes: g_bfSet[] is the panel's choice, taken at the next battle's start (battle_reset),
+// never in the middle of one; g_bfOk[]: the fix's hooks went in at startup (else a restart is needed).
+enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
+static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
+static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP,
+	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life" };
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_ZOOM, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { (void)i; return FALSE; } // no line is marked "new" at present // marked "new"
+static BOOL menu_new(int i) { return i == M_MINIPOP || i == M_BF_PATH || i == M_BF_GROUP || i == M_BF_ENGAGE; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3262,11 +3803,19 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		*restart = g_gpuWantedSet != g_gpuWanted;
 		break;
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
+	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
+	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: { // from the next battle
+		int f = i - M_BF_PATH;
+		snprintf(v, n, "%s", g_bfSet[f] ? "On" : "Off");
+		*restart = g_bfSet[f] && !g_bfOk[f];
+		break;
+	}
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines",
+	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3327,6 +3876,12 @@ static void resound_sample(void)
 		WritePrivateProfileStringA("Display", "Renderer", g_gpuWantedSet ? "gpu" : "cpu", g_iniPath);
 		break;
 	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
+	case M_MINIPOP: g_miniPop = !g_miniPop; ini_set("Display", "MinimapPop", g_miniPop); break;
+	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
+		int f = i - M_BF_PATH;
+		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);
+		break;
+	}
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -3337,7 +3892,7 @@ static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); menu_scroll_ke
 static void menu_toggle(void)
 {
 	if (!g_menuOpen) {
-		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 0, g_iniPath) != 0;
+		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 		g_battleZoomSet = GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
 	}
 	InterlockedExchange(&g_menuOpen, !g_menuOpen);
@@ -3391,7 +3946,16 @@ static void menu_click(int wx, int wy, int gx, int gy)
 static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 {
 	int fh = max(16, vh / 34), pad = fh, rowH = fh * 3 / 2, labelW = fh * 10, valueW = fh * 12;
-	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (MENU_ROWS + 6);
+	{ // the label column: wide enough for the open tab's longest label
+		HFONT f = CreateFontA(fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Georgia");
+		HGDIOBJ o = SelectObject(dc, f);
+		for (int i = 0; i < menu_tab_count(g_menuTab); i++) {
+			const char *s = kMenuLabel[kMenuTabItems[g_menuTab][i]]; SIZE sz;
+			if (GetTextExtentPoint32A(dc, s, lstrlenA(s), &sz)) labelW = max(labelW, sz.cx + fh);
+		}
+		SelectObject(dc, o); DeleteObject(f);
+	}
+	int bw = max(pad * 2 + labelW + valueW, pad * 2 + MENU_TABS * fh * 8 + (MENU_TABS - 1) * (fh / 2)), bh = pad * 2 + rowH * (MENU_ROWS + 6);
 	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
 	COLORREF cPaper = RGB(222, 196, 140), cHi = RGB(244, 226, 180), cLine = RGB(120, 80, 40);
 	HBRUSH paper = CreateSolidBrush(cPaper), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(cHi);
@@ -3411,7 +3975,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
 	DrawTextA(dc, "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	// the tabs, on a line across the panel; the open one joins the paper below it
-	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 9, gap = fh / 2, tx0 = bx + (bw - MENU_TABS * tw - (MENU_TABS - 1) * gap) / 2, lw = max(1, fh / 12);
+	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 8, gap = fh / 2, tx0 = bx + (bw - MENU_TABS * tw - (MENU_TABS - 1) * gap) / 2, lw = max(1, fh / 12);
 	RECT ln = { bx + pad / 2, ty + th - lw, bx + bw - pad / 2, ty + th };
 	FillRect(dc, &ln, line);
 	for (int k = 0; k < MENU_TABS; k++) {
@@ -3460,9 +4024,10 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	}
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
-	if (g_menuTab == 0) {
+	if (g_menuTab == 0 || g_menuTab == 3) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
-		DrawTextA(dc, "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		DrawTextA(dc, g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
+			: "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
 	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -4078,11 +4643,84 @@ static void bt_double_job(int band, int me)
 		}
 	}
 }
+// Smooth scrolling ([Display] SmoothScroll=1). The game scrolls the battlefield a whole cell (32 of its
+// pixels) at a time, 16-34 times a second, which on a 60 Hz screen is an uneven judder: the view moves on
+// one refresh and waits two or three on others. When the view steps one cell between two pictures, the
+// new picture is shown shifted back by that cell and the shift slides to zero over about the time
+// between the game's steps (measured), drawn on every refresh meanwhile; the strip the shift uncovers
+// comes from the previous picture, which held it. Only the battlefield part of the picture moves (not
+// the bar above it or the side panel), and longer jumps (the minimap) are not slid. The game's view and
+// everything it does are unchanged: this is the picture only.
+static volatile int g_scrollTrace = 120;   // Timing=1: lines of "scroll trace" left
+static volatile LONG g_primaryView = -1;   // battle view (col + row * 256) of the frame last copied to the screen surface
+static double g_ssRemSum, g_ssRemMax; static int g_ssSteps;   // smooth scroll: what was left at each step
+static volatile LONG g_ssSliding;   // the last battle picture was a sliding one (the next is due at once)
+// cur: the new picture; old1/old2: the pictures of the one and two views before (each a step away,
+// o1x/o1y and o2x/o2y: from one picture's coordinates to the one before)
+static struct { const DWORD *cur, *old1, *old2; DWORD *out; int w, rowTop, rowEnd, colEnd, dx, dy, o1x, o1y, o2x, o2y; } g_ss;
+static void ss_rows_job(int band, int me)
+{
+	(void)me;
+	int y0 = band * BT_BAND, y1 = min(g_ss.rowEnd, y0 + BT_BAND);
+	int w = g_ss.w, c1 = g_ss.colEnd, r0 = g_ss.rowTop, r1 = g_ss.rowEnd;
+	for (int y = max(y0, r0); y < y1; y++) {
+		DWORD *o = g_ss.out + (size_t)y * w;
+		// the part from the new picture is one run of a row: copied whole; only the uncovered strip
+		// goes pixel by pixel
+		int sy0 = y - g_ss.dy, xa = 0, xb = 0;
+		if (sy0 >= r0 && sy0 < r1) {
+			xa = max(0, g_ss.dx); xb = min(c1, c1 + g_ss.dx);
+			if (xb > xa) memcpy(o + xa, g_ss.cur + (size_t)sy0 * w + (xa - g_ss.dx), (size_t)(xb - xa) * 4);
+			else xa = xb = 0;
+		}
+		for (int x = 0; x < c1; x++) {
+			if (x == xa && xb > xa) { x = xb - 1; continue; }
+			int sx = x - g_ss.dx, sy = y - g_ss.dy;   // where this pixel of the world is in the new picture
+			if (sx >= 0 && sx < c1 && sy >= r0 && sy < r1) { o[x] = g_ss.cur[(size_t)sy * w + sx]; continue; }
+			sx += g_ss.o1x; sy += g_ss.o1y;   // uncovered: in the view before, one step back
+			if ((sx >= 0 && sx < c1 && sy >= r0 && sy < r1) || !g_ss.old2) {
+				sx = max(0, min(c1 - 1, sx)); sy = max(r0, min(r1 - 1, sy));
+				o[x] = g_ss.old1[(size_t)sy * w + sx];
+				continue;
+			}
+			sx += g_ss.o2x; sy += g_ss.o2y;   // or the one before that
+			sx = max(0, min(c1 - 1, sx)); sy = max(r0, min(r1 - 1, sy));
+			o[x] = g_ss.old2[(size_t)sy * w + sx];
+		}
+	}
+}
+
+// The battlefield part of the game's frame (rows 24 down, the field's columns) sampled in 4x4 blocks
+// every 16 pixels: a block is undrawn when its 16 pixels are one colour and that colour is black. Over
+// a quarter of them undrawn: half drawn, held for up to half a second.
+static BOOL battle_half_drawn(const BYTE *frame, int pitch, int fh, const PALETTEENTRY *pal, int mapW)
+{
+	static DWORD since;
+	int x0 = g_off + PANEL_X - mapW, x1 = g_off + PANEL_X - 4, flat = 0, n = 0;
+	for (int y = 32; y + 4 < fh; y += 16)
+		for (int x = max(0, x0); x < x1; x += 16, n++) {
+			const BYTE *b = frame + y * pitch + x;
+			BYTE v = b[0];
+			const PALETTEENTRY *c = &pal[v];
+			if (c->peRed > 12 || c->peGreen > 12 || c->peBlue > 12) continue;   // not black
+			BOOL same = TRUE;
+			for (int r = 0; r < 4 && same; r++) for (int k = 0; k < 4; k++) if (b[r * pitch + k] != v) { same = FALSE; break; }
+			flat += same;
+		}
+	BOOL hold = n && flat * 4 > n;
+	if (g_remote && hold) logf_("half-drawn battle frame: %d of %d blocks flat black", flat, n);
+	if (!hold) { since = 0; return FALSE; }
+	DWORD now = GetTickCount();
+	if (!since) since = now;
+	return now - since < 500;
+}
+
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 {
-	static DWORD *pic, *pic2;
+	static DWORD *pic, *pic2, *picB, *pic2B, *picC, *pic2C, *ssOut;
 	static BYTE *copy, *shown;
 	static RECT lastView;
+	static int ring;
 	int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
 	int fh = g_primary->h, pitch = g_primary->pitch;
 	if (!pic) {
@@ -4091,6 +4729,12 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		copy = malloc(pitch * fh);
 		shown = malloc(pitch * fh);
 		if (!pic || !pic2 || !copy || !shown) return FALSE;
+		if (g_smoothScroll) {
+			picB = malloc(lw * lh * 4); picC = malloc(lw * lh * 4);
+			pic2B = malloc(lw * 2 * lh * 2 * 4); pic2C = malloc(lw * 2 * lh * 2 * 4);
+			ssOut = malloc(lw * 2 * lh * 2 * 4);
+			if (!picB || !picC || !pic2B || !pic2C || !ssOut) g_smoothScroll = FALSE;
+		}
 	}
 	EnterCriticalSection(&g_lock);
 	memcpy(copy, g_primary->bits, pitch * fh);
@@ -4099,16 +4743,50 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	RECT v, c;
 	view_rect(&v);
 	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView);
+	// A big forest is one forest tile over and over: scrolled a cell over it, the game's frame can come
+	// out byte for byte the same while the HD trees moved, and the picture was skipped as unchanged (the
+	// view froze over forest, then jumped). A view that moved is always a new picture.
+	{
+		static LONG shownView = -1;
+		LONG view = g_primaryView;   // the view of the frame on the screen surface (set at each copy)
+		if (view != shownView) { forced = TRUE; shownView = view; }
+	}
+	if (g_timing && g_scrollTrace > 0) {   // Timing=1, while the view moves: what each read finds (100 lines)
+		static int lastCol = -1, lastRow = -1, quiet;
+		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
+		if (col != lastCol || row != lastRow) quiet = 0;
+		if (quiet++ < 6) {
+			int diffRows = 0, firstRow = -1, lastRowD = -1;
+			for (int y = 0; y < fh; y++) if (memcmp(copy + y * pitch, shown + y * pitch, pitch)) { diffRows++; if (firstRow < 0) firstRow = y; lastRowD = y; }
+			g_scrollTrace--;
+			logf_("scroll trace: read seq %ld view %d,%d (was %d,%d), rows changed %d (%d..%d of %d), forced %d", (long)g_paceReadSeq, col, row, lastCol, lastRow,
+				diffRows, firstRow, lastRowD, fh, forced);
+		}
+		lastCol = col; lastRow = row;
+	}
 	if (!forced && palSame && memcmp(copy, shown, pitch * fh) == 0) return FALSE;
 	memcpy(shown, copy, pitch * fh);
 	lastView = v;
+	// Smooth scroll: when the view has stepped since the last picture, the new one is built into the other
+	// of two sets, so the last picture of the old view stays whole for the uncovered strip while it slides.
+	// three sets in a ring: the current view's picture and the two views before it
+	DWORD *prevPic = NULL, *prevPic2 = NULL, *prev2Pic = NULL, *prev2Pic2 = NULL;
+	DWORD *setsP[3] = { pic, picB, picC }, *setsP2[3] = { pic2, pic2B, pic2C };
+	if (g_smoothScroll) {
+		static int builtCol = -9999, builtRow = -9999;
+		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
+		if (col != builtCol || row != builtRow) { ring = (ring + 1) % 3; builtCol = col; builtRow = row; }
+		prevPic = setsP[(ring + 2) % 3]; prevPic2 = setsP2[(ring + 2) % 3];
+		prev2Pic = setsP[(ring + 1) % 3]; prev2Pic2 = setsP2[(ring + 1) % 3];
+	}
+	DWORD *curPic = g_smoothScroll ? setsP[ring] : pic, *curPic2 = g_smoothScroll ? setsP2[ring] : pic2;
 
 	// the HD layer as of the frame on screen (bt_publish); the live one until the first copy
 	g_bt.btL = g_btLayerS ? g_btLayerS : g_btLayer;
 	g_bt.btS = g_btLayerS ? g_btShadowS : g_btShadow; g_bt.btV = g_btLayerS ? g_btValidS : g_btValid;
 	g_bt.btOn = g_bt.btL && g_bt.btS && g_bt.btV && g_showTiles; // all three, or the HD battle layer is left out of this picture
 	for (int i = 0; i < 256; i++) g_lut[i] = (pal[i].peRed << 16) | (pal[i].peGreen << 8) | pal[i].peBlue;
-	g_bt.pic = pic; g_bt.pic2 = pic2; g_bt.copy = copy; g_bt.frame = copy + g_off; // the game's x = 0
+	g_bt.pic = curPic; g_bt.pic2 = curPic2; g_bt.copy = copy; g_bt.frame = copy + g_off; // the game's x = 0
 	g_bt.pitch = pitch; g_bt.lw = lw; g_bt.lh = lh; g_bt.mapW = mapW;
 	// An open drop-down: doubled from its corner like the bar above it (it covers its 1:1 self).
 	g_bt.mx0 = g_bt.mx1 = g_bt.my1 = 0; // its doubled rectangle in this picture, rows 48 .. my1
@@ -4131,15 +4809,28 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 	bi.biPlanes = 1;
 	bi.biBitCount = 32;
 	bi.biCompression = BI_RGB;
-	const DWORD *src = pic;
+	const DWORD *src = curPic;
 	int sw = lw, sh = lh;
 	if (g_bt.big) {
 		// (the doubling stays bilinear even with Catmull-Rom: at 3392x1920 two Catmull-Rom passes
 		// took 25-44 ms a picture; the final stretch is Catmull-Rom). With FSR on the CPU: EASU,
 		// then the HD layer stamped.
-		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(pic, lw, lh, lw, pic2, 2 * lw, 2 * lh, 2 * lw);
+		g_bt.easu = g_upscaleCR == 2 && !gpu_drawing() && fsr_easu(curPic, lw, lh, lw, curPic2, 2 * lw, 2 * lh, 2 * lw);
 		InterlockedExchange(&g_btMiss, 0);
 		pool_run((lh + BT_BAND - 1) / BT_BAND, bt_double_job);
+		// A picture with most of the battlefield in the 1x art (the HD layer not matching this frame for a
+		// moment, seen while scrolling over forest, where it shows as a flash or tear) is not shown: the last
+		// good picture stays and the next refresh tries again (at most 3 in a row, so it can't freeze).
+		static int badRun;
+		if (g_bt.btOn && g_btMiss > 250000 && badRun < 3) {
+			badRun++;
+			static int logs;
+			if (g_timing && logs < 60) { logs++; logf_("battle picture held back: %ld pixels would show 1x (view %d,%d, frame view %ld)", (long)g_btMiss,
+				*(int *)0x0055ce70, *(int *)0x005678a0, (long)g_primaryView); }
+			ReleaseDC(g_hwnd, dc);   // (no retry at once: the next copy from the game brings a matching frame)
+			return FALSE;
+		}
+		badRun = 0;
 		if (g_timing) { // pictures where many HD pixels fell back to 1x (a flicker)
 			static int n, bad; static double t0; static LONG worst;
 			LONG m = g_btMiss; n++;
@@ -4149,15 +4840,93 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			if (!t0) t0 = now;
 			if (now - t0 > 1000) { if (bad || worst > 5000) logf_("timing: battle HD art: %d of %d pictures with over 20000 pixels shown 1x (worst %ld)", bad, n, (long)worst); n = bad = 0; worst = 0; t0 = now; }
 		}
-		src = pic2;
+		src = curPic2;
 		sw = lw * 2;
 		sh = lh * 2;
 	}
-	if (entry_dark(src, sw, sh, sw * 3 / 4)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
+	BOOL big = src == curPic2;
+	if (g_smoothScroll) {
+		// the view's steps since the last picture (one cell slides; anything else snaps)
+		static int lastCol = -9999, lastRow = -9999;
+		static double offX, offY, lastT, lastStepT, stepGap = 50;
+		int col = *(int *)0x0055ce70, row = *(int *)0x005678a0;
+		double now = perf_now();
+		int dc = col - lastCol, dr = row - lastRow;
+		static int s1x, s1y, s2x, s2y, hist;   // the last two steps (hist: how many of them are single steps)
+		// The shown view glides at the game's scroll speed (a cell per measured step gap) and stays up to two
+		// cells behind the game's view (the two pictures before cover that): it doesn't stop at each step
+		// or jump at the next, though the game's steps come unevenly, sometimes two in one refresh.
+		// offX/offY: how far behind it is, in the game's pixels.
+		if (lastCol == -9999 || abs(dc) > 1 || abs(dr) > 1) { offX = offY = 0; hist = 0; }
+		else {
+			if (dc || dr) {
+				// the gap between the game's steps, from steps that follow each other (not across a pause)
+				if (lastStepT && now - lastStepT < 150) stepGap = max(14.0, min(120.0, 0.7 * stepGap + 0.3 * (now - lastStepT)));
+				lastStepT = now;
+				offX += 32.0 * dc; offY += 32.0 * dr;
+				// what can't be shown (more than two cells behind) is a jump: counted for the timing log
+				double jump = max(max(fabs(offX), fabs(offY)) - 64.0, 0.0);
+				g_ssRemSum += jump; g_ssSteps++; if (jump > g_ssRemMax) g_ssRemMax = jump;
+				s2x = s1x; s2y = s1y; s1x = dc; s1y = dr;
+				hist = min(2, hist + 1);
+			}
+			if (lastT) {   // glide at the scroll speed, slower when nearly caught up and faster when far behind,
+				// so it settles about a cell behind and keeps moving between the game's steps
+				double lag = max(fabs(offX), fabs(offY));
+				BOOL scrolling = now - lastStepT < stepGap * 2.5;   // stopped scrolling: glide in at full speed
+				double k = scrolling ? max(0.5, min(1.6, lag / 32.0)) : 1.0;
+				double d = 32.0 * (now - lastT) / stepGap * k;
+				offX = offX > 0 ? max(0.0, offX - d) : min(0.0, offX + d);
+				offY = offY > 0 ? max(0.0, offY - d) : min(0.0, offY + d);
+			}
+			double cap = hist >= 2 ? 64.0 : 32.0;
+			offX = max(-cap, min(cap, offX));
+			offY = max(-cap, min(cap, offY));
+			if (!offX && !offY) hist = min(hist, 1);   // standing still: the next glide starts fresh
+		}
+		lastCol = col; lastRow = row; lastT = now;
+		int scale = big ? 2 : 1;
+		int ox = (int)(offX * scale + (offX >= 0 ? 0.5 : -0.5)), oy = (int)(offY * scale + (offY >= 0 ? 0.5 : -0.5));
+		InterlockedExchange(&g_ssSliding, (ox || oy) && prevPic);
+		if ((ox || oy) && prevPic) {
+			g_ss.cur = src; g_ss.out = ssOut; g_ss.w = sw;
+			g_ss.old1 = big ? prevPic2 : prevPic;
+			g_ss.old2 = hist >= 2 ? (big ? prev2Pic2 : prev2Pic) : NULL;
+			g_ss.rowTop = 48 * scale; g_ss.rowEnd = sh; g_ss.colEnd = min(sw, mapW * scale);
+			g_ss.dx = ox; g_ss.dy = oy;   // screen x shows new-picture x - ox
+			g_ss.o1x = 32 * scale * s1x; g_ss.o1y = 32 * scale * s1y;   // a picture's coordinates to the one before
+			g_ss.o2x = 32 * scale * s2x; g_ss.o2y = 32 * scale * s2y;
+			double ssT0 = perf_now();
+			memcpy(ssOut, src, (size_t)sw * g_ss.rowTop * 4);   // the bar above stays
+			for (int y = g_ss.rowTop; y < sh; y++)   // the side panel stays
+				memcpy(ssOut + (size_t)y * sw + g_ss.colEnd, src + (size_t)y * sw + g_ss.colEnd, (size_t)(sw - g_ss.colEnd) * 4);
+			pool_run((sh + BT_BAND - 1) / BT_BAND, ss_rows_job);
+			src = ssOut;
+			if (g_timing) {   // slide pictures per second, and what the slide itself costs
+				static int n; static double t0, ssSum, ssWorst;
+				double ssMs = perf_now() - ssT0;
+				n++; ssSum += ssMs; if (ssMs > ssWorst) ssWorst = ssMs;
+				if (!t0) t0 = now;
+				if (now - t0 >= 1000) {
+					logf_("timing: smooth scroll: %d sliding pictures in 1 s (step gap %.0f ms); jumps at a step: %.1f px average, %.1f worst (%d steps); sliding %.1f ms average, %.1f worst",
+						n, stepGap, g_ssSteps ? g_ssRemSum / g_ssSteps : 0.0, g_ssRemMax, g_ssSteps, n ? ssSum / n : 0.0, ssWorst);
+					n = 0; t0 = now; g_ssRemSum = g_ssRemMax = 0; g_ssSteps = 0; ssSum = ssWorst = 0;
+				}
+			}
+			InterlockedExchange(&g_forcePresent, 1);   // next refresh: the slide goes on
+			mark_dirty();
+		}
+	}
+	// A half-drawn battle frame (entering a battle the game shows its frame before the battlefield is
+	// drawn into it) is held back. The check looks at the game's own frame for what undrawn really is:
+	// flat blocks of one black colour. Dark pixels in the finished picture were counted before, and a
+	// screen of dense forest passed for half drawn: every picture over it was held (mini freezes while
+	// scrolling over forest). Forest, however dark, is never flat.
+	if (battle_half_drawn(copy, pitch, fh, pal, mapW)) { ReleaseDC(g_hwnd, dc); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); return FALSE; }
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
-	put_picture(dc, &v, src, sw, sh, src == pic2 ? COLORONCOLOR : HALFTONE);
+	put_picture(dc, &v, src, sw, sh, big ? COLORONCOLOR : HALFTONE);
 	ReleaseDC(g_hwnd, dc);
 	return TRUE;
 }
@@ -4503,15 +5272,16 @@ static BOOL present(void)
 	int sx = g_showX, sw = g_showW;
 	// A wider room takes the frame, built from the game's 640 columns.
 	BOOL room = g_room.on && g_hdPic.on && g_showScreens && !g_wideScreen && g_off && g_scale == SCALE_SMOOTH;
-	if (room && !g_hdPic.seen) {
+	if (room && (!g_hdPic.seen || g_hdPic.gone)) {
 		// The painting's first frame on screen goes wide at once (waiting for hd_overlay to have
-		// seen it showed one narrow frame: a flicker on every painted screen).
+		// seen it showed one narrow frame: a flicker on every painted screen). The same when a gone
+		// picture is put back, with hd_overlay's stricter test for that.
 		int same = 0;
 		for (int y = 0; y < GAME_H; y += 4) {
 			const BYTE *fr = g_primary->bits + y * g_primary->pitch + g_off, *sh = g_hdPic.shadow + y * GAME_W;
 			for (int x = 0; x < GAME_W; x += 4) same += fr[x] == sh[x];
 		}
-		room = same >= (GAME_W / 4) * (GAME_H / 4) / 8;
+		room = same >= (GAME_W / 4) * (GAME_H / 4) / (g_hdPic.gone ? 2 : 8);
 	}
 	int roomW = 0;
 	if (room) {
@@ -4541,6 +5311,7 @@ static BOOL present(void)
 		palDumped = TRUE;
 	}
 
+	InterlockedExchange(&g_ssSliding, 0);   // (present_battle sets it again while it slides)
 	if (battle_zoom_on()) return present_battle(pal, palSame);
 
 	RECT v, c;
@@ -4604,8 +5375,9 @@ static BOOL present(void)
 		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
+		hv_overlay(pal, sx, sw);
 		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
-		room = room && g_room.on && g_hdPic.on && g_showScreens;
+		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
 		// Below 4x, as at 1080p (2.25x), a plain stretch of the 2x frame drops rows and columns
@@ -4725,7 +5497,9 @@ static DWORD WINAPI presenter(void *unused)
 		// and waiting for another would wait for this presenter)
 		// (a whole frame copied since the last picture was started, before the refresh too, needs no wait)
 		static double composeT;
-		if (!bench && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank && g_frameCopyT < composeT) {
+		// (not while smooth scrolling slides the picture along: a sliding picture doesn't need the game's newest
+		// frame, and the wait made it miss refreshes)
+		if (!bench && !g_ssSliding && g_frameTaken && g_copyPending && g_frameCopyT < g_lastVblank && g_frameCopyT < composeT) {
 			for (;;) {
 				double wait = g_lastVblank + 6 - perf_now();
 				if (wait <= 0 || wait > 6 || g_frameCopyT >= g_lastVblank || !g_copyPending || !g_frameTaken) break;
@@ -4749,6 +5523,18 @@ static DWORD WINAPI presenter(void *unused)
 				continue;
 			}
 		}
+		// Zoomed-out battle: nothing new on the screen surface since the last read (no copy from the game,
+		// same palette, not forced): no read. Woken by the game's small updates, the presenter re-read the
+		// whole surface every 2-3 ms holding the compose lock, so the game's copies of its new frames were
+		// skipped as "composing" again and again: the screen stayed on one picture for several refreshes
+		// (mini freezes while scrolling with units in view, worst over forest).
+		static LONG lastReadSeq = -1;
+		static PALETTEENTRY lastReadPal[256];
+		if (!bench && !statsOnly && battle_zoom_on() && !g_forcePresent && !g_ssSliding && g_pacePrimarySeq == lastReadSeq &&
+			g_primary && g_primary->pal && !memcmp(lastReadPal, g_primary->pal->e, sizeof lastReadPal))
+			continue;
+		if (g_primary && g_primary->pal) memcpy(lastReadPal, g_primary->pal->e, sizeof lastReadPal);
+		lastReadSeq = g_pacePrimarySeq;
 		QueryPerformanceCounter(&t0);
 		perf_begin();
 		EnterCriticalSection(&g_composeLock); // (see g_composeLock)
@@ -4763,6 +5549,23 @@ static DWORD WINAPI presenter(void *unused)
 		BOOL shown = present();
 		InterlockedExchange(&g_composing, 0);
 		LeaveCriticalSection(&g_composeLock);
+		// Freeze detector (Timing=1, battles): more than 100 ms without a new picture while the game has
+		// newer frames: what happened meanwhile (the presenter's reads and the game's copies, from the pace
+		// event ring)
+		if (g_timing && IN_BATTLE_NOW()) {
+			static double lastNewT; static LONG lastNewSeq = -1; static int freezeLogs;
+			double nowF = perf_now();
+			if (shown && g_paceReadSeq != lastNewSeq) {
+				double gap = lastNewT ? nowF - lastNewT : 0;
+				if (gap > 100 && g_paceReadSeq - lastNewSeq >= 2 && lastNewSeq >= 0 && freezeLogs < 40) {   // frames in between never shown
+					freezeLogs++;
+					logf_("FREEZE: %.0f ms without a new picture (pictures #%ld -> #%ld, game at #%ld), view %d,%d, last logic step %.0f ms ago",
+						gap, (long)lastNewSeq, (long)g_paceReadSeq, (long)g_paceChangeSeq, *(int *)0x0055ce70, *(int *)0x005678a0, nowF - g_lastLogicStepT);
+					pace_trace(nowF - gap - 5, nowF, nowF - gap);
+				}
+				lastNewT = nowF; lastNewSeq = g_paceReadSeq;
+			}
+		}
 		QueryPerformanceCounter(&t1);
 		if (!statsOnly) perf_end(shown, g_outW, g_outH); // (a redraw for the overlay is not a new picture)
 		if (g_timing && !statsOnly && !bench) pace_wake(shown);
@@ -4896,6 +5699,8 @@ static HRESULT WINAPI pal_set_entries(void *this_, DWORD flags, DWORD start, DWO
 	BOOL onScreen = g_primary && g_primary->pal == self;
 	LeaveCriticalSection(&g_lock);
 	if (onScreen) mark_dirty();
+	// (the game's own thread, which owns its window: the stamp tables are not locked)
+	if (onScreen && g_hwnd && GetWindowThreadProcessId(g_hwnd, NULL) == GetCurrentThreadId()) sprites_retry_late();
 	return DD_OK;
 }
 static void *vt_palette[] = { no_interface, add_ref, pal_release, pal_get_caps, pal_get_entries,
@@ -5350,6 +6155,7 @@ HRESULT WINAPI hd_DirectDrawCreate(GUID *guid, void **out, IUnknown *outer)
 // ---------------------------------------------------------------------------------------------
 // Input: the game sees a 640x480 window at the top-left of the screen.
 
+static BOOL g_fieldDrag, g_lastOnField;   // zoomed-out battle: a left-button drag that began on the battlefield
 static void client_to_game(int *x, int *y)
 {
 	RECT v;
@@ -5360,6 +6166,15 @@ static void client_to_game(int *x, int *y)
 		int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, mapW = battle_map_w();
 		int sx = max(0, min(lw - 1, MulDiv(*x - v.left, lw, vw))), sy = max(0, min(lh - 1, MulDiv(*y - v.top, lh, vh)));
 		int mx0 = g_menuX - (PANEL_X - mapW), fy0 = max(24, g_menuY);
+		// A drag that began on the battlefield stays on it: crossing into the doubled side panel or
+		// the top bar switched to their halved coordinates and the selection box collapsed to a line.
+		if (g_fieldDrag && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) g_fieldDrag = FALSE;
+		g_lastOnField = !menu_doubled() && sy >= 48 && sx < mapW;
+		if (g_fieldDrag) {
+			sx = min(sx, mapW - 1); sy = max(sy, 48);
+			*x = PANEL_X - mapW + sx; *y = 24 + sy - 48;
+			return;
+		}
 		if (menu_doubled() && sy >= 48 && sx >= mx0 && sx < mx0 + 2 * MENU_W && sy < 48 + 2 * (g_menuY + MENU_H - fy0)) {
 			*x = g_menuX + (sx - mx0) / 2; *y = fy0 + (sy - 48) / 2; // over the doubled drop-down
 		}
@@ -5385,6 +6200,8 @@ static void client_to_game(int *x, int *y)
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
 static int g_fakeEdge;
+static volatile int g_testMopUp;   // remote testing: run Mop-Up for this side at the next battle step
+static volatile int g_testOrder;   // remote testing: march every human group to a cell
 static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	int n = msg - WM_REMOTE;
@@ -5479,6 +6296,14 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		InterlockedExchange(&g_shotViewWanted, 1);
 		InterlockedExchange(&g_forcePresent, 1);
 		mark_dirty();
+		return 0;
+	}
+	if (n == 25) { // testing: Mop-Up for side w (the game's FUN_0047a76d), run at the next battle step
+		g_testMopUp = (int)wp;
+		return 0;
+	}
+	if (n == 26) { // testing: order every human group to march to cell (x = low word, y = high word of w)
+		g_testOrder = (int)wp | 0x40000000;
 		return 0;
 	}
 	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
@@ -5630,7 +6455,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-		client_to_game(&x, &y);
+		if (msg == WM_LBUTTONUP) { client_to_game(&x, &y); g_fieldDrag = FALSE; }   // the release still counts on the field
+		else {
+			client_to_game(&x, &y);
+			if (msg == WM_LBUTTONDOWN) g_fieldDrag = battle_zoom_on() && g_lastOnField;
+		}
 		// the < > buttons on the name plate: theirs, not the game's
 		static BOOL btnDown;
 		int btn = cycle_button_at(x, y);
@@ -5841,13 +6670,26 @@ static void cycle_buttons_draw(int sx, int sw)
 		}
 	}
 }
+// In a battle the battlefield starts left of the game's x = 0 (wide and zoomed-out views), but the mouse
+// was held at x >= 1 so that x = 0 could mean "scroll left": a selection box started on the left jumped
+// to x = 1 and units there couldn't be clicked. In a battle the real position now goes through, down to
+// the view's left edge (DAT_004e6558), and the edge scroll (FUN_00432221, the only reader of the raw
+// x at DAT_004e6594) is told about the left edge separately (g_battleLeftEdge).
+static BOOL g_battleLeftEdge;
+static int battle_left_x(void)
+{
+	return g_off && IN_BATTLE_NOW() && *(int *)0x0052af94 == 3 ? min(1, *(int *)0x004e6558) : 1;
+}
+
 static BOOL WINAPI h_GetCursorPos(POINT *p)
 {
+	int leftX = battle_left_x();
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
 		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
-		p->x = max(1, min(right - 1, g_fake.x));
+		p->x = max(leftX, min(right - 1, g_fake.x));
+		g_battleLeftEdge = (g_fakeEdge & 1) != 0;
 		p->y = max(1, min(bottom - 1, g_fake.y));
-		if (g_fakeEdge & 1) p->x = 0;
+		if (g_fakeEdge & 1) p->x = leftX < 1 ? leftX : 0;   // as the real mouse at the left edge
 		if (g_fakeEdge & 2) p->x = right;
 		if (g_fakeEdge & 4) p->y = 0;
 		if (g_fakeEdge & 8) p->y = bottom;
@@ -5865,9 +6707,14 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 		client_to_game(&x, &y);
 		if (g_off) {
 			int right = max(2, SCROLL_EDGE_W - 1);
-			if (cx <= v.left) x = 0;
+			// in a battle only the screen's outermost pixels scroll left, so a drag can start in the
+			// black strip beside the picture; elsewhere the whole strip is the edge, as before
+			BOOL edge = leftX < 1 ? cx <= 1 : cx <= v.left;
+			g_battleLeftEdge = edge;
+			if (edge) x = leftX < 1 ? leftX : 0;
+			else if (cx <= v.left) x = leftX;
 			else if (cx >= v.right - 1) x = right;
-			else x = max(1, min(right - 1, x));
+			else x = max(leftX, min(right - 1, x));
 			// The same for the bottom edge, measured against the frame's height (DAT_004ea838).
 			int bottom = max(2, *(int *)0x004ea838 - 1), cy = p->y;
 			if (cy <= v.top) y = 0;
@@ -6110,13 +6957,30 @@ static const BYTE kLoadPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // p
 typedef int (__cdecl *load_file_t)(const char *, void *, unsigned, long);
 static load_file_t o_load_file;
 
+// One frame read on its own (FUN_0040ae12: the frame's 16-byte record into 0x522d10, then its
+// pixels at their offset into the caller's buffer), as the lords' faces in message scrolls and the
+// castle screen's picture are: the frame whose record was read last.
+#define FRAME_RECORD ((void *)0x00522d10)
+static char g_frameFile[32];
+static int g_frameIndex = -1;
+
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
 	int n = o_load_file(name, buffer, size, offset);
+	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
+		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
 	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
-	if (n > 0 && offset == 0 && (!_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
-		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6)))
-		tiles_loaded(name, buffer, n);
+	if (n > 0 && offset == 0 && tiles) tiles_loaded(name, buffer, n);
+	else if (n > 0 && offset == 0) tiles_forget_buffer(buffer); // another file in a buffer that held ground
+	if (n == 16 && buffer == FRAME_RECORD && offset >= 8 && (offset - 8) % 16 == 0) {
+		lstrcpynA(g_frameFile, name, sizeof g_frameFile);
+		g_frameIndex = (offset - 8) / 16;
+	}
+	else if (n > 0 && offset > 0 && g_frameIndex >= 0 && !lstrcmpiA(name, g_frameFile)) {
+		const short *rec = (const short *)FRAME_RECORD;
+		if ((long)rec[0] * rec[1] == n) sprite_set_bind(name, g_frameIndex, buffer);
+		g_frameIndex = -1;
+	}
 	if (g_logLoads) logf_("load %s -> %p, %d bytes", name, buffer, n);
 	note_load(name);
 	return n;
@@ -6520,7 +7384,9 @@ static void __cdecl h_yesno_draw(void)
 {
 	BOOL wide = g_yesnoWide && *(int *)0x0052af90 != 160;
 	g_drawingLeft = wide;
-	o_yesno_draw();
+	// Not hooked in 4:3 (the wide hooks are installed only with Wide=1): the game's own, unchanged
+	// FUN_0040ccfa. yesno_keep calls here in every mode; calling the empty trampoline crashed.
+	if (o_yesno_draw) o_yesno_draw(); else ((draw_msg_t)0x0040ccfa)();
 	g_drawingLeft = FALSE;
 }
 
@@ -6863,7 +7729,7 @@ static void army_panel_keep(void)
 // The settings panel (F10) as one of the game's scrolls: drawn with its own scroll frame and
 // lettering into its picture, like the army scroll, before every flush that would show the place
 // without it. What it covered is kept and put back when it closes.
-#define MS_W (24 * 16)
+#define MS_W (28 * 16) // (wide enough for the four tabs side by side)
 #define MS_H (17 * 16)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
@@ -6912,6 +7778,8 @@ static void menu_scroll_draw(void)
 	int n = menu_tab_count(g_menuTab);
 	if (g_menuSel >= n) g_menuSel = 0;
 	g_menuRows = n;
+	int vx = 190; // the values' column: clear of the tab's longest label
+	for (int i = 0; i < n; i++) vx = max(vx, 32 + width(kMenuLabel[kMenuTabItems[g_menuTab][i]], small) + 14);
 	for (int i = 0; i < n; i++) {
 		int item = kMenuTabItems[g_menuTab][i], y = y0 + 74 + i * 15, c = i == g_menuSel ? red : ink;
 		char v[64]; BOOL restart;
@@ -6920,11 +7788,15 @@ static void menu_scroll_draw(void)
 		if (i == g_menuSel) // a pointer before the chosen line
 			for (int k = 0; k < 4; k++) line(x0 + 22 + k, y + 4 - (3 - k), x0 + 22 + k, y + 4 + (3 - k), red);
 		text(kMenuLabel[item], x0 + 32, y, small, c); // the small lettering: the body's is too large for a list
-		text(v, x0 + 190, y, small, restart ? red : c);
+		text(v, x0 + vx, y, small, restart ? red : c);
 		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
 	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink); // under the last of 8 rows
+	if (g_menuTab == 3) {
+		ctext("* after a restart; the fixes from the next battle", x0, y0 + 188, MS_W, small, ink);
+		ctext("The fixes stay off in multiplayer games", x0, y0 + 202, MS_W, small, ink);
+	}
 	const char *keys = "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
@@ -7019,6 +7891,18 @@ static void __cdecl h_battle_view(void *a, void *b, void *c, int mapW, int d, in
 typedef void (__cdecl *battle_clamp_t)(void);
 static battle_clamp_t o_battle_clamp;
 #define BATTLE_COL (*(int *)0x0055ce70)
+typedef int (__cdecl *edge_scroll_t)(void);
+static edge_scroll_t o_edge_scroll;
+static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x
+{
+	if (battle_left_x() >= 1) return o_edge_scroll();
+	int saved = *(int *)0x004e6594;
+	*(int *)0x004e6594 = g_battleLeftEdge ? 0 : max(1, saved);
+	int r = o_edge_scroll();
+	*(int *)0x004e6594 = saved;
+	return r;
+}
+
 static void __cdecl h_battle_clamp(void)
 {
 	o_battle_clamp();
@@ -7043,11 +7927,27 @@ static void __cdecl h_battle_draw(int col, int row)
 	if (col > 0x41 - g_battleK) BATTLE_COL = col = 0x41 - g_battleK;
 	if (row > 0x42 - g_battleR) BATTLE_ROW = row = 0x42 - g_battleR;
 	LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+	double a = perf_now();
 	g_btDefer = battle_zoom_on() && g_btLayer && g_btShadow && g_btValid; // the stamps batched (bt_queue)
 	o_battle_draw(col, row);
+	double b = perf_now();
 	g_btDefer = FALSE;
 	bt_flush();
+	double c = perf_now();
 	if (g_timing) draw_timed(1, t0);
+	// Timing=1: each scroll step (the view moved), with the forest cells in view (blocked, not water)
+	static int lc = -1, lr = -1, stepLogs; static double lastStep;
+	if (g_timing && (col != lc || row != lr) && stepLogs < 400) {
+		int forest = 0, cols = 43, rows = 29;
+		for (int y = row; y < row + rows && y < 80; y++) for (int x = col - g_battleK; x < col - g_battleK + cols && x < 80; x++)
+			if (x >= 0 && y >= 0 && (((BYTE *)0x005440e1)[(y * 80 + x) * 8] & 0x50) == 0x10) forest++;
+		stepLogs++;
+		logf_("scroll step: view %d,%d, %.1f ms since the last, forest cells in view %d, game's redraw %.1f ms, HD stamps %.1f ms, longest frame gap %.1f ms, queued stamps %d",
+			col, row, lastStep ? a - lastStep : 0.0, forest, b - a, c - b, g_frameGapMax, g_btLastQN);
+		g_frameGapMax = 0;
+		lastStep = a;
+	}
+	lc = col; lr = row;
 }
 
 // The view as the game set it, while it is widened for one call.
@@ -7543,6 +8443,8 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00426b92, kBlockPrologue, sizeof kBlockPrologue, h_stream_play, &o_stream_play);
 	hook_code((BYTE *)0x004bc020, kBlockPrologue, sizeof kBlockPrologue, h_battle_view, &o_battle_view);
 	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
+	static const BYTE kEdgePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }; // push ebp; mov ebp,esp; sub esp,10h
+	hook_code((BYTE *)0x00432221, kEdgePrologue, sizeof kEdgePrologue, h_edge_scroll, &o_edge_scroll);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
@@ -7584,6 +8486,131 @@ static BOOL known_build(void)
 // its frame copy (FUN_00452160) calls through a null primary surface. Nothing to show yet: skip it.
 typedef void (__cdecl *show_frame_t)(int);
 static show_frame_t o_show_frame;
+
+// The battle minimap's troops ([Display] MinimapPop): the game draws each as a 2x2 dot of its owner's
+// colour (FUN_004bc51a, frames of t2_spri.pl8), and the black player's is mid-grey (index 0x31), the
+// grey of rock and walls. Here every troop gets a ring one screen pixel wide (half a game pixel: black;
+// the black player's dots true black with a white ring). The rings are drawn in the HD layer (the
+// zoomed battle's g_btLayer, else the sprite layer) on the game pixels around the dots, which keep their
+// own colour there, and taken off again at the next copy, so nothing trails. The black player's dot
+// colour goes into the game's frame only for its copy to the screen and is taken out right after, so the
+// game's own minimap, which redraws only changed cells, never sees it.
+static BYTE g_miniSave[200 * 200];
+static int g_miniX, g_miniY, g_miniW, g_miniH; // the saved rectangle (game pixels); g_miniW 0: none
+static int g_ringFx[4096], g_ringFy[4096], g_ringN; static BOOL g_ringBt; // the ring pixels stamped last time
+static BYTE g_ringMask[200 * 200], g_ringInk[200 * 200];
+static void minimap_rings_clear(void)
+{
+	for (int i = 0; i < g_ringN; i++) {
+		int fx = g_ringFx[i], fy = g_ringFy[i];
+		if (g_ringBt) { if (g_btValid && fx < g_frameW && fy < g_frameH) g_btValid[fy * g_frameW + fx] = 0; rows_dirty(g_btDirty, fy, fy + 1); }
+		else if (g_sprValid && fx < MAX_W && fy < GAME_H) { g_sprValid[fy * MAX_W + fx] = 0; g_sprDirty[fy] = 1; }
+	}
+	g_ringN = 0;
+}
+static void minimap_dots_paint(void)
+{
+	g_miniW = 0;
+	minimap_rings_clear();
+	if (!g_miniPop || !IN_BATTLE_NOW() || *(int *)0x004e5d58 != 2 || !g_back || !g_primary || !g_primary->pal) return;
+	BYTE *fb = *(BYTE **)0x004ea1a8, *cells = *(BYTE **)0x004e6574, *spr = *(BYTE **)0x004e5d40;
+	int pitch = *(int *)0x004eb274, stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
+	int ox = *(int *)0x004e5d68, oy = *(int *)0x004e5d60;
+	if (!fb || !cells || !spr || pitch <= 0 || stride <= 0 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
+	int w = 2 * cw, h = 2 * ch;
+	if (ox + w > pitch || oy + h > GAME_H || pitch != g_back->pitch) return;
+	INT_PTR off = fb - g_back->bits; // the game's frame inside the patch's back buffer (for the HD layers)
+	if (off < 0) return;
+	int bx = (int)(off % g_back->pitch), by = (int)(off / g_back->pitch);
+	BOOL bt = battle_zoom_on() && g_btLayer;
+	if (!bt && (!g_sprLayer || !g_sprValid)) return;
+	// The dots' colours, one per frame of t2_spri.pl8 (148 bytes: its offsets are tiny). Once a battle is
+	// over the game frees that buffer and the cell table (filled with 0xDD) while the battle screen is
+	// still up: an offset that makes no sense means no outlines this time (it crashed reading 0xDDDDDDDD).
+	// and the game's buffers must still be there at all (freed memory may also be handed back to Windows)
+	if (!mem_readable(cells, (size_t)cw * ch * stride) || !mem_readable(spr, 7 * 16) ||
+		!mem_readable(fb + oy * pitch, (size_t)h * pitch)) return;
+	BYTE fcol[7] = { 0 };
+	for (int f = 1; f <= 6; f++) {
+		int o = *(int *)(spr + f * 16 + 12);
+		if (o <= 0 || o >= 4096 || !mem_readable(spr + o, 1)) return;
+		fcol[f] = spr[o];
+	}
+	for (int y = 0; y < h; y++) memcpy(g_miniSave + y * w, fb + (oy + y) * pitch + ox, w);
+	g_miniX = ox; g_miniY = oy; g_miniW = w; g_miniH = h;
+	memset(g_ringMask, 0, w * h);
+	// Each ring pixel's four HD sub-pixels (bit 0 top left, 1 top right, 2 bottom left, 3 bottom right):
+	// those within one HD pixel of a dot are inked.
+	for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) {
+		BYTE unit = cells[(r * cw + c) * stride + 5];
+		if (unit < 1 || unit > 0x50) continue;          // (a battle has figures 1..80; 0xDD: a freed table)
+		BYTE owner = *(BYTE *)(0x005544ac + unit * 0x1b0);
+		if (owner > 6) continue;                          // (players 0..5, 6 the rebels)
+		int frame = owner == 6 ? 6 : *(BYTE *)(0x0057bf0a + owner * 0x160); // as FUN_004bc51a
+		if (frame <= 0 || frame > 6) continue;
+		BYTE col = fcol[frame], ink = 0x3f; // the frame's colour; black ring
+		int x0 = 2 * c, y0 = 2 * r;
+		if (col == 0x31) { // the black player: black dots, white ring
+			ink = 0x20;
+			for (int y = y0; y <= y0 + 1; y++) for (int x = x0; x <= x0 + 1; x++)
+				if (x < w && y < h) fb[(oy + y) * pitch + ox + x] = 0x3f;
+		}
+		for (int y = y0 - 1; y <= y0 + 2; y++) for (int x = x0 - 1; x <= x0 + 2; x++) {
+			if (x < 0 || x >= w || y < 0 || y >= h || (x >= x0 && x <= x0 + 1 && y >= y0 && y <= y0 + 1)) continue;
+			int m = 0;
+			for (int b = 0; b < 4; b++) {
+				int hx = 2 * x + (b & 1), hy = 2 * y + (b >> 1);
+				if (hx >= 2 * x0 - 1 && hx <= 2 * x0 + 4 && hy >= 2 * y0 - 1 && hy <= 2 * y0 + 4) m |= 1 << b;
+			}
+			g_ringMask[y * w + x] |= m; g_ringInk[y * w + x] = ink;
+		}
+	}
+	const PALETTEENTRY *pe = g_primary->pal->e;
+	for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+		int m = g_ringMask[y * w + x];
+		if (!m || g_ringN >= 4096) continue;
+		BYTE v = fb[(oy + y) * pitch + ox + x];
+		BOOL dot = FALSE; // a pixel of another troop's dot: the dot shows, no ring on it
+		{ int c = x / 2, r = y / 2; BYTE u = c < cw && r < ch ? cells[(r * cw + c) * stride + 5] : 0; if (u >= 1 && u <= 0x50) dot = TRUE; }
+		if (dot) continue;
+		BOOL hidden = FALSE; // under the patch's scrolls (settings, army): those must stay as drawn
+		for (int k = 0; k < 2 && !hidden; k++) {
+			const SCROLL_OVL *s = &g_ovl[k];
+			hidden = s->on && ox + x >= s->x && ox + x < s->x + s->w && oy + y >= s->y && oy + y < s->y + s->h;
+		}
+		if (hidden) continue;
+		int fx = bx + ox + x, fy = by + oy + y;
+		DWORD ground = (DWORD)pe[v].peRed << 16 | (DWORD)pe[v].peGreen << 8 | pe[v].peBlue;
+		BYTE ik = g_ringInk[y * w + x];
+		DWORD ink = (DWORD)pe[ik].peRed << 16 | (DWORD)pe[ik].peGreen << 8 | pe[ik].peBlue;
+		DWORD q[4];
+		for (int b = 0; b < 4; b++) q[b] = m >> b & 1 ? ink : ground;
+		if (bt) {
+			if (fx >= g_frameW || fy >= g_frameH) continue;
+			DWORD *o = g_btLayer + (fy * g_frameW + fx) * 4;
+			o[0] = q[0]; o[1] = q[1]; o[2] = q[2]; o[3] = q[3];
+			g_btShadow[fy * g_frameW + fx] = v; g_btValid[fy * g_frameW + fx] = 1;
+			rows_dirty(g_btDirty, fy, fy + 1);
+		}
+		else {
+			if (fx >= MAX_W || fy >= GAME_H) continue;
+			DWORD *o0 = g_sprLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
+			o0[0] = q[0]; o0[1] = q[1]; o1[0] = q[2]; o1[1] = q[3];
+			g_sprShadow[fy * MAX_W + fx] = v; g_sprValid[fy * MAX_W + fx] = 1; g_sprDirty[fy] = 1;
+		}
+		g_ringFx[g_ringN] = fx; g_ringFy[g_ringN] = fy; g_ringN++;
+	}
+	g_ringBt = bt;
+}
+static void minimap_dots_restore(void)
+{
+	if (!g_miniW) return;
+	BYTE *fb = *(BYTE **)0x004ea1a8; int pitch = *(int *)0x004eb274;
+	if (fb) for (int y = 0; y < g_miniH; y++) memcpy(fb + (g_miniY + y) * pitch + g_miniX, g_miniSave + y * g_miniW, g_miniW);
+	g_miniW = 0;
+}
+static void show_frame_dots(int force) { minimap_dots_paint(); o_show_frame(force); minimap_dots_restore(); }
+
 static void __cdecl h_show_frame(int force)
 {
 	if (!*(void **)0x004eabd0) return;
@@ -7631,10 +8658,15 @@ static void __cdecl h_show_frame(int force)
 	// wait for it (g_composeLock), and nobody would see that frame; the next call copies.
 	static int sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy; static double sfT; // Timing=1: why copies did or did not happen
 	if (g_timing) {
+		static double lastFrame;   // the gap between the game's frames (for the scroll step log)
+		double nf = perf_now();
+		if (lastFrame && nf - lastFrame > g_frameGapMax) g_frameGapMax = nf - lastFrame;
+		lastFrame = nf;
 		sfCalls++;
 		if (perf_now() - sfT > 1000) {
-			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies",
-				sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy, g_pendingCopies);
+			if (IN_BATTLE_NOW()) logf_("copies 1 s: %d calls, %d skipped (composing), %d with the presenter's turn (%d copied nothing), %d without (%d copied), %d in-wait copies, %d view copies the game didn't make",
+				sfCalls, sfCompSkip, sfOurs, sfOursNoCopy, sfOther, sfOtherCopy, g_pendingCopies, g_forcedViewCopies);
+			g_forcedViewCopies = 0;
 			sfCalls = sfCompSkip = sfOurs = sfOursNoCopy = sfOther = sfOtherCopy = 0; g_pendingCopies = 0; sfT = perf_now();
 		}
 	}
@@ -7647,26 +8679,53 @@ static void __cdecl h_show_frame(int force)
 	if (g_timing) {
 		static double sum, worst, t0; static int n;
 		double a = perf_now();
-		o_show_frame(force);
+		show_frame_dots(force);
 		double b = perf_now(), ms = b - a;
 		sum += ms; n++; if (ms > worst) worst = ms;
 		if (!t0) t0 = b;
 		if (b - t0 > 5000) { logf_("timing: %d frame copies, %.2f ms average, %.1f ms worst (game thread)", n, sum / n, worst); sum = worst = 0; n = 0; t0 = b; }
 	}
-	else o_show_frame(force);
+	else show_frame_dots(force);
 	// nothing was copied (nothing changed, or the game's own gate): the presenter's turn is kept
 	if (ours && g_copySeq == seq && hadTurn) InterlockedExchange(&g_frameTaken, 1);
 	if (ours) { sfOurs++; if (g_copySeq == seq) sfOursNoCopy++; } else { sfOther++; if (g_copySeq != seq) sfOtherCopy++; }
 	if (g_timing) {
 		pace_event(g_copySeq != seq ? 'C' : ours ? 'c' : 'N', g_paceChangeSeq);
+		if (IN_BATTLE_NOW() && g_scrollTrace > 0) {
+			static int lc = -1, lr = -1, q;
+			if (BATTLE_COL != lc || BATTLE_ROW != lr) q = 0;
+			if (q++ < 4) logf_("scroll trace: game frame view %d,%d copy %s (turn %d, marks %d, change #%ld)", BATTLE_COL, BATTLE_ROW,
+				g_copySeq != seq ? "made" : "none", ours, *(int *)0x0050d09c, (long)g_paceChangeSeq);
+			lc = BATTLE_COL; lr = BATTLE_ROW;
+		}
 		static int gateLogs;
 		if (ours && g_copySeq == seq && *(int *)0x0050d09c > 0 && gateLogs < 30) { // marked for the screen, our turn, and still no copy: the copy routine's own gates
 			gateLogs++;
 			logf_("copy refused: marks %d, 4df28c %d, 56d650 %d, 553008 %d, eabe8 %d, 5651ac %d", *(int *)0x0050d09c, *(int *)0x004df28c, *(int *)0x0056d650, *(int *)0x00553008, *(int *)0x004eabe8, *(int *)0x005651ac);
 		}
 	}
+	// Over a big forest every cell is the same forest tile: after a scroll step the game found nothing to
+	// mark for the screen and didn't copy the new view, so the screen kept the old picture (mini freezes
+	// while scrolling over forest, 8-30 new pictures a second instead of 60). When the battle view has
+	// moved and the game copied nothing, the whole frame is copied here.
+	// And in the zoomed-out battle the battlefield reaches beyond the game's 640x480 (left and below), which
+	// its copies to the screen never cover: units moving there were drawn but not copied, and the screen
+	// sat on one picture for up to half a second. Every copy there takes the whole frame along.
+	BOOL wholeFrame = g_copySeq != seq && battle_zoom_on();
+	if ((wholeFrame || (g_copySeq == seq && (LONG)(BATTLE_COL + BATTLE_ROW * 256) != g_primaryView)) && IN_BATTLE_NOW() && g_back && g_primary) {
+		minimap_dots_paint(); // (this copy carries the minimap too: without the outlines it would wipe them)
+		EnterCriticalSection(&g_composeLock);
+		EnterCriticalSection(&g_lock);
+		g_paceCopying = g_paceChangeSeq;
+		copy_rect(g_primary, -g_primary->org, 0, g_back, -g_back->org, 0, g_primary->w, min(g_primary->h, g_back->h));
+		LeaveCriticalSection(&g_lock);
+		LeaveCriticalSection(&g_composeLock);
+		minimap_dots_restore();
+		mark_dirty();   // (counts the copy: g_copySeq)
+		g_forcedViewCopies++;
+	}
 	g_copyPending = g_copySeq == seq && g_frameLimit > 0; // a finished frame not on the screen yet (pending_copy)
-	if (g_copySeq != seq) g_frameCopyT = perf_now();
+	if (g_copySeq != seq) { g_frameCopyT = perf_now(); if (IN_BATTLE_NOW()) InterlockedExchange(&g_primaryView, BATTLE_COL + BATTLE_ROW * 256); }
 }
 // From the frame limiter's wait (h_game_frame): the last finished frame copied once the presenter
 // is ready for it. The game is between frames there, so its back buffer is complete.
@@ -7678,9 +8737,12 @@ static void pending_copy(void)
 	g_copyPending = 0;
 	LONG seq = g_copySeq;
 	g_paceCopying = g_paceChangeSeq;
-	o_show_frame(1);
+	show_frame_dots(1);
 	if (g_copySeq == seq) { if (hadTurn) InterlockedExchange(&g_frameTaken, 1); } // (nothing to copy after all)
-	else { g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq); }
+	else {
+		g_frameCopyT = perf_now(); g_pendingCopies++; pace_event('P', g_paceChangeSeq);
+		if (IN_BATTLE_NOW()) InterlockedExchange(&g_primaryView, BATTLE_COL + BATTLE_ROW * 256);
+	}
 }
 
 // Old-game habit: when no message is waiting, the main loop (FUN_0040e9ab) runs the next game frame
@@ -7782,14 +8844,22 @@ static int __cdecl h_logic_steps(void)
 	int n = o_logic_steps();
 	g_frameSteps += n > 0 ? n : 0;
 	if (!g_timing) return n;
-	static DWORD t0; static int steps, frames;
+	static DWORD t0; static int steps, frames, burst;
+	static double lastStepT, maxGap;
 	DWORD now = GetTickCount();
+	double nowP = perf_now();
 	if (!t0) t0 = now;
 	steps += n > 0 ? n : 0; frames++;
+	if (n > 0) {   // the longest wait between frames that ran steps, and the most steps run at once
+		if (lastStepT && nowP - lastStepT > maxGap) maxGap = nowP - lastStepT;
+		lastStepT = nowP;
+		if (n > burst) burst = n;
+	}
+	g_lastLogicStepT = lastStepT;
 	if (now - t0 >= 5000) {
-		logf_("timing: %d logic steps in %.1f s over %d frames (battle %d, screen %d)", steps, (now - t0) / 1000.0, frames,
-			*(int *)0x0057c8fc == 2, *(BYTE *)0x004eac50);
-		t0 = now; steps = frames = 0;
+		logf_("timing: %d logic steps in %.1f s over %d frames (battle %d, screen %d); longest gap between steps %.0f ms, most steps in one frame %d",
+			steps, (now - t0) / 1000.0, frames, *(int *)0x0057c8fc == 2, *(BYTE *)0x004eac50, maxGap, burst);
+		t0 = now; steps = frames = 0; maxGap = 0; burst = 0;
 	}
 	return n;
 }
@@ -7816,9 +8886,15 @@ static BOOL g_fixMopUp;
 typedef void (__cdecl *chase_t)(void);
 static chase_t o_chase;
 
+static void chase_progress(int me);
+static BOOL engage_chase(int me);
+static BOOL g_fixEngage, g_chaseHookFailed;
+
 static void __cdecl h_chase(void)
 {
 	int me = FIG_CUR;
+	if (fix_on(g_fixEngage) && me > 0 && me < 0x51 && engage_chase(me)) return;   // walked back to its place
+	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) chase_progress(me);
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
 		int group = *(short *)(0x005545f8 + me * 0x1b0);
 		int target = FIG_B(me, 0x005545f4);
@@ -7831,6 +8907,1376 @@ static void __cdecl h_chase(void)
 		}
 	}
 	o_chase();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Battle log ([Debug] BattleLog=1, =2 adds every cell move). No gameplay change: the figure loop
+// FUN_004822ed (once per logic step, figures 1..80) is wrapped, each figure is compared with the step
+// before and the changes go to lords2hd-battle.txt: state changes, swaps, path searches and dropped
+// paths, "twitches" (the walk restarting without a cell change), idle units while enemies live, and a
+// summary each second. A figure that twitches gets a per-step trace for two seconds. At each battle
+// start the battlefield's 80x80 cells (8 bytes at 0x005440e0) are written as a map and raw bytes.
+#define FIG(i)     ((BYTE *)(0x00554480 + (i) * 0x1b0))
+#define FIG_S(i, o) (*(short *)(FIG(i) + (o)))
+#define BCELL(x, y) ((BYTE *)(0x005440e0 + ((y) * 80 + (x)) * 8))
+static int g_battleLog;
+static FILE *g_blog;
+typedef void (__cdecl *fig_loop_t)(void);
+static fig_loop_t o_fig_loop;
+typedef BOOL (__cdecl *path_search_t)(int, int, int, int);
+static path_search_t o_path_search;
+typedef struct { BYTE live, side, type, state, saved, wait, sub, face, frame, pathOn, fails, target;
+	short x, y, dx, dy, group, men, pathLeft; } fig_snap;
+static fig_snap g_snap[81];
+static unsigned g_btick, g_bsecTick;
+static int g_bnum;
+static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81], g_lastMove[81];
+static short g_prevX[81], g_prevY[81];
+static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked, g_bresync;
+static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
+static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
+static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
+
+// The battle log never writes to disk on the game's thread: lines go into a 32 MB memory buffer and a
+// background thread writes them out twice a second (a full buffer drops lines rather than wait).
+#define BLOG_BUF (32 << 20)
+static char *g_blogBuf, *g_blogOut;
+static volatile LONG g_blogLen;
+static CRITICAL_SECTION g_blogLock;
+static HANDLE g_blogFile = INVALID_HANDLE_VALUE;
+
+static DWORD WINAPI blog_writer(LPVOID unused)
+{
+	(void)unused;
+	for (;;) {
+		Sleep(500);
+		EnterCriticalSection(&g_blogLock);
+		LONG n = g_blogLen;
+		char *t = g_blogBuf; g_blogBuf = g_blogOut; g_blogOut = t;   // swap the buffers
+		g_blogLen = 0;
+		LeaveCriticalSection(&g_blogLock);
+		DWORD w;
+		if (n > 0 && g_blogFile != INVALID_HANDLE_VALUE) WriteFile(g_blogFile, g_blogOut, (DWORD)n, &w, NULL);
+	}
+	return 0;
+}
+
+static void blog_vput(const char *fmt, va_list ap, BOOL stamp)
+{
+	char line[1024];
+	int k = stamp ? snprintf(line, sizeof line, "%6u ", g_btick) : 0;
+	int m = vsnprintf(line + k, sizeof line - k - 1, fmt, ap);
+	if (m < 0) return;
+	k += m < (int)(sizeof line - k - 1) ? m : (int)(sizeof line - k - 2);
+	line[k++] = '\n';
+	EnterCriticalSection(&g_blogLock);
+	if (g_blogLen + k <= BLOG_BUF) { memcpy(g_blogBuf + g_blogLen, line, k); g_blogLen += k; }
+	LeaveCriticalSection(&g_blogLock);
+}
+
+static void blog(const char *fmt, ...)
+{
+	if (!g_blog) return;
+	va_list ap;
+	va_start(ap, fmt);
+	blog_vput(fmt, ap, TRUE);
+	va_end(ap);
+}
+
+static void blogf(const char *fmt, ...)   // without the step stamp (headers, maps)
+{
+	if (!g_blog) return;
+	va_list ap;
+	va_start(ap, fmt);
+	blog_vput(fmt, ap, FALSE);
+	va_end(ap);
+}
+
+static BOOL blog_open(void)
+{
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\lords2hd-battle.txt", g_gameDir);
+	g_blogBuf = (char *)VirtualAlloc(NULL, BLOG_BUF, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	g_blogOut = (char *)VirtualAlloc(NULL, BLOG_BUF, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!g_blogBuf || !g_blogOut) return FALSE;
+	g_blogFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (g_blogFile == INVALID_HANDLE_VALUE) return FALSE;
+	InitializeCriticalSection(&g_blogLock);
+	HANDLE t = CreateThread(NULL, 0, blog_writer, NULL, 0, NULL);
+	if (t) { SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(t); }
+	g_blog = (FILE *)1;   // "open" marker for the callers' checks
+	return TRUE;
+}
+
+static void fig_take(int i, fig_snap *s)
+{
+	BYTE *f = FIG(i);
+	s->live = f[0x2c] != 0; s->side = f[0x2c]; s->type = f[0x12]; s->state = f[0x31]; s->saved = f[0x2f];
+	s->wait = f[0x30]; s->sub = f[0x32]; s->face = f[0x18]; s->frame = f[0x10]; s->pathOn = f[0x164];
+	s->fails = f[0x176]; s->target = f[0x174];
+	s->x = FIG_S(i, 0x20); s->y = FIG_S(i, 0x22); s->dx = FIG_S(i, 0x24); s->dy = FIG_S(i, 0x26);
+	s->group = FIG_S(i, 0x178); s->men = FIG_S(i, 0x1a0); s->pathLeft = FIG_S(i, 0x36);
+}
+
+static int group_hunting(int g) { return g >= 0 && g < 80 ? *(BYTE *)(0x0056654a + g * 0x34) : 0; }
+
+static void battle_start(void)
+{
+	char path[MAX_PATH];
+	g_bnum++;
+	if (!g_blog && !blog_open()) return;
+	g_bsecTick = g_btick;
+	memset(g_twitch, 0, sizeof g_twitch); memset(g_twitchSec, 0, sizeof g_twitchSec);
+	memset(g_traceUntil, 0, sizeof g_traceUntil); memset(g_idleSince, 0, sizeof g_idleSince);
+	memset(g_lastMove, 0, sizeof g_lastMove); memset(g_prevX, -1, sizeof g_prevX); memset(g_prevY, -1, sizeof g_prevY);
+	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = 0;
+	blogf("\n==== battle %d ====", g_bnum);
+	blogf("figures: slot side type human group men x,y dest state ranged range delay");
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c]) continue;
+		blogf("  fig %2d side %d type %2d human %d group %2d men %3d at %2d,%2d dest %2d,%2d state %2d ranged %d range %d delay %d",
+			i, f[0x2c], f[0x12], f[0x13], FIG_S(i, 0x178), FIG_S(i, 0x1a0), FIG_S(i, 0x20), FIG_S(i, 0x22),
+			FIG_S(i, 0x24), FIG_S(i, 0x26), f[0x31], f[0x16a], FIG_S(i, 0x170), f[0x189]);
+	}
+	// The battlefield: one character per cell from the flags (byte +1): # 0x10 blocked, X 0x80 siege
+	// footprint, ~ 0x40 water, m 0x20 moat, g 0x08 gate, else the height digit (+4); then the kind
+	// (+7) and the first byte (+0) as hex rows.
+	blogf("map (flags: # blocked 0x10, X 0x80, ~ water 0x40, m moat 0x20, g gate 0x08, digit = height):");
+	for (int y = 0; y < 80; y++) {
+		char row[81];
+		for (int x = 0; x < 80; x++) {
+			BYTE *c = BCELL(x, y), fl = c[1];
+			row[x] = fl & 0x10 ? '#' : fl & 0x80 ? 'X' : fl & 0x40 ? '~' : fl & 0x20 ? 'm' : fl & 0x08 ? 'g' :
+				(char)('0' + (c[4] % 10));
+		}
+		row[80] = 0;
+		blogf("  %2d %s", y, row);
+	}
+	for (int k = 0; k < 3; k++) {
+		static const int off[3] = { 0, 1, 7 };
+		static const char *name[3] = { "byte+0", "flags+1", "kind+7" };
+		blogf("map %s (hex):", name[k]);
+		for (int y = 0; y < 80; y++) {
+			char hex[161];
+			for (int x = 0; x < 80; x++) snprintf(hex + 2 * x, 3, "%02x", BCELL(x, y)[off[k]]);
+			blogf("  %2d %s", y, hex);
+		}
+	}
+	if (g_battleLog >= 2) {
+		snprintf(path, sizeof path, "%s\\lords2hd-battle%d-map.bin", g_gameDir, g_bnum);
+		FILE *m = fopen(path, "wb");
+		if (m) { fwrite((void *)0x005440e0, 8, 6400, m); fclose(m); }
+	}
+	for (int i = 1; i < 0x51; i++) fig_take(i, &g_snap[i]);
+}
+
+static int nearest_enemy(int i, const fig_snap *n)
+{
+	int best = 999;
+	for (int j = 1; j < 0x51; j++) {
+		const fig_snap *e = &n[j];
+		if (!e->live || e->side == n[i].side || e->state == 2) continue;
+		int d = abs(e->x - n[i].x), dy = abs(e->y - n[i].y);
+		if (dy > d) d = dy;
+		if (d < best) best = d;
+	}
+	return best;
+}
+
+static void battle_second(const fig_snap *n)
+{
+	int alive[3] = { 0 }, moving = 0, waiting = 0, idle = 0, chasing = 0, melee = 0;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live) continue;
+		alive[n[i].side < 3 ? n[i].side : 0]++;
+		switch (n[i].state) { case 3: moving++; break; case 1: waiting++; break; case 5: idle++; break;
+			case 8: chasing++; break; case 4: melee++; break; }
+	}
+	char cols[400] = "", *p = cols;
+	for (int g = 0; g < 80 && p < cols + sizeof cols - 24; g++) {
+		int minx = 99, maxx = -1, miny = 99, maxy = -1, cnt = 0;
+		for (int i = 1; i < 0x51; i++) {
+			if (!n[i].live || n[i].group != g || n[i].state == 2) continue;
+			cnt++;
+			if (n[i].x < minx) minx = n[i].x; if (n[i].x > maxx) maxx = n[i].x;
+			if (n[i].y < miny) miny = n[i].y; if (n[i].y > maxy) maxy = n[i].y;
+		}
+		if (cnt > 1) p += sprintf(p, " g%d:%dx%d/%d", g, maxx - minx + 1, maxy - miny + 1, cnt);
+	}
+	// melee units standing idle with a live enemy within 2 cells (what phase 5 is for)
+	int idleClose = 0;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || n[i].state != 5 || n[i].type >= 7 || FIG(i)[0x16a]) continue;
+		for (int j = 1; j < 0x51; j++)
+			if (n[j].live && n[j].side != n[i].side && n[j].state != 2 && n[j].type < 7 &&
+				abs(n[j].x - n[i].x) <= 2 && abs(n[j].y - n[i].y) <= 2) { idleClose++; break; }
+	}
+	// archers and crossbowmen standing (idle or waiting) with an enemy inside their range box
+	int archIdle = 0, archInRange = 0;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || !FIG(i)[0x16a] || (n[i].state != 5 && n[i].state != 1)) continue;
+		archIdle++;
+		int rg = FIG_S(i, 0x170) / 8;
+		for (int j = 1; j < 0x51; j++)
+			if (n[j].live && n[j].side != n[i].side && n[j].state != 2 && abs(n[j].x - n[i].x) <= rg && abs(n[j].y - n[i].y) <= rg) {
+				archInRange++;
+				break;
+			}
+	}
+	blog("idle-close %d | archers standing %d, with an enemy in range %d, shots %d, stepped back %d | routes planned %d", idleClose,
+		archIdle, archInRange, g_bshots, g_bstepback, g_bplanned);
+	g_bshots = 0; g_bstepback = 0; g_bplanned = 0;
+	unsigned h = 2166136261u;   // a hash of every figure, to compare two runs of the same battle
+	for (int i = 1; i < 0x51; i++) {
+		int v[6] = { n[i].live, n[i].x, n[i].y, n[i].state, n[i].men, n[i].target };
+		for (int k = 0; k < 6; k++) h = (h ^ (unsigned)v[k]) * 16777619u;
+	}
+	blog("hash %08x", h);
+	char tw[300] = "", *q = tw;
+	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d [%s] | groups%s",
+		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = 0;
+	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
+	blog("cpu units %.1f ms, searches %.1f ms (in the last second); selected group %d", g_bcpuLoop * 1000.0 / fq.QuadPart,
+		g_bcpuBfs * 1000.0 / fq.QuadPart, *(int *)0x0053e984);
+	g_bcpuLoop = g_bcpuBfs = 0;
+	memset(g_twitchSec, 0, sizeof g_twitchSec);
+	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
+}
+
+typedef int (__cdecl *step_check_t)(int);
+static step_check_t o_step_check;
+static int __cdecl h_step_check(int dir)   // FUN_00490616(dir): logged for traced figures
+{
+	int r = o_step_check(dir);
+	int me = FIG_CUR;
+	if (g_blog && me > 0 && me < 0x51 && g_traceUntil[me] > g_btick) {
+		static const int fdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 }, fdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+		int x = FIG_S(me, 0x20) + fdx[dir & 7], y = FIG_S(me, 0x22) + fdy[dir & 7];
+		BYTE *c = x >= 0 && x < 80 && y >= 0 && y < 80 ? BCELL(x, y) : NULL;
+		blog("chk fig %d dir %d -> %d (cell %d,%d occ %d flags %02x h %d, my h %d, adj-enemy %d)", me, dir, r, x, y,
+			c ? c[5] : -1, c ? c[1] : -1, c ? c[4] : -1, BCELL(FIG_S(me, 0x20), FIG_S(me, 0x22))[4], *(int *)0x00554474);
+	}
+	return r;
+}
+
+static BOOL __cdecl h_path_search(int sx, int sy, int dx, int dy)
+{
+	if (g_blog && g_battleLog >= 2) {   // what stopped the route it had (the game dropped it just before)
+		int me = FIG_CUR;
+		short left = me > 0 && me < 0x51 ? FIG_S(me, 0x36) : 0;
+		if (left >= 0 && left < 150) {   // the step just tried popped its waypoint: entry [left]
+			BYTE *f = FIG(me);
+			int nx = f[0x38 + 2 * left], ny = f[0x39 + 2 * left];
+			BYTE *c = nx < 80 && ny < 80 ? BCELL(nx, ny) : NULL;
+			int occ = c ? c[5] : -1;
+			blog("lost route fig %d at %d,%d: next %d,%d (%d left) occ %d (side %d state %d group %d) flags %02x h %d, my h %d", me, sx, sy, nx, ny, left,
+				occ, occ > 0 && occ < 0x51 ? FIG(occ)[0x2c] : -1, occ > 0 && occ < 0x51 ? FIG(occ)[0x31] : -1, occ > 0 && occ < 0x51 ? FIG_S(occ, 0x178) : -1,
+				c ? c[1] : 0, c ? c[4] : 0, sx >= 0 && sx < 80 && sy >= 0 && sy < 80 ? BCELL(sx, sy)[4] : -1);
+		}
+	}
+	BOOL r = o_path_search(sx, sy, dx, dy);
+	if (g_blog) {
+		int me = FIG_CUR;
+		g_bsearch++;
+		if (!r) g_bsearchFail++;
+		if (g_battleLog >= 1) blog("path fig %d %d,%d -> %d,%d %s (fails %d)", me, sx, sy, dx, dy, r ? "edge-walk found" : "edge-walk failed",
+			me > 0 && me < 0x51 ? FIG(me)[0x176] : -1);
+	}
+	return r;
+}
+
+// [Debug] BattleSeed=1 (single player): the battle setup FUN_004778a0 draws its random numbers (the
+// computer's approach route, its strength jitter, siege deployment) from the game's generators, whose
+// state depends on how long the menus ran. The call at 0x004778ca (to 0x0040489e) comes before every
+// draw; it now first resets the generators to the game's start-up seeds, so the same battle repeats.
+static void (__cdecl *o_setup_call)(void) = (void (__cdecl *)(void))0x0040489e;
+static void __cdecl h_setup_call(void)
+{
+	if (!*(int *)0x00553030) {
+		*(DWORD *)0x0058fe28 = 0x54657687;
+		*(DWORD *)0x0058fe08 = 0x72641663;
+		*(DWORD *)0x00591564 = 0x34518632;
+		logf_("battle seed: random generators reset for a repeatable battle");
+	}
+	o_setup_call();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Jitter fix ([Game] JitterFix=1, single player; multiplayer only with MultiplayerFixes=1).
+// 1. The mover FUN_0048f1dd throws a unit's whole path away when the next cell on it is taken by a
+//    friend (a groupmate that was moving when the path was searched, or any friend for the computer,
+//    whose units treat friends like terrain). With no path the unit heads straight at its goal, which is
+//    usually the cell it just left, then finds the same detour again: it steps back and forth about
+//    three times a second. Now the path is kept and the unit waits a moment (state 1, ~8 steps) for the
+//    friend to move on; after 10 waits in a row (about a second) the game's own handling takes over.
+// 2. Swaps (FUN_0049005f, your units only): two units could swap places, swap back and swap again every
+//    few steps. The same pair can't swap again within 48 steps; the blocked unit waits instead.
+// 3. A swapped unit was always sent marching (saved state 3); a chasing one now keeps chasing.
+// Everything here only reads game state and the patch's own per-battle tables, reset when the game's
+// battle step counter (0x0057c998) starts again, so it gives the same result on every machine.
+#define JIT_MAX_WAITS 10
+static BOOL g_fixJitter;
+typedef int (__cdecl *mover_t)(int);
+static mover_t o_mover;
+typedef int (__cdecl *swapq_t)(void);
+static swapq_t o_swapq;
+static int g_jWaits[81], g_jSwapWith[81];
+static unsigned g_jSwapT[81], g_jLastMove[81], g_jStillSince[81], g_jGaveWay[81];
+static BOOL dm_step_ok(int from, int to);
+static int gr_plan(int me, int gx, int gy);
+static BOOL g_fixGroupMove, g_grSolo;
+static int g_grAvoid;
+static int *g_grOut, g_grOutMax;
+static unsigned g_jReplanT[81];
+static short g_jPrevX[81], g_jPrevY[81];
+static int g_jSwapB, g_jSwapPrev;
+static int g_lastStep = -1;
+
+static int __cdecl h_swapq(void)
+{
+	int me = FIG_CUR, b = *(int *)0x0052eff4;
+	// neither unit may swap again within 64 steps of its last swap (three units could rotate places), and
+	// the same two not within 5 s (in a queue that can't move they swapped back each time the 64 ran out)
+	if (fix_on(g_fixJitter) && me > 0 && me < 0x51 && b > 0 && b < 0x51 &&
+		((g_jSwapWith[me] && g_btick - g_jSwapT[me] < 64) || (g_jSwapWith[b] && g_btick - g_jSwapT[b] < 64) ||
+		 (g_jSwapWith[me] == b && g_btick - g_jSwapT[me] < 410) || (g_jSwapWith[b] == me && g_btick - g_jSwapT[b] < 410))) {
+		g_bswapsBlocked++;
+		// within 3 cells of its place, behind a groupmate it may not swap with (standing at its own place,
+		// or itself waiting in the same crowd): it stops where it is. It waited and asked again every 4-8
+		// steps, for as long as the battle went on (a whole group of crossbowmen at a map edge, 26 s).
+		BYTE *f = FIG(me);
+		short x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+		if (f[0x31] == 3 && abs(FIG_S(me, 0x24) - x) <= 3 && abs(FIG_S(me, 0x26) - y) <= 3 && FIG(b)[0x31] != 8 && FIG(b)[0x31] != 4) {
+			FIG_S(me, 0x24) = x; FIG_S(me, 0x26) = y;
+			f[0x164] = 0;
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d: groupmate %d (state %d) in the way, place was 3 cells or less on", me, x, y, b, FIG(b)[0x31]);
+		}
+		return 0;   // wait instead of swapping back
+	}
+	int prev = b > 0 && b < 0x51 ? FIG(b)[0x31] : 0;
+	int r = o_swapq();
+	if (r == 2 && me > 0 && me < 0x51 && b > 0 && b < 0x51) {
+		g_jSwapWith[me] = b; g_jSwapT[me] = g_btick;
+		g_jSwapWith[b] = me; g_jSwapT[b] = g_btick;
+		g_jSwapB = b; g_jSwapPrev = prev;
+	}
+	return r;
+}
+
+static int __cdecl h_mover(int p1)
+{
+	int me = FIG_CUR;
+	if (!fix_on(g_fixJitter) || me < 1 || me > 0x50) return o_mover(p1);
+	BYTE *f = FIG(me);
+	// The mover finishes the walk into a cell and picks the next step in the same call, so the checks below
+	// (which run at a cell centre) missed most arrivals. This call's last bit of walking is done here
+	// first, exactly as FUN_0048f1dd's own first part does it, and the checks see the unit at the centre.
+	if (f[0x2c] && !(f[0x34] & 1) && p1 != 1 && (signed char)(BYTE)(f[0x33] + 1) > (int)f[0x189] && (signed char)(BYTE)(f[0x32] + 2) >= 0x11) {
+		f[0x35] = 1; f[0x33] = 0; f[0x32] = 0; f[0x34] |= 1;
+	}
+	BYTE pathOn = f[0x164];
+	short left = FIG_S(me, 0x36), x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	int wx = -1, wy = -1;
+	static BYTE wp[300];
+	// 7. Back on its route: a swap (or a sidestep) moves a unit a cell without touching its waypoints, so
+	//    its next waypoint was two cells off and the step toward it ran into something; the whole route was
+	//    then dropped for the game's edge walk. At a cell centre it now picks up the furthest of its next
+	//    six waypoints that is next to it (or the one it stands on) and goes on from there.
+	if ((f[0x34] & 1) && pathOn && left >= 1 && left <= 150 && x >= 0 && x < 80 && y >= 0 && y < 80) {
+		int nx = f[0x38 + 2 * (left - 1)], ny = f[0x39 + 2 * (left - 1)];
+		if (max(abs(nx - x), abs(ny - y)) != 1) {
+			int best = -1;
+			for (int k = left - 1; k >= 0 && k >= left - 6; k--) {
+				int d = max(abs(f[0x38 + 2 * k] - x), abs(f[0x39 + 2 * k] - y));
+				if (d == 1) best = k + 1;
+				else if (d == 0 && k >= 1) best = k;
+			}
+			if (best >= 1 && best != left) {
+				if (g_blog && g_battleLog >= 1) blog("resync fig %d at %d,%d: next waypoint %d,%d, goes on from %d,%d (%d left, was %d)", me, x, y, nx, ny,
+					f[0x38 + 2 * (best - 1)], f[0x39 + 2 * (best - 1)], best, left);
+				FIG_S(me, 0x36) = left = (short)best;
+				g_bresync++;
+			}
+			else if (best < 1 && max(abs(nx - x), abs(ny - y)) == 2 && left < 150) {
+				// pushed off to the side, away from the way on: one step back next to the route, a free cell
+				// beside both (a taken one if that's all there is)
+				int pick = -1, pickTaken = -1;
+				for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+					int cx = x + dx, cy = y + dy;
+					if ((!dx && !dy) || cx < 0 || cx > 79 || cy < 0 || cy > 79 || max(abs(nx - cx), abs(ny - cy)) != 1) continue;
+					if (!dm_step_ok(y * 80 + x, cy * 80 + cx) || !dm_step_ok(cy * 80 + cx, ny * 80 + nx)) continue;
+					if (!BCELL(cx, cy)[5]) { if (pick < 0) pick = cy * 80 + cx; }
+					else if (pickTaken < 0) pickTaken = cy * 80 + cx;
+				}
+				if (pick < 0) pick = pickTaken;
+				if (pick >= 0) {
+					f[0x38 + 2 * left] = (BYTE)(pick % 80); f[0x39 + 2 * left] = (BYTE)(pick / 80);
+					FIG_S(me, 0x36) = ++left;
+					g_bresync++;
+					if (g_blog && g_battleLog >= 1) blog("resync fig %d at %d,%d: next waypoint %d,%d two cells off, steps to %d,%d first", me, x, y, nx, ny, pick % 80, pick / 80);
+				}
+			}
+		}
+	}
+	if (pathOn && left >= 1 && left <= 150) {
+		wx = f[0x38 + 2 * (left - 1)]; wy = f[0x39 + 2 * (left - 1)];
+		memcpy(wp, f + 0x38, 300);
+	}
+	// 6. At a cell centre, the next cell on its route taken by a friend that is walking too (often of
+	//    another group crossing): the mover would drop the route and search again at once, with the
+	//    game's edge walk, which can lead round the other side of a forest. It waits for the friend to
+	//    pass instead (no enemy beside it; after 10 waits the game's own handling takes over).
+	//    A friend of another group standing there won't move: the unit finds its own way round that cell
+	//    at once (A*, the same side of any forest), and so does one whose waits ran out; at most once in 2 s.
+	if ((f[0x34] & 1) && wx >= 0 && wx < 80 && wy >= 0 && wy < 80 && abs(wx - x) <= 1 && abs(wy - y) <= 1 &&
+		(wx != x || wy != y) && f[0x31] == 3 && x >= 0 && x < 80 && y >= 0 && y < 80) {
+		int occ = BCELL(wx, wy)[5];
+		BYTE ost = occ > 0 && occ < 0x51 ? FIG(occ)[0x31] : 0;
+		BOOL friendHere = occ > 0 && occ < 0x51 && occ != me && FIG(occ)[0x2c] == f[0x2c] && ost != 2;
+		BOOL walking = ost == 3 || ost == 8 || (ost == 1 && (FIG(occ)[0x2f] == 3 || FIG(occ)[0x2f] == 8));
+		BOOL otherGroup = friendHere && FIG_S(occ, 0x178) != FIG_S(me, 0x178);
+		if (friendHere && fix_on(g_fixGroupMove) && g_btick - g_jReplanT[me] >= 164 &&
+			((walking && g_jWaits[me] >= JIT_MAX_WAITS) || (!walking && otherGroup))) {
+			// a short way round that cell back onto its own route ~5 cells on (so it keeps to its side of
+			// a forest), spliced into its waypoints
+			g_jReplanT[me] = g_btick;
+			int T = left - 6 > 0 ? left - 6 : 0;
+			int tx = f[0x38 + 2 * T], ty = f[0x39 + 2 * T];
+			static int det[24];
+			int n = 0;
+			if ((tx != wx || ty != wy) && tx < 80 && ty < 80) {
+				g_grSolo = TRUE; g_grAvoid = wy * 80 + wx; g_grOut = det; g_grOutMax = 14;
+				n = gr_plan(me, tx, ty);
+				g_grSolo = FALSE; g_grAvoid = -1; g_grOut = NULL;
+			}
+			if (n && T + n <= 150) {
+				for (int k = 0; k < n; k++) { f[0x38 + 2 * (T + k)] = (BYTE)(det[k] % 80); f[0x39 + 2 * (T + k)] = (BYTE)(det[k] / 80); }
+				FIG_S(me, 0x36) = (short)(T + n);
+				f[0x164] = 1;
+				g_jWaits[me] = 0;
+				g_bplanned++;
+				if (g_blog && g_battleLog >= 1) blog("detour fig %d at %d,%d round fig %d (%s) at %d,%d: %d cells back to %d,%d", me, x, y, occ, walking ? "walking" : "standing", wx, wy, n, tx, ty);
+				return 1;
+			}
+		}
+		if (friendHere && walking && g_jWaits[me] < JIT_MAX_WAITS) {
+			BOOL enemy = FALSE;
+			BYTE myh = BCELL(x, y)[4];
+			for (int dy = -1; dy <= 1 && !enemy; dy++) for (int dx = -1; dx <= 1; dx++) {
+				int ex = x + dx, ey = y + dy;
+				if ((!dx && !dy) || ex < 0 || ex > 79 || ey < 0 || ey > 79) continue;
+				int e = BCELL(ex, ey)[5];
+				if (e > 0 && e < 0x51 && FIG(e)[0x2c] && FIG(e)[0x2c] != f[0x2c] && FIG(e)[0x31] != 2 && BCELL(ex, ey)[4] == myh) { enemy = TRUE; break; }
+			}
+			if (!enemy) {
+				g_jWaits[me]++;
+				f[0x2f] = 3; f[0x31] = 1;
+				f[0x30] = 1;   // counted down one step in four: ~4 steps
+				g_bheld++;
+				if (g_blog && g_battleLog >= 1) blog("route wait fig %d at %d,%d: next cell %d,%d has walking fig %d (wait %d)", me, x, y, wx, wy, occ, g_jWaits[me]);
+				return 1;
+			}
+		}
+	}
+	// 4. Arriving: one cell from its destination, with a friend standing on it, a unit sidestepped
+	//    right, then left, then right (FUN_004904ec has no memory). It now stops where it is.
+	short gx = FIG_S(me, 0x24), gy = FIG_S(me, 0x26);
+	if (!pathOn && (gx != x || gy != y) && abs(gx - x) <= 1 && abs(gy - y) <= 1 &&
+		gx >= 0 && gx < 80 && gy >= 0 && gy < 80) {
+		int occ = BCELL(gx, gy)[5];
+		if (occ > 0 && occ < 0x51 && occ != me && FIG(occ)[0x2c] == f[0x2c]) {
+			BYTE st = FIG(occ)[0x31];
+			if (st == 5 || st == 7 || st == 0x11 || (st == 1 && FIG(occ)[0x2f] == 5)) {
+				FIG_S(me, 0x24) = x; FIG_S(me, 0x26) = y;
+				g_bheld++;
+				if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d: destination %d,%d has standing fig %d", me, x, y, gx, gy, occ);
+			}
+		}
+	}
+	g_jSwapB = 0;
+	int r = o_mover(p1);
+	if (g_jSwapB && g_jSwapPrev == 8 && FIG(g_jSwapB)[0x31] == 1)
+		FIG(g_jSwapB)[0x2f] = 8;   // a chasing unit that was swapped keeps chasing
+	g_jSwapB = 0;
+	if (!f[0x2c]) return r;
+	if (FIG_S(me, 0x20) != x || FIG_S(me, 0x22) != y) {
+		g_jWaits[me] = 0;
+		g_jStillSince[me] = g_btick;
+		// 5. Close to its destination (2 cells) with no path, a unit that steps straight back to the cell it
+		//    left a moment ago stops there: it was dancing round a taken destination.
+		short nx = FIG_S(me, 0x20), ny = FIG_S(me, 0x22);
+		if (!f[0x164] && nx == g_jPrevX[me] && ny == g_jPrevY[me] && g_btick - g_jLastMove[me] < 64 &&
+			abs(gx - nx) <= 2 && abs(gy - ny) <= 2 && f[0x31] == 3) {
+			FIG_S(me, 0x24) = nx; FIG_S(me, 0x26) = ny;
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("arrive fig %d at %d,%d after stepping back (destination was %d,%d)", me, nx, ny, gx, gy);
+		}
+		// a chaser that steps straight back close to its target (a crowd round it) waits a moment
+		// instead of dancing; the chase's give-up then finds it another target if it stays stuck
+		else if (nx == g_jPrevX[me] && ny == g_jPrevY[me] && g_btick - g_jLastMove[me] < 64 &&
+			abs(gx - nx) <= 2 && abs(gy - ny) <= 2 && f[0x31] == 8) {
+			f[0x2f] = 8; f[0x31] = 1; f[0x30] = 4;   // ~16 steps
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("chase wait fig %d at %d,%d (target cell %d,%d crowded)", me, nx, ny, gx, gy);
+		}
+		g_jPrevX[me] = x; g_jPrevY[me] = y; g_jLastMove[me] = g_btick;
+		return r;
+	}
+	if (pathOn && !f[0x164] && wx >= 0 && wx < 80 && wy >= 0 && wy < 80 && abs(wx - x) <= 1 && abs(wy - y) <= 1 &&
+		g_jWaits[me] < JIT_MAX_WAITS) {
+		int occ = BCELL(wx, wy)[5];
+		if (occ > 0 && occ < 0x51 && occ != me && FIG(occ)[0x2c] == f[0x2c] && FIG(occ)[0x31] != 2) {
+			g_jWaits[me]++;
+			memcpy(f + 0x38, wp, 300);
+			f[0x164] = 1;
+			FIG_S(me, 0x36) = left;
+			if (f[0x31] != 1) { f[0x2f] = f[0x31]; f[0x31] = 1; }
+			f[0x30] = 2;   // counted down one step in four: ~8 steps
+			g_bheld++;
+			if (g_blog && g_battleLog >= 1) blog("held fig %d at %d,%d: next cell %d,%d has fig %d (wait %d)", me, x, y, wx, wy, occ,
+				g_jWaits[me]);
+			return 1;
+		}
+	}
+	return r;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Walking distances (phase 3) and the Mop-Up fixes that use them (phase 4), both under MopUpFix.
+// For every live soldier a map of how many steps each cell is from it, by the game's own movement
+// rules (FUN_00490a44: flags 0x90 and water 0x40 block, gates 0x08 block, a height step of more than
+// one level blocks unless the cell is level 5; moats are crossed by filling them). The maps are
+// rebuilt in turn, five figures a logic step (each every 16 steps), in a fixed order.
+// - Chasing melee units pick their target by walking distance (FUN_004954dd used a straight line, so
+//   units chased enemies on walls, across water or a level above them and stood or danced there).
+//   An enemy that can't be reached is skipped; with none left the unit stops.
+// - A chaser that gets no closer to its target for two seconds drops it and ignores it for four.
+// - An idle melee unit in a Mop-Up group goes back to chasing (state 5 never woke it).
+// - Selecting units after Mop-Up keeps their Mop-Up; your move or attack order cancels it for that group
+//   (a group on Mop-Up used to ignore every order for the rest of the battle).
+#define DM_FAR 0xFFFF
+static BOOL g_dmapOn;   // the phase-4 hooks are in
+static unsigned g_cSince[81], g_cAvoidUntil[81];
+static int g_cBest[81], g_cTarget[81], g_cAvoid[81];
+typedef int (__cdecl *target_t)(void);
+static target_t o_target;
+typedef void (__cdecl *idle_t)(void);
+static idle_t o_idle;
+typedef void (__cdecl *order_t)(int, int, int, int, int, int);
+static order_t o_order;
+typedef void (__cdecl *select_t)(unsigned);
+static select_t o_select;
+
+static BOOL dm_height_ok(int from, int to)
+{
+	BYTE ht = ((BYTE *)0x005440e4)[to * 8], hf = ((BYTE *)0x005440e4)[from * 8];
+	return !(ht != hf && ht != 5 && (ht + 1 < hf || hf + 1 < ht));
+}
+
+static BOOL dm_step_ok(int from, int to)
+{
+	return dm_height_ok(from, to) && (((BYTE *)0x005440e1)[to * 8] & (0x90 | 0x40 | 0x08)) == 0;
+}
+
+// A search outward from one unit over the game's movement rules: the step count to every cell it can
+// walk to, into g_dscratch. With stop >= 0 it ends as soon as that cell is reached and returns its
+// distance (DM_FAR if it can't be reached). Run only when a unit needs it: a target pick, or every 16
+// steps per chaser to measure progress, so it costs little (a full search is ~0.2 ms).
+static unsigned short g_dscratch[6400];
+static int g_dmMaxDepth = 0x7fff;   // dm_from stops expanding past this many steps (for short checks)
+static int g_dmFullThisStep;        // full searches this logic step; capped so a charge can't cause a hitch
+#define DM_FULL_PER_STEP 4
+static int dm_from(int me, int stop)
+{
+	static int q[6400];
+	LARGE_INTEGER t0, t1;
+	QueryPerformanceCounter(&t0);
+	unsigned short *m = g_dscratch;
+	memset(m, 0xff, sizeof g_dscratch);
+	int r = DM_FAR;
+	int x0 = FIG_S(me, 0x20), y0 = FIG_S(me, 0x22);
+	if (x0 >= 0 && x0 < 80 && y0 >= 0 && y0 < 80) {
+		int head = 0, tail = 0;
+		m[y0 * 80 + x0] = 0; q[tail++] = y0 * 80 + x0;
+		while (head < tail) {
+			int u = q[head++], ux = u % 80, uy = u / 80;
+			if (u == stop) { r = m[u]; break; }
+			if (m[u] >= g_dmMaxDepth) continue;
+			for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+				if (!dx && !dy) continue;
+				int vx = ux + dx, vy = uy + dy;
+				if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+				int v = vy * 80 + vx;
+				if (m[v] != DM_FAR) continue;
+				// the target's own cell counts as reached from any cell a unit could attack it from
+				if (v == stop ? !dm_height_ok(u, v) : !dm_step_ok(u, v)) continue;
+				m[v] = m[u] + 1; q[tail++] = v;
+			}
+		}
+	}
+	QueryPerformanceCounter(&t1);
+	g_bcpuBfs += t1.QuadPart - t0.QuadPart;
+	return r;
+}
+
+static int dm_dist(int e, int me)
+{
+	if (e < 1 || e > 0x50 || !FIG(e)[0x2c]) return DM_FAR;
+	int x = FIG_S(e, 0x20), y = FIG_S(e, 0x22);
+	if (x < 0 || x > 79 || y < 0 || y > 79) return DM_FAR;
+	return dm_from(me, y * 80 + x);
+}
+
+static int dm_pick(int me)
+{
+	int best = 0, bestCost = 0x7fffffff;
+	dm_from(me, -1);
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *f = FIG(e);
+		if (!f[0x2c] || f[0x2c] == FIG(me)[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		if (g_cAvoid[me] == e && g_btick < g_cAvoidUntil[me]) continue;
+		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
+		if (ex < 0 || ex > 79 || ey < 0 || ey > 79) continue;
+		// reached from a neighbouring cell it could attack from (its own cell may carry blocking flags)
+		int ec = ey * 80 + ex, d = g_dscratch[ec];
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int nx = ex + dx, ny = ey + dy;
+			if ((!dx && !dy) || nx < 0 || nx > 79 || ny < 0 || ny > 79) continue;
+			int n = ny * 80 + nx, v = g_dscratch[n];
+			if (v != DM_FAR && v + 1 < d && dm_height_ok(n, ec)) d = v + 1;
+		}
+		if (d == DM_FAR) continue;
+		if (f[0x16a]) d /= 2;   // as the game: archers count at half distance
+		int cost = d + (signed char)f[0x175];
+		if (cost < bestCost) { bestCost = cost; best = e; }
+	}
+	return best;
+}
+
+static int __cdecl h_target(void)
+{
+	int me = FIG_CUR;
+	if (!fix_on(g_fixMopUp) || me < 1 || me > 0x50 || FIG(me)[0x16a] || FIG(me)[0x12] >= 7 ||
+		g_dmFullThisStep >= DM_FULL_PER_STEP) return o_target();   // over the cap: the game's own quick pick
+	g_dmFullThisStep++;
+	int best = dm_pick(me);
+	if (best) {
+		*(int *)0x0056d5d0 = best;
+		FIG(best)[0x175] += 2;
+		g_bretarget++;
+	}
+	return best;
+}
+
+// Called from h_chase each step: a target that hasn't come closer (walking distance) for 164 steps is
+// dropped and avoided for 328, so the chase picks another.
+static void chase_progress(int me)
+{
+	BYTE *f = FIG(me);
+	if (f[0x16a] || f[0x12] >= 7) return;
+	int t = f[0x174];
+	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) { g_cTarget[me] = 0; return; }
+	if (t == g_cTarget[me] && (unsigned)(me + g_btick) % 16) return;   // measured every 16 steps
+	int d = dm_dist(t, me);
+	if (t != g_cTarget[me] || d < g_cBest[me]) { g_cTarget[me] = t; g_cBest[me] = d; g_cSince[me] = g_btick; return; }
+	// only a target that can't be reached, or one close by that it isn't getting to (a far one that
+	// keeps its distance is still worth chasing)
+	unsigned waited = g_btick - g_cSince[me];
+	if ((waited >= 164 && (d == DM_FAR || d <= 6)) || (waited >= 82 && d <= 2)) {
+		g_cAvoid[me] = t; g_cAvoidUntil[me] = g_btick + 328;
+		f[0x174] = 0; g_cTarget[me] = 0;
+		g_bdropTarget++;
+		if (g_blog && g_battleLog >= 1) blog("give up fig %d on target %d (no closer than %d steps for 2 s)", me, t, d == DM_FAR ? -1 : d);
+	}
+}
+
+// State 5 (idle): a melee unit in a Mop-Up group goes back to chasing.
+static void engage_idle(int me);
+static void archer_idle(int me);
+static void __cdecl h_idle(void)
+{
+	o_idle();
+	int me = FIG_CUR;
+	if (me < 1 || me > 0x50) return;
+	BYTE *f = FIG(me);
+	if (fix_on(g_fixMopUp) && f[0x2c] && f[0x31] == 5 && !f[0x16a] && f[0x12] < 7 && group_hunting(FIG_S(me, 0x178)) &&
+		(unsigned)(me + g_btick) % 16 == 0 && g_dmFullThisStep < DM_FULL_PER_STEP && (g_dmFullThisStep++, dm_pick(me))) {
+		f[0x31] = 8; f[0x174] = 0;
+		g_bwake++;
+	}
+	if (fix_on(g_fixEngage) && f[0x2c] && f[0x31] == 5) {
+		if (f[0x16a]) archer_idle(me);
+		else engage_idle(me);
+	}
+}
+
+// FUN_00479e90(group, x, y, target, fire, formation) carries out an order. Called from your move/attack
+// command (FUN_0043c634) or a multiplayer order message (FUN_00448137) with no formation change, it now
+// ends Mop-Up for that group first, so the group obeys. The computer's own calls are left alone.
+static void __cdecl h_order(int g, int x, int y, int target, int fire, int formation)
+{
+	DWORD ret = (DWORD)__builtin_return_address(0);
+	if (fix_on(g_fixMopUp) && formation == 0 && g > 0 && g < 80 &&
+		((ret > 0x0043c634 && ret < 0x0043c77a) || (ret > 0x00448137 && ret < 0x00448300)) &&
+		*(BYTE *)(0x0056654a + g * 0x34)) {
+		*(BYTE *)(0x0056654a + g * 0x34) = 0;
+		if (g_blog && g_battleLog >= 1) blog("order ends Mop-Up for group %d", g);
+	}
+	o_order(g, x, y, target, fire, formation);
+}
+
+// FUN_00478987(player): a selection that isn't one whole group becomes a new group, whose record is
+// zeroed. Units that came from a group on Mop-Up keep it in their new group.
+static void __cdecl h_select(unsigned player)
+{
+	static short before[81];
+	static BYTE hunt[81];
+	BOOL on = fix_on(g_fixMopUp);
+	if (on) for (int i = 1; i < 0x51; i++) {
+		before[i] = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
+		hunt[i] = before[i] >= 0 ? (BYTE)group_hunting(before[i]) : 0;
+	}
+	o_select(player);
+	if (!on) return;
+	for (int i = 1; i < 0x51; i++) {
+		short g = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
+		if (g >= 0 && g < 80 && g != before[i] && hunt[i] && !group_hunting(g)) {
+			*(BYTE *)(0x0056654a + g * 0x34) = 1;
+			if (g_blog && g_battleLog >= 1) blog("selection keeps Mop-Up: new group %d (from %d)", g, before[i]);
+		}
+	}
+}
+
+// 6. FUN_004972f9(x, y, cell) gives the direction of an adjacent enemy to attack before any other move,
+//    but it didn't skip dying ones (state 2, which keep their cell for ~80 steps). A unit next to a
+//    corpse tried to attack it, was refused, and sidestepped, never fighting the live enemy beside it:
+//    the dance round every crowded fight. Dying enemies are now skipped.
+typedef int (__cdecl *adj_enemy_t)(int, int, int);
+static adj_enemy_t o_adj_enemy;
+static int __cdecl h_adj_enemy(int x, int y, int cell)
+{
+	if (!fix_on(g_fixJitter)) return o_adj_enemy(x, y, cell);
+	int me = FIG_CUR;
+	if (me < 1 || me > 0x50 || FIG(me)[0x18d] || x <= 0 || y <= 0 || x >= 0x4f || y >= 0x4f) return 8;
+	const int *off = (const int *)0x004d8588;
+	BYTE *grid = (BYTE *)0x005440e0;
+	for (int k = 0; k < 8; k++) {
+		int c = cell + off[k];
+		int occ = grid[c + 5];
+		if (occ && occ < 0x51 && FIG(me)[0x2c] != FIG(occ)[0x2c] && grid[c + 4] == grid[cell + 4] && FIG(occ)[0x31] != 2)
+			return k;
+	}
+	return 8;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 5: idle units engage ([Game] EngageFix=1; multiplayer only with MultiplayerFixes=1).
+// An idle melee unit (state 5, not on Mop-Up) fought only an enemy that walked into it. Now, checked
+// every 8 steps, it goes for an enemy that is close by walking distance (2 cells, 3 for knights),
+// within its leash, with the anti-bait rules agreed with the user:
+// - it remembers where it stood (its anchor; reset when its group gets a new destination) and never
+//   goes more than 4 cells from it, nor after an enemy more than 5 cells from it; past that it walks back;
+// - an enemy that keeps getting away for a second is let go;
+// - after letting go, it ignores that enemy for 3 seconds;
+// - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
+// - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
+#define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
+#define ENG_RANGE_KNIGHT 4
+#define ENG_RANGE_ARCHERS 5  // enemy archers and crossbowmen shooting at the unit
+#define ENG_LEASH 4
+static short g_eAnchorX[81], g_eAnchorY[81], g_eGroupX[81], g_eGroupY[81];
+static BYTE g_eAnchorOk[81];
+static int g_eTarget[81], g_eIgnore[81], g_eBestD[81];
+static unsigned g_eIgnoreUntil[81], g_eSince[81], g_eLastIdle[81];
+
+static int cheb(int x0, int y0, int x1, int y1) { int a = abs(x1 - x0), b = abs(y1 - y0); return a > b ? a : b; }
+
+static void engage_forget(int me) { g_eTarget[me] = 0; }
+
+// Called from h_idle for an idle unit.
+static void engage_idle(int me)
+{
+	BYTE *f = FIG(me);
+	if (f[0x16a] || f[0x12] >= 7 || group_hunting(FIG_S(me, 0x178))) return;
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), g = FIG_S(me, 0x178);
+	if (x < 0 || x > 79 || y < 0 || y > 79 || BCELL(x, y)[4] != 0) return;   // on a wall
+	short gx = g >= 0 && g < 80 ? *(short *)(0x00566542 + g * 0x34) : -1, gy = g >= 0 && g < 80 ? *(short *)(0x00566544 + g * 0x34) : -1;
+	// the anchor is where it stands each time it goes idle: a unit stopped by a fight on its way (often
+	// several cells short of its group's place) kept the old one, so an enemy beside it was "past the
+	// leash"; it went for it, was sent straight back, ran into it, and stood there. Every chase still
+	// ends with it walking back here, so it can't be pulled away.
+	if (!g_eAnchorOk[me] || gx != g_eGroupX[me] || gy != g_eGroupY[me] || g_btick - g_eLastIdle[me] > 2) {
+		g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eGroupX[me] = gx; g_eGroupY[me] = gy; g_eAnchorOk[me] = 1;
+	}
+	g_eLastIdle[me] = g_btick;
+	engage_forget(me);
+	if ((unsigned)(me + g_btick) % 8) return;
+	int range = f[0x12] == 6 ? ENG_RANGE_KNIGHT : ENG_RANGE;
+	int best = 0, bestD = 99;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x12] >= 7) continue;
+		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
+		int r = t[0x16a] ? max(range, ENG_RANGE_ARCHERS) : range;   // archers shooting at us: further
+		if (cheb(x, y, ex, ey) > r || cheb(g_eAnchorX[me], g_eAnchorY[me], ex, ey) > ENG_LEASH + 1) continue;
+		if (g_eIgnore[me] == e && g_btick < g_eIgnoreUntil[me]) continue;
+		if (g_cAvoid[me] == e && g_btick < g_cAvoidUntil[me]) continue;   // just gave up on it (a crowd round it)
+		int n = 0;   // our units already on it (an enemy right beside it, or one locked in a fight, is fought
+		             // anyway: no bait in that)
+		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
+		if (n >= 2 && cheb(x, y, ex, ey) > 1 && t[0x31] != 4) continue;
+		g_dmMaxDepth = r + 1;
+		int d = dm_dist(e, me);
+		g_dmMaxDepth = 0x7fff;
+		if (d == DM_FAR || d > r) continue;
+		if (d < bestD) { bestD = d; best = e; }
+	}
+	if (!best) return;
+	g_eTarget[me] = best; g_eBestD[me] = bestD; g_eSince[me] = g_btick;
+	f[0x174] = (BYTE)best;
+	f[0x31] = 8;
+	g_bengage++;
+	if (g_blog && g_battleLog >= 1) blog("engage fig %d (side %d) -> enemy %d, %d steps away, anchor %d,%d", me, f[0x2c], best, bestD,
+		g_eAnchorX[me], g_eAnchorY[me]);
+}
+
+// Archers save themselves: an idle archer or crossbowman with an enemy foot soldier or knight marching
+// or charging at it within 2 cells steps back about 3 cells, away from it, then shoots again. It stays
+// within 5 cells of where it stood, steps back at most once every 3 seconds, and stands and fights when
+// there's no free cell behind it. Both sides.
+static unsigned g_aNext[81];
+static BOOL archer_step_away(int me, int threat, const char *why);
+static void archer_idle(int me)
+{
+	BYTE *f = FIG(me);
+	if (!f[0x16a] || f[0x12] >= 7 || g_btick < g_aNext[me]) return;
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), g = FIG_S(me, 0x178);
+	if (x < 0 || x > 79 || y < 0 || y > 79 || BCELL(x, y)[4] != 0) return;   // on a wall: stays
+	short gx = g >= 0 && g < 80 ? *(short *)(0x00566542 + g * 0x34) : -1, gy = g >= 0 && g < 80 ? *(short *)(0x00566544 + g * 0x34) : -1;
+	if (!g_eAnchorOk[me] || gx != g_eGroupX[me] || gy != g_eGroupY[me]) {
+		g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eGroupX[me] = gx; g_eGroupY[me] = gy; g_eAnchorOk[me] = 1;
+	}
+	if ((unsigned)(me + g_btick) % 4) return;
+	int threat = 0, td = 99;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x16a] || t[0x12] >= 7) continue;
+		if (t[0x31] != 3 && t[0x31] != 8) continue;   // only one coming at it
+		int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
+		if (d <= 2 && d < td) { td = d; threat = e; }
+	}
+	if (!threat || td < 1) return;
+	if (!archer_step_away(me, threat, "")) g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
+}
+
+// A step about 3 cells straight away from enemy e (or to either side of that), inside the archer's
+// 5-cell leash, onto a free cell it can walk to. Returns FALSE when there's none.
+static BOOL archer_step_away(int me, int threat, const char *why)
+{
+	BYTE *f = FIG(me);
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	int td = cheb(x, y, FIG_S(threat, 0x20), FIG_S(threat, 0x22));
+	int ex = FIG_S(threat, 0x20), ey = FIG_S(threat, 0x22);
+	int sx = (x > ex) - (x < ex), sy = (y > ey) - (y < ey);
+	// straight away, then the two directions beside it; 3 cells, then 2
+	static const int turn[3][2] = { { 0, 0 }, { 1, 0 }, { -1, 0 } };
+	for (int dist = 3; dist >= 2; dist--)
+		for (int k = 0; k < 3; k++) {
+			int dx = sx, dy = sy;
+			if (k == 1) { if (!dx) dx = 1; else if (!dy) dy = 1; else dy = 0; }
+			if (k == 2) { if (!dx) dx = -1; else if (!dy) dy = -1; else dx = 0; }
+			(void)turn;
+			int nx = x + dx * dist, ny = y + dy * dist;
+			if (nx < 1 || nx > 78 || ny < 1 || ny > 78) continue;
+			if (cheb(g_eAnchorX[me], g_eAnchorY[me], nx, ny) > ENG_LEASH + 1) continue;
+			BYTE *c = BCELL(nx, ny);
+			if (c[5] || (c[1] & (0x90 | 0x40 | 0x08 | 0x20)) || c[4] != BCELL(x, y)[4]) continue;
+			g_dmMaxDepth = dist + 2;
+			int d = dm_from(me, ny * 80 + nx);
+			g_dmMaxDepth = 0x7fff;
+			if (d == DM_FAR || d > dist + 1) continue;
+			FIG_S(me, 0x24) = nx; FIG_S(me, 0x26) = ny;
+			f[0x164] = 0;
+			f[0x31] = 3;
+			g_aNext[me] = g_btick + 246;
+			g_bstepback++;
+			if (g_blog && g_battleLog >= 1) blog("step back fig %d (archer, side %d%s) from enemy %d at %d cells: %d,%d -> %d,%d", me, f[0x2c], why, threat, td, x, y, nx, ny);
+			return TRUE;
+		}
+	return FALSE;
+}
+
+// State 4 (melee) for an archer or crossbowman: once a friendly soldier stands beside its enemy and can
+// take over, it slips out the same way (the enemy's next step finds the friend beside it and fights
+// it). Alone, it keeps fighting: walking away would only get it cut down from behind.
+typedef void (__cdecl *melee_t)(void);
+static melee_t o_melee;
+static void __cdecl h_melee(void)
+{
+	int me = FIG_CUR;
+	if (fix_on(g_fixEngage) && me >= 1 && me <= 0x50) {
+		BYTE *f = FIG(me);
+		int opp = f[0x17e];
+		if (f[0x2c] && f[0x31] == 4 && f[0x16a] && f[0x12] < 7 && g_btick >= g_aNext[me] && (unsigned)(me + g_btick) % 4 == 0 &&
+			opp >= 1 && opp <= 0x50 && FIG(opp)[0x2c] && FIG(opp)[0x2c] != f[0x2c] && FIG(opp)[0x31] == 4) {
+			int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), ox = FIG_S(opp, 0x20), oy = FIG_S(opp, 0x22);
+			int cover = 0;
+			if (x >= 0 && x < 80 && y >= 0 && y < 80 && BCELL(x, y)[4] == 0)
+				for (int k = 1; k < 0x51 && !cover; k++) {
+					BYTE *t = FIG(k);
+					if (k != me && t[0x2c] == f[0x2c] && !t[0x16a] && t[0x12] < 7 && (t[0x31] == 4 || t[0x31] == 8) &&
+						cheb(FIG_S(k, 0x20), FIG_S(k, 0x22), ox, oy) <= 1)
+						cover = k;
+				}
+			if (cover) {
+				// (an archer pushed or ordered away from where it stood counts from here)
+				if (!g_eAnchorOk[me] || cheb(g_eAnchorX[me], g_eAnchorY[me], x, y) > ENG_LEASH) {
+					g_eAnchorX[me] = x; g_eAnchorY[me] = y; g_eAnchorOk[me] = 1;
+				}
+				static char why[40];
+				sprintf(why, ", in melee, fig %d takes over", cover);
+				if (archer_step_away(me, opp, why)) return;
+				g_aNext[me] = g_btick + 82;
+			}
+		}
+	}
+	o_melee();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Group routes against the "snake" ([Game] GroupMoveFix=1; multiplayer only with MultiplayerFixes=1).
+// FUN_00489b8d(x, y, fig, group) gives each unit of an ordered group its formation slot; the unit then
+// walks straight at it and only looks for a way round once blocked, with a search that follows the
+// obstacle's edge, so a whole group strings out along a forest edge in single file. Now, when the
+// straight line to a unit's slot crosses blocked ground, its whole route is planned at once (A* on the
+// game's movement rules), costing extra on cells next to the routes its groupmates were already given:
+// the group goes round in parallel lanes. At most 3 routes a logic step (the rest wait their turn).
+#define GR_PER_STEP 3
+// marching, or waiting a moment before it marches on (the game's order puts a unit in state 1 for a
+// few steps first: those units got no route and went their own way)
+#define GR_MARCHING(f) ((f)[0x31] == 3 || ((f)[0x31] == 1 && (f)[0x2f] == 3))
+static BOOL g_fixGroupMove;
+typedef void (__cdecl *slot_t)(int, int, int, int);
+static slot_t o_slot;
+static BYTE g_grCong[6400];           // groupmates' routes so far: 2 on a route cell, 1 beside it
+static BYTE g_grCorr[6400];           // the group's corridor: within 2 cells of its first unit's route
+static BOOL g_grLeaderSet;
+static int g_grCongGroup = -1;
+static unsigned g_grCongTick;
+static int g_grQueue[81], g_grQLen;   // units waiting for a route, in order
+static int g_grPlannedThisStep;
+static BOOL g_grSolo;                 // gr_plan for one unit alone: no lane costs, nothing marked
+static int g_grAvoid = -1;            // a cell gr_plan must not use (a friend standing in the way)
+static int *g_grOut, g_grOutMax;      // set: gr_plan only hands back the cells (goal first), at most this many
+
+static BOOL gr_line_clear(int x0, int y0, int x1, int y1)
+{
+	int dx = abs(x1 - x0), dy = abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx - dy;
+	int x = x0, y = y0;
+	while (x != x1 || y != y1) {
+		int e2 = 2 * err, px = x, py = y;
+		if (e2 > -dy) { err -= dy; x += sx; }
+		if (e2 < dx) { err += dx; y += sy; }
+		if (!dm_step_ok(py * 80 + px, y * 80 + x)) return FALSE;
+	}
+	return TRUE;
+}
+
+// A* from the unit's cell to (gx, gy); writes the route into the unit's waypoint list (entry 0 = the
+// last cell, the next step is entry count-1, as FUN_00472875 does). Returns the route's length.
+static int gr_plan(int me, int gx, int gy)
+{
+	static int g[6400], from[6400], heap[6400 * 2];
+	static unsigned stamp[6400], cur;
+	static BYTE closed[6400];
+	int x0 = FIG_S(me, 0x20), y0 = FIG_S(me, 0x22);
+	if (x0 < 0 || x0 > 79 || y0 < 0 || y0 > 79 || gx < 0 || gx > 79 || gy < 0 || gy > 79) return 0;
+	int s = y0 * 80 + x0, t = gy * 80 + gx;
+	if (s == t) return 0;
+	cur++;
+	int hn = 0;
+#define GR_H(c) (10 * max(abs((c) % 80 - gx), abs((c) / 80 - gy)))
+#define GR_PUSH(c) do { int i_ = hn++; heap[i_] = (c); while (i_ > 0) { int p_ = (i_ - 1) / 2; \
+	if (g[heap[p_]] + GR_H(heap[p_]) <= g[heap[i_]] + GR_H(heap[i_])) break; int tmp_ = heap[p_]; heap[p_] = heap[i_]; heap[i_] = tmp_; i_ = p_; } } while (0)
+	stamp[s] = cur; g[s] = 0; from[s] = -1; closed[s] = 0;
+	GR_PUSH(s);
+	BOOL found = FALSE;
+	while (hn > 0) {
+		int u = heap[0];
+		heap[0] = heap[--hn];
+		for (int i = 0;;) {   // sift down
+			int l = 2 * i + 1, r = l + 1, m = i;
+			if (l < hn && g[heap[l]] + GR_H(heap[l]) < g[heap[m]] + GR_H(heap[m])) m = l;
+			if (r < hn && g[heap[r]] + GR_H(heap[r]) < g[heap[m]] + GR_H(heap[m])) m = r;
+			if (m == i) break;
+			int tmp = heap[m]; heap[m] = heap[i]; heap[i] = tmp; i = m;
+		}
+		if (stamp[u] == cur && closed[u]) continue;
+		closed[u] = 1;
+		if (u == t) { found = TRUE; break; }
+		int ux = u % 80, uy = u / 80;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			if (!dx && !dy) continue;
+			int vx = ux + dx, vy = uy + dy;
+			if (vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (!dm_step_ok(u, v)) continue;
+			if (v == g_grAvoid) continue;
+			int cost = g[u] + (dx && dy ? 14 : 10) + (g_grSolo ? 0 : 3 * g_grCong[v] + (g_grLeaderSet && !g_grCorr[v] ? 10 : 0));
+			if (stamp[v] != cur) { stamp[v] = cur; closed[v] = 0; g[v] = 0x7fffffff; }
+			if (closed[v] || cost >= g[v]) continue;
+			g[v] = cost; from[v] = u;
+			if (hn < 6400 * 2) GR_PUSH(v);
+		}
+	}
+#undef GR_PUSH
+#undef GR_H
+	if (!found) return 0;
+	static int path[6400];
+	int n = 0;
+	for (int c = t; c != s && n < 6400; c = from[c]) path[n++] = c;   // reversed: path[0] = goal
+	if (g_grOut) {   // only the cells wanted (a detour): the unit's waypoints are left alone
+		if (n > g_grOutMax) return 0;
+		memcpy(g_grOut, path, (size_t)n * sizeof path[0]);
+		return n;
+	}
+	// the waypoint list holds 150: a longer route keeps its first 150 cells (the unit walks on from there)
+	int skip = n > 150 ? n - 150 : 0;
+	int cnt = n - skip;
+	BYTE *f = FIG(me);
+	for (int k = 0; k < cnt; k++) {
+		int c = path[k + skip];
+		f[0x38 + 2 * k] = (BYTE)(c % 80); f[0x39 + 2 * k] = (BYTE)(c / 80);
+	}
+	FIG_S(me, 0x36) = (short)cnt;
+	f[0x164] = 1;
+	if (g_grSolo) return n;   // a unit's own new way round: the group's lanes stay as they are
+	if (!g_grLeaderSet) {   // the group's first route sets the corridor the others keep to
+		for (int k = 0; k < n; k++) {
+			int c = path[k], cx = c % 80, cy = c / 80;
+			for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
+				int nx = cx + dx, ny = cy + dy;
+				if (nx >= 0 && nx < 80 && ny >= 0 && ny < 80) g_grCorr[ny * 80 + nx] = 1;
+			}
+		}
+		g_grLeaderSet = TRUE;
+	}
+	for (int k = 0; k < n; k++) {   // mark it for the groupmates that follow
+		// not added up: a lane taken costs a little, so the next unit takes the lane beside it, but a
+		// long way round never becomes cheaper than walking next to its groupmates
+		int c = path[k], cx = c % 80, cy = c / 80;
+		g_grCong[c] = 2;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int nx = cx + dx, ny = cy + dy;
+			if ((dx || dy) && nx >= 0 && nx < 80 && ny >= 0 && ny < 80 && !g_grCong[ny * 80 + nx]) g_grCong[ny * 80 + nx] = 1;
+		}
+	}
+	return n;
+}
+
+// The group's first route, kept so the others can follow it shifted by their own offset.
+static int g_grLeadPath[6400], g_grLeadN, g_grLeadX, g_grLeadY;
+
+static void gr_set_path(int me, const int *cells, int n)   // cells[0] = first step ... cells[n-1] = last
+{
+	BYTE *f = FIG(me);
+	int cnt = n > 150 ? 150 : n;   // the first 150 steps; the unit walks on from there
+	for (int k = 0; k < cnt; k++) {
+		int c = cells[cnt - 1 - k];
+		f[0x38 + 2 * k] = (BYTE)(c % 80); f[0x39 + 2 * k] = (BYTE)(c / 80);
+	}
+	FIG_S(me, 0x36) = (short)cnt;
+	f[0x164] = 1;
+}
+
+// Follows the leader's route shifted by (ox, oy); where the shifted cell is blocked it moves in toward the
+// leader's own cell. Every step must be a legal move; if not, returns 0 and the unit plans its own route.
+static int gr_follow(int me, int ox, int oy, int gx, int gy)
+{
+	static int out[6400];
+	int n = 0, px = FIG_S(me, 0x20), py = FIG_S(me, 0x22);
+	for (int k = 0; k < g_grLeadN && n < 6000; k++) {
+		int lc = g_grLeadPath[k], lx = lc % 80, ly = lc / 80, tx = lx, ty = ly;
+		for (int s = 8; s >= 0; s--) {   // from the full offset in toward the leader's cell
+			int qx = lx + ox * s / 8, qy = ly + oy * s / 8;
+			if (qx < 0 || qx > 79 || qy < 0 || qy > 79) continue;
+			BYTE fl = BCELL(qx, qy)[1];
+			if (!(fl & (0x90 | 0x40 | 0x08))) { tx = qx; ty = qy; break; }
+		}
+		for (int tries = 0; (px != tx || py != ty) && tries < 40; tries++) {   // walk there one legal step at a time
+			int sx = (tx > px) - (tx < px), sy = (ty > py) - (ty < py);
+			// straight at it, else the two steps beside that direction; round a corner, not through it
+			int cand[3][2] = { { sx, sy }, { sx, 0 }, { 0, sy } };
+			if (!sx) { cand[1][0] = 1; cand[1][1] = sy; cand[2][0] = -1; cand[2][1] = sy; }
+			if (!sy) { cand[1][0] = sx; cand[1][1] = 1; cand[2][0] = sx; cand[2][1] = -1; }
+			int k2;
+			for (k2 = 0; k2 < 3; k2++) {
+				int nx = px + cand[k2][0], ny = py + cand[k2][1];
+				if ((cand[k2][0] || cand[k2][1]) && nx >= 0 && nx < 80 && ny >= 0 && ny < 80 && dm_step_ok(py * 80 + px, ny * 80 + nx)) {
+					px = nx; py = ny;
+					if (n < 6000) out[n++] = py * 80 + px;
+					break;
+				}
+			}
+			if (k2 == 3) {   // stuck: aim at the leader's own cell instead (its route is legal)
+				if (tx == lx && ty == ly) return 0;
+				tx = lx; ty = ly;
+			}
+		}
+		if (px != tx || py != ty) return 0;
+	}
+	for (int tries = 0; (px != gx || py != gy) && tries < 40; tries++) {   // and on to its own slot
+		int sx = (gx > px) - (gx < px), sy = (gy > py) - (gy < py);
+		int cand[3][2] = { { sx, sy }, { sx, 0 }, { 0, sy } }, k2;
+		for (k2 = 0; k2 < 3; k2++) {
+			int nx = px + cand[k2][0], ny = py + cand[k2][1];
+			if ((cand[k2][0] || cand[k2][1]) && dm_step_ok(py * 80 + px, ny * 80 + nx)) {
+				px = nx; py = ny;
+				if (n < 6000) out[n++] = py * 80 + px;
+				break;
+			}
+		}
+		if (k2 == 3) break;   // the game walks the rest
+	}
+	if (!n) return 0;
+	gr_set_path(me, out, n);
+	return n;
+}
+
+static void gr_route(int me)
+{
+	BYTE *f = FIG(me);
+	if (!f[0x2c] || !GR_MARCHING(f) || f[0x12] >= 7) return;
+	int g = FIG_S(me, 0x178);
+	if (g != g_grCongGroup || g_btick - g_grCongTick > 82) {
+		memset(g_grCong, 0, sizeof g_grCong); memset(g_grCorr, 0, sizeof g_grCorr);
+		g_grLeaderSet = FALSE; g_grLeadN = 0; g_grCongGroup = g;
+	}
+	g_grCongTick = g_btick;
+	int gx = FIG_S(me, 0x24), gy = FIG_S(me, 0x26);
+	int n = 0;
+	const char *how = "own";
+	if (g_grLeaderSet && g_grLeadN > 0) {
+		n = gr_follow(me, FIG_S(me, 0x20) - g_grLeadX, FIG_S(me, 0x22) - g_grLeadY, gx, gy);
+		how = n ? "follows" : "own (couldn't follow)";
+	}
+	else how = "leads";
+	if (!n) {
+		BOOL lead = !g_grLeaderSet;
+		int lx = FIG_S(me, 0x20), ly = FIG_S(me, 0x22);
+		n = gr_plan(me, gx, gy);
+		if (n && lead) {   // keep the leader's route, first step first
+			int cnt = FIG_S(me, 0x36);
+			g_grLeadN = 0;
+			for (int k = cnt - 1; k >= 0; k--) g_grLeadPath[g_grLeadN++] = FIG(me)[0x38 + 2 * k] + 80 * FIG(me)[0x39 + 2 * k];
+			g_grLeadX = lx; g_grLeadY = ly;
+		}
+	}
+	if (n) {
+		g_bplanned++;
+		if (g_blog && g_battleLog >= 1) blog("route fig %d (group %d, %s) to %d,%d: %d cells", me, g, how, gx, gy, n);
+	}
+}
+
+static void __cdecl h_slot(int x, int y, int fig, int group)
+{
+	// the formation step hands places out again every ~500 steps: a unit still walking its route to
+	// the same place keeps it (planned again from where it had got to, a strung-out group's units went
+	// their own ways, some round the other side of a forest)
+	// (the new place is often a few cells from the old one: kept when within 4, the unit walks the rest)
+	BOOL keep = fix_on(g_fixGroupMove) && fig >= 1 && fig <= 0x50 && FIG(fig)[0x164] && abs(FIG_S(fig, 0x24) - x) <= 4 && abs(FIG_S(fig, 0x26) - y) <= 4;
+	static BYTE wp[300]; short left = 0;
+	if (keep) { memcpy(wp, FIG(fig) + 0x38, 300); left = FIG_S(fig, 0x36); }
+	o_slot(x, y, fig, group);
+	if (keep && GR_MARCHING(FIG(fig))) {   // (the game wiped the route for the new place: it goes back)
+		memcpy(FIG(fig) + 0x38, wp, 300); FIG_S(fig, 0x36) = left; FIG(fig)[0x164] = 1;
+		return;
+	}
+	if (!fix_on(g_fixGroupMove) || fig < 1 || fig > 0x50) return;
+	BYTE *f = FIG(fig);
+	if (!f[0x2c] || !GR_MARCHING(f) || f[0x12] >= 7) return;
+	int x0 = FIG_S(fig, 0x20), y0 = FIG_S(fig, 0x22);
+	if (max(abs(x - x0), abs(y - y0)) < 3 || gr_line_clear(x0, y0, x, y)) return;   // the game's own walk is fine
+	for (int k = 0; k < g_grQLen; k++) if (g_grQueue[k] == fig) return;
+	if (g_grQLen < 80) g_grQueue[g_grQLen++] = fig;
+}
+
+// each logic step: plan the next few queued routes
+static void gr_step(void)
+{
+	g_grPlannedThisStep = 0;
+	while (g_grQLen > 0 && g_grPlannedThisStep < GR_PER_STEP) {
+		int fig = g_grQueue[0];
+		memmove(g_grQueue, g_grQueue + 1, (size_t)(--g_grQLen) * sizeof g_grQueue[0]);
+		gr_route(fig);
+		g_grPlannedThisStep++;
+	}
+}
+
+// Called from h_chase for a unit that engaged from idle: leash and letting retreaters go.
+static BOOL engage_chase(int me)
+{
+	int t = g_eTarget[me];
+	if (!t) return FALSE;
+	BYTE *f = FIG(me);
+	if (group_hunting(FIG_S(me, 0x178))) { engage_forget(me); return FALSE; }   // Mop-Up rules take over
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22);
+	int tt = f[0x174];
+	BOOL gone = tt < 1 || tt > 0x50 || !FIG(tt)[0x2c] || FIG(tt)[0x31] == 2;
+	int tx = gone ? x : FIG_S(tt, 0x20), ty = gone ? y : FIG_S(tt, 0x22);
+	int d = cheb(x, y, tx, ty);
+	if (!gone && tt == t) { if (d < g_eBestD[me]) { g_eBestD[me] = d; g_eSince[me] = g_btick; } }
+	BOOL leash = cheb(g_eAnchorX[me], g_eAnchorY[me], x, y) > ENG_LEASH || (!gone && cheb(g_eAnchorX[me], g_eAnchorY[me], tx, ty) > ENG_LEASH + 1);
+	// let go of an enemy that keeps getting away for 2 s, but not of an archer still inside the leash: its
+	// step back (once in 3 s) is not running away, and chasing it a few cells is right
+	BOOL archerNear = !gone && FIG(tt)[0x16a] && cheb(g_eAnchorX[me], g_eAnchorY[me], tx, ty) <= ENG_LEASH + 1;
+	BOOL fled = !gone && tt == t && g_btick - g_eSince[me] >= 164 && d > 2 && !archerNear;
+	if (gone || tt != t || leash || fled) {
+		if (!gone && (leash || fled)) { g_eIgnore[me] = tt; g_eIgnoreUntil[me] = g_btick + 246; }
+		engage_forget(me);
+		// back to where it stood
+		f[0x174] = 0;
+		FIG_S(me, 0x24) = g_eAnchorX[me]; FIG_S(me, 0x26) = g_eAnchorY[me];
+		f[0x164] = 0;
+		f[0x31] = 3;
+		g_bdisengage++;
+		if (g_blog && g_battleLog >= 1) blog("disengage fig %d (%s), back to %d,%d", me, gone ? "target down" : leash ? "leash" : tt != t ? "new target" : "let it go",
+			g_eAnchorX[me], g_eAnchorY[me]);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static void battle_reset(void)
+{
+	g_btick = 0;
+	// F10, Battles: the fixes switched between battles only, never in the middle of one
+	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
+	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];
+	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
+	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
+	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
+	g_grQLen = 0; g_grCongGroup = -1;
+	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
+	memset(g_jReplanT, 0, sizeof g_jReplanT);
+	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
+	memset(g_jStillSince, 0, sizeof g_jStillSince); memset(g_jGaveWay, 0, sizeof g_jGaveWay);
+	memset(g_cSince, 0, sizeof g_cSince); memset(g_cAvoidUntil, 0, sizeof g_cAvoidUntil);
+	memset(g_cBest, 0, sizeof g_cBest); memset(g_cTarget, 0, sizeof g_cTarget); memset(g_cAvoid, 0, sizeof g_cAvoid);
+}
+
+static void __cdecl h_fig_loop(void)
+{
+	int step = *(int *)0x0057c998;
+	BOOL fresh = step < g_lastStep || g_lastStep < 0;
+	g_lastStep = step;
+	if (fresh) battle_reset();
+	if (g_battleLog && fresh) battle_start();
+	if (g_testMopUp && g_remote) {
+		int side = g_testMopUp;
+		g_testMopUp = 0;
+		((void (__cdecl *)(unsigned))0x0047a76d)((unsigned)side);
+		if (g_blog) blog("TEST: Mop-Up for side %d", side);
+	}
+	if (g_testOrder && g_remote) {
+		int x = g_testOrder & 0xffff, y = (g_testOrder >> 16) & 0x3fff;
+		g_testOrder = 0;
+		for (int g = 1; g < 80; g++)
+			if (*(BYTE *)(0x00566522 + g * 0x34) && *(BYTE *)(0x00566521 + g * 0x34)) {
+				((void (__cdecl *)(int, int, int, int, int, int))0x00479e90)(g, x, y, 0, 0, 0);
+				if (g_blog) blog("TEST: group %d ordered to %d,%d", g, x, y);
+			}
+	}
+	LARGE_INTEGER c0, c1;
+	QueryPerformanceCounter(&c0);
+	g_dmFullThisStep = 0;
+	if (fix_on(g_fixGroupMove)) gr_step();
+	o_fig_loop();
+	QueryPerformanceCounter(&c1);
+	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
+	g_btick++;
+	if (!g_blog) return;
+	static fig_snap n[81];
+	for (int i = 1; i < 0x51; i++) {
+		fig_take(i, &n[i]);
+		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++;   // set to 120 by a shot (FUN_00483337), counted down each step
+	}
+	for (int i = 1; i < 0x51; i++) {
+		fig_snap *o = &g_snap[i], *c = &n[i];
+		if (!c->live && !o->live) continue;
+		if (c->live != o->live) { blog("fig %d %s", i, c->live ? "appears" : "removed"); continue; }
+		BOOL moved = c->x != o->x || c->y != o->y;
+		if (moved) {
+			// a swap: someone else went from our new cell to our old one this step
+			for (int j = i + 1; j < 0x51; j++)
+				if (n[j].live && n[j].x == o->x && n[j].y == o->y && g_snap[j].x == c->x && g_snap[j].y == c->y) {
+					g_bswaps++;
+					blog("swap fig %d (state %d) at %d,%d <-> fig %d (state %d) at %d,%d", i, o->state, o->x, o->y, j,
+						g_snap[j].state, g_snap[j].x, g_snap[j].y);
+				}
+			if (g_battleLog >= 2) blog("move fig %d %d,%d -> %d,%d state %d", i, o->x, o->y, c->x, c->y, c->state);
+		}
+		if (c->state != o->state) {
+			if (c->state == 1) g_bstate1++;
+			blog("state fig %d %d -> %d (saved %d wait %d target %d) at %d,%d dest %d,%d", i, o->state, c->state, c->saved,
+				c->wait, c->target, c->x, c->y, c->dx, c->dy);
+			if (c->state == 5 && c->type < 7 && FIG(i)[0x16a] == 0) {
+				int d = nearest_enemy(i, n);
+				if (d <= 12) {
+					int t = c->target;
+					blog("IDLE fig %d side %d human %d group %d hunting %d target %d (state %d) nearest enemy %d cells",
+						i, c->side, FIG(i)[0x13], c->group, group_hunting(c->group), t,
+						t > 0 && t < 0x51 ? n[t].state : -1, d);
+				}
+				g_idleSince[i] = g_btick;
+			}
+		}
+		if (o->pathOn && !c->pathOn && (c->x != c->dx || c->y != c->dy)) {
+			g_bdrops++;
+			if (g_battleLog >= 1) blog("drop fig %d path at %d,%d (%d left) dest %d,%d", i, c->x, c->y, o->pathLeft, c->dx, c->dy);
+		}
+		// a twitch: a step straight back to the cell it left (within ~2 s), or the facing turning
+		// round (4 of 8 directions) without a cell change
+		BOOL twitch = FALSE;
+		if (moved) {
+			if (c->x == g_prevX[i] && c->y == g_prevY[i] && g_btick - g_lastMove[i] < 164) {
+				twitch = TRUE;
+				blog("BACKSTEP fig %d %d,%d -> %d,%d -> back (state %d, %u steps)", i, c->x, c->y, o->x, o->y, c->state,
+					g_btick - g_lastMove[i]);
+				if (g_battleLog >= 2 && g_traceUntil[i] < g_btick + 60) g_traceUntil[i] = g_btick + 120;
+			}
+			g_prevX[i] = o->x; g_prevY[i] = o->y; g_lastMove[i] = g_btick;
+		}
+		else if (((c->face - o->face) & 7) == 4) twitch = TRUE;
+		if (twitch) {
+			g_twitch[i]++; g_twitchSec[i]++; g_btwitch++;
+			if (g_battleLog >= 2 && g_twitchSec[i] == 3 && g_traceUntil[i] < g_btick) {
+				g_traceUntil[i] = g_btick + 164;
+				blog("trace fig %d starts (twitching at %d,%d)", i, c->x, c->y);
+			}
+		}
+		if (g_traceUntil[i] > g_btick) {
+			// who stands in the cell the figure faces
+			static const int fdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 }, fdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+			int ax = c->x + fdx[c->face & 7], ay = c->y + fdy[c->face & 7], occ = -1, ofl = -1;
+			if (ax >= 0 && ax < 80 && ay >= 0 && ay < 80) { occ = BCELL(ax, ay)[5]; ofl = BCELL(ax, ay)[1]; }
+			// the next two waypoints: entry k is at +0x38 + 2k, the next one is entry (left - 1)
+			int k = c->pathLeft - 1, w1x = -1, w1y = -1, w2x = -1, w2y = -1;
+			if (k >= 0 && k < 150) { w1x = FIG(i)[0x38 + 2 * k]; w1y = FIG(i)[0x39 + 2 * k]; }
+			if (k >= 1 && k < 151) { w2x = FIG(i)[0x36 + 2 * k]; w2y = FIG(i)[0x37 + 2 * k]; }
+			blog("tr %d %d,%d st %d sv %d w %d sub %d face %d frame %d path %d/%d wp %d,%d %d,%d fails %d cd %d dest %d,%d tgt %d grp %d | ahead %d,%d fig %d (st %d grp %d) flags %02x",
+				i, c->x, c->y, c->state, c->saved, c->wait, c->sub, c->face, c->frame, c->pathOn, c->pathLeft, w1x, w1y, w2x, w2y,
+				c->fails, FIG(i)[0x165], c->dx, c->dy, c->target, c->group, ax, ay, occ, occ > 0 && occ < 0x51 ? n[occ].state : -1,
+				occ > 0 && occ < 0x51 ? n[occ].group : -1, ofl & 0xff);
+		}
+	}
+	memcpy(g_snap, n, sizeof n);
+	if (g_btick - g_bsecTick >= 82) { g_bsecTick = g_btick; battle_second(n); }
 }
 
 // AI castle cap. A computer lord's building step (FUN_0049edc7(player)) starts a castle
@@ -8161,8 +10607,67 @@ static void install_game_fixes(void)
 	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
 	static const BYTE kChasePrologue[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 }; // push ebp; mov ebp,esp; push ebx/esi/edi
 	if (!hook_code((BYTE *)0x00483e55, kChasePrologue, sizeof kChasePrologue, h_chase, &o_chase))
-		g_fixMopUp = FALSE;
+		g_fixMopUp = FALSE, g_chaseHookFailed = TRUE;
 	logf_("Mop-Up fix %s", g_fixMopUp ? "on" : "off");
+
+	g_battleLog = GetPrivateProfileIntA("Debug", "BattleLog", 0, g_iniPath);
+	g_fixJitter = GetPrivateProfileIntA("Game", "JitterFix", 1, g_iniPath) != 0;
+	g_fixEngage = GetPrivateProfileIntA("Game", "EngageFix", 1, g_iniPath) != 0 && !g_chaseHookFailed;
+	logf_("engage fix %s", g_fixEngage ? "on" : "off");
+	g_fixGroupMove = GetPrivateProfileIntA("Game", "GroupMoveFix", 1, g_iniPath) != 0;
+	BOOL figLoop = FALSE;
+	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage || g_fixGroupMove) {
+		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
+		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
+	}
+	if (g_battleLog) {
+		static const BYTE kSearch[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C };   // push ebp; mov ebp,esp; sub esp,1Ch
+		if (figLoop) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
+		static const BYTE kStep[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };   // push ebp; mov ebp,esp; sub esp,8
+		if (figLoop && g_battleLog >= 2) hook_code((BYTE *)0x00490616, kStep, sizeof kStep, h_step_check, &o_step_check);
+		logf_("battle log %s (level %d)", figLoop ? "on" : "failed", g_battleLog);
+	}
+	if (g_fixJitter) {
+		static const BYTE kMover[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };   // push ebp; mov ebp,esp; sub esp,0Ch
+		static const BYTE kSwapQ[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14 };   // push ebp; mov ebp,esp; sub esp,14h
+		if (!figLoop || !hook_code((BYTE *)0x0048f1dd, kMover, sizeof kMover, h_mover, &o_mover) ||
+			!hook_code((BYTE *)0x0049005f, kSwapQ, sizeof kSwapQ, h_swapq, &o_swapq) ||
+			!hook_code((BYTE *)0x004972f9, (const BYTE[]){ 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }, 6, h_adj_enemy, &o_adj_enemy))
+			g_fixJitter = FALSE;
+		logf_("jitter fix %s", g_fixJitter ? "on" : "off");
+	}
+	if (g_fixGroupMove) {
+		static const BYTE kSlot[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };   // push ebp; mov ebp,esp; sub esp,4
+		if (!figLoop || !hook_code((BYTE *)0x00489b8d, kSlot, sizeof kSlot, h_slot, &o_slot)) g_fixGroupMove = FALSE;
+		logf_("group move fix %s", g_fixGroupMove ? "on" : "off");
+	}
+	BOOL meleeOk = FALSE;
+	if ((g_fixMopUp || g_fixEngage) && figLoop) {
+		static const BYTE kTarget[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
+		static const BYTE kIdle[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };    // sub esp,4
+		static const BYTE kOrder[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 };   // sub esp,24h
+		static const BYTE kSelect[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };  // sub esp,10h
+		g_dmapOn = hook_code((BYTE *)0x004954dd, kTarget, sizeof kTarget, h_target, &o_target) &&
+			hook_code((BYTE *)0x004832ea, kIdle, sizeof kIdle, h_idle, &o_idle) &&
+			hook_code((BYTE *)0x00479e90, kOrder, sizeof kOrder, h_order, &o_order) &&
+			hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select);
+		logf_("Mop-Up walking distances %s", g_dmapOn ? "on" : "failed");
+		if (g_fixEngage) {
+			static const BYTE kMelee[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
+			meleeOk = hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee);
+			logf_("archers leaving melee %s", meleeOk ? "on" : "failed");
+		}
+	}
+	// (F10, Battles) each fix's choice as read, and whether it can be switched on without a restart: only
+	// when every hook it needs went in (Mop-Up: the chase handler, always tried, and the walking-distance
+	// hooks, put in only when Mop-Up or engaging was on at startup; engaging: those and the melee hook)
+	g_bfOk[BF_PATH] = g_bfSet[BF_PATH] = g_fixJitter; g_bfOk[BF_GROUP] = g_bfSet[BF_GROUP] = g_fixGroupMove;
+	g_bfSet[BF_ENGAGE] = g_fixEngage; g_bfOk[BF_ENGAGE] = g_fixEngage && g_dmapOn && meleeOk;
+	g_bfSet[BF_MOPUP] = g_fixMopUp; g_bfOk[BF_MOPUP] = !g_chaseHookFailed && g_dmapOn;
+	for (int f = 0; f < BF_COUNT; f++) g_bfOk[f] = g_bfOk[f] && figLoop; // (the choice is taken in battle_reset, from the battle loop's hook)
+	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
+		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
+		logf_("battle seed on");
 }
 
 static void install(void)
