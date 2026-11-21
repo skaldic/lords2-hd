@@ -4,7 +4,15 @@
  * The patch's DllMain (its start-up: settings, hooks into the game) is renamed away and never runs: a test sets
  * up only what it needs. The shipped DLL is built from hd\lords2hd.c alone and is not changed by any of this. */
 #define DllMain l2hd_DllMain_off
+/* The patch finds the game's exe (its PE headers, the import table) with GetModuleHandleA(NULL). In the tests that
+ * is the host; while a game exe is copied into the fake memory (t_hooks.c) it answers that copy instead. */
+#define COBJMACROS                  /* (as the patch's source sets it before its own windows.h) */
+#include <windows.h>
+static HMODULE t_gameModule;
+static HMODULE WINAPI t_GetModuleHandleA(LPCSTR name) { return !name && t_gameModule ? t_gameModule : GetModuleHandleA(name); }
+#define GetModuleHandleA t_GetModuleHandleA
 #include "../hd/lords2hd.c"
+#include "out/tramps.h"
 #include "t.h"
 #include "game_mem.h"
 #include <shellapi.h>
@@ -75,6 +83,7 @@ static void t_reset(void)
 #include "t_battle.c"
 #include "t_campaign.c"
 #include "t_settings.c"
+#include "t_hooks.c"
 
 __declspec(dllexport) int run_tests(const char *filter, void *gameLo, void *gameHi)
 {

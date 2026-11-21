@@ -31,6 +31,20 @@ minimap crash on freed battle buffers) before a release, with tests that run in 
   - the restart marks
 - **Second finding, fixed:** the code's default for `[Display] Upscale` was `catmullrom`, while the shipped ini, the
   README and INSTALL.txt all said FSR. It is now FSR. `settings_without_an_ini_are_the_documented_defaults` covers it.
+- **Phase 4 is done:** 4 hook tests (85 in all, about 6 s). They run the patch's real `install()` on a local
+  Lords2.exe whose sections are copied into the fake memory. The exe is only read, never changed, and none of it goes
+  into the repository. The host was moved down to 0x300000 so its fake memory covers the game's whole image.
+  - With Wide=0 and with Wide=1, every hook site holds the expected code and every hook goes in (all pitch, frame and
+    y*640 sites in widescreen).
+  - Every trampoline left NULL in a mode (29 in 4:3, 2 in widescreen) is never called, unguarded, from code the patch
+    runs itself. A run.ps1 step lists all 83 trampolines at build time.
+  - **These tests catch real bugs:**
+    - with the 1.4.0 yes/no guard removed, they flag `h_yesno_draw` calling a NULL `o_yesno_draw` in 4:3, at the
+      exact line
+    - a hook expecting different code shows up as not hooked
+  - Without a game exe given (`-GameExe` or `L2HD_GAME_EXE`) these 4 tests say so and pass.
+  - The only test-only change to how the patch builds: in the test build, `GetModuleHandleA(NULL)` gives the copied
+    exe while it is mapped.
 - **Not tested:** the F10 labels' pixel width. It needs the game's own font.
 - **Not tested:** the packer's 4 GB check. Testing it would need a 4 GB file.
 - **Not tested:** `h_order` ending Mop-Up. It depends on the caller's return address in the game.
