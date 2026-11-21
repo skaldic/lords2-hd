@@ -4,11 +4,17 @@ An unofficial fan patch for the GOG and Steam versions of **Lords of the Realm I
 modern widescreen monitor, shows the game's art and videos at double detail, and fixes how battles
 play. You need your own copy of the game; the patch changes none of its files.
 
-Current version: **1.5.0** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
+Current version: **1.5.1** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
 [Watch what's new (47 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.5.0.mp4) ·
 [Community Discord](https://discord.gg/uBzaMGjUR)
 
 ![The armoury, widened](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg)
+
+## Fixed in 1.5.1
+
+- **Zoomed-out battles no longer freeze.** A zoomed-out battle could stay on its first picture while
+  the game ran on behind it: the battle seemed never to start and the hourglass did nothing.
+- **The Town Center window stays still** when you move peasants and its info scrolls open.
 
 ## New in 1.5.0
 
@@ -115,7 +121,7 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 
 ## Install
 
-Download `Lords2-HD-1.5.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.5.1-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and run it with the game closed. It finds the GOG or Steam game by itself (or asks for the folder
 holding `Lords2.exe`), adds the patch, and leaves the game's own files alone. Uninstall it from
 Windows' Apps list. Windows may warn that the publisher is unknown: the installer is not code-signed.
@@ -129,7 +135,7 @@ these replace them.
 back to the 1.5.0 defaults once (widescreen, the battle fixes and the sharper videos on); the old
 ones are kept as `lords2hd-before-1.5.0.ini` beside it. Later updates keep your settings.
 
-Rather unzip by hand? `Lords2-HD-1.5.0.zip` holds the same files: unzip it into the game's folder,
+Rather unzip by hand? `Lords2-HD-1.5.1.zip` holds the same files: unzip it into the game's folder,
 replacing the old files (`lords2hd.ini` too, for the new defaults).
 
 ## Videos and music
