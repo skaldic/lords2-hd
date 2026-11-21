@@ -60,6 +60,7 @@ int main(int argc, char **argv)
 		FindClose(h);
 	}
 	long long idx = _ftelli64(out);
+	if (idx + (long long)count * (long long)sizeof(PAK_ENTRY) > 0xffffffffLL) { fprintf(stderr, "pack over 4 GB\n"); return 1; } // (offsets are 32-bit)
 	fwrite(entries, sizeof(PAK_ENTRY), count, out);
 	head[1] = (DWORD)count; head[2] = (DWORD)idx;
 	fseek(out, 0, SEEK_SET);

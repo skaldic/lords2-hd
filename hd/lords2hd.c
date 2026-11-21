@@ -2595,7 +2595,10 @@ static void hv_open(void *s, const char *name, int w, int h, int n)
 	DWORD *back = realloc(g_hv.back, px); if (back) g_hv.back = back; else ok = FALSE;
 	BYTE *shb = realloc(g_hv.shadowBack, w * h); if (shb) g_hv.shadowBack = shb; else ok = FALSE;
 	if (!ok || afread(offs, 4, n + 1, f) != (size_t)(n + 1)) {
-		free(offs); afclose(f); return;
+		// the buffers may now have this video's size: an HD video still open must stop using them
+		free(offs); afclose(f);
+		hv_free_file(); g_hv.smk = NULL;
+		return;
 	}
 	hv_free_file();
 	g_hv.f = f; g_hv.offs = offs;
@@ -10611,6 +10614,7 @@ static void install_game_fixes(void)
 		if (!figLoop || !hook_code((BYTE *)0x00489b8d, kSlot, sizeof kSlot, h_slot, &o_slot)) g_fixGroupMove = FALSE;
 		logf_("group move fix %s", g_fixGroupMove ? "on" : "off");
 	}
+	BOOL meleeOk = FALSE;
 	if ((g_fixMopUp || g_fixEngage) && figLoop) {
 		static const BYTE kTarget[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
 		static const BYTE kIdle[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };    // sub esp,4
@@ -10623,14 +10627,16 @@ static void install_game_fixes(void)
 		logf_("Mop-Up walking distances %s", g_dmapOn ? "on" : "failed");
 		if (g_fixEngage) {
 			static const BYTE kMelee[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
-			logf_("archers leaving melee %s", hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee) ? "on" : "failed");
+			meleeOk = hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee);
+			logf_("archers leaving melee %s", meleeOk ? "on" : "failed");
 		}
 	}
-	// (F10, Battles) each fix's choice as read, and whether it can be switched on without a restart;
-	// Mop-Up's own hook (the chase handler) goes in whatever the ini says
+	// (F10, Battles) each fix's choice as read, and whether it can be switched on without a restart: only
+	// when every hook it needs went in (Mop-Up: the chase handler, always tried, and the walking-distance
+	// hooks, put in only when Mop-Up or engaging was on at startup; engaging: those and the melee hook)
 	g_bfOk[BF_PATH] = g_bfSet[BF_PATH] = g_fixJitter; g_bfOk[BF_GROUP] = g_bfSet[BF_GROUP] = g_fixGroupMove;
-	g_bfOk[BF_ENGAGE] = g_bfSet[BF_ENGAGE] = g_fixEngage;
-	g_bfSet[BF_MOPUP] = g_fixMopUp; g_bfOk[BF_MOPUP] = !g_chaseHookFailed;
+	g_bfSet[BF_ENGAGE] = g_fixEngage; g_bfOk[BF_ENGAGE] = g_fixEngage && g_dmapOn && meleeOk;
+	g_bfSet[BF_MOPUP] = g_fixMopUp; g_bfOk[BF_MOPUP] = !g_chaseHookFailed && g_dmapOn;
 	for (int f = 0; f < BF_COUNT; f++) g_bfOk[f] = g_bfOk[f] && figLoop; // (the choice is taken in battle_reset, from the battle loop's hook)
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
