@@ -27,5 +27,8 @@
 # Notes for another project, kept local
 /docs/
 
+# Test build output (tests\run.ps1)
+/tests/out/
+
 # Multiplayer DLL build output
 /multiplayer/dplayx/dplayx.dll
