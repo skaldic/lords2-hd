@@ -6686,7 +6686,9 @@ static BOOL cycle_key(int dir)
 #define AP_Y (GAME_H - 8 - AP_H) // on the map's bottom edge: the rows under it are not the map's
 static int panel_army(void);
 static int player_armies(void);
-static const RECT kCycleBtn[2] = { { 487, 162, 503, 180 }, { 615, 162, 631, 180 } }; // game coords: < and >
+// game coords: < and >, at the name plate's outer edges (its parchment is about x 480..637): long county
+// names ("Gloucestershire") reach almost from edge to edge, and bigger arrows further in covered their letters
+static const RECT kCycleBtn[2] = { { 483, 164, 495, 179 }, { 623, 164, 635, 179 } };
 static BOOL cycle_btn_rect(int b, RECT *r)
 {
 	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
