@@ -3739,23 +3739,27 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 3
+#define MENU_TABS 4
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-// "Improved pathfinding and cohesion" (JitterFix, EngageFix, GroupMoveFix together): g_bfSet is the panel's choice, taken
-// at the next battle's start (battle_reset); g_bf*Ok: that fix's hooks went in at startup (on in the ini).
-static BOOL g_bfSet, g_bfJitterOk, g_bfEngageOk, g_bfGroupOk;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_BATTLES, M_COUNT };
+// The Battles tab's fixes: g_bfSet[] is the panel's choice, taken at the next battle's start (battle_reset),
+// never in the middle of one; g_bfOk[]: the fix's hooks went in at startup (else a restart is needed).
+enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
+static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
+static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP,
+	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life" };
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_ZOOM, M_MINIPOP, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
-	{ M_BATTLES, M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_MINIPOP || i == M_BATTLES; } // marked "new"
+static BOOL menu_new(int i) { return i == M_MINIPOP || i == M_BF_PATH || i == M_BF_GROUP || i == M_BF_ENGAGE; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3780,15 +3784,18 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		break;
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
 	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
-	case M_BATTLES: // from the next battle; a restart only if none of the three was on at startup
-		snprintf(v, n, "%s", g_bfSet ? "On" : "Off");
-		*restart = g_bfSet && !g_bfJitterOk && !g_bfEngageOk && !g_bfGroupOk;
+	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: { // from the next battle
+		int f = i - M_BF_PATH;
+		snprintf(v, n, "%s", g_bfSet[f] ? "On" : "Off");
+		*restart = g_bfSet[f] && !g_bfOk[f];
 		break;
+	}
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Improved pathfinding and cohesion" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines",
+	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3850,10 +3857,11 @@ static void resound_sample(void)
 		break;
 	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
 	case M_MINIPOP: g_miniPop = !g_miniPop; ini_set("Display", "MinimapPop", g_miniPop); break;
-	case M_BATTLES:
-		g_bfSet = !g_bfSet;
-		ini_set("Game", "JitterFix", g_bfSet); ini_set("Game", "EngageFix", g_bfSet); ini_set("Game", "GroupMoveFix", g_bfSet);
+	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
+		int f = i - M_BF_PATH;
+		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);
 		break;
+	}
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -3927,7 +3935,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 		}
 		SelectObject(dc, o); DeleteObject(f);
 	}
-	int bw = pad * 2 + labelW + valueW, bh = pad * 2 + rowH * (MENU_ROWS + 6);
+	int bw = max(pad * 2 + labelW + valueW, pad * 2 + MENU_TABS * fh * 8 + (MENU_TABS - 1) * (fh / 2)), bh = pad * 2 + rowH * (MENU_ROWS + 6);
 	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
 	COLORREF cPaper = RGB(222, 196, 140), cHi = RGB(244, 226, 180), cLine = RGB(120, 80, 40);
 	HBRUSH paper = CreateSolidBrush(cPaper), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(cHi);
@@ -3947,7 +3955,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
 	DrawTextA(dc, "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	// the tabs, on a line across the panel; the open one joins the paper below it
-	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 9, gap = fh / 2, tx0 = bx + (bw - MENU_TABS * tw - (MENU_TABS - 1) * gap) / 2, lw = max(1, fh / 12);
+	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 8, gap = fh / 2, tx0 = bx + (bw - MENU_TABS * tw - (MENU_TABS - 1) * gap) / 2, lw = max(1, fh / 12);
 	RECT ln = { bx + pad / 2, ty + th - lw, bx + bw - pad / 2, ty + th };
 	FillRect(dc, &ln, line);
 	for (int k = 0; k < MENU_TABS; k++) {
@@ -3996,9 +4004,10 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	}
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
-	if (g_menuTab == 0) {
+	if (g_menuTab == 0 || g_menuTab == 3) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
-		DrawTextA(dc, "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		DrawTextA(dc, g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
+			: "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
 	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -7700,7 +7709,7 @@ static void army_panel_keep(void)
 // The settings panel (F10) as one of the game's scrolls: drawn with its own scroll frame and
 // lettering into its picture, like the army scroll, before every flush that would show the place
 // without it. What it covered is kept and put back when it closes.
-#define MS_W (28 * 16) // (wide enough for "Improved pathfinding and cohesion" and its value)
+#define MS_W (28 * 16) // (wide enough for the four tabs side by side)
 #define MS_H (17 * 16)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
@@ -7764,6 +7773,10 @@ static void menu_scroll_draw(void)
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
 	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink); // under the last of 8 rows
+	if (g_menuTab == 3) {
+		ctext("* after a restart; the fixes from the next battle", x0, y0 + 188, MS_W, small, ink);
+		ctext("The fixes stay off in multiplayer games", x0, y0 + 202, MS_W, small, ink);
+	}
 	const char *keys = "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
@@ -10110,8 +10123,9 @@ static BOOL engage_chase(int me)
 static void battle_reset(void)
 {
 	g_btick = 0;
-	// F10 "Improved pathfinding and cohesion": switched between battles only, never in the middle of one
-	g_fixJitter = g_bfSet && g_bfJitterOk; g_fixEngage = g_bfSet && g_bfEngageOk; g_fixGroupMove = g_bfSet && g_bfGroupOk;
+	// F10, Battles: the fixes switched between battles only, never in the middle of one
+	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
+	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
 	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
@@ -10612,8 +10626,12 @@ static void install_game_fixes(void)
 			logf_("archers leaving melee %s", hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee) ? "on" : "failed");
 		}
 	}
-	g_bfJitterOk = g_fixJitter; g_bfEngageOk = g_fixEngage; g_bfGroupOk = g_fixGroupMove; // (F10 "Improved pathfinding and cohesion")
-	g_bfSet = g_bfJitterOk || g_bfEngageOk || g_bfGroupOk;
+	// (F10, Battles) each fix's choice as read, and whether it can be switched on without a restart;
+	// Mop-Up's own hook (the chase handler) goes in whatever the ini says
+	g_bfOk[BF_PATH] = g_bfSet[BF_PATH] = g_fixJitter; g_bfOk[BF_GROUP] = g_bfSet[BF_GROUP] = g_fixGroupMove;
+	g_bfOk[BF_ENGAGE] = g_bfSet[BF_ENGAGE] = g_fixEngage;
+	g_bfSet[BF_MOPUP] = g_fixMopUp; g_bfOk[BF_MOPUP] = !g_chaseHookFailed;
+	for (int f = 0; f < BF_COUNT; f++) g_bfOk[f] = g_bfOk[f] && figLoop; // (the choice is taken in battle_reset, from the battle loop's hook)
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
 		logf_("battle seed on");
