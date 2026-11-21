@@ -11,9 +11,15 @@ it. It will be taken down on request from the rights holders.
 
 - The double-detail pictures, ground, buildings and troops are the game's own art enlarged with
   Real-ESRGAN, an AI upscaler.
-- The new left and right parts of the widened full-screen paintings were painted by an AI image
-  model (FLUX.1 Fill [dev], used under its non-commercial license) from the game's own picture. The
-  original 4:3 picture is unchanged in the middle.
+- The new left and right parts of the widened full-screen paintings: since 1.5.0, those of the castle
+  builder, the armoury, the custom game, battle setup and results screens, the greatest nobles and the
+  merchant's left side are built from the painting's own pixels (its bricks, stone, plaster, clouds and
+  yard). The others were painted by an AI image model (FLUX.1 Fill [dev], used under its
+  non-commercial license) from the game's own picture. The original 4:3 picture is unchanged in the
+  middle.
+- The town screen has the original's grain put back over the upscaled picture.
+- The videos' upscaled frames (`lords2hd.pak`, `videohd/`) are the game's own frames enlarged with
+  Real-ESRGAN, blended half and half with the original frame and gently de-dithered.
 
 ## How the voices were made
 
@@ -55,6 +61,7 @@ MIT license:
 ## The videos
 
 The disc-quality videos are the game's own, as on its original CD, unchanged: the GOG release has
-smaller, interlaced copies. They were made available by a member of the community in the SMK_HIGH
+smaller, interlaced copies. The patch draws upscaled frames over them (see above); the videos
+themselves are not altered. They were made available by a member of the community in the SMK_HIGH
 thread on the GOG forum. Like the art, they are meant only for use with a copy of the game you own
 and will be taken down on request from the rights holders.
