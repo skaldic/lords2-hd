@@ -199,7 +199,7 @@ static void read_settings(void)
 	GetPrivateProfileStringA("Display", "Renderer", "gpu", s, sizeof s, g_iniPath);
 	g_gpuWanted = g_gpuWantedSet = lstrcmpiA(s, "cpu") != 0;
 	g_repeatOn = GetPrivateProfileIntA("Display", "RepeatFrames", 1, g_iniPath) != 0;
-	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
+	GetPrivateProfileStringA("Display", "Upscale", "fsr", s, sizeof s, g_iniPath);   // (FSR the default, as the shipped ini)
 	g_upscaleCR = !lstrcmpiA(s, "bilinear") ? 0 : !lstrcmpiA(s, "fsr") ? 2 : 1;
 	g_fsrFinal = GetPrivateProfileIntA("Display", "FsrFinal", 0, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "FsrSharpness", "0.2", s, sizeof s, g_iniPath);
@@ -439,7 +439,7 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 	return ((rb >> 4) & 0xff00ff) | ((g >> 4) & 0x00ff00);
 }
 
-// ---- Catmull-Rom resampling ([Display] Upscale=catmullrom, the default) --------------------------
+// ---- Catmull-Rom resampling ([Display] Upscale=catmullrom; FSR's final stretch too) ---------------
 // A sharper alternative to bilinear doubling and GDI's stretch, for the 2x step (1x frame -> 2x frame
 // the HD art is stamped into) and the final step (2x frame -> the window). Separable: a horizontal
 // pass into 16-bit rows (value * 64), then a vertical pass in SSE2 (pmulhw with Q10 weights gives the
@@ -448,7 +448,7 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 #include <emmintrin.h>
 #define CR_MAXTAPS 12
 typedef struct { int n, taps; int *idx; short *w; } cr_axis; // per output index: taps source indexes and weights
-static int g_upscaleCR = 1;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1), 2 FSR (Catmull-Rom's final stretch, then RCAS)
+static int g_upscaleCR = 2;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1), 2 FSR (Catmull-Rom's final stretch, then RCAS)
 static double cr_k(double t) { t = fabs(t); return t < 1 ? 1.5 * t * t * t - 2.5 * t * t + 1 : t < 2 ? -0.5 * t * t * t + 2.5 * t * t - 4 * t + 2 : 0; }
 // weights for src length sn -> dst length dn, fixed point "one" (256 or 1024)
 static BOOL cr_axis_make(cr_axis *a, int sn, int dn, int one)

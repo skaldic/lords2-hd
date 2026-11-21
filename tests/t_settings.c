@@ -106,6 +106,23 @@ TEST(settings_code_defaults_match_the_shipped_ini)
 	CHECK_EQ(off, 0);
 }
 
+TEST(settings_without_an_ini_are_the_documented_defaults)
+{
+	// no lords2hd.ini at all (or keys missing): what the README and INSTALL.txt give as the defaults
+	DeleteFileA(g_iniPath);
+	read_settings();
+	CHECK_EQ(g_upscaleCR, 2);                   // AMD FSR 1 (was Catmull-Rom up to 1.5.1)
+	CHECK(g_gpuWanted);                         // the graphics card draws
+	CHECK(g_wantWide); CHECK(g_battleZoom);     // widescreen, battle zoom-out
+	CHECK_EQ(g_frameLimit, 120);
+	CHECK_EQ(g_statsOn, 0);
+	CHECK(!g_miniPop);
+	CHECK(g_hdScreens && g_hdTiles && g_hdVideos && g_hdText && g_shoreWaves);
+	CHECK(g_tutorialOnce && g_wasdOn && g_cycleOn && g_armyPanel && g_letters && g_resounded);
+	CHECK_EQ(g_scale, SCALE_SMOOTH);
+	CHECK(g_fullscreen);
+}
+
 TEST(settings_ini_marks_its_version_for_the_installer)
 {
 	char v[64];

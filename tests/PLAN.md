@@ -29,8 +29,8 @@ minimap crash on freed battle buffers) before a release, with tests that run in 
   - every F10 change is saved under the key the patch reads at start-up and goes back round to its first value
   - the README's F10 table matches the panel: labels, order, defaults after an install, and the key each one writes
   - the restart marks
-- **Second finding, open:** the code's default for `[Display] Upscale` is `catmullrom`, but the shipped ini, the README
-  and INSTALL.txt all say FSR. A player whose ini lacks the key gets Catmull-Rom.
+- **Second finding, fixed:** the code's default for `[Display] Upscale` was `catmullrom`, while the shipped ini, the
+  README and INSTALL.txt all said FSR. It is now FSR. `settings_without_an_ini_are_the_documented_defaults` covers it.
 - **Not tested:** the F10 labels' pixel width. It needs the game's own font.
 - **Not tested:** the packer's 4 GB check. Testing it would need a 4 GB file.
 - **Not tested:** `h_order` ending Mop-Up. It depends on the caller's return address in the game.
