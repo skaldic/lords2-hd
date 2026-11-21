@@ -888,6 +888,11 @@ static void pace_change(void)
 	g_paceChg[i].t = perf_now(); g_paceChg[i].seq = s;
 	InterlockedIncrement(&g_paceChgN);
 }
+// The number a frame copy carries to the screen surface (g_pacePrimarySeq), which the zoomed battle's
+// presenter compares to skip a read with nothing new. Changes are only counted with Timing=1 (pace_change
+// hashes the frame); without it every copy is a new one. (1.5.0 counted them only with Timing=1: the number
+// never moved, the presenter never read the screen again and zoomed battles stayed on their first picture.)
+static LONG pace_copy_seq(void) { return g_timing ? g_paceChangeSeq : InterlockedIncrement(&g_paceChangeSeq); }
 // Timing=1: both threads' events, for the late-refresh trace: T turn given, H changed frame finished,
 // C copied, K skipped (composing), N no turn, P copied from the wait
 static struct { double t; char k; LONG seq; } g_paceEv[PACE_RING];
@@ -8764,11 +8769,7 @@ static void __cdecl h_show_frame(int force)
 	LONG hadTurn = 0;
 	if (g_frameLimit > 0 && !force) { hadTurn = InterlockedExchange(&g_frameTaken, 0); if (hadTurn || g_preTurn) force = ours = 1; } // (g_preTurn: see there)
 	LONG seq = g_copySeq;
-	// The change this copy carries (copy_rect: g_pacePrimarySeq). Changes are only counted with Timing=1
-	// (pace_change hashes the frame); without it every copy is a new one. (1.5.0 counted them only with
-	// Timing=1: the zoomed battle's presenter, which skips a read with nothing new, then never read
-	// again and the battle stayed on its first picture, unless Timing=1.)
-	g_paceCopying = g_timing ? g_paceChangeSeq : InterlockedIncrement(&g_paceChangeSeq);
+	g_paceCopying = pace_copy_seq(); // the change this copy carries (copy_rect: g_pacePrimarySeq)
 	if (g_timing) {
 		static double sum, worst, t0; static int n;
 		double a = perf_now();
