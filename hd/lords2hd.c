@@ -9250,6 +9250,52 @@ static int nearest_enemy(int i, const fig_snap *n)
 	return best;
 }
 
+// Cover for the computer's archers (the players' complaint: its melee charges and leaves them alone).
+// For each live computer bow or crossbow unit: the nearest live melee unit of its own side and the
+// nearest enemy melee unit (cells, the larger of dx and dy). "Isolated": enemy melee within
+// AI_COVER_THREAT and none of its own within AI_COVER_NEAR. Returns FALSE when the side has no computer
+// units. Also the men left in melee and ranged units on each side.
+#define AI_COVER_NEAR 5
+#define AI_COVER_THREAT 8
+typedef struct { int archers, ownSum, ownMax, isolated, inMelee, menMelee, menRanged, enemyMenMelee, enemyMenRanged; } ai_cover;
+static BOOL g_aiStatsDone;
+
+static BOOL ai_is_melee(const fig_snap *f, int i) { return f->live && f->state != 2 && f->type < 7 && !FIG(i)[0x16a]; }
+
+static BOOL ai_archer_cover(const fig_snap *n, int side, ai_cover *c)
+{
+	memset(c, 0, sizeof *c);
+	BOOL computer = FALSE;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || n[i].state == 2 || n[i].type >= 7) continue;
+		BOOL ranged = FIG(i)[0x16a] != 0;
+		if (n[i].side == side) {
+			if (!FIG(i)[0x13]) computer = TRUE;
+			if (ranged) c->menRanged += n[i].men; else c->menMelee += n[i].men;
+		}
+		else if (ranged) c->enemyMenRanged += n[i].men; else c->enemyMenMelee += n[i].men;
+	}
+	if (!computer) return FALSE;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || n[i].state == 2 || n[i].type >= 7 || n[i].side != side || FIG(i)[0x13] || !FIG(i)[0x16a]) continue;
+		int own = 999, enemy = 999;
+		for (int j = 1; j < 0x51; j++) {
+			if (j == i || !ai_is_melee(&n[j], j)) continue;
+			int d = abs(n[j].x - n[i].x), dy = abs(n[j].y - n[i].y);
+			if (dy > d) d = dy;
+			if (n[j].side == side) { if (d < own) own = d; }
+			else if (d < enemy) enemy = d;
+		}
+		c->archers++;
+		if (own > 80) own = 80;
+		c->ownSum += own;
+		if (own > c->ownMax) c->ownMax = own;
+		if (enemy <= AI_COVER_THREAT && own > AI_COVER_NEAR) c->isolated++;
+		if (n[i].state == 4) c->inMelee++;
+	}
+	return TRUE;
+}
+
 static void battle_second(const fig_snap *n)
 {
 	int alive[3] = { 0 }, moving = 0, waiting = 0, idle = 0, chasing = 0, melee = 0;
@@ -9311,6 +9357,118 @@ static void battle_second(const fig_snap *n)
 	g_bcpuLoop = g_bcpuBfs = 0;
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
+	if (!g_aiStatsDone) {
+		// each unit type's fighting values once a battle (set by the type's handler every step): melee hit
+		// (+0x19c, from the type and how many men are left), first-strike (+0x198, once per fight), strike
+		// interval (+0x18b), armour against missiles (+0x172), missile power (+0x19e) and range
+		g_aiStatsDone = TRUE;
+		for (int t = 0; t < 7; t++)
+			for (int i = 1; i < 0x51; i++)
+				if (n[i].live && n[i].type == t) {
+					BYTE *f = FIG(i);
+					blog("type %d (%s): men %d, melee hit %d, first strike %d, strike every %d, recovery class %d, armour %d, missile power %d, range %d",
+						t, f[0x16a] ? "ranged" : "melee", n[i].men, FIG_S(i, 0x19c), FIG_S(i, 0x198), f[0x18b], f[0x18a], f[0x172],
+						FIG_S(i, 0x19e), FIG_S(i, 0x170) / 8);
+					break;
+				}
+	}
+	for (int side = 1; side < 3; side++) {
+		ai_cover c;
+		if (!ai_archer_cover(n, side, &c)) continue;
+		blog("cover side %d (computer): archers %d, own melee within %d cells of each: nearest avg %d max %d | isolated %d (enemy melee within %d, no own melee within %d) | archers in melee %d | men melee %d ranged %d, enemy melee %d ranged %d",
+			side, c.archers, AI_COVER_NEAR, c.archers ? c.ownSum / c.archers : -1, c.ownMax, c.isolated, AI_COVER_THREAT,
+			AI_COVER_NEAR, c.inMelee, c.menMelee, c.menRanged, c.enemyMenMelee, c.enemyMenRanged);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Computer battle AI log (part of [Debug] BattleLog, no gameplay change). The group tick
+// FUN_00489401 runs every computer group's AI handler (table 0x004d91b8 by the group's kind,
+// +0x08: 1 bows and crossbows, 2 peasants and pikes, 3 maces and swords, 4 knights); each one thinks
+// once its timer (+0x1c) passes 199 and no member is in melee. The tick is wrapped: every group's AI
+// fields and the side-wide values are taken before and after, and each think is written with what it
+// did (charge, a new destination, a 2-cell step), plus every change of the strength percentage and the
+// shared aggression. The strength percentage (computer x 100 / human - 100, re-rolled by -10..+21 in
+// single player every 100 steps) above the threshold (5) runs the attack rules, else the defence rules.
+#define GRP_B(g, o) (*(BYTE *)(0x00566520 + (g) * 0x34 + (o)))
+#define GRP_S(g, o) (*(short *)(0x00566520 + (g) * 0x34 + (o)))
+typedef struct { BYTE side, human, count, kind, attacked, melee, stepped, hunting, presses; short attacker, phase, think, cx, cy, dx, dy; } ai_snap;
+typedef struct { int ratio, threshold, aggression, hits, limit, archerStrength, strength, holdBack; } ai_glob;
+typedef void (__cdecl *grp_tick_t)(void);
+static grp_tick_t o_group_tick;
+static BOOL g_aiListed;
+
+static void ai_take(int g, ai_snap *s)
+{
+	s->side = GRP_B(g, 0x00); s->human = GRP_B(g, 0x01); s->count = GRP_B(g, 0x02); s->kind = GRP_B(g, 0x08);
+	s->attacked = GRP_B(g, 0x0c); s->melee = GRP_B(g, 0x0d); s->stepped = GRP_B(g, 0x10); s->hunting = GRP_B(g, 0x2a);
+	s->presses = GRP_B(g, 0x2b); s->attacker = GRP_S(g, 0x0a); s->phase = GRP_S(g, 0x1a); s->think = GRP_S(g, 0x1c);
+	s->cx = GRP_S(g, 0x1e); s->cy = GRP_S(g, 0x20); s->dx = GRP_S(g, 0x22); s->dy = GRP_S(g, 0x24);
+}
+
+static void ai_glob_take(ai_glob *a)
+{
+	a->ratio = *(int *)0x004eea98; a->threshold = *(int *)0x0057c8b4; a->aggression = *(int *)0x00553070;
+	a->hits = *(int *)0x00553f28;
+	int county = *(int *)0x005653f8;
+	a->limit = county >= 0 && county < 0x30 ? *(BYTE *)(0x00553080 + county) : -1;
+	a->archerStrength = *(int *)0x0056d6ac; a->strength = *(int *)0x00553f74; a->holdBack = *(int *)0x0056d89c;
+}
+
+static const char *ai_kind_name(int k)
+{
+	switch (k) { case 1: return "archers"; case 2: return "peasants/pikes"; case 3: return "maces/swords"; case 4: return "knights"; }
+	return "siege";
+}
+
+// What one group's think did, from its fields before and after: the text goes into out (empty when
+// the group didn't think this tick).
+static void ai_think_text(int g, const ai_snap *b, const ai_snap *a, const ai_glob *gb, const ai_glob *ga, char *out, size_t n)
+{
+	out[0] = 0;
+	if (!a->side || a->human || a->think != 0 || b->think == 0) return;   // thinking resets the timer to 0
+	char did[160] = "", *p = did;
+	if (!b->hunting && a->hunting) p += snprintf(p, did + sizeof did - p, " charge");
+	if (b->hunting && !a->hunting) p += snprintf(p, did + sizeof did - p, " charge ends");
+	if (a->dx != b->dx || a->dy != b->dy) {
+		int d = abs(a->dx - a->cx), dy = abs(a->dy - a->cy);
+		p += snprintf(p, did + sizeof did - p, " go %d,%d -> %d,%d (%d cells from its centre)", b->dx, b->dy, a->dx, a->dy, d > dy ? d : dy);
+	}
+	if (a->presses != b->presses) p += snprintf(p, did + sizeof did - p, " step 2 away from group %d", a->attacker);
+	if (!did[0]) snprintf(did, sizeof did, " nothing");
+	snprintf(out, n, "ai g%d side %d %s (%d) turn %d %s | strength %+d aggression %d hits %d/%d | %s by g%d | did:%s",
+		g, a->side, ai_kind_name(a->kind), a->count, b->phase, gb->ratio > gb->threshold ? "ATTACK" : "DEFEND", gb->ratio,
+		ga->aggression, ga->hits, ga->limit, a->attacked ? "under attack" : "not attacked", a->attacker, did);
+}
+
+static void __cdecl h_group_tick(void)
+{
+	if (!g_blog) { o_group_tick(); return; }
+	static ai_snap b[81], a[81];
+	ai_glob gb, ga;
+	for (int g = 1; g < 0x51; g++) ai_take(g, &b[g]);
+	ai_glob_take(&gb);
+	o_group_tick();
+	for (int g = 1; g < 0x51; g++) ai_take(g, &a[g]);
+	ai_glob_take(&ga);
+	if (!g_aiListed) {
+		g_aiListed = TRUE;
+		blog("ai groups at the start (strength %+d, threshold %d: %s; county limit %d, archer strength %d of %d):", ga.ratio,
+			ga.threshold, ga.ratio > ga.threshold ? "attack" : "defend", ga.limit, ga.archerStrength, ga.strength);
+		for (int g = 1; g < 0x51; g++)
+			if (a[g].side) blog("  g%d side %d %s %s, %d units at %d,%d", g, a[g].side, a[g].human ? "human" : "computer",
+				ai_kind_name(a[g].kind), a[g].count, a[g].cx, a[g].cy);
+	}
+	if (ga.ratio != gb.ratio && (ga.ratio > ga.threshold) != (gb.ratio > gb.threshold))
+		blog("ai strength %+d -> %+d: now %s", gb.ratio, ga.ratio, ga.ratio > ga.threshold ? "ATTACK" : "DEFEND");
+	if (ga.aggression != gb.aggression || ga.hits != gb.hits || ga.holdBack != gb.holdBack)
+		blog("ai aggression %d -> %d, hits %d -> %d (limit %d), archer strength %d of %d%s", gb.aggression, ga.aggression, gb.hits,
+			ga.hits, ga.limit, ga.archerStrength, ga.strength, ga.holdBack != gb.holdBack ? (ga.holdBack ? ", holding back" : ", hold-back over") : "");
+	for (int g = 1; g < 0x51; g++) {
+		char line[400];
+		ai_think_text(g, &b[g], &a[g], &gb, &ga, line, sizeof line);
+		if (line[0]) blog("%s", line);
+	}
 }
 
 typedef int (__cdecl *step_check_t)(int);
@@ -10321,6 +10479,7 @@ static BOOL engage_chase(int me)
 static void battle_reset(void)
 {
 	g_btick = 0;
+	g_aiListed = FALSE; g_aiStatsDone = FALSE;
 	// F10, Battles: the fixes switched between battles only, never in the middle of one
 	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
 	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];
@@ -10791,6 +10950,8 @@ static void install_game_fixes(void)
 		if (figLoop) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
 		static const BYTE kStep[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };   // push ebp; mov ebp,esp; sub esp,8
 		if (figLoop && g_battleLog >= 2) hook_code((BYTE *)0x00490616, kStep, sizeof kStep, h_step_check, &o_step_check);
+		static const BYTE kGroupTick[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
+		if (figLoop) hook_code((BYTE *)0x00489401, kGroupTick, sizeof kGroupTick, h_group_tick, &o_group_tick);
 		logf_("battle log %s (level %d)", figLoop ? "on" : "failed", g_battleLog);
 	}
 	if (g_fixJitter) {

@@ -81,6 +81,7 @@ static void t_reset(void)
 
 #include "t_core.c"
 #include "t_battle.c"
+#include "t_ai.c"
 #include "t_campaign.c"
 #include "t_settings.c"
 #include "t_input.c"

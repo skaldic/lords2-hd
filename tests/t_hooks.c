@@ -60,11 +60,11 @@ static int t_count_lines(const char *log, const char *what)   // prints them
 }
 
 /* The patch's start-up on the copied exe with Wide=wide; the log lines it wrote. NULL: no exe (skipped). */
-static char *t_install(int wide, BOOL *wideOn)
+static char *t_install_with(int wide, const char *debug, BOOL *wideOn)
 {
 	if (!t_map_game()) return NULL;
 	char ini[256];
-	snprintf(ini, sizeof ini, "[Display]\r\nWide=%d\r\nBattleZoom=1\r\n[Debug]\r\nMpLogs=0\r\nRemote=0\r\n", wide);
+	snprintf(ini, sizeof ini, "[Display]\r\nWide=%d\r\nBattleZoom=1\r\n[Debug]\r\nMpLogs=0\r\nRemote=0\r\n%s", wide, debug);
 	t_write("lords2hd.ini", ini, strlen(ini));
 	read_settings();
 	for (int i = 0; i < (int)(sizeof t_tramps / sizeof *t_tramps); i++)
@@ -76,6 +76,20 @@ static char *t_install(int wide, BOOL *wideOn)
 	install();
 	*wideOn = g_off > 0;
 	return t_log_since(at);
+}
+static char *t_install(int wide, BOOL *wideOn) { return t_install_with(wide, "", wideOn); }
+
+TEST(hooks_battle_log_goes_in)   // [Debug] BattleLog=1: its own hooks too, the computer AI's group tick among them
+{
+	BOOL on;
+	char *log = t_install_with(0, "BattleLog=1\r\n", &on);
+	if (!log) return;
+	CHECK_EQ(t_count_lines(log, "not hooked"), 0);
+	CHECK_EQ(t_count_lines(log, "battle log on"), 1);
+	CHECK(o_group_tick != NULL);
+	CHECK(o_path_search != NULL);
+	free(log);
+	t_unmap_game();
 }
 
 TEST(hooks_all_go_in_4_3)
