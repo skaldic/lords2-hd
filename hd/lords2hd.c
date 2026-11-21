@@ -133,6 +133,7 @@ static BOOL g_showScreens;     // (the F8 panel's HD art switch, defined with it
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
+static BOOL g_arrowsOn = TRUE; // [Display] ArrowKeys: the arrow keys scroll the map too (wasd_bit)
 static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
 static BOOL g_armyPanel; // [Display] ArmyPanel: the selected army's scroll (army_panel_keep)
 static BOOL g_resounded; // [Display] Resounded: the restored voices (Lords2Resounded) instead of the game's (h_mmioOpenA)
@@ -145,6 +146,7 @@ static int g_apStyle, g_apSig;
 static void cycle_buttons_draw(int sx, int sw);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
+static int wasd_letter(WPARAM vk);
 static BOOL wasd_screen(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr), 2 FSR (fsr_easu, fsr_rcas)
 static int g_fsrFinal;
@@ -202,6 +204,7 @@ static void read_settings(void)
 	g_wasdOn = GetPrivateProfileIntA("Display", "WASD", 1, g_iniPath) != 0;
 	g_letters = GetPrivateProfileIntA("Display", "Letters", 1, g_iniPath) != 0;
 	g_cycleOn = GetPrivateProfileIntA("Display", "CycleKeys", 1, g_iniPath) != 0;
+	g_arrowsOn = GetPrivateProfileIntA("Display", "ArrowKeys", 1, g_iniPath) != 0;
 	g_armyPanel = GetPrivateProfileIntA("Display", "ArmyPanel", 1, g_iniPath) != 0;
 	g_resounded = GetPrivateProfileIntA("Display", "Resounded", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Renderer", "gpu", s, sizeof s, g_iniPath);
@@ -3780,17 +3783,17 @@ enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
 static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
 static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP,
-	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*)
+	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ARROWS, M_COUNT }; // (M_BF_*: in the order of BF_*)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
-	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 	{ M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_MINIPOP || i == M_BF_PATH || i == M_BF_GROUP || i == M_BF_ENGAGE; } // marked "new"
+static BOOL menu_new(int i) { return i == M_ARROWS; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3803,6 +3806,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_LIMIT: snprintf(v, n, "%s", g_frameLimit ? "120 a second" : "Off (as the original)"); break;
 	case M_TUTORIAL: snprintf(v, n, "%s", !*(int *)0x0053f24c ? "Off" : g_tutorialOnce ? "Once" : "Every time"); break; // Off: the game's own option (0x53f24c)
 	case M_WASD: snprintf(v, n, "%s", g_wasdOn ? "On" : "Off"); break;
+	case M_ARROWS: snprintf(v, n, "%s", g_arrowsOn ? "On" : "Off"); break;
 	case M_CYCLE: snprintf(v, n, "%s", g_cycleOn ? "On" : "Off"); break;
 	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
 	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
@@ -3826,7 +3830,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines",
-	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
+	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Arrow key scrolling" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3877,6 +3881,7 @@ static void resound_sample(void)
 		break;
 	case M_WASD: g_wasdOn = !g_wasdOn; ini_set("Display", "WASD", g_wasdOn); break;
 	case M_CYCLE: g_cycleOn = !g_cycleOn; ini_set("Display", "CycleKeys", g_cycleOn); break;
+	case M_ARROWS: g_arrowsOn = !g_arrowsOn; ini_set("Display", "ArrowKeys", g_arrowsOn); break;
 	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
 	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
 	case M_ARMY: g_armyPanel = !g_armyPanel; ini_set("Display", "ArmyPanel", g_armyPanel); break;
@@ -5216,10 +5221,16 @@ static BOOL window_screen(int screen)
 		screen == 11 || screen == 26; // diplomacy, and the letter it writes
 }
 // Called with the frame composed (g_frame8 / g_frame2x, sw columns from game x sx - g_off).
+// Closed back to the map (screen 0): the game's frame still holds the window until it redraws the map
+// there, and that frame showed it at its old place for a moment (a flash on a right-click close). For
+// half a second after, what still differs from the map is moved as before.
+static DWORD g_winLeftT;
 static void window_shift(int screen, int sx, int sw)
 {
 	InterlockedExchange(&g_winShift, 0);
-	if (!g_snapW || g_snapW != sw || !window_screen(screen)) return;
+	BOOL linger = screen == 0 && g_winLeftT && GetTickCount() - g_winLeftT < 500;
+	if (screen == 0 && g_winLeftT && !linger) { g_winLeftT = 0; g_snapW = 0; g_winLockS = 0; }
+	if (!g_snapW || g_snapW != sw || (!window_screen(screen) && !linger)) return;
 	int x0g = g_off - sx, x1g = x0g + PANEL_X; // frame columns of game x 0 and PANEL_X
 	if (x0g < 0 || x1g > sw) return;
 	static int colN[MAX_W], rowN[GAME_H];
@@ -5251,16 +5262,26 @@ static void window_shift(int screen, int sx, int sw)
 	s = min(s, bx0); // never past the left edge
 	if (s <= 2) return;
 	if (!g_winLockS) g_winLockS = s;
-	int w = bx1 - bx0, W2 = 2 * sw;
+	int W2 = 2 * sw;
 	static DWORD row[MAX_W * 2];
-	for (int y = by0; y < by1; y++)
+	for (int y = by0; y < by1; y++) {
+		// Each row moves only its own span of what differs from the map: a scroll wider than the window
+		// (the Town Center's "Field reclamation") made the box wider, and the plain map beside the window,
+		// above and below the scroll, was moved with it (a strip of map out of line, coming and going).
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		int rx0 = bx0, rx1 = bx1;
+		while (rx0 < rx1 && a[rx0] == b[rx0]) rx0++;
+		while (rx1 > rx0 && a[rx1 - 1] == b[rx1 - 1]) rx1--;
+		if (rx1 <= rx0) continue;
+		int w = rx1 - rx0;
 		for (int r = 0; r < 2; r++) {
 			DWORD *o = g_frame2x + (2 * y + r) * W2;
 			const DWORD *m = g_snap2x + (2 * y + r) * W2;
-			memcpy(row, o + 2 * bx0, w * 2 * sizeof(DWORD));             // the window
-			memcpy(o + 2 * bx0, m + 2 * bx0, w * 2 * sizeof(DWORD));     // the map where it was
-			memcpy(o + 2 * (bx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
+			memcpy(row, o + 2 * rx0, w * 2 * sizeof(DWORD));             // the window
+			memcpy(o + 2 * rx0, m + 2 * rx0, w * 2 * sizeof(DWORD));     // the map where it was
+			memcpy(o + 2 * (rx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
 		}
+	}
 	g_winX0 = bx0 - x0g; g_winX1 = bx1 - x0g; g_winY0 = by0; g_winY1 = by1;
 	InterlockedExchange(&g_winShift, s);
 }
@@ -5295,10 +5316,13 @@ static BOOL present(void)
 			memcpy(g_snap2x, g_frame2x, (size_t)g_showW * 2 * GAME_H * 2 * sizeof(DWORD));
 			g_snapW = g_showW;
 			g_winLockS = 0;   // a new window: its shift is worked out again
+			g_winLeftT = 0;
 			// better: the map as the game last redrew it (after any scroll the click caused)
 			if (g_snapPendW == g_showW) InterlockedExchange(&g_snapPending, 1);
 		}
-		else if (screen == 0 || !county_map_on()) g_snapW = 0, g_winLockS = 0;
+		// back to the map from a moved window: it keeps being moved while the frame still holds it (window_shift)
+		else if (screen == 0 && window_screen(lastScreen) && g_snapW && g_winShift) g_winLeftT = GetTickCount();
+		else if (screen == 0 || !county_map_on()) g_snapW = 0, g_winLockS = 0, g_winLeftT = 0;
 		lastScreen = screen;
 		lastMode = mode;
 	}
@@ -6478,12 +6502,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// The settings panel: F10 opens it; while open, keys and the mouse are its own.
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && menu_key((int)wp)) return 0;
 	if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && wp == VK_F10) return 0; // not Windows' menu key
-	// WASD: held keys scroll (wasd_edges); their letters are not typed on the map or battlefield
+	// WASD and the arrow keys: held keys scroll (wasd_edges); on the map or battlefield the game doesn't
+	// get them (the letters aren't typed)
 	if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && wasd_bit(wp)) {
 		if (msg == WM_KEYDOWN) InterlockedOr(&g_wasd, wasd_bit(wp)); else InterlockedAnd(&g_wasd, ~wasd_bit(wp));
 		if (wasd_screen()) return 0;
 	}
-	if (msg == WM_CHAR && wasd_screen() && wasd_bit((WPARAM)toupper((int)wp))) return 0;
+	if (msg == WM_CHAR && wasd_screen() && wasd_letter((WPARAM)toupper((int)wp))) return 0;
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) InterlockedExchange(&g_wasd, 0);
 	if (msg == WM_KEYDOWN && (wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD) && cycle_key(wp == VK_OEM_PERIOD ? 1 : -1)) return 0;
 	if (msg == WM_CHAR && (wp == ',' || wp == '.') && (*(BYTE *)0x004eac50 == 0 || *(BYTE *)0x004eac50 == 16) && *(int *)0x0052af94 == 3 && g_cycleOn) return 0;
@@ -6553,8 +6578,15 @@ static HCURSOR (WINAPI *o_SetCursor)(HCURSOR);
 // is typed; the keys are tracked from the window's own key messages (and the test driver).
 static volatile LONG g_wasd;      // 1 left, 2 right, 4 up, 8 down
 static BOOL g_wasdOn = TRUE;
-static BOOL wasd_screen(void) { BYTE s = *(BYTE *)0x004eac50; return g_wasdOn && !g_menuOpen && *(int *)0x0052af94 == 3 && (s == 0 || s == 41); }
-static int wasd_bit(WPARAM vk) { return vk == 'A' ? 1 : vk == 'D' ? 2 : vk == 'W' ? 4 : vk == 'S' ? 8 : 0; }
+static BOOL wasd_screen(void) { BYTE s = *(BYTE *)0x004eac50; return (g_wasdOn || g_arrowsOn) && !g_menuOpen && *(int *)0x0052af94 == 3 && (s == 0 || s == 41); }
+// The letters ([Display] WASD) and the arrow keys ([Display] ArrowKeys; the game itself uses left and
+// right only to move the cursor in a text field, up and down not at all, and neither screen here has one).
+static int wasd_letter(WPARAM vk) { return !g_wasdOn ? 0 : vk == 'A' ? 1 : vk == 'D' ? 2 : vk == 'W' ? 4 : vk == 'S' ? 8 : 0; }
+static int wasd_bit(WPARAM vk)
+{
+	if (g_arrowsOn) { if (vk == VK_LEFT) return 1; if (vk == VK_RIGHT) return 2; if (vk == VK_UP) return 4; if (vk == VK_DOWN) return 8; }
+	return wasd_letter(vk);
+}
 static void wasd_edges(POINT *p, int right, int bottom)
 {
 	int k = g_wasd;
