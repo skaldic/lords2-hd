@@ -45,6 +45,29 @@ minimap crash on freed battle buffers) before a release, with tests that run in 
   - Without a game exe given (`-GameExe` or `L2HD_GAME_EXE`) these 4 tests say so and pass.
   - The only test-only change to how the patch builds: in the test build, `GetModuleHandleA(NULL)` gives the copied
     exe while it is mapped.
+- **Input tests from the hotfix work:** the 1.5.1/1.5.2 session added `t_input.c` (818dea9, 6 tests, 91 in all, about
+  7 s). They cover:
+  - the scroll keys (WASD and the new ArrowKeys)
+  - A scrolling left in battles
+  - `pace_copy_seq` numbering copies with Timing=0
+  - `battle_half_drawn` holding only while a battle opens
+  - `window_shift`
+- **Phase 5 is done:** the slow checks, run with `run.ps1 -Integration <copy of the game>` (about 30 minutes).
+  - `tests\integration.ps1` plays four seeded custom battles hidden and muted in a copy of the game: Three Bridges,
+    the default field, a siege, and Squigglewood with a march round the forest. It refuses your own game folder and
+    puts the copy's ddraw.dll and ini back afterwards. Per battle it checks:
+    - no crash
+    - the same hash every second when played twice (determinism, which multiplayer needs)
+    - with `-RefDll`, the same hashes as that build
+  - **Result on 2026-11-21:** v1.6.0 (with hotfixes 1.5.1 and 1.5.2) against the 1.5.0 release DLL: all four battles
+    the same twice and the same as 1.5.0. So nothing done since 1.5.0 changed how battles play.
+  - A test lesson: an order sent a few seconds into a battle landed one step apart from run to run (179 against 180) and
+    the battle went another way. Orders now go in while the battle is still paused at its start.
+  - `tests\mp_selftest.ps1` builds the multiplayer layer and its own self-test natively with llvm-mingw (no Docker or
+    Wine) and runs it on 127.0.0.1. All 34 cases pass (v11).
+  - **Third finding, open (not shipped code):** `multiplayer\dplayx\test\selftest.c` writes report lines of 203 and
+    211 characters into a 160-byte buffer (lines 922 and 1122). It ran fine, but that is a stack overflow in the test
+    program. It is imported code, so it is left as it is for now; the build hides that one warning.
 - **Not tested:** the F10 labels' pixel width. It needs the game's own font.
 - **Not tested:** the packer's 4 GB check. Testing it would need a 4 GB file.
 - **Not tested:** `h_order` ending Mop-Up. It depends on the caller's return address in the game.

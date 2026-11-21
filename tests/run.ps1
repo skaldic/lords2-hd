@@ -4,8 +4,12 @@
 #   tests\run.ps1 -GameExe "D:\L2HD-test\Lords of the Realm II\Lords2.exe"
 #                                 also the hook tests on a copy of the game's exe (or set L2HD_GAME_EXE); it is
 #                                 only read, never changed, and nothing of it goes into the repository
+#   tests\run.ps1 -Integration "D:\L2HD-test\Lords of the Realm II" [-RefDll <last release's ddraw.dll>]
+#                                 then builds hd\ddraw.dll and plays seeded battles hidden in that copy of the game
+#                                 (tests\integration.ps1: no crash, the same every time, as the reference), and the
+#                                 multiplayer layer's self-test (tests\mp_selftest.ps1); about 30 minutes
 # Needs the same compiler as hd\build.ps1 (llvm-mingw, 32-bit). Output goes to tests\out (not in git).
-param([string]$Filter = "", [string]$GameExe = $env:L2HD_GAME_EXE)
+param([string]$Filter = "", [string]$GameExe = $env:L2HD_GAME_EXE, [string]$Integration, [string]$RefDll)
 $ErrorActionPreference = 'Stop'
 $c = & "$PSScriptRoot\..\tools\find_cc.ps1"
 $cc = $c.cc; $target = $c.args
@@ -39,4 +43,13 @@ $t0 = Get-Date
 & "$out\l2hd_tests.exe" $Filter
 $code = $LASTEXITCODE
 "tests: {0:N1} s, exit {1}" -f ((Get-Date) - $t0).TotalSeconds, $code
+if ($Integration -and $code -eq 0) {
+    & "$PSScriptRoot\..\hd\build.ps1"
+    $ia = @{ Game = $Integration }
+    if ($RefDll) { $ia.RefDll = $RefDll }
+    & "$PSScriptRoot\integration.ps1" @ia
+    $code = $LASTEXITCODE
+    & "$PSScriptRoot\mp_selftest.ps1"
+    $code += $LASTEXITCODE
+}
 exit $code
