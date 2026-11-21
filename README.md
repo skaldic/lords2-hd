@@ -190,6 +190,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Performance | FPS counter | Off, Simple, Detailed | Off | `FpsCounter` |
 | Quality of life | Tutorial scrolls | Off, Once, Every time | Once | `TutorialOnce` |
 | Quality of life | WASD scrolling | On, Off | On | `WASD` |
+| Quality of life | Arrow key scrolling | On, Off | On | `ArrowKeys` |
 | Quality of life | , and . cycle | On, Off | On | `CycleKeys` |
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |

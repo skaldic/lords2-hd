@@ -3,20 +3,8 @@
 # folder of the external tools folder (tools\tools_dir.ps1).
 param([switch]$Install)
 
-$cc = (Get-Command i686-w64-mingw32-clang.exe -ErrorAction SilentlyContinue).Source
-if (-not $cc) {
-    $tools = & "$PSScriptRoot\..\tools\tools_dir.ps1"
-    $cc = Get-ChildItem -Path $tools -Filter i686-w64-mingw32-clang.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue |
-        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-}
-$target = @()
-if (-not $cc) { # llvm-mingw's per-target wrapper missing: its clang itself, told the target
-    $tools = & "$PSScriptRoot\..\tools\tools_dir.ps1"
-    $cc = Get-ChildItem -Path $tools -Filter "clang-*.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^clang-\d+\.exe$' } |
-        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-    $target = @('--target=i686-w64-mingw32', '-fuse-ld=lld')
-}
-if (-not $cc) { throw "i686-w64-mingw32-clang.exe not found: put llvm-mingw on PATH or in the tools folder (tools\tools_dir.ps1)" }
+$c = & "$PSScriptRoot\..\tools\find_cc.ps1"   # (shared with tests\run.ps1)
+$cc = $c.cc; $target = $c.args
 $out = "$PSScriptRoot\ddraw.dll"
 
 & $cc @target -O2 -Wall -shared -static -o $out "$PSScriptRoot\lords2hd.c" "$PSScriptRoot\lords2hd.def" -luser32 -lgdi32 -lwinmm -lole32 -lmfuuid -lwindowscodecs -luuid

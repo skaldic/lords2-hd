@@ -133,6 +133,7 @@ static BOOL g_showScreens;     // (the F8 panel's HD art switch, defined with it
 static BOOL g_tutorialOnce = TRUE; // [Display] TutorialOnce: each tutorial scroll once (h_tutorial)
 static int g_frameLimit; // [Display] FrameLimit: game frames a second (0 = no limit)
 static BOOL g_wasdOn;    // [Display] WASD: the keys scroll the map (wasd_edges)
+static BOOL g_arrowsOn = TRUE; // [Display] ArrowKeys: the arrow keys scroll the map too (wasd_bit)
 static BOOL g_letters;   // [Display] Letters: fresh diplomatic letters (h_edit_text)
 static BOOL g_armyPanel; // [Display] ArmyPanel: the selected army's scroll (army_panel_keep)
 static BOOL g_resounded; // [Display] Resounded: the restored voices (Lords2Resounded) instead of the game's (h_mmioOpenA)
@@ -145,7 +146,10 @@ static int g_apStyle, g_apSig;
 static void cycle_buttons_draw(int sx, int sw);
 static volatile LONG g_wasd;
 static int wasd_bit(WPARAM vk);
+static int wasd_letter(WPARAM vk);
 static BOOL wasd_screen(void);
+static BOOL g_battleLeftEdge;
+static int battle_left_x(void);
 static int g_upscaleCR;  // [Display] Upscale: 1 Catmull-Rom, 0 bilinear (resize_cr), 2 FSR (fsr_easu, fsr_rcas)
 static int g_fsrFinal;
 static float g_rcasSharp;
@@ -202,12 +206,13 @@ static void read_settings(void)
 	g_wasdOn = GetPrivateProfileIntA("Display", "WASD", 1, g_iniPath) != 0;
 	g_letters = GetPrivateProfileIntA("Display", "Letters", 1, g_iniPath) != 0;
 	g_cycleOn = GetPrivateProfileIntA("Display", "CycleKeys", 1, g_iniPath) != 0;
+	g_arrowsOn = GetPrivateProfileIntA("Display", "ArrowKeys", 1, g_iniPath) != 0;
 	g_armyPanel = GetPrivateProfileIntA("Display", "ArmyPanel", 1, g_iniPath) != 0;
 	g_resounded = GetPrivateProfileIntA("Display", "Resounded", 1, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "Renderer", "gpu", s, sizeof s, g_iniPath);
 	g_gpuWanted = g_gpuWantedSet = lstrcmpiA(s, "cpu") != 0;
 	g_repeatOn = GetPrivateProfileIntA("Display", "RepeatFrames", 1, g_iniPath) != 0;
-	GetPrivateProfileStringA("Display", "Upscale", "catmullrom", s, sizeof s, g_iniPath);
+	GetPrivateProfileStringA("Display", "Upscale", "fsr", s, sizeof s, g_iniPath);   // (FSR the default, as the shipped ini)
 	g_upscaleCR = !lstrcmpiA(s, "bilinear") ? 0 : !lstrcmpiA(s, "fsr") ? 2 : 1;
 	g_fsrFinal = GetPrivateProfileIntA("Display", "FsrFinal", 0, g_iniPath) != 0;
 	GetPrivateProfileStringA("Display", "FsrSharpness", "0.2", s, sizeof s, g_iniPath);
@@ -272,8 +277,9 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 // buffers the patch reads on its own, which the game may have freed (the battle minimap's, after a battle).
 static BOOL mem_readable(const void *p, size_t n)
 {
-	const BYTE *a = (const BYTE *)p, *end = a + n;
-	if (!p || end < a) return FALSE;
+	// (the wrap check on integers: as pointers, "a + n < a" can't happen in C and the compiler drops it)
+	if (!p || n > (uintptr_t)-1 - (uintptr_t)p) return FALSE;
+	const BYTE *a = (const BYTE *)p, *end = (const BYTE *)((uintptr_t)p + n);
 	while (a < end) {
 		MEMORY_BASIC_INFORMATION mi;
 		if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
@@ -448,7 +454,7 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 	return ((rb >> 4) & 0xff00ff) | ((g >> 4) & 0x00ff00);
 }
 
-// ---- Catmull-Rom resampling ([Display] Upscale=catmullrom, the default) --------------------------
+// ---- Catmull-Rom resampling ([Display] Upscale=catmullrom; FSR's final stretch too) ---------------
 // A sharper alternative to bilinear doubling and GDI's stretch, for the 2x step (1x frame -> 2x frame
 // the HD art is stamped into) and the final step (2x frame -> the window). Separable: a horizontal
 // pass into 16-bit rows (value * 64), then a vertical pass in SSE2 (pmulhw with Q10 weights gives the
@@ -457,7 +463,7 @@ static inline DWORD mix4(DWORD a, DWORD b, DWORD c, DWORD d)
 #include <emmintrin.h>
 #define CR_MAXTAPS 12
 typedef struct { int n, taps; int *idx; short *w; } cr_axis; // per output index: taps source indexes and weights
-static int g_upscaleCR = 1;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1), 2 FSR (Catmull-Rom's final stretch, then RCAS)
+static int g_upscaleCR = 2;                   // 1 Catmull-Rom, 0 bilinear / GDI (as up to 1.1.1), 2 FSR (Catmull-Rom's final stretch, then RCAS)
 static double cr_k(double t) { t = fabs(t); return t < 1 ? 1.5 * t * t * t - 2.5 * t * t + 1 : t < 2 ? -0.5 * t * t * t + 2.5 * t * t - 4 * t + 2 : 0; }
 // weights for src length sn -> dst length dn, fixed point "one" (256 or 1024)
 static BOOL cr_axis_make(cr_axis *a, int sn, int dn, int one)
@@ -883,6 +889,11 @@ static void pace_change(void)
 	g_paceChg[i].t = perf_now(); g_paceChg[i].seq = s;
 	InterlockedIncrement(&g_paceChgN);
 }
+// The number a frame copy carries to the screen surface (g_pacePrimarySeq), which the zoomed battle's
+// presenter compares to skip a read with nothing new. Changes are only counted with Timing=1 (pace_change
+// hashes the frame); without it every copy is a new one. (1.5.0 counted them only with Timing=1: the number
+// never moved, the presenter never read the screen again and zoomed battles stayed on their first picture.)
+static LONG pace_copy_seq(void) { return g_timing ? g_paceChangeSeq : InterlockedIncrement(&g_paceChangeSeq); }
 // Timing=1: both threads' events, for the late-refresh trace: T turn given, H changed frame finished,
 // C copied, K skipped (composing), N no turn, P copied from the wait
 static struct { double t; char k; LONG seq; } g_paceEv[PACE_RING];
@@ -3779,18 +3790,18 @@ static BOOL g_wantWideSet, g_battleZoomSet;
 enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
 static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
 static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP,
-	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*)
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS,
+	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*, and last)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
-	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 	{ M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_MINIPOP || i == M_BF_PATH || i == M_BF_GROUP || i == M_BF_ENGAGE; } // marked "new"
+static BOOL menu_new(int i) { return i == M_ARROWS; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3803,6 +3814,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_LIMIT: snprintf(v, n, "%s", g_frameLimit ? "120 a second" : "Off (as the original)"); break;
 	case M_TUTORIAL: snprintf(v, n, "%s", !*(int *)0x0053f24c ? "Off" : g_tutorialOnce ? "Once" : "Every time"); break; // Off: the game's own option (0x53f24c)
 	case M_WASD: snprintf(v, n, "%s", g_wasdOn ? "On" : "Off"); break;
+	case M_ARROWS: snprintf(v, n, "%s", g_arrowsOn ? "On" : "Off"); break;
 	case M_CYCLE: snprintf(v, n, "%s", g_cycleOn ? "On" : "Off"); break;
 	case M_WIDE: snprintf(v, n, "%s", g_wantWideSet ? "On" : "Off"); *restart = g_wantWideSet != g_wantWide; break;
 	case M_ZOOM: snprintf(v, n, "%s", g_battleZoomSet ? "On" : "Off"); *restart = g_battleZoomSet != g_battleZoom; break;
@@ -3825,7 +3837,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines",
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
 	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
 static void ini_set(const char *sec, const char *key, int v)
 {
@@ -3877,6 +3889,7 @@ static void resound_sample(void)
 		break;
 	case M_WASD: g_wasdOn = !g_wasdOn; ini_set("Display", "WASD", g_wasdOn); break;
 	case M_CYCLE: g_cycleOn = !g_cycleOn; ini_set("Display", "CycleKeys", g_cycleOn); break;
+	case M_ARROWS: g_arrowsOn = !g_arrowsOn; ini_set("Display", "ArrowKeys", g_arrowsOn); break;
 	case M_WIDE: g_wantWideSet = !g_wantWideSet; ini_set("Display", "Wide", g_wantWideSet); break;
 	case M_ZOOM: g_battleZoomSet = !g_battleZoomSet; ini_set("Display", "BattleZoom", g_battleZoomSet); break;
 	case M_ARMY: g_armyPanel = !g_armyPanel; ini_set("Display", "ArmyPanel", g_armyPanel); break;
@@ -5216,10 +5229,16 @@ static BOOL window_screen(int screen)
 		screen == 11 || screen == 26; // diplomacy, and the letter it writes
 }
 // Called with the frame composed (g_frame8 / g_frame2x, sw columns from game x sx - g_off).
+// Closed back to the map (screen 0): the game's frame still holds the window until it redraws the map
+// there, and that frame showed it at its old place for a moment (a flash on a right-click close). For
+// half a second after, what still differs from the map is moved as before.
+static DWORD g_winLeftT;
 static void window_shift(int screen, int sx, int sw)
 {
 	InterlockedExchange(&g_winShift, 0);
-	if (!g_snapW || g_snapW != sw || !window_screen(screen)) return;
+	BOOL linger = screen == 0 && g_winLeftT && GetTickCount() - g_winLeftT < 500;
+	if (screen == 0 && g_winLeftT && !linger) { g_winLeftT = 0; g_snapW = 0; g_winLockS = 0; }
+	if (!g_snapW || g_snapW != sw || (!window_screen(screen) && !linger)) return;
 	int x0g = g_off - sx, x1g = x0g + PANEL_X; // frame columns of game x 0 and PANEL_X
 	if (x0g < 0 || x1g > sw) return;
 	static int colN[MAX_W], rowN[GAME_H];
@@ -5231,6 +5250,14 @@ static void window_shift(int screen, int sx, int sw)
 	int bx0 = -1, bx1 = -1, by0 = -1, by1 = -1;
 	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
 	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
+	static int lb0, lb1, lt0, lt1;   // the box last moved (frame columns, rows)
+	if (linger) {
+		// After closing, only while what differs is still the window (the same box as last moved): once the
+		// game has redrawn the map there, the differences are waving flags and moving units, and moving
+		// those cut sprites in pieces.
+		BOOL same = bx0 >= 0 && by0 >= 0 && abs(bx0 - lb0) <= 4 && abs(bx1 - lb1) <= 4 && abs(by0 - lt0) <= 4 && abs(by1 - lt1) <= 4;
+		if (!same) { g_winLeftT = 0; g_snapW = 0; g_winLockS = 0; return; }
+	}
 	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
 	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
 	// the kept picture is of somewhere else - then the window stays where the game put it.
@@ -5251,17 +5278,28 @@ static void window_shift(int screen, int sx, int sw)
 	s = min(s, bx0); // never past the left edge
 	if (s <= 2) return;
 	if (!g_winLockS) g_winLockS = s;
-	int w = bx1 - bx0, W2 = 2 * sw;
+	int W2 = 2 * sw;
 	static DWORD row[MAX_W * 2];
-	for (int y = by0; y < by1; y++)
+	for (int y = by0; y < by1; y++) {
+		// Each row moves only its own span of what differs from the map: a scroll wider than the window
+		// (the Town Center's "Field reclamation") made the box wider, and the plain map beside the window,
+		// above and below the scroll, was moved with it (a strip of map out of line, coming and going).
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		int rx0 = bx0, rx1 = bx1;
+		while (rx0 < rx1 && a[rx0] == b[rx0]) rx0++;
+		while (rx1 > rx0 && a[rx1 - 1] == b[rx1 - 1]) rx1--;
+		if (rx1 <= rx0) continue;
+		int w = rx1 - rx0;
 		for (int r = 0; r < 2; r++) {
 			DWORD *o = g_frame2x + (2 * y + r) * W2;
 			const DWORD *m = g_snap2x + (2 * y + r) * W2;
-			memcpy(row, o + 2 * bx0, w * 2 * sizeof(DWORD));             // the window
-			memcpy(o + 2 * bx0, m + 2 * bx0, w * 2 * sizeof(DWORD));     // the map where it was
-			memcpy(o + 2 * (bx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
+			memcpy(row, o + 2 * rx0, w * 2 * sizeof(DWORD));             // the window
+			memcpy(o + 2 * rx0, m + 2 * rx0, w * 2 * sizeof(DWORD));     // the map where it was
+			memcpy(o + 2 * (rx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
 		}
+	}
 	g_winX0 = bx0 - x0g; g_winX1 = bx1 - x0g; g_winY0 = by0; g_winY1 = by1;
+	lb0 = bx0; lb1 = bx1; lt0 = by0; lt1 = by1;
 	InterlockedExchange(&g_winShift, s);
 }
 // A click on the picture at game x, y: over the moved window it is the window's own place; over
@@ -5295,10 +5333,13 @@ static BOOL present(void)
 			memcpy(g_snap2x, g_frame2x, (size_t)g_showW * 2 * GAME_H * 2 * sizeof(DWORD));
 			g_snapW = g_showW;
 			g_winLockS = 0;   // a new window: its shift is worked out again
+			g_winLeftT = 0;
 			// better: the map as the game last redrew it (after any scroll the click caused)
 			if (g_snapPendW == g_showW) InterlockedExchange(&g_snapPending, 1);
 		}
-		else if (screen == 0 || !county_map_on()) g_snapW = 0, g_winLockS = 0;
+		// back to the map from a moved window: it keeps being moved while the frame still holds it (window_shift)
+		else if (screen == 0 && window_screen(lastScreen) && g_snapW && g_winShift) g_winLeftT = GetTickCount();
+		else if (screen == 0 || !county_map_on()) g_snapW = 0, g_winLockS = 0, g_winLeftT = 0;
 		lastScreen = screen;
 		lastMode = mode;
 	}
@@ -6478,12 +6519,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// The settings panel: F10 opens it; while open, keys and the mouse are its own.
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && menu_key((int)wp)) return 0;
 	if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && wp == VK_F10) return 0; // not Windows' menu key
-	// WASD: held keys scroll (wasd_edges); their letters are not typed on the map or battlefield
+	// WASD and the arrow keys: held keys scroll (wasd_edges); on the map or battlefield the game doesn't
+	// get them (the letters aren't typed)
 	if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && wasd_bit(wp)) {
 		if (msg == WM_KEYDOWN) InterlockedOr(&g_wasd, wasd_bit(wp)); else InterlockedAnd(&g_wasd, ~wasd_bit(wp));
 		if (wasd_screen()) return 0;
 	}
-	if (msg == WM_CHAR && wasd_screen() && wasd_bit((WPARAM)toupper((int)wp))) return 0;
+	if (msg == WM_CHAR && wasd_screen() && wasd_letter((WPARAM)toupper((int)wp))) return 0;
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp)) InterlockedExchange(&g_wasd, 0);
 	if (msg == WM_KEYDOWN && (wp == VK_OEM_COMMA || wp == VK_OEM_PERIOD) && cycle_key(wp == VK_OEM_PERIOD ? 1 : -1)) return 0;
 	if (msg == WM_CHAR && (wp == ',' || wp == '.') && (*(BYTE *)0x004eac50 == 0 || *(BYTE *)0x004eac50 == 16) && *(int *)0x0052af94 == 3 && g_cycleOn) return 0;
@@ -6553,13 +6595,24 @@ static HCURSOR (WINAPI *o_SetCursor)(HCURSOR);
 // is typed; the keys are tracked from the window's own key messages (and the test driver).
 static volatile LONG g_wasd;      // 1 left, 2 right, 4 up, 8 down
 static BOOL g_wasdOn = TRUE;
-static BOOL wasd_screen(void) { BYTE s = *(BYTE *)0x004eac50; return g_wasdOn && !g_menuOpen && *(int *)0x0052af94 == 3 && (s == 0 || s == 41); }
-static int wasd_bit(WPARAM vk) { return vk == 'A' ? 1 : vk == 'D' ? 2 : vk == 'W' ? 4 : vk == 'S' ? 8 : 0; }
+static BOOL wasd_screen(void) { BYTE s = *(BYTE *)0x004eac50; return (g_wasdOn || g_arrowsOn) && !g_menuOpen && *(int *)0x0052af94 == 3 && (s == 0 || s == 41); }
+// The letters ([Display] WASD) and the arrow keys ([Display] ArrowKeys; the game itself uses left and
+// right only to move the cursor in a text field, up and down not at all, and neither screen here has one).
+static int wasd_letter(WPARAM vk) { return !g_wasdOn ? 0 : vk == 'A' ? 1 : vk == 'D' ? 2 : vk == 'W' ? 4 : vk == 'S' ? 8 : 0; }
+static int wasd_bit(WPARAM vk)
+{
+	if (g_arrowsOn) { if (vk == VK_LEFT) return 1; if (vk == VK_RIGHT) return 2; if (vk == VK_UP) return 4; if (vk == VK_DOWN) return 8; }
+	return wasd_letter(vk);
+}
 static void wasd_edges(POINT *p, int right, int bottom)
 {
 	int k = g_wasd;
 	if (!k || !wasd_screen()) return;
-	if (k & 1) p->x = 0; else if (k & 2) p->x = right;
+	// Left: in a battle the field starts left of the game's x = 0 and its edge scroll is told about the
+	// left edge separately (h_edge_scroll); x = 0 alone is the middle of the field there, and A (or the
+	// left arrow) didn't scroll a battle left.
+	if (k & 1) { int lx = battle_left_x(); p->x = lx < 1 ? lx : 0; g_battleLeftEdge = TRUE; }
+	else if (k & 2) p->x = right;
 	if (k & 4) p->y = 0; else if (k & 8) p->y = bottom;
 }
 // , and . cycle through the player's counties and then armies on the county map, centring the
@@ -6633,13 +6686,16 @@ static BOOL cycle_key(int dir)
 #define AP_Y (GAME_H - 8 - AP_H) // on the map's bottom edge: the rows under it are not the map's
 static int panel_army(void);
 static int player_armies(void);
-static const RECT kCycleBtn[2] = { { 487, 162, 503, 180 }, { 615, 162, 631, 180 } }; // game coords: < and >
+// game coords: < and >, at the name plate's outer edges (its parchment is about x 480..637): long county
+// names ("Gloucestershire") reach almost from edge to edge, and bigger arrows further in covered their letters
+static const RECT kCycleBtn[2] = { { 483, 164, 495, 179 }, { 623, 164, 635, 179 } };
 static BOOL cycle_btn_rect(int b, RECT *r)
 {
 	if (!g_cycleOn || g_menuOpen || *(int *)0x0052af94 != 3 || *(int *)0x0057c8fc != 0 || *(int *)0x0057cb18 == 2) return FALSE;
 	BYTE s = *(BYTE *)0x004eac50;
 	if (s == 16) {
 		if (!panel_army() || player_armies() < 2) return FALSE; // one army: nothing to go to
+		// (bigger than the name plate's: the men count is short, so they fit with room to spare)
 		SetRect(r, b ? AP_X + AP_W - 24 : AP_X + 8, AP_Y + AP_H - 40, b ? AP_X + AP_W - 8 : AP_X + 24, AP_Y + AP_H - 22);
 		return TRUE;
 	}
@@ -6718,7 +6774,6 @@ static void cycle_buttons_draw(int sx, int sw)
 // to x = 1 and units there couldn't be clicked. In a battle the real position now goes through, down to
 // the view's left edge (DAT_004e6558), and the edge scroll (FUN_00432221, the only reader of the raw
 // x at DAT_004e6594) is told about the left edge separately (g_battleLeftEdge).
-static BOOL g_battleLeftEdge;
 static int battle_left_x(void)
 {
 	return g_off && IN_BATTLE_NOW() && *(int *)0x0052af94 == 3 ? min(1, *(int *)0x004e6558) : 1;
@@ -8559,7 +8614,8 @@ static void minimap_dots_paint(void)
 	BYTE *fb = *(BYTE **)0x004ea1a8, *cells = *(BYTE **)0x004e6574, *spr = *(BYTE **)0x004e5d40;
 	int pitch = *(int *)0x004eb274, stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
 	int ox = *(int *)0x004e5d68, oy = *(int *)0x004e5d60;
-	if (!fb || !cells || !spr || pitch <= 0 || stride <= 0 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
+	// (stride: the game always sets 8, the battlefield's cell records, FUN_004bc020's two callers)
+	if (!fb || !cells || !spr || pitch <= 0 || stride != 8 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
 	int w = 2 * cw, h = 2 * ch;
 	if (ox + w > pitch || oy + h > GAME_H || pitch != g_back->pitch) return;
 	INT_PTR off = fb - g_back->bits; // the game's frame inside the patch's back buffer (for the HD layers)
@@ -8718,11 +8774,7 @@ static void __cdecl h_show_frame(int force)
 	LONG hadTurn = 0;
 	if (g_frameLimit > 0 && !force) { hadTurn = InterlockedExchange(&g_frameTaken, 0); if (hadTurn || g_preTurn) force = ours = 1; } // (g_preTurn: see there)
 	LONG seq = g_copySeq;
-	// The change this copy carries (copy_rect: g_pacePrimarySeq). Changes are only counted with Timing=1
-	// (pace_change hashes the frame); without it every copy is a new one. (1.5.0 counted them only with
-	// Timing=1: the zoomed battle's presenter, which skips a read with nothing new, then never read
-	// again and the battle stayed on its first picture, unless Timing=1.)
-	g_paceCopying = g_timing ? g_paceChangeSeq : InterlockedIncrement(&g_paceChangeSeq);
+	g_paceCopying = pace_copy_seq(); // the change this copy carries (copy_rect: g_pacePrimarySeq)
 	if (g_timing) {
 		static double sum, worst, t0; static int n;
 		double a = perf_now();
