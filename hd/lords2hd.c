@@ -3743,16 +3743,19 @@ static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loade
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_COUNT };
+// "Better battles" (JitterFix, EngageFix, GroupMoveFix together): g_bfSet is the panel's choice, taken
+// at the next battle's start (battle_reset); g_bf*Ok: that fix's hooks went in at startup (on in the ini).
+static BOOL g_bfSet, g_bfJitterOk, g_bfEngageOk, g_bfGroupOk;
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_BATTLES, M_COUNT };
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_ZOOM, M_MINIPOP, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
-	{ M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_BATTLES, M_TUTORIAL, M_WASD, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_MINIPOP; } // marked "new"
+static BOOL menu_new(int i) { return i == M_MINIPOP || i == M_BATTLES; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3777,11 +3780,15 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		break;
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
 	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
+	case M_BATTLES: // from the next battle; a restart only if none of the three was on at startup
+		snprintf(v, n, "%s", g_bfSet ? "On" : "Off");
+		*restart = g_bfSet && !g_bfJitterOk && !g_bfEngageOk && !g_bfGroupOk;
+		break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
-	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines" };
+	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Better battles" };
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3843,6 +3850,10 @@ static void resound_sample(void)
 		break;
 	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
 	case M_MINIPOP: g_miniPop = !g_miniPop; ini_set("Display", "MinimapPop", g_miniPop); break;
+	case M_BATTLES:
+		g_bfSet = !g_bfSet;
+		ini_set("Game", "JitterFix", g_bfSet); ini_set("Game", "EngageFix", g_bfSet); ini_set("Game", "GroupMoveFix", g_bfSet);
+		break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -8434,43 +8445,105 @@ static show_frame_t o_show_frame;
 
 // The battle minimap's troops ([Display] MinimapPop): the game draws each as a 2x2 dot of its owner's
 // colour (FUN_004bc51a, frames of t2_spri.pl8), and the black player's is mid-grey (index 0x31), the
-// grey of rock and walls. Here every troop gets a one-pixel black ring (black troops: true black with a
-// white ring), painted into the game's frame only for its copy to the screen and taken out right after,
-// so the game's own minimap, which redraws only changed cells, never sees it (no trails).
+// grey of rock and walls. Here every troop gets a ring one screen pixel wide (half a game pixel: black;
+// the black player's dots true black with a white ring). The rings are drawn in the HD layer (the
+// zoomed battle's g_btLayer, else the sprite layer) on the game pixels around the dots, which keep their
+// own colour there, and taken off again at the next copy, so nothing trails. The black player's dot
+// colour goes into the game's frame only for its copy to the screen and is taken out right after, so the
+// game's own minimap, which redraws only changed cells, never sees it.
 static BYTE g_miniSave[200 * 200];
 static int g_miniX, g_miniY, g_miniW, g_miniH; // the saved rectangle (game pixels); g_miniW 0: none
+static int g_ringFx[4096], g_ringFy[4096], g_ringN; static BOOL g_ringBt; // the ring pixels stamped last time
+static BYTE g_ringMask[200 * 200], g_ringInk[200 * 200];
+static void minimap_rings_clear(void)
+{
+	for (int i = 0; i < g_ringN; i++) {
+		int fx = g_ringFx[i], fy = g_ringFy[i];
+		if (g_ringBt) { if (g_btValid && fx < g_frameW && fy < g_frameH) g_btValid[fy * g_frameW + fx] = 0; rows_dirty(g_btDirty, fy, fy + 1); }
+		else if (g_sprValid && fx < MAX_W && fy < GAME_H) { g_sprValid[fy * MAX_W + fx] = 0; g_sprDirty[fy] = 1; }
+	}
+	g_ringN = 0;
+}
 static void minimap_dots_paint(void)
 {
 	g_miniW = 0;
-	if (!g_miniPop || !IN_BATTLE_NOW() || *(int *)0x004e5d58 != 2) return;
+	minimap_rings_clear();
+	if (!g_miniPop || !IN_BATTLE_NOW() || *(int *)0x004e5d58 != 2 || !g_back || !g_primary || !g_primary->pal) return;
 	BYTE *fb = *(BYTE **)0x004ea1a8, *cells = *(BYTE **)0x004e6574, *spr = *(BYTE **)0x004e5d40;
 	int pitch = *(int *)0x004eb274, stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
 	int ox = *(int *)0x004e5d68, oy = *(int *)0x004e5d60;
 	if (!fb || !cells || !spr || pitch <= 0 || stride <= 0 || cw <= 0 || ch <= 0 || cw > 96 || ch > 96 || ox < 0 || oy < 0) return;
 	int w = 2 * cw, h = 2 * ch;
-	if (ox + w > pitch || oy + h > GAME_H) return;
+	if (ox + w > pitch || oy + h > GAME_H || pitch != g_back->pitch) return;
+	INT_PTR off = fb - g_back->bits; // the game's frame inside the patch's back buffer (for the HD layers)
+	if (off < 0) return;
+	int bx = (int)(off % g_back->pitch), by = (int)(off / g_back->pitch);
+	BOOL bt = battle_zoom_on() && g_btLayer;
+	if (!bt && (!g_sprLayer || !g_sprValid)) return;
 	for (int y = 0; y < h; y++) memcpy(g_miniSave + y * w, fb + (oy + y) * pitch + ox, w);
 	g_miniX = ox; g_miniY = oy; g_miniW = w; g_miniH = h;
-	for (int pass = 0; pass < 2; pass++) // rings first, then the dots, so a formation gets one outline
-		for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) {
-			BYTE unit = cells[(r * cw + c) * stride + 5];
-			if (!unit) continue;
-			BYTE owner = *(BYTE *)(0x005544ac + unit * 0x1b0);
-			int frame = owner == 6 ? 6 : *(BYTE *)(0x0057bf0a + owner * 0x160); // as FUN_004bc51a
-			if (frame <= 0 || frame > 6) continue;
-			BYTE col = spr[*(int *)(spr + frame * 16 + 12)], ring = 0x3f; // the frame's colour; black ring
-			if (col == 0x31) { col = 0x3f; ring = 0x20; } // the black player: black, white ring
-			int x0 = 2 * c, y0 = 2 * r, e = pass ? 0 : 1;
-			for (int y = y0 - e; y <= y0 + 1 + e; y++) for (int x = x0 - e; x <= x0 + 1 + e; x++) {
-				if (x < 0 || x >= w || y < 0 || y >= h) continue;
-				BOOL hidden = FALSE; // under the patch's scrolls (settings, army): those must stay as drawn
-				for (int k = 0; k < 2 && !hidden; k++) {
-					const SCROLL_OVL *s = &g_ovl[k];
-					hidden = s->on && ox + x >= s->x && ox + x < s->x + s->w && oy + y >= s->y && oy + y < s->y + s->h;
-				}
-				if (!hidden) fb[(oy + y) * pitch + ox + x] = pass ? col : ring;
-			}
+	memset(g_ringMask, 0, w * h);
+	// Each ring pixel's four HD sub-pixels (bit 0 top left, 1 top right, 2 bottom left, 3 bottom right):
+	// those within one HD pixel of a dot are inked.
+	for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) {
+		BYTE unit = cells[(r * cw + c) * stride + 5];
+		if (!unit) continue;
+		BYTE owner = *(BYTE *)(0x005544ac + unit * 0x1b0);
+		int frame = owner == 6 ? 6 : *(BYTE *)(0x0057bf0a + owner * 0x160); // as FUN_004bc51a
+		if (frame <= 0 || frame > 6) continue;
+		BYTE col = spr[*(int *)(spr + frame * 16 + 12)], ink = 0x3f; // the frame's colour; black ring
+		int x0 = 2 * c, y0 = 2 * r;
+		if (col == 0x31) { // the black player: black dots, white ring
+			ink = 0x20;
+			for (int y = y0; y <= y0 + 1; y++) for (int x = x0; x <= x0 + 1; x++)
+				if (x < w && y < h) fb[(oy + y) * pitch + ox + x] = 0x3f;
 		}
+		for (int y = y0 - 1; y <= y0 + 2; y++) for (int x = x0 - 1; x <= x0 + 2; x++) {
+			if (x < 0 || x >= w || y < 0 || y >= h || (x >= x0 && x <= x0 + 1 && y >= y0 && y <= y0 + 1)) continue;
+			int m = 0;
+			for (int b = 0; b < 4; b++) {
+				int hx = 2 * x + (b & 1), hy = 2 * y + (b >> 1);
+				if (hx >= 2 * x0 - 1 && hx <= 2 * x0 + 4 && hy >= 2 * y0 - 1 && hy <= 2 * y0 + 4) m |= 1 << b;
+			}
+			g_ringMask[y * w + x] |= m; g_ringInk[y * w + x] = ink;
+		}
+	}
+	const PALETTEENTRY *pe = g_primary->pal->e;
+	for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+		int m = g_ringMask[y * w + x];
+		if (!m || g_ringN >= 4096) continue;
+		BYTE v = fb[(oy + y) * pitch + ox + x];
+		BOOL dot = FALSE; // a pixel of another troop's dot: the dot shows, no ring on it
+		{ int c = x / 2, r = y / 2; if (c < cw && r < ch && cells[(r * cw + c) * stride + 5]) dot = TRUE; }
+		if (dot) continue;
+		BOOL hidden = FALSE; // under the patch's scrolls (settings, army): those must stay as drawn
+		for (int k = 0; k < 2 && !hidden; k++) {
+			const SCROLL_OVL *s = &g_ovl[k];
+			hidden = s->on && ox + x >= s->x && ox + x < s->x + s->w && oy + y >= s->y && oy + y < s->y + s->h;
+		}
+		if (hidden) continue;
+		int fx = bx + ox + x, fy = by + oy + y;
+		DWORD ground = (DWORD)pe[v].peRed << 16 | (DWORD)pe[v].peGreen << 8 | pe[v].peBlue;
+		BYTE ik = g_ringInk[y * w + x];
+		DWORD ink = (DWORD)pe[ik].peRed << 16 | (DWORD)pe[ik].peGreen << 8 | pe[ik].peBlue;
+		DWORD q[4];
+		for (int b = 0; b < 4; b++) q[b] = m >> b & 1 ? ink : ground;
+		if (bt) {
+			if (fx >= g_frameW || fy >= g_frameH) continue;
+			DWORD *o = g_btLayer + (fy * g_frameW + fx) * 4;
+			o[0] = q[0]; o[1] = q[1]; o[2] = q[2]; o[3] = q[3];
+			g_btShadow[fy * g_frameW + fx] = v; g_btValid[fy * g_frameW + fx] = 1;
+			rows_dirty(g_btDirty, fy, fy + 1);
+		}
+		else {
+			if (fx >= MAX_W || fy >= GAME_H) continue;
+			DWORD *o0 = g_sprLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
+			o0[0] = q[0]; o0[1] = q[1]; o1[0] = q[2]; o1[1] = q[3];
+			g_sprShadow[fy * MAX_W + fx] = v; g_sprValid[fy * MAX_W + fx] = 1; g_sprDirty[fy] = 1;
+		}
+		g_ringFx[g_ringN] = fx; g_ringFy[g_ringN] = fy; g_ringN++;
+	}
+	g_ringBt = bt;
 }
 static void minimap_dots_restore(void)
 {
@@ -10026,6 +10099,8 @@ static BOOL engage_chase(int me)
 static void battle_reset(void)
 {
 	g_btick = 0;
+	// F10 "Better battles": switched between battles only, never in the middle of one
+	g_fixJitter = g_bfSet && g_bfJitterOk; g_fixEngage = g_bfSet && g_bfEngageOk; g_fixGroupMove = g_bfSet && g_bfGroupOk;
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
 	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
@@ -10526,6 +10601,8 @@ static void install_game_fixes(void)
 			logf_("archers leaving melee %s", hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee) ? "on" : "failed");
 		}
 	}
+	g_bfJitterOk = g_fixJitter; g_bfEngageOk = g_fixEngage; g_bfGroupOk = g_fixGroupMove; // (F10 "Better battles")
+	g_bfSet = g_bfJitterOk || g_bfEngageOk || g_bfGroupOk;
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
 		logf_("battle seed on");
