@@ -258,6 +258,22 @@ static LONG CALLBACK crash_logger(EXCEPTION_POINTERS *ep)
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// Whether n bytes from p can be read now: every page committed and readable (no guard page). For game
+// buffers the patch reads on its own, which the game may have freed (the battle minimap's, after a battle).
+static BOOL mem_readable(const void *p, size_t n)
+{
+	const BYTE *a = (const BYTE *)p, *end = a + n;
+	if (!p || end < a) return FALSE;
+	while (a < end) {
+		MEMORY_BASIC_INFORMATION mi;
+		if (!VirtualQuery(a, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
+			!(mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+			return FALSE;
+		a = (const BYTE *)mi.BaseAddress + mi.RegionSize;
+	}
+	return TRUE;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Shared frame state
 
@@ -2288,6 +2304,7 @@ static void __cdecl h_mini_paint(unsigned player, int x, int y, int mode)
 	// The colour each county got for each shade, read back from what was drawn.
 	static short shade[256][4];
 	for (int i = 0; i < 256; i++) shade[i][0] = shade[i][1] = shade[i][2] = shade[i][3] = -1;
+	if (g_back->org + x < 0 || g_back->org + x + 128 > g_back->w) return; // (the read-back below has no column check)
 	for (int r = 0; r < 128; r++) {
 		int fy = y + r;
 		if (fy < 0 || fy >= GAME_H) continue;
@@ -8507,6 +8524,18 @@ static void minimap_dots_paint(void)
 	int bx = (int)(off % g_back->pitch), by = (int)(off / g_back->pitch);
 	BOOL bt = battle_zoom_on() && g_btLayer;
 	if (!bt && (!g_sprLayer || !g_sprValid)) return;
+	// The dots' colours, one per frame of t2_spri.pl8 (148 bytes: its offsets are tiny). Once a battle is
+	// over the game frees that buffer and the cell table (filled with 0xDD) while the battle screen is
+	// still up: an offset that makes no sense means no outlines this time (it crashed reading 0xDDDDDDDD).
+	// and the game's buffers must still be there at all (freed memory may also be handed back to Windows)
+	if (!mem_readable(cells, (size_t)cw * ch * stride) || !mem_readable(spr, 7 * 16) ||
+		!mem_readable(fb + oy * pitch, (size_t)h * pitch)) return;
+	BYTE fcol[7] = { 0 };
+	for (int f = 1; f <= 6; f++) {
+		int o = *(int *)(spr + f * 16 + 12);
+		if (o <= 0 || o >= 4096 || !mem_readable(spr + o, 1)) return;
+		fcol[f] = spr[o];
+	}
 	for (int y = 0; y < h; y++) memcpy(g_miniSave + y * w, fb + (oy + y) * pitch + ox, w);
 	g_miniX = ox; g_miniY = oy; g_miniW = w; g_miniH = h;
 	memset(g_ringMask, 0, w * h);
@@ -8514,11 +8543,12 @@ static void minimap_dots_paint(void)
 	// those within one HD pixel of a dot are inked.
 	for (int r = 0; r < ch; r++) for (int c = 0; c < cw; c++) {
 		BYTE unit = cells[(r * cw + c) * stride + 5];
-		if (!unit) continue;
+		if (unit < 1 || unit > 0x50) continue;          // (a battle has figures 1..80; 0xDD: a freed table)
 		BYTE owner = *(BYTE *)(0x005544ac + unit * 0x1b0);
+		if (owner > 6) continue;                          // (players 0..5, 6 the rebels)
 		int frame = owner == 6 ? 6 : *(BYTE *)(0x0057bf0a + owner * 0x160); // as FUN_004bc51a
 		if (frame <= 0 || frame > 6) continue;
-		BYTE col = spr[*(int *)(spr + frame * 16 + 12)], ink = 0x3f; // the frame's colour; black ring
+		BYTE col = fcol[frame], ink = 0x3f; // the frame's colour; black ring
 		int x0 = 2 * c, y0 = 2 * r;
 		if (col == 0x31) { // the black player: black dots, white ring
 			ink = 0x20;
@@ -8541,7 +8571,7 @@ static void minimap_dots_paint(void)
 		if (!m || g_ringN >= 4096) continue;
 		BYTE v = fb[(oy + y) * pitch + ox + x];
 		BOOL dot = FALSE; // a pixel of another troop's dot: the dot shows, no ring on it
-		{ int c = x / 2, r = y / 2; if (c < cw && r < ch && cells[(r * cw + c) * stride + 5]) dot = TRUE; }
+		{ int c = x / 2, r = y / 2; BYTE u = c < cw && r < ch ? cells[(r * cw + c) * stride + 5] : 0; if (u >= 1 && u <= 0x50) dot = TRUE; }
 		if (dot) continue;
 		BOOL hidden = FALSE; // under the patch's scrolls (settings, army): those must stay as drawn
 		for (int k = 0; k < 2 && !hidden; k++) {
