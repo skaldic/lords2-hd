@@ -115,6 +115,30 @@ TEST(ai_group_tick_writes_the_think_and_the_aggression)
 	CHECK(strstr(buf, "did: charge") != NULL);
 }
 
+TEST(ai_second_writes_unit_values_once_and_the_cover)
+{
+	static char buf[1 << 16];
+	static fig_snap n[81];
+	t_human(t_unit(1, 1, 40, 40, 1)); t_men(1, 32);
+	BYTE *k = t_unit(2, 2, 60, 40, 2); k[0x12] = 6; t_men(2, 25);   // computer knights
+	FIG_S(2, 0x19c) = 20; FIG_S(2, 0x198) = 200; k[0x18b] = 16; k[0x18a] = 4; k[0x172] = 25;
+	t_archer(3, 2, 44, 40, 3); t_men(3, 30);                        // isolated computer archers
+	t_snap_all(n);
+	InitializeCriticalSection(&g_blogLock);
+	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	battle_second(n);
+	battle_second(n);                                               // the values only once a battle
+	buf[g_blogLen] = 0;
+	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
+	DeleteCriticalSection(&g_blogLock);
+	CHECK(strstr(buf, "type 6 (melee): men 25, melee hit 20, first strike 200, toughness 16, turn class 4, armour 25") != NULL);
+	const char *first = strstr(buf, "type 6 ");
+	CHECK(first && !strstr(first + 1, "type 6 "));
+	CHECK(strstr(buf, "cover side 2 (computer): archers 1, own melee within 5 cells of each: nearest avg 16 max 16 | isolated 1") != NULL);
+	CHECK(strstr(buf, "men melee 25 ranged 30, enemy melee 32 ranged 0") != NULL);
+	CHECK(!strstr(buf, "cover side 1"));                            // only the computer's side
+}
+
 TEST(ai_group_tick_without_the_log_only_runs_the_game)
 {
 	g_blog = NULL;

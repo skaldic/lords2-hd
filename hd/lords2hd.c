@@ -9358,15 +9358,17 @@ static void battle_second(const fig_snap *n)
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
 	if (!g_aiStatsDone) {
-		// each unit type's fighting values once a battle (set by the type's handler every step): melee hit
-		// (+0x19c, from the type and how many men are left), first-strike (+0x198, once per fight), strike
-		// interval (+0x18b), armour against missiles (+0x172), missile power (+0x19e) and range
+		// each unit type's fighting values once a battle (set by the type's handler every step). In melee
+		// (FUN_00494908) the two take turns: the striker's turn lasts by its turn class (+0x18a: 0, 40, 80,
+		// 80, 120 steps), and the other is hit for the striker's melee hit (+0x19c, from the type and how many
+		// men are left) once every toughness (+0x18b) steps of it; a first strike (+0x198) lands once per
+		// fight. Then armour against missiles (+0x172), missile power (+0x19e) and range.
 		g_aiStatsDone = TRUE;
 		for (int t = 0; t < 7; t++)
 			for (int i = 1; i < 0x51; i++)
 				if (n[i].live && n[i].type == t) {
 					BYTE *f = FIG(i);
-					blog("type %d (%s): men %d, melee hit %d, first strike %d, strike every %d, recovery class %d, armour %d, missile power %d, range %d",
+					blog("type %d (%s): men %d, melee hit %d, first strike %d, toughness %d, turn class %d, armour %d, missile power %d, range %d",
 						t, f[0x16a] ? "ranged" : "melee", n[i].men, FIG_S(i, 0x19c), FIG_S(i, 0x198), f[0x18b], f[0x18a], f[0x172],
 						FIG_S(i, 0x19e), FIG_S(i, 0x170) / 8);
 					break;
