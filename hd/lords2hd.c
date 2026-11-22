@@ -11218,6 +11218,22 @@ static void __cdecl h_slot(int x, int y, int fig, int group)
 	if (g_grQLen < 80) g_grQueue[g_grQLen++] = fig;
 }
 
+// Every 500 steps the game asks FUN_00489654(group) whether to form the group again round its destination
+// (FUN_0048970e: every member gets a place anew). Yes for any group of 4 or more, so the player's groups
+// were re-formed with no order: archers deployed on both sides of a line of stakes walked round through
+// the gap to their new places, and units standing where the player had left them were shuffled (the
+// user's report). An order sets the group's flag (+0x13) and brings the re-form forward to 20 steps, which
+// is how the order's formation is laid out: that one stays. For the player's groups (+0x01) without the
+// flag the answer is now no. The computer's groups are re-formed as before.
+typedef int (__cdecl *reform_t)(int);
+static reform_t o_reform;
+static int reform_filter(int g, int r)
+{
+	if (fix_on(g_fixGroupMove) && g >= 1 && g < 0x51 && GRP_B(g, 0x01) && !GRP_B(g, 0x13)) return 0;
+	return r;
+}
+static int __cdecl h_reform(int g) { return reform_filter(g, o_reform(g)); }
+
 // each logic step: plan the next few queued routes
 static void gr_step(void)
 {
@@ -11762,6 +11778,8 @@ static void install_game_fixes(void)
 	if (g_fixGroupMove) {
 		static const BYTE kSlot[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };   // push ebp; mov ebp,esp; sub esp,4
 		if (!figLoop || !hook_code((BYTE *)0x00489b8d, kSlot, sizeof kSlot, h_slot, &o_slot)) g_fixGroupMove = FALSE;
+		else logf_("player's groups re-formed only after an order %s",
+			hook_code((BYTE *)0x00489654, kSlot, sizeof kSlot, h_reform, &o_reform) ? "on" : "failed");
 		logf_("group move fix %s", g_fixGroupMove ? "on" : "off");
 	}
 	BOOL meleeOk = FALSE;

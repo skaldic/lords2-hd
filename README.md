@@ -61,7 +61,8 @@ The screenshots are hosted on the release: this repository holds no game art.
 **Battles**
 - Units wait for a friend in the way instead of turning back, and stop beside a taken place instead of
   dancing round it
-- Groups ordered round a forest, river or other obstacle keep their shape and their route
+- Groups ordered round a forest, river or other obstacle keep their shape and their route, and your
+  groups stay where you left them (the game no longer re-forms them every few seconds unordered)
 - Idle soldiers fight an enemy within a few cells (knights a little further), but never wander more
   than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away; and
   only when they aren't outnumbered by the enemy there and coming up behind it, so a few pikemen

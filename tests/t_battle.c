@@ -339,6 +339,20 @@ TEST(archers_back_up_a_fight_of_their_side)
 	CHECK_EQ(support_target(8, 8), 0);
 }
 
+TEST(player_groups_reform_only_after_an_order)
+{
+	g_fixGroupMove = TRUE;
+	GRP_B(11, 0x01) = 1; GRP_B(11, 0x13) = 0;                       // your archers, no order since
+	CHECK_EQ(reform_filter(11, 1), 0);                              // left where you put them
+	GRP_B(11, 0x13) = 1;                                            // just ordered: the order's formation
+	CHECK_EQ(reform_filter(11, 1), 1);
+	GRP_B(3, 0x01) = 0; GRP_B(3, 0x13) = 0;                         // the computer's group: as the game
+	CHECK_EQ(reform_filter(3, 1), 1);
+	g_fixGroupMove = FALSE; GRP_B(11, 0x13) = 0;                    // fix off: as the game
+	CHECK_EQ(reform_filter(11, 1), 1);
+	GRP_B(11, 0x01) = 0;
+}
+
 TEST(archers_shoot_instead_of_chasing_after_a_fight)
 {
 	g_fixEngage = TRUE;
@@ -864,7 +878,7 @@ static const struct { DWORD at; BYTE code[6]; } kFixSites[] = {
 	{ 0x004831d8, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } }, { 0x0047fc01, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } },
 	{ 0x0048a9d2, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 } }, { 0x0048acd2, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
 	{ 0x0048b02b, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } }, { 0x00494908, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } },
-	{ 0x004956cc, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } },
+	{ 0x004956cc, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } }, { 0x00489654, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
 };
 /* Runs the patch's start-up of the game fixes on fake code: every site but `missing` (0 = none) as expected. */
 static void t_install_fixes(DWORD missing, const char *ini)
