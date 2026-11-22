@@ -10893,10 +10893,20 @@ static int support_target(int me, int range)
 	}
 	return best;
 }
-static int __cdecl h_pick(int range, int me, int only)
+// After a fight (state 7, FUN_00483ce1, the call returning to 0x483e16) the game sends a unit with an enemy
+// within 5 cells chasing it (state 8), archers and crossbowmen too: they ran into melee across the field
+// (the user's report). For them the answer is now "none", so they stand (state 5) and shoot; an enemy right
+// beside them is still fought, as that's decided before this call.
+#define PICK_AFTER_FIGHT ((void *)0x00483e16)
+#define PICK_SHOT ((void *)0x00483491)
+// What h_pick hands back to the caller at `from`, given the game's own result r.
+static int pick_filter(void *from, int range, int me, int only, int r)
 {
-	int r = o_pick(range, me, only);
-	if (__builtin_return_address(0) != (void *)0x00483491 || only || !fix_on(g_fixEngage) || me < 1 || me > 0x50) return r;
+	if (from == PICK_AFTER_FIGHT && fix_on(g_fixEngage) && me >= 1 && me <= 0x50 && FIG(me)[0x16a]) {
+		if ((BYTE)r && g_blog && g_battleLog >= 1) blog("stand fig %d (archer, side %d): shoots instead of chasing enemy %d", me, FIG(me)[0x2c], *(int *)0x0052eff4);
+		return 0;
+	}
+	if (from != PICK_SHOT || only || !fix_on(g_fixEngage) || me < 1 || me > 0x50) return r;
 	BYTE *f = FIG(me);
 	int g = FIG_S(me, 0x178);
 	if (!f[0x16a] || (g >= 0 && g < 80 && *(BYTE *)(0x0056654c + g * 0x34))) return r;   // an ordered target stays
@@ -10907,6 +10917,10 @@ static int __cdecl h_pick(int range, int me, int only)
 	*(DWORD *)0x0052eff4 = (DWORD)e;
 	g_bsupport++;
 	return 1;
+}
+static int __cdecl h_pick(int range, int me, int only)
+{
+	return pick_filter(__builtin_return_address(0), range, me, only, o_pick(range, me, only));
 }
 
 // State 4 (melee) for an archer or crossbowman: once a friendly soldier stands beside its enemy and can

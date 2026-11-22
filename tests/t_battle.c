@@ -339,6 +339,23 @@ TEST(archers_back_up_a_fight_of_their_side)
 	CHECK_EQ(support_target(8, 8), 0);
 }
 
+TEST(archers_shoot_instead_of_chasing_after_a_fight)
+{
+	g_fixEngage = TRUE;
+	t_archer(8, 1, 20, 20, 2);
+	t_unit(9, 2, 24, 20, 3);                                        // an enemy 4 cells off after the fight
+	t_unit(12, 1, 30, 30, 6);                                       // a pikeman of ours
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0);     // the archer: no chase, it stands
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 12, 0, 0x1201), 0x1201);   // a soldier: the game's answer
+	CHECK_EQ(pick_filter((void *)0x0048c9e7, 40, 8, 0, 0x1201), 0x1201); // the AI's fire order: untouched
+	t_unit(10, 2, 26, 20, 4); FIG(10)[0x31] = ST_MELEE;             // the shot: an enemy fighting ours
+	t_unit(11, 1, 27, 20, 5); FIG(11)[0x31] = ST_MELEE; FIG(10)[0x17e] = 11;
+	CHECK_EQ(pick_filter(PICK_SHOT, 8, 8, 0, 0x1201), 1);
+	CHECK_EQ(*(int *)0x0052eff4, 10);
+	g_fixEngage = FALSE;
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0x1201);   // fix off: the game as it was
+}
+
 TEST(engage_counts_the_column_behind_the_first_enemy)
 {
 	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // two of our pikemen at a gap, 60 men
