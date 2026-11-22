@@ -4911,6 +4911,44 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 	}
 	return TRUE;
 }
+// Panning while zoomed in: the cursor at a screen edge (or WASD, the arrow keys) first slides the shown part
+// across the field; only once it is at the field's edge on that side does the game scroll the battlefield,
+// the shown part staying at that edge. Without this, the part of the field beside the shown one couldn't be
+// reached where the game's view was already at the end of the battlefield. dirs: 1 left, 2 right, 4 up,
+// 8 down; dt in seconds. Returns the directions left to the game's own edge scroll (g_wzHeld: the others).
+#define WZ_PAN_SPEED 900.0f   // shown picture px a second (the field px it covers: this over the zoom)
+static int g_wzHeld;
+static int wz_pan_step(int dirs, float dt)
+{
+	g_wzHeld = 0;
+	if (!dirs || !wz_shown()) return dirs;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], x = g_wzX, y = g_wzY, d = WZ_PAN_SPEED / z * dt;
+	wz_clamp(z, fw, fh, &x, &y);
+	float maxX = fw - fw / z, maxY = fh - fh / z;
+	if ((dirs & 1) && x > 0) { x -= d; g_wzHeld |= 1; }
+	else if ((dirs & 2) && !(dirs & 1) && x < maxX) { x += d; g_wzHeld |= 2; }
+	if ((dirs & 4) && y > 0) { y -= d; g_wzHeld |= 4; }
+	else if ((dirs & 8) && !(dirs & 4) && y < maxY) { y += d; g_wzHeld |= 8; }
+	if (g_wzHeld && d > 0) {
+		wz_clamp(z, fw, fh, &x, &y);
+		g_wzX = x; g_wzY = y;
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+	}
+	return dirs & ~g_wzHeld;
+}
+// The same with the time since the last call (the game asks for the cursor every frame, or more often).
+static int wz_pan(int dirs)
+{
+	static LARGE_INTEGER last;
+	LARGE_INTEGER now, f;
+	QueryPerformanceCounter(&now);
+	QueryPerformanceFrequency(&f);
+	float dt = last.QuadPart ? (float)(now.QuadPart - last.QuadPart) / (float)f.QuadPart : 0;
+	last = dirs && wz_shown() ? now : (LARGE_INTEGER){ 0 };   // a new push starts from still
+	return wz_pan_step(dirs, min(dt, 0.05f));
+}
 
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 {
@@ -6785,7 +6823,7 @@ static int wasd_bit(WPARAM vk)
 }
 static void wasd_edges(POINT *p, int right, int bottom)
 {
-	int k = g_wasd;
+	int k = g_wasd & ~g_wzHeld;   // (not those panning the wheel zoom's part: wz_pan)
 	if (!k || !wasd_screen()) return;
 	// Left: in a battle the field starts left of the game's x = 0 and its edge scroll is told about the
 	// left edge separately (h_edge_scroll); x = 0 alone is the middle of the field there, and A (or the
@@ -6964,12 +7002,13 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
 		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
 		p->x = max(leftX, min(right - 1, g_fake.x));
-		g_battleLeftEdge = (g_fakeEdge & 1) != 0;
+		int edges = wz_pan(g_fakeEdge | (wasd_screen() ? g_wasd : 0)) & g_fakeEdge;   // (zoomed in: the part slides first)
+		g_battleLeftEdge = (edges & 1) != 0;
 		p->y = max(1, min(bottom - 1, g_fake.y));
-		if (g_fakeEdge & 1) p->x = leftX < 1 ? leftX : 0;   // as the real mouse at the left edge
-		if (g_fakeEdge & 2) p->x = right;
-		if (g_fakeEdge & 4) p->y = 0;
-		if (g_fakeEdge & 8) p->y = bottom;
+		if (edges & 1) p->x = leftX < 1 ? leftX : 0;   // as the real mouse at the left edge
+		if (edges & 2) p->x = right;
+		if (edges & 4) p->y = 0;
+		if (edges & 8) p->y = bottom;
 		wasd_edges(p, right, bottom);
 		ap_mouse(&p->x, &p->y);
 		return TRUE;
@@ -6987,15 +7026,20 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 			// in a battle only the screen's outermost pixels scroll left, so a drag can start in the
 			// black strip beside the picture; elsewhere the whole strip is the edge, as before
 			BOOL edge = leftX < 1 ? cx <= 1 : cx <= v.left;
+			int cy = p->y;
+			// zoomed in with the wheel: an edge (or a scroll key) slides the shown part first (wz_pan)
+			int edges = (edge ? 1 : 0) | (cx >= v.right - 1 ? 2 : 0) | (cy <= v.top ? 4 : 0) | (cy >= v.bottom - 1 ? 8 : 0);
+			edges &= wz_pan(edges | (wasd_screen() ? g_wasd : 0));
+			if (!(edges & 1)) edge = FALSE;
 			g_battleLeftEdge = edge;
 			if (edge) x = leftX < 1 ? leftX : 0;
-			else if (cx <= v.left) x = leftX;
-			else if (cx >= v.right - 1) x = right;
+			else if (cx <= v.left && !(g_wzHeld & 1)) x = leftX;
+			else if (edges & 2) x = right;
 			else x = max(leftX, min(right - 1, x));
 			// The same for the bottom edge, measured against the frame's height (DAT_004ea838).
-			int bottom = max(2, *(int *)0x004ea838 - 1), cy = p->y;
-			if (cy <= v.top) y = 0;
-			else if (cy >= v.bottom - 1) y = bottom;
+			int bottom = max(2, *(int *)0x004ea838 - 1);
+			if (edges & 4) y = 0;
+			else if (edges & 8) y = bottom;
 			else y = max(1, min(bottom - 1, y));
 		}
 		p->x = x;

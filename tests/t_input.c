@@ -213,6 +213,43 @@ TEST(wheel_zoom_picture_enlarges_only_the_field)
 	t_zoomed_battle_end();
 }
 
+/* Zoomed in, a screen edge or a scroll key first slides the shown part across the field; the game scrolls the
+ * battlefield only once the part is at the field's edge on that side. Before, the part stayed where it was and the
+ * field beside it couldn't be reached where the game's view was already at the end of the battlefield. */
+TEST(wheel_zoom_edges_slide_the_shown_part_first)
+{
+	t_zoomed_battle();
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	InterlockedExchange(&g_wzLevel, 3); g_wzX = 0; g_wzY = 0;   // x2, at the field's top-left
+	CHECK_EQ(wz_pan_step(1, 0.1f), 1);                           // left: already there, the game scrolls
+	CHECK_EQ(g_wzHeld, 0);
+	CHECK_EQ(wz_pan_step(2, 0.1f), 0);                           // right: the part slides, the game doesn't scroll
+	CHECK_EQ(g_wzHeld, 2);
+	CHECK(fabsf(g_wzX - WZ_PAN_SPEED / 2 * 0.1f) < 0.01f);       // (900 shown px a second: 450 field px at x2)
+	CHECK_EQ(wz_pan_step(2 | 8, 0.1f), 0);                       // diagonal
+	CHECK(fabsf(g_wzX - 90) < 0.01f); CHECK(fabsf(g_wzY - 45) < 0.01f);
+	g_wzX = fw - fw / 2.0f;                                      // at the right edge: the game scrolls, the part stays
+	CHECK_EQ(wz_pan_step(2, 0.1f), 2);
+	CHECK_EQ(g_wzX, fw - fw / 2.0f);
+	g_wzY = fh - fh / 2.0f;
+	CHECK_EQ(wz_pan_step(8, 0.1f), 8);
+	// the scroll keys: a key panning the part isn't passed on as an edge
+	BOOL w = g_wasdOn; g_wasdOn = TRUE;
+	POINT p = { 300, 200 };
+	g_wasd = 1; wz_pan_step(1, 0.1f);
+	REQUIRE(g_wzHeld == 1);
+	wasd_edges(&p, 600, 400);
+	CHECK_EQ(p.x, 300);
+	g_wzX = fw - fw / 2.0f;                                      // (the left key slid it off the right edge)
+	g_wasd = 2; wz_pan_step(2, 0.1f);                            // at the right edge: the game's scroll again
+	wasd_edges(&p, 600, 400);
+	CHECK_EQ(p.x, 600);
+	g_wasd = 0; g_wasdOn = w;
+	InterlockedExchange(&g_wzLevel, 0);                          // not zoomed: every edge is the game's
+	CHECK_EQ(wz_pan_step(15, 0.1f), 15);
+	t_zoomed_battle_end();
+}
+
 /* A made-up wide map 1100 columns wide (game x 0 at column 600): a window at columns 900..999, rows 100..299, and a
  * wider scroll over it (columns 850..1049, rows 150..199). The 2x picture holds each map pixel's own column number,
  * so a map pixel moved to the wrong place shows. */
