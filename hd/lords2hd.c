@@ -3767,10 +3767,16 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 		}
 	}
 }
-static void scroll_overlays(int sx, int sw)
+// In two steps: caught (scroll_overlays_catch) before the zoomed-out county map takes the map's field
+// (cz_field), which would hide the army scroll there, and laid on (scroll_overlays_lay) over it.
+static BOOL g_ovlShow[2];
+static int g_ovlCol[2];
+static void scroll_overlays_catch(int sx, int sw)
 {
-	BOOL show[2] = { FALSE, FALSE };
-	int col[2] = { 0, 0 };
+	BOOL *show = g_ovlShow;
+	int *col = g_ovlCol;
+	show[0] = show[1] = FALSE;
+	col[0] = col[1] = 0;
 	for (int i = 0; i < 2; i++) { // first catch each from the frame as the game made it...
 		SCROLL_OVL *s = &g_ovl[i];
 		if (!s->on || !s->snap) continue;
@@ -3794,6 +3800,11 @@ static void scroll_overlays(int sx, int sw)
 		}
 		show[i] = TRUE; col[i] = c0;
 	}
+}
+static void scroll_overlays_lay(int sw)
+{
+	const BOOL *show = g_ovlShow;
+	const int *col = g_ovlCol;
 	for (int i = 0; i < 2; i++) { // ... then lay them on, the settings scroll last: only the scroll's own
 		SCROLL_OVL *s = &g_ovl[i];   // pixels (where it differs from what it covers), so the live map
 		if (!show[i]) continue;      // shows through its ragged edges instead of a frozen strip of it
@@ -5005,13 +5016,15 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 	}
 	return TRUE;
 }
+// The county map itself as the screen: 0, or 16 with an army selected (its scroll, the march path).
+static BOOL map_screen(int screen) { return screen == 0 || screen == 16; }
 // The wheel on the county map (CountyZoom): back (down) shows it zoomed out, forward the normal view.
 // TRUE: it was ours.
 static BOOL cz_wheel(WPARAM wp, LPARAM lp)
 {
 	static int acc;
 	(void)lp;
-	if (!g_countyZoom || !g_battleZoom || !g_off || !g_wideScreen || g_scale != SCALE_SMOOTH || !county_map_on() || *(BYTE *)0x004eac50 != 0 || MAP_ZOOM_NOW() != 0 ||
+	if (!g_countyZoom || !g_battleZoom || !g_off || !g_wideScreen || g_scale != SCALE_SMOOTH || !county_map_on() || !map_screen(*(BYTE *)0x004eac50) || MAP_ZOOM_NOW() != 0 ||
 		menu_doubled() || g_menuOpen) { acc = 0; return FALSE; }
 	acc += (short)HIWORD(wp);
 	LONG to = g_czOut;
@@ -5778,7 +5791,7 @@ static BOOL present(void)
 	const cz_buf *cz = g_czShown;
 	// (Under a window over the map - the Town Center, the boxes a click on the map opens - too: the window
 	// stays as the game drew it, moved to the middle as ever, the zoomed-out map round it. czWin below.)
-	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (screen == 0 || (window_screen(screen) && g_snapW == sw)) &&
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (map_screen(screen) || (window_screen(screen) && g_snapW == sw)) &&
 		g_wideScreen && MAP_ZOOM_NOW() == 0 && cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
 	InterlockedExchange(&g_czShowing, czOn);
 	static BOOL czWas;
@@ -5857,16 +5870,17 @@ static BOOL present(void)
 		text_overlay(sx, sw); ct_add(3, &ct);
 		// A window over the zoomed-out map: where it is (no window found there - the map behind it moved: the
 		// normal view, as without the zoom).
-		BOOL czWin = czOn && screen != 0;
+		BOOL czWin = czOn && !map_screen(screen);
 		if (czWin && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
+		scroll_overlays_catch(sx, sw);
 		if (czOn) cz_field(cz, sw, czWin);
-		scroll_overlays(sx, sw);
+		scroll_overlays_lay(sw);
 		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		hv_overlay(pal, sx, sw);
 		// (Zoomed out with the window closed, the map covers what the frame still holds of it: nothing to move.)
-		if (g_wideScreen && !(czOn && screen == 0)) window_shift(screen, sx, sw, czOn ? cz : NULL);
+		if (g_wideScreen && !(czOn && map_screen(screen))) window_shift(screen, sx, sw, czOn ? cz : NULL);
 		else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
@@ -9137,7 +9151,7 @@ static void cz_hd(cz_buf *b, int pitch)
 static void cz_draw(void)
 {
 	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
-		(SCREEN_ID != 0 && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
+		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
 	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
 	int rowsAll = CZ_M + 24 + H + CZ_BELOW;
 	if (pitch - W < 2 * CZ_M + 64) return;   // (the frame is as wide as the zoomed-out battlefield: not without BattleZoom)

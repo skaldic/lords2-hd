@@ -1,6 +1,6 @@
 # Tests
 
-Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 179 tests in about 8 seconds. They need only the compiler
+Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 180 tests in about 8 seconds. They need only the compiler
 that builds the patch (llvm-mingw, 32-bit). The five hook tests also need a copy of the game's exe.
 
 ```powershell
@@ -46,7 +46,7 @@ Set `L2HD_TOOLS` to the tools folder if llvm-mingw is not on PATH (as for `hd\bu
 | `t_ai.c` | the battle log's computer AI lines (each group's decisions, the archers' cover count); enemy tactics on Hard: the steady mode, the archers, soldiers helping attacked archers, the melee advancing smoothly and charging together, the crossing assault (parking, the archers' place, the storm, waiting at a jam), soldiers stepping out of burning oil (sieges too); on Legendary: the unit counters, target picks, advancing under fire, regrouping, the archers' target |
 | `t_campaign.c` | the wheat, castle cap and besieged castle fixes |
 | `t_settings.c` | the code's defaults and the shipped ini; F10 changes saved and read back; the README's F10 table |
-| `t_input.c` | the scroll keys (WASD, arrow keys), A in battles, frame copy numbering, the half-drawn guard, moved windows, the battle wheel zoom, the county map zoom-out (the wheel, its switch, clicks on the zoomed-out map) |
+| `t_input.c` | the scroll keys (WASD, arrow keys), A in battles, frame copy numbering, the half-drawn guard, moved windows, the battle wheel zoom, the county map zoom-out (the wheel, its switch, clicks on the zoomed-out map, an army selected on it) |
 | `t_hooks.c` | `install()` on a real Lords2.exe: every hook goes in (4:3 and widescreen); no NULL trampoline called |
 
 ## How it works

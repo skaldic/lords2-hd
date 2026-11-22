@@ -660,3 +660,44 @@ TEST(county_zoom_window_keeps_the_zoomed_map_round_it)
 	g_back = back; g_lut[7] = lut7; g_showTiles = tiles;
 	g_off = off; g_snapW = snap; g_winLockS = 0; g_winLeftT = 0;
 }
+
+/* An army selected (screen 16) is the county map too: the wheel zooms out, and the army scroll stays over the
+ * zoomed-out map (caught from the frame before the zoomed-out map takes the field, laid on after). */
+TEST(county_zoom_with_an_army_selected)
+{
+	t_county_map();
+	*(BYTE *)0x004eac50 = 16;
+	CHECK(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	CHECK_EQ(g_czOut, 1);
+	t_county_map_end();
+
+	int off = g_off; BOOL tiles = g_showTiles; DWORD lut7 = g_lut[7]; Surface *back = g_back; SCROLL_OVL keep0 = g_ovl[0], keep1 = g_ovl[1];
+	static Surface sb;
+	sb.pitch = 2300; g_back = &sb;
+	cz_buf v = { 0 };
+	v.w = 2 * (600 + PANEL_X); v.h = 2 * (GAME_H - 24); v.sw = TW_SW;
+	REQUIRE((v.pix = malloc((size_t)sb.pitch * (CZ_M + 24 + v.h + CZ_BELOW))) != NULL);
+	memset(v.pix, 7, (size_t)sb.pitch * (CZ_M + 24 + v.h + CZ_BELOW));
+	g_lut[7] = 0x123456; g_showTiles = FALSE; g_off = 600;
+	t_window_scene(FALSE, FALSE, FALSE);
+	memset(g_apUnder, 0, sizeof g_apUnder);
+	memset(g_apSnap, 0, sizeof g_apSnap);
+	for (int r = 20; r < AP_H - 20; r++) for (int c = 10; c < AP_W - 10; c++) {   // the scroll, ragged edges round it
+		int x = 600 + AP_X + c, y = AP_Y + r;
+		g_apSnap[r * AP_W + c] = g_frame8[y * TW_SW + x] = 9;
+		for (int k = 0; k < 2; k++) for (int j = 0; j < 2; j++) g_frame2x[(2 * y + k) * 2 * TW_SW + 2 * x + j] = TW_SCROLL;
+	}
+	memset(g_ovl, 0, sizeof g_ovl);
+	g_ovl[0].x = AP_X; g_ovl[0].y = AP_Y; g_ovl[0].w = AP_W; g_ovl[0].h = AP_H; g_ovl[0].snap = g_apSnap; g_ovl[0].under = g_apUnder;
+	g_ovl[0].gen = 1; g_ovl[0].on = 1;
+	scroll_overlays_catch(0, TW_SW);
+	cz_field(&v, TW_SW, FALSE);
+	scroll_overlays_lay(TW_SW);
+	CHECK_EQ(TW_PX(600 + AP_X + AP_W / 2, AP_Y + AP_H / 2), TW_SCROLL);   // the scroll
+	CHECK_EQ(TW_PX(600 + AP_X + 2, AP_Y + AP_H / 2), 0x123456);           // its ragged edge: the zoomed-out map
+	CHECK_EQ(TW_PX(500, 120), 0x123456);
+	free(g_ovl[0].cache);
+	free(v.pix);
+	g_ovl[0] = keep0; g_ovl[1] = keep1;
+	g_back = back; g_lut[7] = lut7; g_showTiles = tiles; g_off = off;
+}
