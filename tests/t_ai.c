@@ -817,3 +817,25 @@ TEST(ai_fire_soldiers_dont_walk_back_in_while_it_burns)
 	CHECK_EQ(FIG_S(5, 0x26), 52);                                   // free to go again
 	CHECK_EQ(g_fHold[5], 0);
 }
+TEST(ai_fire_siege_marchers_at_the_wall_step_out_too)
+{
+	t_ai_battle(1); *(int *)0x0053e8fc = 1;
+	t_unit(5, 2, 40, 58, 3); t_oil(40, 58, 10);
+	FIG(5)[0x31] = 9; FIG_S(5, 0x24) = 40; FIG_S(5, 0x26) = 56;    // a siege's march to its place at the wall foot
+	FIG(5)[0x18f] = 1; *(int *)(FIG(5) + 0x190) = (56 * 80 + 40) * 8;   // working on a moat cell
+	g_btick = 1000;
+	fire_step();                                                    // just stepped in, its place out of the fire: goes on
+	CHECK_EQ(FIG(5)[0x31], 9);
+	t_unit_at(5, 41, 58); g_btick = 1020;                           // shuffles to the next burning cell: still in it
+	fire_step();
+	CHECK_EQ(FIG(5)[0x31], 9);
+	g_btick = 1000 + FIRE_PASSING;                                  // 40 steps in the fire: out
+	fire_step();
+	CHECK_EQ(FIG(5)[0x31], ST_MARCH); CHECK(!fire_at(FIG_S(5, 0x24), FIG_S(5, 0x26)));
+	CHECK_EQ(FIG(5)[0x18f], 0); CHECK_EQ(*(int *)(FIG(5) + 0x190), 0);   // the moat work stops
+	int hx = FIG_S(5, 0x24), hy = FIG_S(5, 0x26);
+	t_unit_at(5, hx, hy);
+	FIG(5)[0x31] = 9; FIG_S(5, 0x24) = 40; FIG_S(5, 0x26) = 58;     // marched back into the fire
+	fire_step();
+	CHECK_EQ(FIG(5)[0x31], ST_MARCH); CHECK_EQ(FIG_S(5, 0x24), hx); CHECK_EQ(FIG_S(5, 0x26), hy);
+}

@@ -11537,20 +11537,24 @@ static BOOL engage_chase(int me)
 // stood in it like sheep and burned alive). Oil poured from a wall (FUN_0047a814) sets the cell it hits and the
 // four beside it burning for about 7 s (FUN_00485675: cell type 10, the old type put back after; spreading fire
 // 0x10, 0x11), and each step every unit standing on a burning cell loses men (FUN_004822ed calls FUN_0049459a).
-// Nothing in the game moved them: they kept waiting or chasing the men on the wall. Now, each step:
-// - a computer unit standing in fire (waiting, walking, fighting, idle, after a fight or chasing; not one just
-//   walking through it) walks to the nearest free cell out of it within FIRE_LOOK steps, one not beside the
-//   fire when that's not much further;
+// Nothing in the game moved them: they kept waiting or chasing the men on the wall, or marching to their place
+// at its foot (state 9, a siege's march: FUN_00489b8d gives it instead of 3; it also fills the moat cell a unit
+// works on). Now, each step:
+// - a computer unit standing in fire (waiting, marching, fighting, idle, after a fight or chasing; not one
+//   walking through it, in the fire for less than FIRE_PASSING steps on its way to a cell out of it) walks to
+//   the nearest free cell out of it within FIRE_LOOK steps, one not beside the fire when that's not much
+//   further; its moat work stops (it would go on filling that cell from afar);
 // - while that fire burns, it doesn't walk back in: a walk into the fire is turned back to where it went, and
 //   one whose next step (towards its target or destination) is into the fire stops there.
 // Your units are left to you; siege engines stay. In sieges too (the rest of BattleAI stays out of them).
 #define FIRE_LOOK 5        // cells searched for a way out
-#define FIRE_PASSING 40    // a walking unit that changed cell within this many steps is passing through
+#define FIRE_PASSING 40    // a marching unit in the fire for fewer steps than this is passing through
 static BYTE g_fHold[81];
-static short g_fX[81], g_fY[81], g_fLX[81], g_fLY[81];
-static unsigned g_fSince[81], g_fLogNext[81];
+static short g_fX[81], g_fY[81];
+static unsigned g_fEnter[81], g_fLogNext[81];   // g_fEnter: the step it stepped into the fire, + 1 (0: not in it)
 
 static BOOL fire_on(void) { return g_aiLevel >= 1 && fix_on(TRUE); }
+static BOOL fire_marching(int st) { return st == 3 || st == 9; }
 static BOOL fire_at(int x, int y)
 {
 	if (x < 0 || x > 79 || y < 0 || y > 79) return FALSE;
@@ -11592,6 +11596,7 @@ static void fire_send(int me, int x, int y)
 	BYTE *f = FIG(me);
 	FIG_S(me, 0x24) = (short)x; FIG_S(me, 0x26) = (short)y;
 	f[0x164] = 0; f[0x174] = 0;
+	f[0x18e] = f[0x18f] = 0; *(int *)(f + 0x190) = 0;   // its moat work stops (as state 9 ends it)
 	f[0x31] = 3;
 }
 
@@ -11607,15 +11612,15 @@ static void fire_step(void)
 	if (!fire_on()) return;
 	for (int me = 1; me < 0x51; me++) {
 		BYTE *f = FIG(me);
-		if (!f[0x2c] || f[0x13] || f[0x31] == 2 || f[0x12] >= 7) { g_fHold[me] = 0; continue; }
+		if (!f[0x2c] || f[0x13] || f[0x31] == 2 || f[0x12] >= 7) { g_fHold[me] = 0; g_fEnter[me] = 0; continue; }
 		int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), st = f[0x31];
 		if (x < 0 || x > 79 || y < 0 || y > 79) continue;
-		if (x != g_fLX[me] || y != g_fLY[me]) { g_fLX[me] = (short)x; g_fLY[me] = (short)y; g_fSince[me] = g_btick; }
 		int dx = FIG_S(me, 0x24), dy = FIG_S(me, 0x26);
 		if (fire_at(x, y)) {
-			if (st == 3 && g_fHold[me] && dx == g_fX[me] && dy == g_fY[me]) continue;              // on its way out
-			if (st == 3 && !fire_at(dx, dy) && g_btick - g_fSince[me] < FIRE_PASSING) continue;   // walking through
-			if (st != 1 && st != 3 && st != 4 && st != 5 && st != 7 && st != 8) {
+			if (!g_fEnter[me]) g_fEnter[me] = g_btick + 1;
+			if (st == 3 && g_fHold[me] && dx == g_fX[me] && dy == g_fY[me]) continue;                  // on its way out
+			if (fire_marching(st) && !fire_at(dx, dy) && g_btick + 1 - g_fEnter[me] < FIRE_PASSING) continue;   // walking through
+			if (st != 1 && !fire_marching(st) && st != 4 && st != 5 && st != 7 && st != 8) {
 				if (fire_log_ok(me)) blog("burn fig %d (side %d) stays in the fire at %d,%d: state %d", me, f[0x2c], x, y, st);
 				continue;
 			}
@@ -11630,14 +11635,15 @@ static void fire_step(void)
 			if (g_blog && g_battleLog >= 1) blog("burn fig %d (side %d, state %d) steps out of the fire: %d,%d -> %d,%d", me, f[0x2c], st, x, y, nx, ny);
 			continue;
 		}
+		g_fEnter[me] = 0;
 		if (!g_fHold[me]) continue;
 		if (!fire_near(g_fX[me], g_fY[me], 2) && !fire_near(x, y, 2)) { g_fHold[me] = 0; continue; }   // burnt out: free again
-		if (st == 3 && fire_at(dx, dy)) {
+		if (fire_marching(st) && fire_at(dx, dy)) {
 			fire_send(me, g_fX[me], g_fY[me]);
 			if (fire_log_ok(me)) blog("burn fig %d (side %d) kept out of the fire: %d,%d -> back to %d,%d", me, f[0x2c], dx, dy, g_fX[me], g_fY[me]);
 			continue;
 		}
-		if (st != 1 && st != 3 && st != 8) continue;
+		if (st != 1 && !fire_marching(st) && st != 8) continue;
 		int tx = dx, ty = dy, t = f[0x174];
 		if (st == 8 && t >= 1 && t <= 0x50 && FIG(t)[0x2c]) { tx = FIG_S(t, 0x20); ty = FIG_S(t, 0x22); }
 		if (tx == x && ty == y) continue;
@@ -11652,7 +11658,7 @@ static void battle_reset(void)
 {
 	g_btick = 0;
 	memset(g_fHold, 0, sizeof g_fHold); memset(g_fLogNext, 0, sizeof g_fLogNext); g_bfire = 0;
-	memset(g_fLX, -1, sizeof g_fLX); memset(g_fLY, -1, sizeof g_fLY);
+	memset(g_fEnter, 0, sizeof g_fEnter);
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
 	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
 	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiChargeAtt, 0, sizeof g_aiChargeAtt); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
