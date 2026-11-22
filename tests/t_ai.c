@@ -204,6 +204,23 @@ TEST(ai_hard_defender_attacks_after_a_long_wait_only_when_about_even)
 	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-11, 21) <= 5);
 }
 
+TEST(ai_legendary_weaker_defender_sallies_after_the_wait)
+{
+	t_ai_battle(2);
+	CHECK(t_weigh_at(-15, -10) <= 5);                       // 20 below the threshold: defence
+	for (int i = 1; i < AI_DEF_WAIT; i++) CHECK(t_weigh_at(-15, 21) <= 5);
+	CHECK_EQ(t_weigh_at(-15, 0), 6);                        // about 70 s: it attacks (Hard keeps waiting)
+	t_ai_battle(2);
+	CHECK(t_weigh_at(-26, 0) <= 5);                         // 31 below: hopeless, it keeps waiting
+	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-26, 21) <= 5);
+	t_ai_battle(2); g_aiParts = AI_ALL & ~AI_SALLY;         // switched off: as Hard
+	CHECK(t_weigh_at(-15, -10) <= 5);
+	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-15, 21) <= 5);
+	t_ai_battle(1);                                         // Hard
+	CHECK(t_weigh_at(-15, -10) <= 5);
+	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-15, 21) <= 5);
+}
+
 TEST(ai_hard_each_battle_decides_afresh)
 {
 	t_ai_battle(1);

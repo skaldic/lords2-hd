@@ -9515,7 +9515,11 @@ static ai_fn_t o_strength;
 #define AI_UNDER_FIRE 32
 #define AI_REGROUP 64
 #define AI_FOCUS 128
-#define AI_ALL 0xff
+#define AI_SALLY 256
+#define AI_ALL 0x1ff
+// Legendary's sally (AI_SALLY): after the same wait, a defender attacks unless it's more than AI_SALLY_BAND
+// below the threshold (Hard: AI_DEF_EVEN), so a player who only holds his ground is attacked too.
+#define AI_SALLY_BAND 30
 static int g_aiParts = AI_ALL;
 
 static BOOL ai_on(void) { return g_aiLevel >= 1 && fix_on(TRUE) && *(int *)0x0053e8fc == 0; }
@@ -9527,7 +9531,9 @@ static int ai_mode_step(int raw, int rolled, int thr)
 {
 	if (!g_aiDecided) { g_aiDecided = TRUE; g_aiAttack = rolled > thr; g_aiWeighs = 0; }
 	else if (g_aiAttack && raw < thr - AI_MODE_SLACK) { g_aiAttack = FALSE; g_aiWeighs = 0; }
-	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiWeighs >= AI_DEF_WAIT && raw >= thr - AI_DEF_EVEN))) { g_aiAttack = TRUE; g_aiWeighs = 0; }
+	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiWeighs >= AI_DEF_WAIT && raw >= thr - (ai_legend(AI_SALLY) ? AI_SALLY_BAND : AI_DEF_EVEN)))) {
+		g_aiAttack = TRUE; g_aiWeighs = 0;
+	}
 	g_aiWeighs++;
 	return g_aiAttack ? max(raw, thr + 1) : min(raw, thr);
 }
