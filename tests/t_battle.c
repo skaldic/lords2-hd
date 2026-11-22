@@ -408,6 +408,21 @@ TEST(archer_cornered_stands_and_fights)
 	CHECK_EQ(g_aNext[8], 82);                   // looks again in a second
 }
 
+TEST(archer_behind_stakes_stays_put)
+{
+	t_archer(8, 1, 20, 53, 2);
+	t_unit(9, 2, 20, 51, 3); FIG(9)[0x31] = ST_MARCH;           // 2 cells off, coming at it
+	t_flags(0, 52, 79, 52, FL_BLOCKED);                          // a row of stakes between them
+	g_btick = 0;
+	archer_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                             // it can't walk up: the archer stays and shoots
+	CHECK(can_reach_soon(9, 8) == FALSE);
+	BCELL(21, 52)[1] = 0;                                        // a gap right beside it: now it can
+	archer_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_MARCH);
+	for (int x = 0; x < 80; x++) BCELL(x, 52)[1] = 0;
+}
+
 TEST(archer_leaves_melee_once_covered)
 {
 	t_archer(8, 1, 20, 20, 2);

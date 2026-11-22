@@ -292,6 +292,21 @@ TEST(ai_hard_archers_step_back_from_melee_with_no_cover)
 	CHECK_EQ(t_ordG, 0); CHECK_EQ(t_fireAt, 3);
 }
 
+TEST(ai_hard_archers_behind_stakes_shoot_instead_of_stepping_back)
+{
+	t_ai_battle(1);
+	t_bow(1, 2, 40, 40, 2, 15); t_bow(2, 2, 41, 40, 2, 15); t_group(2, 2, 1, 2, 40, 40);
+	t_human(t_unit(3, 1, 43, 40, 3)); t_group(3, 1, 3, 1, 43, 40);   // the player's melee 3 cells east
+	t_unit(4, 2, 50, 40, 4); t_group(4, 2, 3, 1, 50, 40);
+	t_flags(42, 0, 42, 79, FL_BLOCKED);                             // stakes between them, no way round
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 0); CHECK_EQ(t_fireAt, 3);                     // they stay and shoot
+	BCELL(42, 40)[1] = 0;                                           // a gap: now they step back
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 2); CHECK_EQ(t_ordX, 36);
+	for (int y = 0; y < 80; y++) BCELL(42, y)[1] = 0;
+}
+
 TEST(ai_hard_archers_stand_behind_their_melee_until_in_range)
 {
 	t_ai_battle(1);
@@ -471,6 +486,23 @@ TEST(ai_hard_nearest_free_melee_goes_to_help_its_archers)
 	t_unit_at(4, 70, 40); GRP_S(4, 0x1e) = 70; t_unit_at(5, 75, 40); GRP_S(5, 0x1e) = 75;
 	t_ai_think_melee(4);
 	CHECK_EQ(t_ordG, 0); CHECK_EQ(g_aiRescue[4], 0);
+}
+
+TEST(ai_hard_no_help_for_archers_behind_stakes)
+{
+	t_ai_battle(1); AI_RATIO = 0;
+	t_bow(1, 2, 40, 40, 2, 15); t_group(2, 2, 1, 1, 40, 40);
+	t_unit(4, 2, 50, 40, 4); t_group(4, 2, 3, 1, 50, 40);
+	t_human(t_unit(6, 1, 42, 41, 6)); t_group(6, 1, 3, 1, 42, 41); // your swords 2 cells off...
+	t_flags(41, 0, 41, 79, FL_BLOCKED);                            // ...across a line of stakes
+	int ex = 0, ey = 0;
+	CHECK_EQ(ai_archers_attackers(2, &ex, &ey), 0);
+	G_THINK(4) = 20;
+	ai_rescue_wake(2);
+	CHECK_EQ(G_THINK(4), 20);                                       // nobody woken, nobody sent
+	t_ai_think_melee(4);
+	CHECK_EQ(g_aiRescue[4], 0);
+	for (int y = 0; y < 80; y++) BCELL(41, y)[1] = 0;
 }
 
 TEST(ai_hard_melee_normal_runs_the_games_handlers)

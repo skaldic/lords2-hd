@@ -66,7 +66,8 @@ The screenshots are hosted on the release: this repository holds no game art.
   than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away; and
   only when they aren't outnumbered by the enemy there and coming up behind it, so a few pikemen
   holding a gap stay in it
-- Archers step back from soldiers charging them and keep shooting, and step out of melee once one of
+- Archers step back from soldiers charging them and keep shooting (behind stakes, a hedge or water they
+  stay put), and step out of melee once one of
   their soldiers reaches their enemy
 - Mop-Up hunts down every enemy it can walk to, and your orders still take over
 - Each of these on its own switch, on F10's Battles tab

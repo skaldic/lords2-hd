@@ -9573,6 +9573,7 @@ static void __cdecl h_strength(void)
 #define AI_ARCH_STEP 4
 #define AI_ARCH_BEHIND 3
 static int cheb(int x0, int y0, int x1, int y1);
+static BOOL can_reach_soon(int e, int me);
 typedef void (__cdecl *ai_order_t)(int, int, int, int, int, int);
 typedef int (__cdecl *ai_grp_t)(int);
 static ai_order_t ai_game_order = (ai_order_t)0x00479e90;   // FUN_00479e90(group, x, y, 0, 0, 0)
@@ -9665,13 +9666,33 @@ static BOOL ai_order(int g, int x, int y)
 	return TRUE;
 }
 
+// TRUE when an enemy melee unit within AI_ARCH_THREAT of archer group g's centre can walk up to the member
+// nearest it soon (can_reach_soon): one behind stakes, a hedge or water is no reason to step back.
+static BOOL ai_archers_reachable(int g, const ai_view *v)
+{
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == v->side || t[0x31] == 2 || t[0x12] >= 7 || t[0x16a]) continue;
+		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
+		if (cheb(v->cx, v->cy, ex, ey) > AI_ARCH_THREAT) continue;
+		int m = 0, md = 999;
+		for (int i = 1; i < 0x51; i++)
+			if (FIG_S(i, 0x178) == g && FIG(i)[0x2c] == v->side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) {
+				int d = cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), ex, ey);
+				if (d < md) { md = d; m = i; }
+			}
+		if (m && can_reach_soon(e, m)) return TRUE;
+	}
+	return FALSE;
+}
+
 static void ai_archers_think(int g)
 {
 	ai_view v;
 	ai_view_take(g, &v);
 	int x, y, tg;
 	char what[80] = "";
-	if (v.nearMelee <= AI_ARCH_THREAT && !v.cover) {
+	if (v.nearMelee <= AI_ARCH_THREAT && !v.cover && ai_archers_reachable(g, &v)) {
 		ai_toward(v.cx, v.cy, v.nmx, v.nmy, -AI_ARCH_STEP, &x, &y);
 		if (ai_order(g, x, y)) snprintf(what, sizeof what, "step back from enemy melee %d cells away", v.nearMelee);
 	}
@@ -9902,21 +9923,21 @@ static void ai_charge(int g)
 #define AI_RESCUE_REACH 20
 #define AI_RESCUE_MANY 3
 static BYTE g_aiRescue[0x51];        // the archer group it helps (0: none; per battle)
-// How many enemy melee units stand within AI_RESCUE_NEAR of archer group a's members, and the nearest one's
-// cell. When none, a's helpers are let go.
+// How many enemy melee units stand within AI_RESCUE_NEAR of archer group a's members and can walk up to
+// them (can_reach_soon), and the nearest one's cell. When none, a's helpers are let go.
 static int ai_archers_attackers(int a, int *ex, int *ey)
 {
 	int side = GRP_B(a, 0x00), n = 0, best = 999;
 	for (int e = 1; e < 0x51; e++) {
 		BYTE *t = FIG(e);
 		if (!t[0x2c] || t[0x2c] == side || t[0x31] == 2 || t[0x12] >= 7 || t[0x16a]) continue;
-		int nd = 999;
+		int nd = 999, m = 0;
 		for (int i = 1; i < 0x51; i++)
 			if (FIG_S(i, 0x178) == a && FIG(i)[0x2c] == side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) {
 				int d = cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(e, 0x20), FIG_S(e, 0x22));
-				if (d < nd) nd = d;
+				if (d < nd) { nd = d; m = i; }
 			}
-		if (nd > AI_RESCUE_NEAR) continue;
+		if (nd > AI_RESCUE_NEAR || !can_reach_soon(e, m)) continue;   // not one behind stakes or a hedge
 		n++;
 		if (nd < best) { best = nd; *ex = FIG_S(e, 0x20); *ey = FIG_S(e, 0x22); }
 	}
@@ -10495,6 +10516,19 @@ static int dm_dist(int e, int me)
 	return dm_from(me, y * 80 + x);
 }
 
+// TRUE when enemy unit e can walk up to unit me in at most REACH_SLACK steps more than the straight line.
+// Stakes, a hedge, water or a wall between them make it a long way round, so it is no threat yet (the
+// user's rule: archers behind stakes stay put and keep shooting). A short search: depth d + REACH_SLACK.
+#define REACH_SLACK 2
+static BOOL can_reach_soon(int e, int me)
+{
+	int d = cheb(FIG_S(e, 0x20), FIG_S(e, 0x22), FIG_S(me, 0x20), FIG_S(me, 0x22));
+	g_dmMaxDepth = d + REACH_SLACK;
+	int w = dm_dist(e, me);
+	g_dmMaxDepth = 0x7fff;
+	return w != DM_FAR && w <= d + REACH_SLACK;
+}
+
 static int dm_pick(int me)
 {
 	int best = 0, bestCost = 0x7fffffff;
@@ -10732,7 +10766,8 @@ static void engage_idle(int me)
 }
 
 // Archers save themselves: an idle archer or crossbowman with an enemy foot soldier or knight marching
-// or charging at it within 2 cells steps back about 3 cells, away from it, then shoots again. It stays
+// or charging at it within 2 cells, and able to walk up to it (not behind stakes, a hedge or water: then
+// it stays put and shoots), steps back about 3 cells, away from it, then shoots again. It stays
 // within 5 cells of where it stood, steps back at most once every 3 seconds, and stands and fights when
 // there's no free cell behind it. Both sides.
 static unsigned g_aNext[81];
@@ -10754,7 +10789,7 @@ static void archer_idle(int me)
 		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x16a] || t[0x12] >= 7) continue;
 		if (t[0x31] != 3 && t[0x31] != 8) continue;   // only one coming at it
 		int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
-		if (d <= 2 && d < td) { td = d; threat = e; }
+		if (d <= 2 && d < td && can_reach_soon(e, me)) { td = d; threat = e; }   // not one behind stakes
 	}
 	if (!threat || td < 1) return;
 	if (!archer_step_away(me, threat, "")) g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
