@@ -1,6 +1,6 @@
 # Tests
 
-Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 150 tests in about 8 seconds. They need only the compiler
+Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 151 tests in about 8 seconds. They need only the compiler
 that builds the patch (llvm-mingw, 32-bit). The five hook tests also need a copy of the game's exe.
 
 ```powershell

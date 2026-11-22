@@ -344,6 +344,64 @@ TEST(wheel_zoom_edges_slide_the_shown_part_first)
 	t_zoomed_battle_end();
 }
 
+/* Zoomed in, a minimap click (or a group's number key) shows the spot jumped to: the game puts it in the middle of
+ * its view, and the shown part goes round it. Before, the part kept its place in the field and showed somewhere
+ * else. A click that sends the selected units there moves nothing. */
+static int t_clickCol, t_clickRow, t_clickOrders;
+static void __cdecl t_game_clamp(void)   // the game's scroll limit (FUN_0047ed34)
+{
+	if (BATTLE_COL < 0) BATTLE_COL = 0;
+	if (BATTLE_ROW < 0) BATTLE_ROW = 0;
+	if (BATTLE_COL > 0x41) BATTLE_COL = 0x41;
+	if (BATTLE_ROW > 0x42) BATTLE_ROW = 0x42;
+}
+static int __cdecl t_mini_click(void)   // the game's minimap click (FUN_00432443), with the jump moved to the middle
+{
+	if (t_clickOrders) return 1;
+	BATTLE_COL = t_clickCol - (7 + BATTLE_MORE_COLS / 2);
+	BATTLE_ROW = t_clickRow - (7 + BATTLE_MORE_ROWS / 2);
+	h_battle_clamp();
+	return 1;
+}
+TEST(wheel_zoom_minimap_click_shows_the_spot)
+{
+	t_zoomed_battle();
+	mini_click_t keepClick = o_mini_click;
+	battle_clamp_t keepClamp = o_battle_clamp;
+	int k = g_battleK, r = g_battleR;
+	o_mini_click = t_mini_click; o_battle_clamp = t_game_clamp;
+	g_battleK = BATTLE_MORE_COLS; g_battleR = BATTLE_MORE_ROWS;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	*(int *)0x004e6558 = PANEL_X - fw; *(int *)0x004e6554 = 24;   // the view's first cell at the field's top-left
+	InterlockedExchange(&g_wzLevel, WZ_STEPS - 1); g_wzX = 0; g_wzY = 0;   // x4, at the field's top-left
+	t_clickCol = 40; t_clickRow = 40; t_clickOrders = 0;
+	CHECK_EQ(h_mini_click(), 1);
+	float cx = (40 - BATTLE_COL) * 32 + 16, cy = (40 - BATTLE_ROW) * 32 + 16;   // the cell's middle in the field
+	CHECK(fabsf(g_wzX + fw / 8.0f - cx) < 0.5f); CHECK(fabsf(g_wzY + fh / 8.0f - cy) < 0.5f);   // the part round it
+	CHECK_EQ(g_wzPendView, BATTLE_VIEW_NOW());                     // the old view's frames: the part where it was
+	CHECK(fabsf(g_wzPendX + g_wzX) < 0.01f);
+	CHECK_EQ(g_wzJump, -1);
+	t_clickCol = 79; t_clickRow = 79;                              // the battlefield's far corner: its view stops short
+	h_mini_click();
+	CHECK_EQ(BATTLE_COL, 0x41 - BATTLE_MORE_COLS);
+	cx = (79 - BATTLE_COL) * 32; cy = (79 - BATTLE_ROW) * 32;     // the cell's top-left (the last row is half drawn)
+	CHECK(cx >= g_wzX && cx < g_wzX + fw / 4.0f); CHECK(cy >= g_wzY && cy < g_wzY + fh / 4.0f);   // still shown
+	float x = g_wzX, y = g_wzY;
+	t_clickOrders = 1; t_clickCol = 10; t_clickRow = 10;           // the units sent there: nothing moves
+	h_mini_click();
+	CHECK_EQ(g_wzX, x); CHECK_EQ(g_wzY, y);
+	h_battle_clamp();                                              // the game's scroll limit every frame: nothing
+	CHECK_EQ(g_wzX, x);
+	InterlockedExchange(&g_wzLevel, 0);                            // not zoomed: nothing to move
+	t_clickOrders = 0;
+	h_mini_click();
+	CHECK_EQ(g_wzX, x);
+	InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0;
+	BATTLE_COL = 0; BATTLE_ROW = 0;
+	o_mini_click = keepClick; o_battle_clamp = keepClamp; g_battleK = k; g_battleR = r;
+	t_zoomed_battle_end();
+}
+
 /* A made-up wide map 1100 columns wide (game x 0 at column 600): a window at columns 900..999, rows 100..299, and a
  * wider scroll over it (columns 850..1049, rows 150..199). The 2x picture holds each map pixel's own column number,
  * so a map pixel moved to the wrong place shows. */

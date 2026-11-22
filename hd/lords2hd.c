@@ -8334,8 +8334,58 @@ static void __cdecl h_mini_rows(int row0, int n)
 	for (int k = 0; k < ng; k++) cells[(size_t)ground[k] * stride + 2] &= ~1;
 }
 
+// Jumping to a spot while zoomed in: a minimap click (FUN_00432443) or a group's number key (FUN_0043c910)
+// puts the spot in the middle of the game's view (kCentreSites), but the shown part kept its place in the
+// field, so the spot could be off the screen. Both end with the scroll limit (FUN_0047ed34): their spot is
+// where the view was put just before it (h_battle_clamp records that), and the shown part goes round the
+// spot. A minimap click that sends the selected units there instead moves neither.
+static int g_wzJump = -1, g_wzJumpCol, g_wzJumpRow;   // -1 no jump going on, 0 one is, 1 its view was put
+static void wz_centre_on(int col, int row)   // a battle cell
+{
+	if (!wz_shown()) return;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], ox = g_wzX, oy = g_wzY;
+	wz_clamp(z, fw, fh, &ox, &oy);
+	// the cell's middle in field px: the view's first column is BATTLE_COL, at the game's x *0x004e6558
+	float cx = (col - BATTLE_COL) * WZ_CELL + WZ_CELL / 2 + *(int *)0x004e6558 - (PANEL_X - fw);
+	float cy = (row - BATTLE_ROW) * WZ_CELL + WZ_CELL / 2 + *(int *)0x004e6554 - 24;
+	float x = cx - fw / z / 2, y = cy - fh / z / 2;
+	wz_clamp(z, fw, fh, &x, &y);
+	g_wzX = x; g_wzY = y;
+	// until a frame of the new view is shown, the old one keeps the part where it was
+	g_wzPendX = ox - x; g_wzPendY = oy - y;
+	InterlockedExchange(&g_wzPendView, BATTLE_VIEW_NOW());
+	if (g_clickLog) logf_("wheel zoom: jump to cell %d,%d, view %d,%d, the part at %.0f,%.0f", col, row, BATTLE_COL, BATTLE_ROW, x, y);
+	InterlockedExchange(&g_forcePresent, 1);
+	mark_dirty();
+}
+typedef int (__cdecl *mini_click_t)(void);
+static mini_click_t o_mini_click;
+static int __cdecl h_mini_click(void)
+{
+	g_wzJump = 0;
+	int r = o_mini_click();
+	if (g_wzJump == 1) wz_centre_on(g_wzJumpCol, g_wzJumpRow);
+	g_wzJump = -1;
+	return r;
+}
+typedef void (__cdecl *group_key_t)(int);
+static group_key_t o_group_key;
+static void __cdecl h_group_key(int key)
+{
+	g_wzJump = 0;
+	o_group_key(key);
+	if (g_wzJump == 1) wz_centre_on(g_wzJumpCol, g_wzJumpRow);
+	g_wzJump = -1;
+}
+
 static void __cdecl h_battle_clamp(void)
 {
+	if (g_wzJump == 0) {   // the spot jumped to: the view's middle column and row (kCentreSites)
+		g_wzJump = 1;
+		g_wzJumpCol = BATTLE_COL + 7 + (g_battleZoom ? BATTLE_MORE_COLS / 2 : (g_extra + 31) / 32 / 2);
+		g_wzJumpRow = BATTLE_ROW + 7 + (g_battleZoom ? BATTLE_MORE_ROWS / 2 : 0);
+	}
 	o_battle_clamp();
 	if (BATTLE_COL > 0x41 - g_battleK) BATTLE_COL = 0x41 - g_battleK;
 	if (BATTLE_ROW > 0x42 - g_battleR) BATTLE_ROW = 0x42 - g_battleR;
@@ -8878,6 +8928,9 @@ static void install_wide(void)
 	hook_code((BYTE *)0x00432221, kEdgePrologue, sizeof kEdgePrologue, h_edge_scroll, &o_edge_scroll);
 	static const BYTE kMiniPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20 }; // push ebp; mov ebp,esp; sub esp,20h
 	hook_code((BYTE *)0x004bc51a, kMiniPrologue, sizeof kMiniPrologue, h_mini_rows, &o_mini_rows);
+	static const BYTE kJumpPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	hook_code((BYTE *)0x00432443, kJumpPrologue, sizeof kJumpPrologue, h_mini_click, &o_mini_click);
+	hook_code((BYTE *)0x0043c910, kJumpPrologue, sizeof kJumpPrologue, h_group_key, &o_group_key);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
