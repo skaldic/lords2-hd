@@ -66,8 +66,8 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Idle soldiers fight an enemy within a few cells (knights a little further), but never wander more
   than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away; and
   only when they aren't outnumbered by the enemy there and coming up behind it, so a few pikemen
-  holding a gap stay in it; a formation standing next to stakes, stones or water holds that line and
-  fights only an enemy right beside it
+  holding a gap stay in it; a formation standing next to stakes, stones, water, a castle wall, the gate
+  or the moat holds that line and fights only an enemy right beside it, even after a fight
 - Archers shoot the enemies fighting their soldiers first, never chase after a fight, step back from soldiers charging them and
   keep shooting (behind stakes, a hedge or water they stay put), and step out of melee once one of
   their soldiers reaches their enemy

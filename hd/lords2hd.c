@@ -11010,8 +11010,8 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 // - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
 // - only with the odds: its soldiers near that enemy have at least as many men as the enemy has there and
 //   coming up behind (engage_odds_ok);
-// - one whose formation stands next to an obstacle (stakes, stones, water) holds that line: only an enemy
-//   beside it (engage_line_held);
+// - one whose formation stands next to an obstacle (stakes, stones, water, a castle wall, the gate, the moat)
+//   holds that line: only an enemy beside it (engage_line_held), after a fight too (pick_filter);
 // - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
 #define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
 #define ENG_RANGE_KNIGHT 4
@@ -11047,13 +11047,16 @@ static BOOL engage_odds_ok(int me, int e)
 }
 
 // The user's rule: a unit standing next to an obstacle (a cell it can't step onto: stakes, stones, a hedge or
-// forest, water, a cliff; not the map's edge) is holding a line there, so it fights only an enemy right
-// beside it and never steps out to meet one.
+// forest, water, a cliff, a castle wall (3 levels up) or gate; not the map's edge) is holding a line there, so
+// it fights only an enemy right beside it and never steps out to meet one. An unfilled moat counts too (flag
+// 0x20: the game's step check lets soldiers onto it only to fill it): the user's pikemen formed a line in
+// front of the gate, behind the drawbridge, with the moat beside them, and one went out onto the bridge.
 static BOOL engage_by_obstacle(int x, int y)
 {
 	for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
 		int vx = x + dx, vy = y + dy;
 		if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+		if (BCELL(vx, vy)[1] & 0x20) return TRUE;
 		if (!dm_step_ok(y * 80 + x, vy * 80 + vx)) return TRUE;
 	}
 	return FALSE;
@@ -11126,8 +11129,8 @@ static void engage_idle(int me)
 	f[0x174] = (BYTE)best;
 	f[0x31] = 8;
 	g_bengage++;
-	if (g_blog && g_battleLog >= 1) blog("engage fig %d (side %d) -> enemy %d, %d steps away, anchor %d,%d", me, f[0x2c], best, bestD,
-		g_eAnchorX[me], g_eAnchorY[me]);
+	if (g_blog && g_battleLog >= 1) blog("engage fig %d (side %d) -> enemy %d, %d steps away, anchor %d,%d%s", me, f[0x2c], best, bestD,
+		g_eAnchorX[me], g_eAnchorY[me], held ? ", holding a line" : "");
 }
 
 // Archers save themselves: an idle archer or crossbowman with an enemy foot soldier or knight marching
@@ -11222,7 +11225,9 @@ static int support_target(int me, int range)
 // After a fight (state 7, FUN_00483ce1, the call returning to 0x483e16) the game sends a unit with an enemy
 // within 5 cells chasing it (state 8), archers and crossbowmen too: they ran into melee across the field
 // (the user's report). For them the answer is now "none", so they stand (state 5) and shoot; an enemy right
-// beside them is still fought, as that's decided before this call.
+// beside them is still fought, as that's decided before this call. A soldier whose formation holds a line
+// (engage_line_held) stands too unless the enemy picked is right beside it, so a fight at the line doesn't
+// pull it out after the next enemy.
 #define PICK_AFTER_FIGHT ((void *)0x00483e16)
 #define PICK_SHOT ((void *)0x00483491)
 // What h_pick hands back to the caller at `from`, given the game's own result r.
@@ -11231,6 +11236,13 @@ static int pick_filter(void *from, int range, int me, int only, int r)
 	if (from == PICK_AFTER_FIGHT && fix_on(g_fixEngage) && me >= 1 && me <= 0x50 && FIG(me)[0x16a]) {
 		if ((BYTE)r && g_blog && g_battleLog >= 1) blog("stand fig %d (archer, side %d): shoots instead of chasing enemy %d", me, FIG(me)[0x2c], *(int *)0x0052eff4);
 		return 0;
+	}
+	if (from == PICK_AFTER_FIGHT && (BYTE)r && fix_on(g_fixEngage) && me >= 1 && me <= 0x50 && FIG(me)[0x12] < 7) {
+		int e = *(int *)0x0052eff4;
+		if (e >= 1 && e <= 0x50 && cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), FIG_S(e, 0x20), FIG_S(e, 0x22)) > 1 && engage_line_held(me)) {
+			if (g_blog && g_battleLog >= 1) blog("stand fig %d (side %d): holds its line instead of chasing enemy %d", me, FIG(me)[0x2c], e);
+			return 0;
+		}
 	}
 	if (from != PICK_SHOT || only || !fix_on(g_fixEngage) || me < 1 || me > 0x50) return r;
 	BYTE *f = FIG(me);
