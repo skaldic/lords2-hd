@@ -9891,8 +9891,13 @@ static void __cdecl h_strength(void)
 // think (every 200 steps with no member in melee, as the game's) does the first of:
 //   1. enemy melee within AI_ARCH_THREAT of the group's centre and none of its own melee within
 //      AI_ARCH_COVER: step AI_ARCH_STEP cells straight away from it;
-//   2. an enemy group within range (the members' shortest, centre to centre): the game's own fire order
-//      (FUN_0048c974, as its handler gives it);
+//   2. an enemy group within range (the members' shortest, centre to centre) and at least half its archers
+//      with an enemy unit within their own range: the game's own fire order (FUN_0048c974, as its handler gives
+//      it). That order reaches only archers already close to the target group (its pick uses range 0x28), so
+//      with the group's centre in range but most archers not, they stood shooting nothing while their
+//      soldiers fought at a bridge (the user's Legendary battle: 1-5 shots a second against the player's 14);
+//   2b. its side's soldiers fighting (an enemy in melee with one of them) further than 2 inside its range:
+//      walk up until that fight is 2 inside range, so they back the fight up;
 //   3. its own melee not charging: stand AI_ARCH_BEHIND cells behind the centre of its side's melee, on the
 //      side away from the enemy's centre;
 //   4. otherwise (no melee left, or the melee charging): walk up until the nearest enemy is 2 inside range.
@@ -9918,6 +9923,8 @@ typedef struct {
 	int nearAny, nax, nay;       // the nearest enemy unit of any kind
 	BOOL cover;                  // a melee unit of its own within AI_ARCH_COVER of the centre
 	BOOL charging;               // a computer melee group of its side is charging
+	int members, inRange;        // its live archers, and those with an enemy unit within their own range
+	int nearFight, fx, fy;       // the nearest enemy fighting one of its side (in melee with it): cells, where
 } ai_view;
 
 static void ai_view_take(int g, ai_view *v)
@@ -9941,6 +9948,26 @@ static void ai_view_take(int g, ai_view *v)
 		if (melee && d < v->nearMelee) { v->nearMelee = d; v->nmx = x; v->nmy = y; }
 	}
 	if (v->range == 99) v->range = 8;
+	v->nearFight = 999;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22);
+		if (f[0x2c] == v->side) {
+			if (FIG_S(i, 0x178) != g || !f[0x16a]) continue;
+			v->members++;
+			int r = FIG_S(i, 0x170) / 8;
+			for (int e = 1; e < 0x51; e++) {
+				BYTE *t = FIG(e);
+				if (t[0x2c] && t[0x2c] != v->side && t[0x31] != 2 && cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22)) <= r) { v->inRange++; break; }
+			}
+			continue;
+		}
+		int o = f[0x17e];
+		if (f[0x31] != 4 || o < 1 || o > 0x50 || FIG(o)[0x2c] != v->side) continue;
+		int d = cheb(v->cx, v->cy, x, y);
+		if (d < v->nearFight) { v->nearFight = d; v->fx = x; v->fy = y; }
+	}
 	if (v->ownMelee) { v->omx = osx / v->ownMelee; v->omy = osy / v->ownMelee; }
 	if (v->enemies) { v->ex = esx / v->enemies; v->ey = esy / v->enemies; }
 	for (int h = 1; h < 0x51; h++)
@@ -10025,9 +10052,13 @@ static void ai_archers_think(int g)
 		ai_toward(v.cx, v.cy, v.nmx, v.nmy, -AI_ARCH_STEP, &x, &y);
 		if (ai_order(g, x, y)) snprintf(what, sizeof what, "step back from enemy melee %d cells away", v.nearMelee);
 	}
-	else if ((tg = ai_shoot_target(g, v.range)) != 0) {
+	else if ((tg = ai_shoot_target(g, v.range)) != 0 && v.inRange * 2 >= v.members) {
 		ai_game_fire(tg);
-		snprintf(what, sizeof what, "shoot at g%d", tg);
+		snprintf(what, sizeof what, "shoot at g%d (%d of %d in range)", tg, v.inRange, v.members);
+	}
+	else if (v.nearFight < 999 && v.nearFight > v.range - 2) {
+		ai_toward(v.cx, v.cy, v.fx, v.fy, v.nearFight - (v.range - 2), &x, &y);
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "up to the fight at %d,%d (%d cells, %d of %d in range)", v.fx, v.fy, v.nearFight, v.inRange, v.members);
 	}
 	else if (v.ownMelee && !v.charging && v.enemies) {
 		ai_toward(v.omx, v.omy, v.ex, v.ey, -AI_ARCH_BEHIND, &x, &y);
