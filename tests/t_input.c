@@ -224,6 +224,66 @@ TEST(wheel_zoom_picture_enlarges_only_the_field)
 /* Zoomed in, a screen edge or a scroll key first slides the shown part across the field; the game scrolls the
  * battlefield only once the part is at the field's edge on that side. Before, the part stayed where it was and the
  * field beside it couldn't be reached where the game's view was already at the end of the battlefield. */
+/* The battle minimap's frame: zoomed in, the marks go round the shown part; the game's frame round the whole field
+ * and the part's last frame get their ground back (bit 0, for the minimap's call only). A battle of 60 x 50 cells, the
+ * view's 43 x 29 cells from cell 10, 5. */
+enum { T_CW = 60, T_CH = 50, T_ST = 8 };
+static BYTE t_cells[T_CW * T_CH * T_ST], t_seen[T_CW * T_CH];   // t_seen: byte 2 of each cell as the minimap saw it
+static void __cdecl t_mini_rows(int row0, int n)
+{
+	for (int row = row0; row < row0 + n; row++) for (int c = 0; c < T_CW; c++) {
+		t_seen[row * T_CW + c] = t_cells[(row * T_CW + c) * T_ST + 2];
+		t_cells[(row * T_CW + c) * T_ST + 2] &= ~2;   // (as the game: a frame drawn, its mark taken off)
+	}
+}
+static BYTE t_flag(int c, int row) { return t_cells[(row * T_CW + c) * T_ST + 2]; }
+static void t_game_frame(void)   // the game's battlefield marks the edge of the view it drew, every frame
+{
+	for (int c = 10; c < 53; c++) { t_cells[(5 * T_CW + c) * T_ST + 2] |= 2; t_cells[(33 * T_CW + c) * T_ST + 2] |= 2; }
+	for (int row = 5; row < 34; row++) { t_cells[(row * T_CW + 10) * T_ST + 2] |= 2; t_cells[(row * T_CW + 52) * T_ST + 2] |= 2; }
+}
+static void t_frame(void) { t_game_frame(); h_mini_rows(0, T_CH); }
+TEST(wheel_zoom_minimap_frame_round_the_shown_part)
+{
+	t_zoomed_battle();
+	mini_rows_t keep = o_mini_rows;
+	o_mini_rows = t_mini_rows;
+	memset(t_cells, 0, sizeof t_cells);
+	*(BYTE **)0x004e6574 = t_cells; *(int *)0x004e5d50 = T_ST; *(int *)0x004e6578 = T_CW; *(int *)0x004e6570 = T_CH;
+	*(int *)0x004e5d5c = 43; *(int *)0x004e5d4c = 29; *(int *)0x004e657c = 10; *(int *)0x004e6580 = 5;
+	int fw = battle_map_w();
+	*(int *)0x004e6558 = PANEL_X - fw; *(int *)0x004e6554 = 24;   // the view's first cell at the field's top-left
+	t_frame();                                      // not zoomed: the game's frame as it is
+	CHECK_EQ(t_seen[5 * T_CW + 52] & 3, 2);
+	InterlockedExchange(&g_wzLevel, 3); g_wzX = 0; g_wzY = 0;  // x2 at the field's top-left
+	int r[4];
+	wz_mini_rect(r);
+	CHECK_EQ(r[0], 10); CHECK_EQ(r[1], 5);
+	CHECK(abs((r[2] - r[0] + 1) - (fw / 2 + 31) / 32) <= 1);   // half the field's width in cells
+	CHECK(abs((r[3] - r[1] + 1) - ((2 * GAME_H - 48) / 2 + 31) / 32) <= 1);
+	t_frame();
+	CHECK_EQ(t_seen[5 * T_CW + 10] & 2, 2);                    // the part's corner (also the field's): framed
+	CHECK_EQ(t_seen[r[3] * T_CW + r[2]] & 2, 2);               // its far corner, inside the field: framed
+	CHECK_EQ(t_seen[5 * T_CW + 52] & 3, 1);                    // the field's far corner: its ground drawn, no frame
+	CHECK_EQ(t_flag(52, 5) & 3, 0);                            // (bit 0 only for the minimap's call)
+	CHECK_EQ(t_seen[20 * T_CW + 30] & 3, 0);                   // inside the part: nothing
+	g_wzX = 300;                                               // the part moves right: its last frame gets its ground
+	t_frame();
+	CHECK_EQ(t_seen[r[3] * T_CW + 10] & 3, 1);
+	int r2[4];
+	wz_mini_rect(r2);
+	REQUIRE(r2[0] > r[0]);
+	InterlockedExchange(&g_wzLevel, 0);                        // zoomed out: the part's frame gets its ground, then as the game
+	t_frame();
+	CHECK_EQ(t_seen[r2[3] * T_CW + r2[2]] & 3, 1);             // (it stayed beside the game's frame at first)
+	memset(t_seen, 0, sizeof t_seen);
+	t_frame();
+	CHECK_EQ(t_seen[20 * T_CW + 30] & 3, 0);
+	*(BYTE **)0x004e6574 = NULL;
+	o_mini_rows = keep;
+	t_zoomed_battle_end();
+}
+
 static int t_due = 1;   // the game's scroll clock, played by the test
 static int __cdecl t_scroll_due(void) { return t_due; }
 TEST(wheel_zoom_edges_slide_the_shown_part_first)
@@ -231,7 +291,7 @@ TEST(wheel_zoom_edges_slide_the_shown_part_first)
 	t_zoomed_battle();
 	int (__cdecl *due)(void) = wz_scroll_due;
 	wz_scroll_due = t_scroll_due; t_due = 1;
-	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	int fw = battle_map_w();
 	float maxX = fw - fw / 4.0f;
 	InterlockedExchange(&g_wzLevel, WZ_STEPS - 1); g_wzX = 0; g_wzY = 0;   // x4, at the field's top-left
 	*(int *)0x0055ce70 = 10; *(int *)0x005678a0 = 5;            // the game's view (col, row)

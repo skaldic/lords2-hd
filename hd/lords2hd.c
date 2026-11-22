@@ -8260,6 +8260,78 @@ static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x; onc
 	return r;
 }
 
+// The battle minimap's frame while zoomed in with the wheel: around the shown part instead of the whole field.
+// The game marks the cells on the edge of the battlefield it drew (bit 2 of byte 2 of a cell's record,
+// FUN_004bcbdc, every frame), and its minimap, a few rows a frame in turn (FUN_004bc51a, from FUN_004bc1d1),
+// draws those cells as the frame and takes the mark off. Zoomed in, the rows about to be drawn get the marks on
+// the edge of the shown part instead; the cells that lose one (the game's frame, the part's last frame) get
+// their ground drawn again through bit 0 (the battlefield's "draw again"), set for the minimap's call only.
+typedef void (__cdecl *mini_rows_t)(int, int);
+static mini_rows_t o_mini_rows;
+#define WZ_MINI_MAX (96 * 96)
+static BYTE g_wzMiniOld[WZ_MINI_MAX];   // cells of a frame drawn for the zoom before, waiting for their ground
+static int g_wzMiniR[4] = { -1 }, g_wzMiniCw, g_wzMiniCh, g_wzMiniOldN;
+// The shown part's frame in the battle's cells (c0, r0, c1, r1, inclusive); r[0] -1: no zoom shown.
+static void wz_mini_rect(int *r)
+{
+	r[0] = r[1] = r[2] = r[3] = -1;
+	if (!wz_shown()) return;
+	int cols = *(int *)0x004e5d5c, rows = *(int *)0x004e5d4c, vc = *(int *)0x004e657c, vr = *(int *)0x004e6580;
+	int left = *(int *)0x004e6558, top = *(int *)0x004e6554;   // the view's first cell, in the game's x, y
+	if (cols <= 0 || rows <= 0) return;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], x = g_wzX, y = g_wzY;
+	wz_clamp(z, fw, fh, &x, &y);
+	float gx0 = PANEL_X - fw + x - left, gy0 = 24 + y - top;   // the part, from the view's first cell
+	int i0 = (int)floorf(gx0 / WZ_CELL), i1 = (int)floorf((gx0 + fw / z - 1) / WZ_CELL);
+	int j0 = (int)floorf(gy0 / WZ_CELL), j1 = (int)floorf((gy0 + fh / z - 1) / WZ_CELL);
+	i0 = max(0, min(cols - 1, i0)); i1 = max(i0, min(cols - 1, i1));
+	j0 = max(0, min(rows - 1, j0)); j1 = max(j0, min(rows - 1, j1));
+	r[0] = vc + i0; r[1] = vr + j0; r[2] = vc + i1; r[3] = vr + j1;
+}
+static BOOL wz_mini_edge(const int *r, int c, int row)
+{
+	return r[0] >= 0 && c >= r[0] && c <= r[2] && row >= r[1] && row <= r[3] && (c == r[0] || c == r[2] || row == r[1] || row == r[3]);
+}
+static void __cdecl h_mini_rows(int row0, int n)
+{
+	BYTE *cells = *(BYTE **)0x004e6574;
+	int stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
+	int r[4];
+	wz_mini_rect(r);
+	if (!cells || stride < 3 || cw <= 0 || ch <= 0 || cw * ch > WZ_MINI_MAX || (r[0] < 0 && g_wzMiniR[0] < 0 && !g_wzMiniOldN)) {
+		if (o_mini_rows) o_mini_rows(row0, n);
+		return;
+	}
+	if (cw != g_wzMiniCw || ch != g_wzMiniCh) {   // another battle
+		memset(g_wzMiniOld, 0, sizeof g_wzMiniOld);
+		g_wzMiniOldN = 0; g_wzMiniR[0] = -1; g_wzMiniCw = cw; g_wzMiniCh = ch;
+	}
+	if (memcmp(r, g_wzMiniR, sizeof r)) {   // the part moved: its last frame waits for its ground
+		if (g_wzMiniR[0] >= 0)
+			for (int row = max(0, g_wzMiniR[1]); row <= min(ch - 1, g_wzMiniR[3]); row++)
+				for (int c = max(0, g_wzMiniR[0]); c <= min(cw - 1, g_wzMiniR[2]); c++)
+					if (wz_mini_edge(g_wzMiniR, c, row) && !wz_mini_edge(r, c, row) && !g_wzMiniOld[row * cw + c]) { g_wzMiniOld[row * cw + c] = 1; g_wzMiniOldN++; }
+		memcpy(g_wzMiniR, r, sizeof r);
+	}
+	static int ground[WZ_MINI_MAX];
+	int ng = 0;
+	for (int row = max(0, row0); row < min(ch, row0 + n); row++)
+		for (int c = 0; c < cw; c++) {
+			int idx = row * cw + c;
+			BYTE *f = cells + (size_t)idx * stride + 2;
+			BOOL edge = wz_mini_edge(r, c, row), bare = FALSE;
+			if (r[0] >= 0) {
+				if ((*f & 2) && !edge) { *f &= ~2; bare = TRUE; }   // the game's frame round the whole field
+				if (edge) *f |= 2;
+			}
+			if (g_wzMiniOld[idx]) { g_wzMiniOld[idx] = 0; g_wzMiniOldN--; if (!edge) bare = TRUE; }
+			if (bare && !(*f & 1)) { *f |= 1; ground[ng++] = idx; }
+		}
+	if (o_mini_rows) o_mini_rows(row0, n);
+	for (int k = 0; k < ng; k++) cells[(size_t)ground[k] * stride + 2] &= ~1;
+}
+
 static void __cdecl h_battle_clamp(void)
 {
 	o_battle_clamp();
@@ -8802,6 +8874,8 @@ static void install_wide(void)
 	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
 	static const BYTE kEdgePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }; // push ebp; mov ebp,esp; sub esp,10h
 	hook_code((BYTE *)0x00432221, kEdgePrologue, sizeof kEdgePrologue, h_edge_scroll, &o_edge_scroll);
+	static const BYTE kMiniPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20 }; // push ebp; mov ebp,esp; sub esp,20h
+	hook_code((BYTE *)0x004bc51a, kMiniPrologue, sizeof kMiniPrologue, h_mini_rows, &o_mini_rows);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
