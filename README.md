@@ -120,7 +120,8 @@ Legendary plays like Hard, and also:
 - its archers shoot your archers first, unless your soldiers are close;
 - a weaker army still attacks after a long wait, instead of waiting for you forever;
 - units counter each other, for both sides: pikemen hit knights twice as hard and knights hit pikemen softer,
-  swordsmen are strong against pikemen and maces against knights.
+  swordsmen are strong against pikemen and maces against knights, and knights stomp the lightly armoured
+  (peasants, archers and macemen, who hit hard but fall fast; crossbowmen are armoured).
 
 In multiplayer they stay off, so everyone plays the same rules, unless every player sets
 `MultiplayerFixes=1`.

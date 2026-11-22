@@ -547,10 +547,20 @@ TEST(ai_legendary_counters_scale_the_pair_and_put_it_back)
 	t_hit(4, 3);                                                    // pikemen hit by swordsmen
 	CHECK_EQ(t_hitDmg, 30); CHECK_EQ(t_hitFirst, 200);
 	t_hit(6, 2);                                                    // knights hit by maces
-	CHECK_EQ(t_hitDmg, 30); CHECK_EQ(t_hitFirst, 200);
+	CHECK_EQ(t_hitDmg, 30); CHECK_EQ(t_hitFirst, 300);              // (and knights x1.5 on maces)
 	t_hit(3, 6);                                                    // no counter: as the game has it
 	CHECK_EQ(t_hitDmg, 20); CHECK_EQ(t_hitFirst, 200);
 	t_hit(5, 4); CHECK_EQ(t_hitDmg, 20);
+}
+
+TEST(ai_legendary_knights_stomp_light_units)
+{
+	t_ai_battle(2);
+	t_hit(0, 6); CHECK_EQ(t_hitDmg, 30);                            // peasants hit by knights: x1.5
+	t_hit(5, 6); CHECK_EQ(t_hitDmg, 30);                            // archers
+	t_hit(2, 6); CHECK_EQ(t_hitDmg, 30); CHECK_EQ(t_hitFirst, 300); // maces: hit hard both ways
+	t_hit(1, 6); CHECK_EQ(t_hitDmg, 20);                            // crossbowmen are armoured: none
+	t_hit(6, 0); CHECK_EQ(t_hitFirst, 300);                         // the knights' own first strike on peasants
 }
 
 TEST(ai_counters_only_on_legendary_in_field_battles)
