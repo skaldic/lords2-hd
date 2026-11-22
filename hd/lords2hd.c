@@ -11064,16 +11064,27 @@ static void __cdecl h_order(int g, int x, int y, int target, int fire, int forma
 
 // FUN_00478987(player): a selection that isn't one whole group becomes a new group, whose record is
 // zeroed. Units that came from a group on Mop-Up keep it in their new group.
+// The selection also sets the selected group's re-form timer (+0x14) to 20 steps: that's how a box
+// selection brings its units together. GroupMoveFix (reform_filter) lets that one re-form through
+// (g_grSelected); without it a selection no longer gathered its units (the user's report).
+static BYTE g_grSelected[0x51];
+static BOOL g_fixGroupMove;
 static void __cdecl h_select(unsigned player)
 {
-	static short before[81];
+	static short before[81], timer[0x51];
 	static BYTE hunt[81];
-	BOOL on = fix_on(g_fixMopUp);
+	BOOL on = fix_on(g_fixMopUp), gr = fix_on(g_fixGroupMove);
 	if (on) for (int i = 1; i < 0x51; i++) {
 		before[i] = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
 		hunt[i] = before[i] >= 0 ? (BYTE)group_hunting(before[i]) : 0;
 	}
+	if (gr) for (int g = 1; g < 0x51; g++) timer[g] = GRP_S(g, 0x14);
 	o_select(player);
+	if (gr) for (int g = 1; g < 0x51; g++)
+		if (GRP_S(g, 0x14) == 20 && timer[g] != 20 && GRP_B(g, 0x01)) {
+			g_grSelected[g] = 1;
+			if (g_blog && g_battleLog >= 1) blog("selection: group %d forms up", g);
+		}
 	if (!on) return;
 	for (int i = 1; i < 0x51; i++) {
 		short g = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
@@ -11670,12 +11681,15 @@ static void __cdecl h_slot(int x, int y, int fig, int group)
 // the gap to their new places, and units standing where the player had left them were shuffled (the
 // user's report). An order sets the group's flag (+0x13) and brings the re-form forward to 20 steps, which
 // is how the order's formation is laid out: that one stays. For the player's groups (+0x01) without the
-// flag the answer is now no. The computer's groups are re-formed as before.
+// flag the answer is now no, except for the re-form a selection asked for (h_select: it brings the
+// selected units together, as the game always did). The computer's groups are re-formed as before.
 typedef int (__cdecl *reform_t)(int);
 static reform_t o_reform;
 static int reform_filter(int g, int r)
 {
-	if (fix_on(g_fixGroupMove) && g >= 1 && g < 0x51 && GRP_B(g, 0x01) && !GRP_B(g, 0x13)) return 0;
+	BOOL picked = g >= 1 && g < 0x51 && g_grSelected[g];
+	if (picked) g_grSelected[g] = 0;
+	if (fix_on(g_fixGroupMove) && g >= 1 && g < 0x51 && GRP_B(g, 0x01) && !GRP_B(g, 0x13) && !picked) return 0;
 	return r;
 }
 static int __cdecl h_reform(int g) { return reform_filter(g, o_reform(g)); }
@@ -11865,7 +11879,7 @@ static void battle_reset(void)
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
 	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
-	g_grQLen = 0; g_grCongGroup = -1;
+	g_grQLen = 0; g_grCongGroup = -1; memset(g_grSelected, 0, sizeof g_grSelected);
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jReplanT, 0, sizeof g_jReplanT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
@@ -12349,8 +12363,14 @@ static void install_game_fixes(void)
 	if (g_fixGroupMove) {
 		static const BYTE kSlot[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };   // push ebp; mov ebp,esp; sub esp,4
 		if (!figLoop || !hook_code((BYTE *)0x00489b8d, kSlot, sizeof kSlot, h_slot, &o_slot)) g_fixGroupMove = FALSE;
-		else logf_("player's groups re-formed only after an order %s",
-			hook_code((BYTE *)0x00489654, kSlot, sizeof kSlot, h_reform, &o_reform) ? "on" : "failed");
+		else {
+			static const BYTE kSel[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };  // sub esp,10h
+			// (the selection hook tells the re-form which groups a selection asked to form up; also
+			// installed for Mop-Up below, once)
+			BOOL sel = o_select || hook_code((BYTE *)0x00478987, kSel, sizeof kSel, h_select, &o_select);
+			logf_("player's groups re-formed only after an order or a selection %s",
+				sel && hook_code((BYTE *)0x00489654, kSlot, sizeof kSlot, h_reform, &o_reform) ? "on" : "failed");
+		}
 		logf_("group move fix %s", g_fixGroupMove ? "on" : "off");
 	}
 	BOOL meleeOk = FALSE;
@@ -12362,7 +12382,7 @@ static void install_game_fixes(void)
 		g_dmapOn = hook_code((BYTE *)0x004954dd, kTarget, sizeof kTarget, h_target, &o_target) &&
 			hook_code((BYTE *)0x004832ea, kIdle, sizeof kIdle, h_idle, &o_idle) &&
 			hook_code((BYTE *)0x00479e90, kOrder, sizeof kOrder, h_order, &o_order) &&
-			hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select);
+			(o_select || hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select));
 		logf_("Mop-Up walking distances %s", g_dmapOn ? "on" : "failed");
 		if (g_fixEngage) {
 			static const BYTE kMelee[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi

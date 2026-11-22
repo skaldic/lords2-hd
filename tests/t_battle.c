@@ -353,6 +353,27 @@ TEST(player_groups_reform_only_after_an_order)
 	GRP_B(11, 0x01) = 0;
 }
 
+static void __cdecl t_select_forms_up(unsigned player)   // the game: a box selection makes your group 9, forming up in 20 steps
+{
+	(void)player; t_calls++;
+	GRP_B(9, 0x00) = 1; GRP_B(9, 0x01) = 1; GRP_S(9, 0x14) = 20;
+}
+TEST(a_box_selection_brings_your_units_together)
+{
+	g_fixGroupMove = TRUE; g_fixMopUp = FALSE;
+	GRP_B(11, 0x01) = 1; GRP_S(11, 0x14) = 20;                      // another group of yours whose timer is at 20 anyway
+	o_select = t_select_forms_up;
+	h_select(0);
+	CHECK_EQ(t_calls, 1);
+	CHECK_EQ(reform_filter(9, 1), 1);                               // the selection's form-up goes through
+	CHECK_EQ(reform_filter(9, 1), 0);                               // once: the next ones, 500 steps on, don't
+	CHECK_EQ(reform_filter(11, 1), 0);                              // a group the selection didn't touch stays put
+	GRP_S(9, 0x14) = 400; g_fixGroupMove = FALSE;                   // fix off: nothing marked, the game's answer
+	h_select(0);
+	CHECK_EQ(reform_filter(9, 0), 0);
+	CHECK_EQ(reform_filter(9, 1), 1);
+}
+
 TEST(archers_shoot_instead_of_chasing_after_a_fight)
 {
 	g_fixEngage = TRUE;

@@ -34,7 +34,7 @@ GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Bat
 - Mop-Up fix (MopUpFix): your troops keep fighting after their first kill instead of standing idle
 - Improved pathfinding (JitterFix): no stepping back and forth, no swapping places over and over
 - Group cohesion (GroupMoveFix): groups keep together round obstacles, and yours stay where you left
-  them instead of re-forming every few seconds
+  them instead of re-forming every few seconds (a selection still brings them together)
 - Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away, and
   only when they aren't outnumbered there; next to stakes, water, a castle wall, the gate or the moat they hold the line); archers back
   up their soldiers' fights, don't chase after a fight, step back from a charge (not behind stakes)
