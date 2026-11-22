@@ -8,14 +8,21 @@
 # Then import each season's folder with tools\import_sprites.ps1 -Suffix _<season> (spring, summer,
 # autumn, winter) into <game>\lords2hd\sprites; the patch picks them by season (season_name in hd\lords2hd.c).
 # Needs Python with numpy, scipy and Pillow.
-# usage: season_ground.py summer_hd season_hd out_hd [mask_preview.png]
-import sys, os, shutil
+# With -game <game folder> also the small animations on the picture itself (the tent, villani2 15-24 at
+# 1x 302,293; the forge fire, 33-39 at 50,195): where their 1x pixel is the picture's own (the game's
+# lords2hd\sprites\vill.bin and villani2.bin), the HD pixel is taken from the season's picture.
+# usage: season_ground.py summer_hd season_hd out_hd [mask_preview.png] [-game <game folder>]
+import sys, os, shutil, struct
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage
 
-summer, src, dst = sys.argv[1:4]
-prev_p = sys.argv[4] if len(sys.argv) > 4 else None
+args = sys.argv[1:]
+game = None
+if '-game' in args:
+    i = args.index('-game'); game = args[i + 1]; del args[i:i + 2]
+summer, src, dst = args[:3]
+prev_p = args[3] if len(args) > 3 else None
 
 def png(root, set_, f): return np.asarray(Image.open(os.path.join(root, set_, '%02d.png' % f)).convert('RGBA'), float)
 def lum(a): return a[..., 0] * 0.299 + a[..., 1] * 0.587 + a[..., 2] * 0.114
@@ -91,6 +98,26 @@ anims('villani2', range(7, 15), 41, (216 + 142, 460 + 62))   # woodcutter
 anims('villani2', range(25, 33), None, (32, 350), path_rows=42)  # smithy: path and grass above the forge
 anims('villani2', range(0, 7), 40, (198, 54))                # quarry workers, in the pit (1x 99,27)
 anims('villani1', range(0, 21), 43, (200, 24))               # iron mine (1x 100,12)
+
+def frames1x(name):
+    b = open(os.path.join(game, 'lords2hd', 'sprites', name + '.bin'), 'rb').read()
+    n = struct.unpack_from('<I', b)[0]; offs = struct.unpack_from('<%dI' % n, b, 4)
+    out = {}
+    for i, o in enumerate(offs):
+        if o:
+            w, h = struct.unpack_from('<HH', b, o)
+            out[i] = np.frombuffer(b, np.uint8, w * h, o + 4).reshape(h, w)
+    return out
+
+if game:
+    pic1, ani1 = frames1x('vill')[0], frames1x('villani2')
+    for frames, (x, y) in ((range(15, 25), (302, 293)), (range(33, 40), (50, 195))):
+        for f in frames:
+            p1 = ani1[f]; h, w = p1.shape
+            same = np.kron(p1 == pic1[y:y + h, x:x + w], np.ones((2, 2))).astype(bool)
+            art = png(dst, 'villani2', f)
+            art[..., :3][same] = base[2 * y:2 * y + 2 * h, 2 * x:2 * x + 2 * w][same]
+            save(art, 'villani2', f)
 
 if prev_p:
     rows = []
