@@ -8070,9 +8070,9 @@ static void menu_scroll_draw(void)
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
 	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink); // under the last of 8 rows
-	if (g_menuTab == 3) {
-		ctext("* after a restart; the fixes from the next battle", x0, y0 + 188, MS_W, small, ink);
-		ctext("The fixes stay off in multiplayer games", x0, y0 + 202, MS_W, small, ink);
+	if (g_menuTab == 3) { // under its 8 rows (the last ends at y0 + 192), above the keys (y0 + 234)
+		ctext("* after a restart; the fixes from the next battle", x0, y0 + 200, MS_W, small, ink);
+		ctext("The fixes stay off in multiplayer games", x0, y0 + 214, MS_W, small, ink);
 	}
 	const char *keys = "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
