@@ -10968,9 +10968,23 @@ static BOOL can_reach_soon(int e, int me)
 	return w != DM_FAR && w <= d + REACH_SLACK;
 }
 
-static int dm_pick(int me)
+// Far targets (the user's rule, both sides): only fast units, knights and maces (move delay +0x189 of 0 or
+// 1), go a long way round for a target, up to CHASE_FAR_FAST steps of walking. Slower ones (peasants,
+// archers, crossbowmen 2, swords 3, pikes 4) take a target only within twice the straight line plus
+// CHASE_DETOUR: at a charge the computer's whole army went for the player's archers behind a river, walks
+// of 105 to 124 cells for 10 to 15 in a straight line, past the enemies at hand (the user's battle).
+#define CHASE_FAR_FAST 60
+#define CHASE_DETOUR 10
+static int chase_limit(int me, int straight)
 {
-	int best = 0, bestCost = 0x7fffffff;
+	int lim = 2 * straight + CHASE_DETOUR;
+	return FIG(me)[0x189] <= 1 && lim < CHASE_FAR_FAST ? CHASE_FAR_FAST : lim;
+}
+
+// The nearest enemy by walking within the unit's limit (chase_limit); when none is, the nearest at all.
+static int dm_pick_ex(int me, BOOL *within)
+{
+	int best = 0, bestCost = 0x7fffffff, longest = 0, longCost = 0x7fffffff;
 	dm_from(me, -1);
 	for (int e = 1; e < 0x51; e++) {
 		BYTE *f = FIG(e);
@@ -10987,12 +11001,16 @@ static int dm_pick(int me)
 			if (v != DM_FAR && v + 1 < d && dm_height_ok(n, ec)) d = v + 1;
 		}
 		if (d == DM_FAR) continue;
+		BOOL ok = d <= chase_limit(me, cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), ex, ey));
 		if (f[0x16a]) d /= 2;   // as the game: archers count at half distance
 		int cost = d + (signed char)f[0x175];
-		if (cost < bestCost) { bestCost = cost; best = e; }
+		if (ok && cost < bestCost) { bestCost = cost; best = e; }
+		if (!ok && cost < longCost) { longCost = cost; longest = e; }
 	}
-	return best;
+	if (within) *within = best != 0;
+	return best ? best : longest;
 }
+static int dm_pick(int me) { return dm_pick_ex(me, NULL); }
 
 static int __cdecl h_target(void)
 {
@@ -11019,6 +11037,22 @@ static void chase_progress(int me)
 	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) { g_cTarget[me] = 0; return; }
 	if (t == g_cTarget[me] && (unsigned)(me + g_btick) % 16) return;   // measured every 16 steps
 	int d = dm_dist(t, me);
+	// a target further round than the unit's limit (the game's own quick pick at a charge goes by the straight
+	// line): it changes to the nearest one within it, when there is one
+	if (d != DM_FAR && d > chase_limit(me, cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), FIG_S(t, 0x20), FIG_S(t, 0x22))) &&
+		g_dmFullThisStep < DM_FULL_PER_STEP) {
+		BOOL within;
+		g_dmFullThisStep++;
+		int b = dm_pick_ex(me, &within);
+		if (b && b != t && within) {
+			if (g_blog && g_battleLog >= 1) blog("far fig %d: target %d is %d steps round, takes %d instead", me, t, d, b);
+			f[0x174] = (BYTE)b; f[0x164] = 0;
+			FIG(b)[0x175] += 2;
+			g_cTarget[me] = b; g_cBest[me] = dm_dist(b, me); g_cSince[me] = g_btick;
+			g_bretarget++;
+			return;
+		}
+	}
 	if (t != g_cTarget[me] || d < g_cBest[me]) { g_cTarget[me] = t; g_cBest[me] = d; g_cSince[me] = g_btick; return; }
 	// only a target that can't be reached, or one close by that it isn't getting to (a far one that
 	// keeps its distance is still worth chasing)

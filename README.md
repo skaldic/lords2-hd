@@ -71,7 +71,8 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Archers shoot the enemies fighting their soldiers first, never chase after a fight, step back from soldiers charging them and
   keep shooting (behind stakes, a hedge or water they stay put), and step out of melee once one of
   their soldiers reaches their enemy
-- Mop-Up hunts down every enemy it can walk to, and your orders still take over
+- Mop-Up hunts down every enemy it can walk to, and your orders still take over; only knights and macemen go
+  a long way round for one, slower troops take the enemy at hand
 - Each of these on its own switch, on F10's Battles tab
 - Troops outlined on the battle minimap, if you like (F10 → Battles)
 

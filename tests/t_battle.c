@@ -176,6 +176,45 @@ TEST(mopup_keeps_chasing_a_far_target)
 	CHECK_EQ(FIG(16)[0x174], 2);
 }
 
+/* an archer 8 cells away behind a wall with a gap 20 cells down (a walk of about 40), and a foot soldier 30
+ * cells away on open ground: the archer counts half, so the original pick took it */
+static void t_far_field(int delay)
+{
+	t_unit(16, 1, 20, 40, 3); FIG(16)[0x189] = (BYTE)delay;
+	t_archer(2, 2, 28, 40, 4);
+	t_unit(3, 2, 20, 70, 5);
+	t_flags(25, 0, 25, 59, FL_BLOCKED);
+}
+TEST(far_targets_only_for_fast_units)
+{
+	t_far_field(4);                             // pikemen: a walk over twice the straight line + 10 is too far
+	CHECK_EQ(dm_pick(16), 3);
+	t_far_field(3); CHECK_EQ(dm_pick(16), 3);   // swordsmen
+	t_far_field(2); CHECK_EQ(dm_pick(16), 3);   // peasants
+	t_far_field(1); CHECK_EQ(dm_pick(16), 2);   // macemen go round (up to 60)
+	t_far_field(0); CHECK_EQ(dm_pick(16), 2);   // knights
+	t_far_field(4); FIG(3)[0x2c] = 0;           // nothing nearer: the far one still
+	CHECK_EQ(dm_pick(16), 2);
+}
+TEST(far_target_swapped_for_one_within_reach)
+{
+	t_far_field(4);
+	FIG(16)[0x31] = ST_CHASE; FIG(16)[0x174] = 2; FIG(16)[0x164] = 1;   // the game's straight-line pick
+	g_btick = 0; chase_progress(16);
+	CHECK_EQ(FIG(16)[0x174], 3);
+	CHECK_EQ(FIG(16)[0x164], 0);                // plans its way anew
+	CHECK_EQ(FIG(3)[0x175], 2);
+	t_far_field(0);                             // knights keep it
+	FIG(16)[0x31] = ST_CHASE; FIG(16)[0x174] = 2; g_cTarget[16] = 0;
+	g_btick = 16; chase_progress(16);
+	CHECK_EQ(FIG(16)[0x174], 2);
+	t_far_field(4);                             // over this step's search cap: tried again later
+	FIG(16)[0x31] = ST_CHASE; FIG(16)[0x174] = 2; g_cTarget[16] = 0; g_dmFullThisStep = DM_FULL_PER_STEP;
+	g_btick = 32; chase_progress(16);
+	CHECK_EQ(FIG(16)[0x174], 2);
+	g_dmFullThisStep = 0;
+}
+
 TEST(mopup_wakes_idle_hunters)
 {
 	g_fixEngage = FALSE;
