@@ -37,7 +37,9 @@ is included with Wolfe's and Socius's permission; see `multiplayer/CREDITS.md`.
 
 The wheel zoom in battles (`[Display] WheelZoom`) follows the wheel zoom of Wolfe's LotR2 Fix (a
 notch zooms by a quarter, around the point under the cursor). It is written anew for this patch; none
-of the LotR2 Fix's display code is included.
+of the LotR2 Fix's display code is included. The county map zoom-out (`[Display] CountyZoom`) takes
+the idea of Wolfe's ZoomUI (the mouse wheel shows the county map at half size, twice as wide and
+tall); it too is written anew, and draws the extra map without changing the game's state.
 
 ## AMD FidelityFX Super Resolution 1
 

@@ -118,6 +118,7 @@ TEST(settings_without_an_ini_are_the_documented_defaults)
 	CHECK_EQ(g_statsOn, 0);
 	CHECK(!g_miniPop);
 	CHECK_EQ(g_wheelZoom, 1);                   // the wheel zooms a battle's field, up to 2x
+	CHECK(g_countyZoom);                        // and the county map out
 	CHECK(g_hdScreens && g_hdTiles && g_hdVideos && g_hdText && g_shoreWaves);
 	CHECK(g_tutorialOnce && g_wasdOn && g_cycleOn && g_armyPanel && g_letters && g_resounded);
 	CHECK_EQ(g_scale, SCALE_SMOOTH);
@@ -195,7 +196,7 @@ static int t_panel(int i)
 	case M_WIDE: return g_wantWideSet;    case M_ZOOM: return g_battleZoomSet;  case M_ARMY: return g_armyPanel;
 	case M_LETTERS: return g_letters;     case M_RESOUND: return g_resounded;   case M_RENDERER: return g_gpuWantedSet;
 	case M_FPS: return g_statsOn;         case M_MINIPOP: return g_miniPop;     case M_ARROWS: return g_arrowsOn;
-	case M_WHEEL: return g_wheelZoom;     case M_AI: return g_aiLevelSet;
+	case M_WHEEL: return g_wheelZoom;     case M_AI: return g_aiLevelSet;       case M_COUNTY: return g_countyZoom;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }

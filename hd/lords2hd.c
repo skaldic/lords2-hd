@@ -162,7 +162,9 @@ static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing ov
 static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
 static int g_wheelZoom = 1;     // [Display] WheelZoom: the wheel zooms a zoomed-out battle's field in and out (wz_wheel): 0 off,
                                 // 1 up to 2x (the game's normal size), 2 up to 4x
-static BOOL g_perfLogOn;        // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
+static BOOL g_countyZoom = TRUE; // [Display] CountyZoom: the wheel shows the county map zoomed out (cz_draw)
+static BOOL g_czCheckAll;       // [Debug] CountyZoomCheck: after every zoomed-out draw, the game's memory checked unchanged
+static BOOL g_perfLogOn;       // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
 static BOOL menu_key(int vk);
@@ -225,6 +227,8 @@ static void read_settings(void)
 	if (GetPrivateProfileIntA("Debug", "Stats", 0, g_iniPath)) g_statsOn = 2;
 	g_miniPop = GetPrivateProfileIntA("Display", "MinimapPop", 0, g_iniPath) != 0;
 	g_wheelZoom = max(0, min(2, (int)GetPrivateProfileIntA("Display", "WheelZoom", 1, g_iniPath)));
+	g_countyZoom = GetPrivateProfileIntA("Display", "CountyZoom", 1, g_iniPath) != 0;
+	g_czCheckAll = GetPrivateProfileIntA("Debug", "CountyZoomCheck", 0, g_iniPath) != 0;
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -1916,8 +1920,47 @@ static int g_stampN, g_stampPrevN = -1;
 static BOOL g_stampRec, g_stampOverflow;
 static LONG g_stampPrevGen = -1;
 static int g_stampSkipped, g_stampDone; // Timing=1
+static stamp_call g_czStamps[MAX_STAMPS];   // the zoomed-out county map's stamps (cz_hd)
+static int g_czStampN;
+static BOOL g_czPass;   // the zoomed-out county map's own draw is running (cz_draw): nothing of it is the frame's
+static int g_czClipR, g_czClipB;   // its field's right and bottom edges, for the game's clipping
+// A zoomed-out county map as drawn (cz_draw). Four of them go round: the one being drawn, the one drawn
+// whose frame is not on the screen surface yet, the one that is (cz_publish), and the presenter's.
+#define CZ_M 64        // columns and rows round the field: the ground tiles are never clipped
+#define CZ_BELOW 160   // and rows below it, where the last row of ground reaches
+typedef struct {
+	BYTE *pix;                // g_back's pitch; the field (w x h) from column CZ_M, row CZ_M + 24
+	DWORD *hd;                // w x h: the HD art at half size where the field shows it (top byte 1), else 0
+	int w, h, sw;             // the field's size (picture pixels = game pixels), the frame's width
+	int fc, fr, fx, fy, nc, nr; // the first map column and row drawn, where the first cell is, how many
+	int dx, dy;               // a game point x, y of the normal view is at x + dx, y + dy here
+	LONG gen;                 // g_czGen when drawn
+	BOOL changed;             // its picture differs from the last one copied to the screen
+} cz_buf;
+static cz_buf g_czB[4];
+static cz_buf *g_czDraw = &g_czB[0], *g_czPend = &g_czB[1], *g_czReady = &g_czB[2], *g_czShown = &g_czB[3];
+static BOOL g_czPendNew;            // (game thread) g_czPend is finished, its frame not copied yet
+static volatile LONG g_czReadyNew;  // (g_lock) g_czReady's frame was copied to the screen surface
+static volatile LONG g_czReadyChanged; // and a picture copied since the presenter's last differs
+static const cz_buf *g_czLastPub;   // (game thread) the last one copied: g_czReady or g_czShown, only read
+static volatile LONG g_czOut;       // the player zoomed the county map out (cz_wheel)
+static volatile LONG g_czGen = 1;   // counts the zooms out: an older picture is not shown
+#define MAP_ZOOM_NOW() (*(int *)0x0057cb18)   // (MAP_ZOOM, below)
+static volatile LONG g_czShowing;   // the screen shows it (present)
+static struct { BOOL on; int x, y, gx, gy; } g_czMouse;   // the mouse over it: its point there, and the game's x, y for it (client_to_game)
+// The copy of rows y0..y1 of g_back to the screen surface (g_lock held): its map's zoomed-out picture goes with it.
+static void cz_publish(int y0, int y1)
+{
+	if (!g_czPendNew || y1 <= 24 || y0 >= GAME_H) return;
+	cz_buf *t = g_czReady; g_czReady = g_czPend; g_czPend = t;
+	g_czLastPub = g_czReady;
+	if (g_czReady->changed) InterlockedExchange(&g_czReadyChanged, 1);
+	g_czPendNew = FALSE;
+	InterlockedExchange(&g_czReadyNew, 1);
+}
 static BOOL stamp_record(const BYTE *buf, int index, int x, int y, int sprite)
 {
+	if (g_czPass) { if (g_czStampN < MAX_STAMPS) g_czStamps[g_czStampN++] = (stamp_call){ buf, index, x, y, sprite }; return TRUE; }
 	if (!g_stampRec) { g_layerGen++; return FALSE; }
 	if (g_stampN < MAX_STAMPS) g_stampCur[g_stampN++] = (stamp_call){ buf, index, x, y, sprite };
 	else g_stampOverflow = TRUE;
@@ -3800,17 +3843,17 @@ static int g_aiLevelSet;
 static BOOL g_aiOk;
 static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
-	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
+	M_COUNTY, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL; } // marked "new"
+static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3837,6 +3880,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
 	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
 	case M_WHEEL: snprintf(v, n, "%s", g_wheelZoom == 2 ? "Up to 4x" : g_wheelZoom ? "Up to 2x (normal size)" : "Off"); break;
+	case M_COUNTY: snprintf(v, n, "%s", g_countyZoom ? "On" : "Off"); break;
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: { // from the next battle
 		int f = i - M_BF_PATH;
 		snprintf(v, n, "%s", g_bfSet[f] ? "On" : "Off");
@@ -3849,7 +3893,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
-	"Wheel zoom", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
+	"Wheel zoom", "County map zoom-out", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -3917,6 +3961,10 @@ static void resound_sample(void)
 	case M_WHEEL:   // 2x -> 4x -> off (the whole field again) -> 2x; down to 2x from further in: shown at 2x
 		g_wheelZoom = (g_wheelZoom + 1) % 3; ini_set("Display", "WheelZoom", g_wheelZoom);
 		if (g_wzLevel > wz_top()) InterlockedExchange(&g_wzLevel, wz_top());
+		break;
+	case M_COUNTY:   // off: the county map at its normal size again at once
+		g_countyZoom = !g_countyZoom; ini_set("Display", "CountyZoom", g_countyZoom);
+		if (!g_countyZoom) InterlockedExchange(&g_czOut, 0);
 		break;
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
 		int f = i - M_BF_PATH;
@@ -4935,6 +4983,29 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 	}
 	return TRUE;
 }
+// The wheel on the county map (CountyZoom): back (down) shows it zoomed out, forward the normal view.
+// TRUE: it was ours.
+static BOOL cz_wheel(WPARAM wp, LPARAM lp)
+{
+	static int acc;
+	(void)lp;
+	if (!g_countyZoom || !g_battleZoom || !g_off || !g_wideScreen || g_scale != SCALE_SMOOTH || !county_map_on() || *(BYTE *)0x004eac50 != 0 || MAP_ZOOM_NOW() != 0 ||
+		menu_doubled() || g_menuOpen) { acc = 0; return FALSE; }
+	acc += (short)HIWORD(wp);
+	LONG to = g_czOut;
+	if (acc <= -WHEEL_DELTA) to = 1;
+	if (acc >= WHEEL_DELTA) to = 0;
+	if (acc <= -WHEEL_DELTA || acc >= WHEEL_DELTA) acc = 0;
+	if (to != g_czOut) {
+		if (to) InterlockedIncrement(&g_czGen);   // (a picture from an earlier zoom out is not shown)
+		InterlockedExchange(&g_czOut, to);
+		if (g_clickLog) logf_("county zoom: %s", to ? "out" : "in");
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+	}
+	return TRUE;
+}
+
 // Panning while zoomed in: the cursor at a screen edge (or WASD, the arrow keys) first slides the shown part
 // across the field; only once it is at the field's edge on that side does the game scroll the battlefield.
 // Without this, the part of the field beside the shown one couldn't be reached where the game's view was
@@ -5556,6 +5627,20 @@ static void win_click(int *x, int *y)
 	else if (*x >= g_winX1 - s && *x < g_winX1) *x = g_winX1 + 1 < PANEL_X ? g_winX1 + 1 : g_winX0 - s - 1;
 }
 
+// The zoomed-out county map over the map's field of the doubled picture, at its own size: one game
+// pixel to one picture pixel, half the size of the normal view.
+static void cz_field(const cz_buf *cz, int sw)
+{
+	int W2 = 2 * sw, pitch = g_back->pitch;
+	for (int y = 0; y < cz->h && 48 + y < 2 * GAME_H; y++) {
+		const BYTE *s = cz->pix + (CZ_M + 24 + y) * pitch + CZ_M;
+		DWORD *d = g_frame2x + (48 + y) * W2;
+		const DWORD *h = g_showTiles && cz->hd ? cz->hd + y * cz->w : NULL;
+		if (h) for (int x = 0; x < cz->w; x++) d[x] = h[x] ? h[x] & 0xffffff : g_lut[s[x]];
+		else for (int x = 0; x < cz->w; x++) d[x] = g_lut[s[x]];
+	}
+}
+
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
 // the screen on every pass of its loop, paused or not.
 static BOOL present(void)
@@ -5622,7 +5707,17 @@ static BOOL present(void)
 	if (g_primary->pal) memcpy(pal, g_primary->pal->e, sizeof pal);
 	else memset(pal, 0, sizeof pal);
 	g_paceReadSeq = g_pacePrimarySeq;
+	BOOL czTake = InterlockedExchange(&g_czReadyNew, 0) != 0;
+	BOOL czNew = czTake && InterlockedExchange(&g_czReadyChanged, 0) != 0;   // (a picture like the last forces nothing)
+	if (czTake) { cz_buf *t = g_czShown; g_czShown = g_czReady; g_czReady = t; }
 	LeaveCriticalSection(&g_lock);
+	// The county map zoomed out: its own picture takes the map's field (cz_field).
+	const cz_buf *cz = g_czShown;
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && screen == 0 && g_wideScreen && MAP_ZOOM_NOW() == 0 && !g_snapW &&
+		cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
+	InterlockedExchange(&g_czShowing, czOn);
+	static BOOL czWas;
+	if (czOn != czWas) { czWas = czOn; czNew = TRUE; }
 
 	BOOL palSame = memcmp(pal, lastPal, sizeof pal) == 0;
 	if (!palSame) {
@@ -5640,7 +5735,7 @@ static BOOL present(void)
 
 	RECT v, c;
 	view_rect(&v);
-	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView) || g_waveActive;
+	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView) || g_waveActive || czNew;
 	if (!forced && palSame && memcmp(g_frame8, g_shown8, sw * GAME_H) == 0) return FALSE;
 	memcpy(g_shown8, g_frame8, sw * GAME_H);
 	lastView = v;
@@ -5695,6 +5790,7 @@ static BOOL present(void)
 		if (g_showTiles) screen_sprites(pal, sx, sw); ct_add(1, &ct);
 		if (g_showTiles) tile_overlay(pal, sx, sw); ct_add(2, &ct);
 		text_overlay(sx, sw); ct_add(3, &ct);
+		if (czOn) cz_field(cz, sw);
 		scroll_overlays(sx, sw);
 		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
@@ -6138,6 +6234,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 		bt_publish(dy, dy + h);
 		spr_publish(dy, dy + h);
 		tile_publish(dy, dy + h);
+		cz_publish(dy, dy + h);
 	}
 }
 
@@ -6480,7 +6577,14 @@ HRESULT WINAPI hd_DirectDrawCreate(GUID *guid, void **out, IUnknown *outer)
 // Input: the game sees a 640x480 window at the top-left of the screen.
 
 static BOOL g_fieldDrag, g_lastOnField;   // zoomed-out battle: a left-button drag that began on the battlefield
+static void client_to_game_(int *x, int *y, const int *x0, const int *y0);
 static void client_to_game(int *x, int *y)
+{
+	g_czMouse.on = FALSE;
+	int cx = *x, cy = *y, *x0 = &cx, *y0 = &cy;   // (the window's point, for the zoomed-out county map)
+	client_to_game_(x, y, x0, y0);
+}
+static void client_to_game_(int *x, int *y, const int *x0, const int *y0)
 {
 	RECT v;
 	view_rect(&v);
@@ -6523,6 +6627,12 @@ static void client_to_game(int *x, int *y)
 		return;
 	}
 	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
+	// The county map zoomed out: the point of its own picture under the mouse, at full precision (h_pick_cell).
+	if (g_czShowing && g_wideScreen) {
+		int px = MulDiv(*x0 - v.left, 2 * g_showW, vw), py = MulDiv(*y0 - v.top, 2 * GAME_H, vh);
+		if (py >= 48 && py < 2 * GAME_H && px >= 0 && px < 2 * (g_extra + PANEL_X))
+			g_czMouse.on = TRUE, g_czMouse.x = px, g_czMouse.y = py - 24, g_czMouse.gx = *x, g_czMouse.gy = max(0, min(GAME_H - 1, gy));
+	}
 	*y = max(0, min(GAME_H - 1, gy));
 	win_click(x, y);
 }
@@ -6638,8 +6748,10 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	if (n == 27) { // testing: the wheel turned w notches (+ in, - out) over client point x, y of l
 		POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
 		ClientToScreen(g_hwnd, &p);   // (the game's window, as wz_wheel converts back with it)
-		BOOL ours = wz_wheel(MAKEWPARAM(0, (short)((int)wp * WHEEL_DELTA)), MAKELPARAM((WORD)(short)p.x, (WORD)(short)p.y));
-		logf_("remote wheel %d at %ld,%ld: %s, zoom level %ld", (int)wp, (long)p.x, (long)p.y, ours ? "zoom" : "the game's", (long)g_wzLevel);
+		WPARAM w = MAKEWPARAM(0, (short)((int)wp * WHEEL_DELTA)); LPARAM l = MAKELPARAM((WORD)(short)p.x, (WORD)(short)p.y);
+		BOOL county = cz_wheel(w, l), ours = county || wz_wheel(w, l);
+		logf_("remote wheel %d at %ld,%ld: %s, zoom level %ld, county map %s", (int)wp, (long)p.x, (long)p.y, ours ? "zoom" : "the game's",
+			(long)g_wzLevel, g_czOut ? "zoomed out" : "normal");
 		return 0;
 	}
 	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
@@ -6794,7 +6906,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			return 0;
 		}
 	}
-	if (msg == WM_MOUSEWHEEL && wz_wheel(wp, lp)) return 0;   // a battle's field: the wheel zoom
+	if (msg == WM_MOUSEWHEEL && (cz_wheel(wp, lp) || wz_wheel(wp, lp))) return 0;   // the county map or a battle's field: the wheel zoom
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
 		if (msg == WM_LBUTTONUP) { client_to_game(&x, &y); g_fieldDrag = FALSE; }   // the release still counts on the field
@@ -7493,6 +7605,7 @@ static clip_x_t o_clip_x;
 static BOOL g_drawingLeft; // a widened bar is being drawn: the screen's left edge is in the spare columns
 static void __cdecl h_clip_x(int left, int right)
 {
+	if (g_czPass) { o_clip_x(0, g_czClipR); return; }   // the zoomed-out map's own draw: its whole field
 	if (g_drawingLeft && left == 0) left = battle_zoom_on() ? PANEL_X - battle_map_w() : -g_extra;
 	o_clip_x(max(left, -g_off), right);
 }
@@ -7502,6 +7615,7 @@ static clip_x_t o_clip_y;
 static BOOL g_drawingLow;
 static void __cdecl h_clip_y(int top, int bottom)
 {
+	if (g_czPass) { o_clip_y(24, g_czClipB); return; }
 	if (g_drawingLow && bottom == GAME_H && battle_zoom_on()) bottom = g_frameH;
 	o_clip_y(top, bottom);
 }
@@ -8485,9 +8599,38 @@ static void end_wide_view(void)
 #define PICKED_COL (*(int *)0x00553f04)
 typedef int (__cdecl *pick_cell_t)(int);
 static pick_cell_t o_pick_cell;
+// The county map zoomed out (cz_draw): the cell under the mouse is the one its picture shows there. The game's
+// pick runs with that picture's view and the mouse's point in it, and what it leaves is turned back into the
+// game's own view (the column and half-row relative to its scroll position; the cell's record as it is).
+static BOOL cz_pick(int arg, int *res)
+{
+	if (!o_pick_cell || !g_czShowing || !g_czOut || IN_BATTLE || MAP_ZOOM != 0 || !county_map_on()) return FALSE;
+	EnterCriticalSection(&g_lock);
+	cz_buf v = *g_czShown;
+	LeaveCriticalSection(&g_lock);
+	if (!v.pix || v.gen != g_czGen || v.nc <= 0) return FALSE;
+	int mx = *(int *)0x004e65fc, my = *(int *)0x004e65f4;
+	if (mx < -g_extra || mx >= PANEL_X || my < 24 || my >= GAME_H) return FALSE;   // (the bar and the panel as ever)
+	int X, Y;
+	if (g_czMouse.on && g_czMouse.gx == mx && g_czMouse.gy == my) X = g_czMouse.x, Y = g_czMouse.y;
+	else X = 2 * (mx + g_extra) + 1, Y = 2 * my - 24 + 1;
+	int sv[8] = { MAP_COLUMNS, MAP_FIRST_X, MAP_FIRST_COL, *(int *)0x005651b8, *(int *)0x00553244, *(int *)0x0056d67c, mx, my };
+	MAP_COLUMNS = v.nc; MAP_FIRST_X = v.fx; MAP_FIRST_COL = v.fc; *(int *)0x005651b8 = v.fr; *(int *)0x00553244 = v.fy;
+	*(int *)0x0056d67c = v.nr; *(int *)0x004e65fc = X; *(int *)0x004e65f4 = Y;
+	*res = o_pick_cell(arg);
+	MAP_COLUMNS = sv[0]; MAP_FIRST_X = sv[1]; MAP_FIRST_COL = sv[2]; *(int *)0x005651b8 = sv[3]; *(int *)0x00553244 = sv[4];
+	*(int *)0x0056d67c = sv[5]; *(int *)0x004e65fc = sv[6]; *(int *)0x004e65f4 = sv[7];
+	PICKED_COL += v.fc - sv[2];
+	*(int *)0x005681f4 += v.fr - sv[3];
+	*(int *)0x00553ff8 -= v.dx; *(int *)0x00553fe8 -= v.dy;   // (the cell's place, in the game's view)
+	if (g_clickLog && arg) logf_("county zoom: click at %d,%d of the zoomed-out map: cell %d,%d (record %d)%s", X, Y,
+		sv[2] + PICKED_COL, sv[3] + *(int *)0x005681f4, *(int *)0x00568974, *res ? "" : ", none");
+	return TRUE;
+}
 static int __cdecl h_pick_cell(int arg)
 {
 	int r;
+	if (cz_pick(arg, &r)) return r;
 	if (begin_wide_view()) { r = o_pick_cell(arg); end_wide_view(); PICKED_COL -= g_view.k; }
 	else r = o_pick_cell(arg);
 	return r;
@@ -8549,7 +8692,7 @@ static blit_t o_blit[8]; // 6 and 7: the panels' solid 16x16 and 24x24 tiles
 #define SPRITE_STAMP(i) \
 	static int __cdecl h_blit##i(const BYTE *buf) { \
 		int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac, frame = TILE_FRAME; \
-		text_clear(BLOCK_X, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70); \
+		if (!g_czPass) text_clear(BLOCK_X, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70); \
 		int r = o_blit[i](buf); \
 		stamp_sprite(buf, frame, x, y); \
 		return r; \
@@ -8745,7 +8888,7 @@ static int glyph_common(int i, const BYTE *buf)
 	const short *rec = (const short *)(buf + 8 + index * 16);
 	int w = rec[0], h = rec[1];
 	enum { MAXG = 128 };
-	if (!g_hdText || !g_back || w <= 0 || h <= 0 || w > MAXG || h > MAXG) return o_glyph[i](buf);
+	if (!g_hdText || !g_back || g_czPass || w <= 0 || h <= 0 || w > MAXG || h > MAXG) return o_glyph[i](buf);
 	int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac;
 	int colour = *(int *)0x005cd40c == 1 ? -1 : (BYTE)*(int *)0x0057d3bc;
 	static BYTE before[MAXG * MAXG];
@@ -8760,6 +8903,229 @@ static int glyph_common(int i, const BYTE *buf)
 static int __cdecl h_glyph0(const BYTE *b) { return glyph_common(0, b); }
 static int __cdecl h_glyph1(const BYTE *b) { return glyph_common(1, b); }
 static int __cdecl h_glyph2(const BYTE *b) { return glyph_common(2, b); }
+
+// ---- The county map zoomed out (CountyZoom) ----
+// An idea from Wolfe's ZoomUI (LotR2 Fix), written anew for this patch. The mouse wheel shows the county
+// map at half size: the map's field holds twice as many columns and rows, round the normal view. The
+// game's view never changes. After a redraw of the map (h_redraw_map) the game draws it once more, into a
+// buffer of our own, with a view as large as the doubled field and the normal view in its middle. Every
+// byte of the game's data that draw changes is put back (a copy of the .data section is taken before it),
+// so the game goes on exactly as if it had never run, and multiplayer games stay in step. The draw changes
+// working values, the cells' "redraw me" bits and the animation frames of cells and armies; those of the
+// ones outside the normal view go on in the zoomed-out picture from a list of our own (g_czKept), never
+// in the game's data. The presenter shows the buffer over the map's field (cz_field).
+// (The copy and the put-back are on the game thread. The one other writer of the game's data, its sound
+// streams' timer callback, is held off with its own lock meanwhile: see cz_draw.)
+enum { CZ_LO = 0x004d2000, CZ_HI = 0x005cf000, CZ_KEPT = 65536 };   // the exe's .data section, whole pages
+// The draw's working values: changed by every draw, never kept for the next.
+static const struct { DWORD addr, n; } kCzWork[] = {
+	{ 0x004ea1a8, 4 },                                          // the frame the blitters write to
+	{ 0x0050a4bc, 0x10 }, { 0x0050d09c, 4 },                    // the part to copy to the screen (FUN_00452306)
+	{ 0x0052afdc, 4 }, { 0x0053e8ac, 4 }, { 0x0053e9ac, 4 },    // first x, columns, the full-redraw count
+	{ 0x0052f020, 0x84 }, { 0x0057c93c, 4 },                    // cells per county, the current county
+	{ 0x00553244, 4 }, { 0x00553254, 4 }, { 0x0055cd60, 4 }, { 0x005651b4, 8 }, { 0x0056d67c, 4 }, // the view
+	{ 0x00567954, 4 }, { 0x0056957c, 4 }, { 0x0056d594, 8 }, { 0x0057d374, 0x38 },   // positions, animation clocks
+	{ 0x0058fd50, 4 }, { 0x0058fe04, 4 }, { 0x0058fe18, 4 }, { 0x0058fe98, 4 }, { 0x0058feac, 4 },
+	{ 0x00591500, 0x30 }, { 0x00591568, 4 }, { 0x005aeb50, 4 }, { 0x005aeb6c, 8 },
+	{ 0x005bb478, 4 }, { 0x005c9258, 4 }, { 0x005c9288, 4 }, { 0x005cd400, 4 }, { 0x005cdd20, 4 },
+	{ 0x005ceff8, 8 },
+};
+static BOOL cz_work(DWORD a)
+{
+	for (int i = 0; i < (int)(sizeof kCzWork / sizeof kCzWork[0]); i++) if (a - kCzWork[i].addr < kCzWork[i].n) return TRUE;
+	return FALSE;
+}
+// A byte the last zoomed-out draw left changed: its value there, and the game's then. Put in again for the
+// next draw while the game's is still the same (an animation going on outside the normal view); the game
+// changed it since, the game's is drawn (a field sown, a building put up).
+typedef struct { DWORD addr; BYTE ours, game; } cz_kept;
+static cz_kept g_czKept[CZ_KEPT];
+static int g_czKeptN;
+static DWORD cz_sum(const BYTE *p, size_t n)   // (Timing=1 checks)
+{
+	DWORD h = 2166136261u;
+	for (size_t i = 0; i + 4 <= n; i += 4) h = (h ^ *(const DWORD *)(p + i)) * 16777619u;
+	return h;
+}
+// The HD art of the zoomed-out map: each stamp its draw recorded, at half size (the 2x art's four pixels
+// averaged), wherever the finished picture still shows that stamp's pixel - the last stamp a pixel matches
+// wins, as in the normal view's layer. On all the CPU's threads, a band of rows each (cz_hd_job).
+typedef struct { const BYTE *idx; const DWORD *hd; int x, y, w, h, tile; } cz_job;
+static cz_job g_czJobs[MAX_STAMPS];
+static int g_czJobN, g_czHdPitch;
+static const cz_buf *g_czHdBuf;
+static int g_czTileRow[TILE_H + 1];   // where each row of a ground tile starts in its pixels
+#define CZ_BAND 24
+static DWORD cz_avg(const DWORD *h0, const DWORD *h1)
+{
+	DWORD rb = (h0[0] & 0xff00ff) + (h0[1] & 0xff00ff) + (h1[0] & 0xff00ff) + (h1[1] & 0xff00ff) + 0x20002;
+	DWORD g = (h0[0] & 0xff00) + (h0[1] & 0xff00) + (h1[0] & 0xff00) + (h1[1] & 0xff00) + 0x200;
+	return ((rb >> 2) & 0xff00ff) | ((g >> 2) & 0xff00) | 0x1000000;
+}
+static void cz_hd_job(int band, int me)
+{
+	(void)me;
+	const cz_buf *b = g_czHdBuf;
+	int pitch = g_czHdPitch, W = b->w;
+	int r0 = 24 + band * CZ_BAND, r1 = min(24 + b->h, r0 + CZ_BAND);   // (picture rows)
+	if (r1 <= r0) return;
+	memset(b->hd + (r0 - 24) * W, 0, (size_t)(r1 - r0) * W * 4);
+	for (int i = 0; i < g_czJobN; i++) {
+		const cz_job *j = &g_czJobs[i];
+		int y0 = max(j->y, r0), y1 = min(j->y + j->h, r1);
+		if (y0 >= y1 || j->x >= W || j->x + j->w <= 0) continue;
+		for (int fy = y0; fy < y1; fy++) {
+			int r = fy - j->y, c0, c1;
+			const BYTE *row = b->pix + (CZ_M + fy) * pitch + CZ_M + j->x, *src;
+			DWORD *o = b->hd + (fy - 24) * W + j->x;
+			const DWORD *h0 = j->hd + (2 * r) * (2 * j->w), *h1 = h0 + 2 * j->w;
+			if (j->tile) {   // a diamond: 2 + 4k pixels a row, k from the nearer of top and bottom
+				int k = r < TILE_H / 2 ? r : TILE_H - 1 - r;
+				c0 = (TILE_W - (2 + 4 * k)) / 2; c1 = c0 + 2 + 4 * k;
+				src = j->idx + g_czTileRow[r] - c0;
+			}
+			else { c0 = 0; c1 = j->w; src = j->idx + r * j->w; }
+			c0 = max(c0, -j->x); c1 = min(c1, W - j->x);
+			for (int c = c0; c < c1; c++) {
+				BYTE v = src[c];
+				if ((v || j->tile) && row[c] == v) o[c] = cz_avg(h0 + 2 * c, h1 + 2 * c);
+			}
+		}
+	}
+}
+static void cz_hd(cz_buf *b, int pitch)
+{
+	if (!b->hd) return;
+	if (!g_czTileRow[TILE_H])
+		for (int r = 0, o = 0; r <= TILE_H; r++) { g_czTileRow[r] = o; o += 2 + 4 * (r < TILE_H / 2 ? r : TILE_H - 1 - r); }
+	int n = 0;
+	for (int i = 0; i < g_czStampN; i++) {
+		const stamp_call *s = &g_czStamps[i];
+		if (s->index < 0 || !s->buf) continue;
+		if (!s->sprite) {   // ground (as stamp_tile)
+			const DWORD *px = NULL; int frames = 0;
+			for (int k = 0; k < MAX_TILE_SETS; k++) if (g_tileSets[k].buf == s->buf) { px = g_tileSets[k].px; frames = g_tileSets[k].frames; break; }
+			if (!px || s->index >= frames) continue;
+			const short *rec = (const short *)(s->buf + 8 + s->index * 16);
+			if (rec[0] != TILE_W || rec[1] != TILE_H) continue;
+			g_czJobs[n++] = (cz_job){ s->buf + *(const int *)(rec + 2), px + s->index * (TILE_W * 2 * TILE_H * 2), s->x, s->y, TILE_W, TILE_H, 1 };
+		}
+		else {   // sprites, the overhang of trees and buildings (as stamp_sprite)
+			const BYTE *data = NULL;
+			for (int k = 0; k < MAX_SPRITE_SETS; k++) if (g_spriteSets[k].buf == s->buf) { data = g_spriteSets[k].data; break; }
+			if (!data || s->index >= *(const int *)data) continue;
+			int off = ((const int *)data)[1 + s->index];
+			if (!off) continue;
+			const BYTE *p = data + off;
+			int w = *(const WORD *)p, h = *(const WORD *)(p + 2);
+			g_czJobs[n++] = (cz_job){ p + 4, (const DWORD *)(p + 4 + w * h), s->x, s->y, w, h, 0 };
+		}
+	}
+	g_czJobN = n;
+	g_czHdBuf = b; g_czHdPitch = pitch;
+	pool_run((b->h + CZ_BAND - 1) / CZ_BAND, cz_hd_job);
+}
+// Draws the zoomed-out county map into g_czDraw (the game thread, after the normal redraw).
+static void cz_draw(void)
+{
+	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
+		SCREEN_ID != 0 || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;
+	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
+	int rowsAll = CZ_M + 24 + H + CZ_BELOW;
+	if (pitch - W < 2 * CZ_M + 64) return;   // (the frame is as wide as the zoomed-out battlefield: not without BattleZoom)
+	static int bufPitch;
+	static BYTE *snap;
+	if (!g_czB[0].pix) {
+		if (!(snap = malloc(CZ_HI - CZ_LO))) return;
+		for (int i = 0; i < 4; i++) {   // (kept: the presenter may read one)
+			if (!(g_czB[i].pix = calloc((size_t)pitch, rowsAll))) return;
+			g_czB[i].hd = calloc((size_t)W * H, 4);
+		}
+		bufPitch = pitch;
+	}
+	if (pitch != bufPitch || !snap) return;
+	int cam = MAP_FIRST_COL, camRow = *(int *)0x005651b8, firstX = MAP_FIRST_X, firstY = *(int *)0x00553244;
+	// At most one draw a 15 ms (the game's animations step every 16), except when the view moved.
+	static int lastCam = -1, lastRow = -1; static LONG lastGen; static double lastT;
+	double now = perf_now();
+	if (cam == lastCam && camRow == lastRow && g_czGen == lastGen && now - lastT < 15) return;
+	lastCam = cam; lastRow = camRow; lastGen = g_czGen; lastT = now;
+	cz_buf *b = g_czDraw;
+	// The normal view's middle on the field's middle: game x, y is at x + D, y + E here.
+	int D = W / 2 - (PANEL_X - g_extra) / 2, E = 24 + H / 2 - (24 + (GAME_H - 24) / 2);
+	int cs = (firstX + D + 59) / 60, rs = 2 * ((firstY + E - 9 + 29) / 30);   // columns and rows (even) further out
+	int fx = firstX + D - cs * 60, fy = firstY + E - rs * 15;
+	int nc = (W - fx + 59) / 60, nr = ((24 + H - fy + 14) / 15 + 2) & ~1;
+	int fc = max(0, min(64 - nc, cam - cs)), fr = max(0, min(128 - nr, camRow - rs)) & ~1;
+	// At the map's edge the view stops: the normal view is then off the middle.
+	D += (cam - cs - fc) * 60; E += (camRow - rs - fr) * 15;
+	fx = firstX + D - (cam - fc) * 60; fy = firstY + E - (camRow - fr) * 15;
+	static unsigned draws;
+	BOOL check = g_czCheckAll || (g_timing && (++draws & 63) == 0);
+	DWORD frameSum = check ? cz_sum(g_back->bits, (size_t)pitch * g_back->h) : 0;
+	// The game's sound streams are refilled by a timer callback on another thread (FUN_00426dd5), which writes
+	// its records (0x522bb0 on) under a lock of its own, 0x4d4764: it skips a tick while the lock is taken. Held
+	// here from the copy to the put-back, so no write of it is undone. (It is running: drawn at the next redraw.)
+	if (InterlockedCompareExchange((volatile LONG *)0x004d4764, 1, 0) != 0) { lastCam = -1; return; }
+	// the game's data as it is; then what the last zoomed-out draw left (still the game's own underneath)
+	BYTE *data = (BYTE *)CZ_LO;
+	memcpy(snap, data, CZ_HI - CZ_LO);
+	for (int i = 0; i < g_czKeptN; i++) {
+		BYTE *q = data + (g_czKept[i].addr - CZ_LO);
+		if (*q == g_czKept[i].game) *q = g_czKept[i].ours;
+	}
+	// the view as large as the field, drawn into the buffer
+	MAP_COLUMNS = nc; MAP_FIRST_X = fx; MAP_FIRST_COL = fc; *(int *)0x005651b8 = fr; *(int *)0x00553244 = fy;
+	*(int *)0x0056d67c = nr; *(int *)0x0055cd60 = 60 * nc + fx; *(int *)0x00553254 = (nr + 1) * 15 + fy;
+	*(int *)0x0053e9ac = 1;   // everything drawn
+	*(BYTE **)0x004ea1a8 = b->pix + CZ_M * pitch + CZ_M;
+	g_czClipR = W; g_czClipB = 24 + H;
+	double t0 = g_timing ? perf_now() : 0;
+	g_czStampN = 0;
+	g_czPass = TRUE;
+	o_redraw_map();
+	g_czPass = FALSE;
+	double t1 = g_timing ? perf_now() : 0;
+	// all put back; what it changed besides its working values is kept for the next draw
+	int kept = 0;
+	for (int i = 0; i < CZ_HI - CZ_LO; i += 64) {
+		if (!memcmp(data + i, snap + i, 64)) continue;
+		for (int j = i; j < i + 64; j++) {
+			if (data[j] == snap[j]) continue;
+			DWORD a = CZ_LO + j;
+			if (kept < CZ_KEPT && !cz_work(a)) g_czKept[kept++] = (cz_kept){ a, data[j], snap[j] };
+			data[j] = snap[j];
+		}
+	}
+	g_czKeptN = kept;
+	if (check && memcmp(data, snap, CZ_HI - CZ_LO)) {
+		int j = 0; while (j < CZ_HI - CZ_LO && data[j] == snap[j]) j++;
+		logf_("county zoom: the game's data not put back (0x%08lx: %02x, was %02x)", (unsigned long)(CZ_LO + j), j < CZ_HI - CZ_LO ? data[j] : 0, j < CZ_HI - CZ_LO ? snap[j] : 0);
+	}
+	InterlockedExchange((volatile LONG *)0x004d4764, 0);
+	double t2 = g_timing ? perf_now() : 0;
+	b->w = W; b->h = H;
+	if (b->hd && g_hdTiles) cz_hd(b, pitch);
+	double t3 = g_timing ? perf_now() : 0;
+	if (check && frameSum != cz_sum(g_back->bits, (size_t)pitch * g_back->h)) logf_("county zoom: the draw changed the game's frame");
+	b->w = W; b->h = H; b->sw = GAME_W + g_extra;
+	b->fc = fc; b->fr = fr; b->fx = fx; b->fy = fy; b->nc = nc; b->nr = nr; b->dx = D; b->dy = E;
+	b->gen = g_czGen;
+	// (the presenter's picture is built again only when this one differs)
+	const cz_buf *lp = g_czLastPub;
+	b->changed = !lp || lp->gen != b->gen || lp->w != W;
+	for (int y = 0; y < H && !b->changed; y++) b->changed = memcmp(b->pix + (CZ_M + 24 + y) * pitch + CZ_M, lp->pix + (CZ_M + 24 + y) * pitch + CZ_M, W) != 0;
+	g_czDraw = g_czPend; g_czPend = b;
+	g_czPendNew = TRUE;
+	if (g_timing) {
+		static double sum, sumR, sumH; static int n, nk, ns; static DWORD last;
+		sum += t1 - t0; sumR += t2 - t1; sumH += t3 - t2; n++; nk = max(nk, kept); ns = max(ns, g_czStampN);
+		if (GetTickCount() - last > 5000) {
+			logf_("county zoom: %d draws, %.2f ms each + %.2f ms putting back + %.2f ms HD art (up to %d stamps), up to %d bytes kept; view %d,%d from %d,%d", n, sum / n, sumR / n, sumH / n, ns, nk, cam, camRow, fc, fr);
+			sum = sumR = sumH = 0; n = nk = ns = 0; last = GetTickCount();
+		}
+	}
+}
 
 static void __cdecl h_redraw_map(void)
 {
@@ -8838,6 +9204,7 @@ static void __cdecl h_redraw_map(void)
 		g_snapPendW = g_showW;
 		if (window_screen(SCREEN_ID)) InterlockedExchange(&g_snapPending, 1);
 	}
+	cz_draw();
 }
 
 // "y * 640" compiled as LEA r,[r+r*4] ; SHL r,7 (tools\find_mul640.ps1), in the rectangle

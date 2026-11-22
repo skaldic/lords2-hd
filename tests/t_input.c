@@ -220,6 +220,145 @@ TEST(wheel_zoom_new_battle_starts_whole)
 	t_zoomed_battle_end();
 }
 
+/* ================================ the county map zoomed out (CountyZoom) */
+
+/* The wide county map, nothing over it. */
+static void t_county_map(void)
+{
+	g_off = 960; g_extra = 208; g_battleZoom = TRUE; g_countyZoom = TRUE; g_mapSticky = TRUE; g_menuOpen = 0;
+	g_wideScreen = 1; g_scale = SCALE_SMOOTH;
+	*(int *)0x0052af94 = 3;          // the map mode
+	*(BYTE *)0x004eac50 = 0;         // the county map's screen
+	*(int *)0x0057c8fc = 0;          // not in a battle
+	*(int *)0x0057cb18 = 0;          // the map at its normal scale
+	InterlockedExchange(&g_czOut, 0);
+}
+static void t_county_map_end(void)
+{
+	InterlockedExchange(&g_czOut, 0); g_czShowing = 0;
+	g_off = 0; g_extra = 0; g_battleZoom = FALSE; g_countyZoom = TRUE; g_mapSticky = FALSE; g_wideScreen = 0;
+	*(int *)0x0052af94 = 0;
+}
+
+/* The wheel back (down) shows it zoomed out, forward the normal view; half notches add up. Each zoom out starts a
+ * new picture (an older one is not shown). */
+TEST(county_zoom_wheel_out_and_back)
+{
+	t_county_map();
+	LONG gen = g_czGen;
+	CHECK(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA / 2), 0));   // half a notch: ours, nothing yet
+	CHECK_EQ(g_czOut, 0);
+	CHECK(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA / 2), 0));
+	CHECK_EQ(g_czOut, 1);
+	CHECK_EQ(g_czGen, gen + 1);
+	cz_wheel(MAKEWPARAM(0, -3 * WHEEL_DELTA), 0);           // further out: as far as it goes
+	CHECK_EQ(g_czOut, 1);
+	CHECK_EQ(g_czGen, gen + 1);
+	CHECK(cz_wheel(MAKEWPARAM(0, WHEEL_DELTA), 0));
+	CHECK_EQ(g_czOut, 0);
+	cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0);
+	CHECK_EQ(g_czGen, gen + 2);
+	t_county_map_end();
+}
+
+/* Only on the bare county map at its normal scale, with BattleZoom (the frame as wide as the doubled field) and the
+ * switch on; the F10 switch turned off shows the normal view at once. */
+TEST(county_zoom_only_on_the_bare_county_map)
+{
+	t_county_map();
+	*(BYTE *)0x004eac50 = 0x1e;          // a yes/no question over the map
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	*(BYTE *)0x004eac50 = 0;
+	*(int *)0x0057cb18 = 2;              // the kingdom overview
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	*(int *)0x0057cb18 = 0;
+	g_menuOpen = 1;                      // the F10 panel
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	g_menuOpen = 0;
+	g_battleZoom = FALSE;
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	g_battleZoom = TRUE;
+	g_off = 0;                           // 4:3
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	g_off = 960;
+	g_scale = SCALE_SHARP;               // square pixels: the picture isn't built, so the wheel stays the game's
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	g_scale = SCALE_SMOOTH;
+	CHECK_EQ(g_czOut, 0);
+	REQUIRE(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	REQUIRE(g_czOut == 1);
+	menu_change(M_COUNTY);               // off in the F10 panel: the normal view, and the wheel is the game's
+	CHECK(!g_countyZoom);
+	CHECK_EQ(g_czOut, 0);
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	CHECK_EQ(g_czOut, 0);
+	menu_change(M_COUNTY);
+	CHECK(g_countyZoom);
+	CHECK(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	CHECK_EQ(g_czOut, 1);
+	t_county_map_end();
+}
+
+/* A click on the zoomed-out map: the game's pick runs with the picture's view and the mouse's point in it, and what
+ * it leaves is turned back into the game's own view; the game's view and mouse are as before. */
+static struct { int cols, firstX, firstCol, row, firstY, rows, mx, my; } t_czSaw;
+static int __cdecl t_cz_pick_stub(int arg)
+{
+	t_czSaw.cols = MAP_COLUMNS; t_czSaw.firstX = MAP_FIRST_X; t_czSaw.firstCol = MAP_FIRST_COL;
+	t_czSaw.row = *(int *)0x005651b8; t_czSaw.firstY = *(int *)0x00553244; t_czSaw.rows = *(int *)0x0056d67c;
+	t_czSaw.mx = *(int *)0x004e65fc; t_czSaw.my = *(int *)0x004e65f4;
+	PICKED_COL = 7; *(int *)0x005681f4 = 9;     // column 7, half-row 9 of the picture's view
+	*(int *)0x00553ff8 = 600; *(int *)0x00553fe8 = 400;
+	*(int *)0x00568974 = 42;                    // the cell's record
+	return arg + 1;
+}
+TEST(county_zoom_click_picks_the_cell_shown)
+{
+	t_county_map();
+	static BYTE pix[1];
+	cz_buf v = { 0 };
+	v.pix = pix; v.gen = g_czGen; v.nc = 23; v.nr = 66; v.fc = 10; v.fr = 20; v.fx = -30; v.fy = -5; v.dx = 500; v.dy = 228;
+	cz_buf *keepShown = g_czShown;
+	pick_cell_t keepPick = o_pick_cell;
+	g_czShown = &v; o_pick_cell = t_cz_pick_stub;
+	InterlockedExchange(&g_czOut, 1); g_czShowing = 1; g_czMouse.on = FALSE;
+	MAP_COLUMNS = 12; MAP_FIRST_X = -10; MAP_FIRST_COL = 15; *(int *)0x005651b8 = 30; *(int *)0x00553244 = 7; *(int *)0x0056d67c = 34;
+	*(int *)0x004e65fc = 100; *(int *)0x004e65f4 = 200;   // the game's mouse
+	int r = h_pick_cell(1);
+	CHECK_EQ(r, 2);
+	CHECK_EQ(t_czSaw.cols, 23); CHECK_EQ(t_czSaw.firstX, -30); CHECK_EQ(t_czSaw.firstCol, 10);
+	CHECK_EQ(t_czSaw.row, 20); CHECK_EQ(t_czSaw.firstY, -5); CHECK_EQ(t_czSaw.rows, 66);
+	CHECK_EQ(t_czSaw.mx, 2 * (100 + 208) + 1); CHECK_EQ(t_czSaw.my, 2 * 200 - 24 + 1);   // its point in the picture
+	CHECK_EQ(MAP_COLUMNS, 12); CHECK_EQ(MAP_FIRST_X, -10); CHECK_EQ(MAP_FIRST_COL, 15);   // the game's view as it was
+	CHECK_EQ(*(int *)0x005651b8, 30); CHECK_EQ(*(int *)0x00553244, 7); CHECK_EQ(*(int *)0x0056d67c, 34);
+	CHECK_EQ(*(int *)0x004e65fc, 100); CHECK_EQ(*(int *)0x004e65f4, 200);
+	CHECK_EQ(MAP_FIRST_COL + PICKED_COL, 10 + 7);                  // the same cell, from the game's view
+	CHECK_EQ(*(int *)0x005651b8 + *(int *)0x005681f4, 20 + 9);
+	CHECK_EQ(*(int *)0x00553ff8, 100); CHECK_EQ(*(int *)0x00553fe8, 172);
+	CHECK_EQ(*(int *)0x00568974, 42);
+	// the window's precise point (client_to_game) when it is for the same game point
+	g_czMouse.on = TRUE; g_czMouse.x = 700; g_czMouse.y = 300; g_czMouse.gx = 100; g_czMouse.gy = 200;
+	h_pick_cell(0);
+	CHECK_EQ(t_czSaw.mx, 700); CHECK_EQ(t_czSaw.my, 300);
+	g_czMouse.gx = 101;                  // a stale one: from the game's mouse
+	h_pick_cell(0);
+	CHECK_EQ(t_czSaw.mx, 2 * (100 + 208) + 1);
+	// over the side panel, the normal view, or an old picture: the game's own pick
+	t_czSaw.mx = 0;
+	*(int *)0x004e65fc = PANEL_X + 10;
+	h_pick_cell(0);
+	CHECK_EQ(t_czSaw.mx, PANEL_X + 10);
+	*(int *)0x004e65fc = 100;
+	g_czShowing = 0;
+	h_pick_cell(0);
+	CHECK_EQ(t_czSaw.mx, 100);
+	g_czShowing = 1; v.gen = g_czGen - 1;
+	h_pick_cell(0);
+	CHECK_EQ(t_czSaw.mx, 100);
+	g_czShown = keepShown; o_pick_cell = keepPick;
+	t_county_map_end();
+}
+
 /* The zoomed picture: the field enlarged from the shown part, the top bar and the side panel untouched. A field
  * of 400x300 picture px, its left half one colour and its right half another, under a bar of 48 rows. */
 TEST(wheel_zoom_picture_enlarges_only_the_field)

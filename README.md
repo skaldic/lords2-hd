@@ -51,7 +51,8 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Runs fullscreen at your monitor's resolution, without switching its display mode
 - Fills widescreen monitors: the county map, the kingdom overview and battles show more of the world,
   and the full-screen paintings are widened
-- Battles can zoom out to show four times the field
+- Battles can zoom out to show four times the field, and the mouse wheel zooms the county map out
+  to show four times as much of it
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels, lettering and
   videos
 - Drawn by the graphics card (Direct3D 11) and upscaled with AMD FidelityFX Super Resolution 1, with
@@ -213,6 +214,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Display | Sharp lettering | On, Off | On | `SharpText` |
 | Display | Shore waves | On, Off | On | `ShoreWaves` |
 | Display | Widescreen * | On, Off | On | `Wide` |
+| Display | County map zoom-out | On, Off | On | `CountyZoom` |
 | Performance | Upscaling | AMD FSR 1 (sharpest), Catmull-Rom (sharp), Bilinear (soft) | AMD FSR 1 | `Upscale` |
 | Performance | Drawing * | Graphics card, Processor | Graphics card | `Renderer` |
 | Performance | Frame limit | 120 a second, Off (as the original) | 120 a second | `FrameLimit` |
