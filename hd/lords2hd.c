@@ -9196,6 +9196,11 @@ static void cz_draw(void)
 		BYTE *q = data + (g_czKept[i].addr - CZ_LO);
 		if (*q == g_czKept[i].game) *q = g_czKept[i].ours;
 	}
+	// An army selected (screen 16) with a cell under the mouse: the march path to it. Each frame the game marks
+	// the path's cells (flag 0x40 of the cell's record, FUN_004a91ba, from FUN_004a8e0b) and the redraw draws a
+	// numbered dot on each marked cell in view and clears its mark (FUN_004081a6): the normal redraw just did, so
+	// they are marked again here, as the game does (put back after, with the rest).
+	if (SCREEN_ID == 16 && *(DWORD *)0x00568974 < 0xfff0000) ((void (__cdecl *)(void))0x004a91ba)();
 	// the view as large as the field, drawn into the buffer
 	MAP_COLUMNS = nc; MAP_FIRST_X = fx; MAP_FIRST_COL = fc; *(int *)0x005651b8 = fr; *(int *)0x00553244 = fy;
 	*(int *)0x0056d67c = nr; *(int *)0x0055cd60 = 60 * nc + fx; *(int *)0x00553254 = (nr + 1) * 15 + fy;
