@@ -63,7 +63,9 @@ The screenshots are hosted on the release: this repository holds no game art.
   dancing round it
 - Groups ordered round a forest, river or other obstacle keep their shape and their route
 - Idle soldiers fight an enemy within a few cells (knights a little further), but never wander more
-  than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away
+  than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away; and
+  only when they aren't outnumbered by the enemy there and coming up behind it, so a few pikemen
+  holding a gap stay in it
 - Archers step back from soldiers charging them and keep shooting, and step out of melee once one of
   their soldiers reaches their enemy
 - Mop-Up hunts down every enemy it can walk to, and your orders still take over
@@ -102,8 +104,9 @@ Bugs of the original game are fixed in single player, each with its own switch u
 
 Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal is the game's own battle AI.
 On Hard, in field battles, the computer picks attack or defence once instead of switching every few
-seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), and moves its
-soldiers up together and charges together. Legendary plays like Hard, and also:
+seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), sends its
+nearest soldiers to help archers you reach, and moves its soldiers up together and charges together.
+Legendary plays like Hard, and also:
 - when it attacks, its knights ride for your archers and its pikemen for your knights, no more than two
   groups on one of yours;
 - shot at from afar, it keeps closing in instead of charging at once;

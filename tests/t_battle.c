@@ -270,6 +270,45 @@ TEST(engage_at_most_two_on_one_enemy)
 	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
 }
 
+TEST(engage_only_with_the_odds)
+{
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // our pikemen, 30 men
+	t_unit(9, 2, 22, 20, 3); FIG_S(9, 0x1a0) = 30;                 // two enemy units, 60 men
+	t_unit(10, 2, 23, 21, 3); FIG_S(10, 0x1a0) = 30;
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // outnumbered: holds its ground
+	t_unit(11, 1, 20, 22, 2); FIG_S(11, 0x1a0) = 30;               // a friend 2 cells from the enemy: 60 to 60
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30; FIG_S(11, 0x1a0) = 0;
+	t_archer(10, 2, 23, 21, 3); FIG_S(10, 0x1a0) = 30;             // archers count half: 30 to 45
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
+	FIG_S(10, 0x1a0) = 0;                                           // 30 to 30: it goes
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30; FIG_S(10, 0x1a0) = 90;
+	t_unit_at(9, 21, 20);                                           // right beside it: fought whatever the odds
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+}
+
+TEST(engage_counts_the_column_behind_the_first_enemy)
+{
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // two of our pikemen at a gap, 60 men
+	t_unit(11, 1, 20, 21, 2); FIG_S(11, 0x1a0) = 30;
+	t_unit(9, 2, 23, 20, 3); FIG_S(9, 0x1a0) = 30;                 // the head of a column 3 cells off
+	t_unit(10, 2, 27, 20, 3); FIG_S(10, 0x1a0) = 30;               // the next 4 cells behind it
+	t_unit(12, 2, 28, 21, 3); FIG_S(12, 0x1a0) = 30;               // and 5 behind: 60 to 90
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // they hold the gap
+	t_unit_at(10, 40, 20); t_unit_at(12, 40, 22);                  // the head alone: 60 to 30
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+}
+
 TEST(engage_skips_walls_the_dying_and_siege)
 {
 	t_unit(8, 1, 20, 20, 2);

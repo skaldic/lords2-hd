@@ -9708,6 +9708,9 @@ static void ai_archers_think(int g)
 #define AI_CHARGE_DIST 6
 #define AI_LINE_SLACK 2
 #define AI_ADVANCE_STEP 6
+#define AI_LEG_LEFT 3      // a group with more than this left of its walk is still walking
+#define AI_LEG_SAME 4      // ... and keeps its order when the new point is within this of it
+#define AI_LEG_MIN 4       // an arrived group moves on only for a step of at least this
 #define AI_CHARGE_STEPS 5000
 #define AI_VOLLEY_STEPS 400
 #define AI_DEF_TRIGGER 6
@@ -9887,10 +9890,82 @@ static void ai_charge(int g)
 	ai_game_charge(g);
 }
 
+// Rescue (Hard): enemy melee at the side's archers. An archer group with an enemy melee unit within
+// AI_RESCUE_NEAR cells of one of its members is threatened; the nearest of the side's melee groups with no
+// member in melee and within AI_RESCUE_REACH cells of that enemy goes to help (two when more than
+// AI_RESCUE_MANY enemy units are there): it walks to the enemy, and within AI_RESCUE_NEAR + 1 cells uses
+// the game's charge, whose units chase the nearest enemies, the attackers. A helper stays one until the
+// archers are clear; no more are sent while the one or two needed are on it, so the side isn't pulled in
+// group by group. This comes before the group's other rules, also once its side has charged. The archers'
+// handler wakes a new helper at once (ai_rescue_wake).
+#define AI_RESCUE_NEAR 3
+#define AI_RESCUE_REACH 20
+#define AI_RESCUE_MANY 3
+static BYTE g_aiRescue[0x51];        // the archer group it helps (0: none; per battle)
+// How many enemy melee units stand within AI_RESCUE_NEAR of archer group a's members, and the nearest one's
+// cell. When none, a's helpers are let go.
+static int ai_archers_attackers(int a, int *ex, int *ey)
+{
+	int side = GRP_B(a, 0x00), n = 0, best = 999;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == side || t[0x31] == 2 || t[0x12] >= 7 || t[0x16a]) continue;
+		int nd = 999;
+		for (int i = 1; i < 0x51; i++)
+			if (FIG_S(i, 0x178) == a && FIG(i)[0x2c] == side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) {
+				int d = cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(e, 0x20), FIG_S(e, 0x22));
+				if (d < nd) nd = d;
+			}
+		if (nd > AI_RESCUE_NEAR) continue;
+		n++;
+		if (nd < best) { best = nd; *ex = FIG_S(e, 0x20); *ey = FIG_S(e, 0x22); }
+	}
+	if (!n) for (int h = 1; h < 0x51; h++) if (g_aiRescue[h] == a) g_aiRescue[h] = 0;
+	return n;
+}
+// The group that should go to help archer group a against n attackers at x,y: 0 when the helpers needed are
+// already on it, else the nearest free melee group (no member in melee, not helping) within AI_RESCUE_REACH.
+static int ai_rescuer(int a, int n, int x, int y)
+{
+	int side = GRP_B(a, 0x00), have = 0, best = 0, bd = AI_RESCUE_REACH + 1;
+	for (int h = 1; h < 0x51; h++) {
+		if (!ai_melee_group(h, side)) continue;
+		if (g_aiRescue[h] == a) { have++; continue; }
+		if (g_aiRescue[h] || GRP_B(h, 0x0d)) continue;
+		int d = cheb(GRP_S(h, 0x1e), GRP_S(h, 0x20), x, y);
+		if (d < bd) { bd = d; best = h; }
+	}
+	return have >= (n > AI_RESCUE_MANY ? 2 : 1) ? 0 : best;
+}
+static BOOL ai_rescue(int g)
+{
+	int side = GRP_B(g, 0x00);
+	for (int a = 1; a < 0x51; a++) {
+		if (GRP_B(a, 0x00) != side || GRP_B(a, 0x01) || !GRP_B(a, 0x02) || GRP_B(a, 0x08) != 1) continue;
+		int ex, ey, n = ai_archers_attackers(a, &ex, &ey);
+		if (!n || (g_aiRescue[g] != a && (g_aiRescue[g] || ai_rescuer(a, n, ex, ey) != g))) continue;
+		int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), ex, ey);
+		if (g_blog && g_aiRescue[g] != a) blog("ai %s g%d %s: to the archers g%d (%d enemy units at them, %d cells away)", kAiLevel[g_aiLevel], g,
+			ai_kind_name(GRP_B(g, 0x08)), a, n, d);
+		g_aiRescue[g] = (BYTE)a;
+		if (d <= AI_RESCUE_NEAR + 1) { g_aiCharged[g] = 1; ai_game_charge(g); }
+		else { g_aiCharged[g] = 0; ai_order(g, ex, ey); }
+		return TRUE;
+	}
+	return FALSE;
+}
+// From the archers' handler, every 25 steps: a threatened archer group makes a new helper think at once.
+static void ai_rescue_wake(int a)
+{
+	int ex, ey, n = ai_archers_attackers(a, &ex, &ey), h;
+	if (n && (h = ai_rescuer(a, n, ex, ey)) != 0 && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;
+}
+
 static void ai_melee_think(int g)
 {
 	int side = GRP_B(g, 0x00);
 	if (side < 1 || side > 2) return;
+	if (ai_rescue(g)) return;
 	if (g_aiCharge[side]) { ai_charge(g); return; }
 	int farthest = 0, groups = 0, fighting = 0, archers = 0, close = 0, sx = 0, sy = 0, units = 0;
 	BOOL hit = FALSE;
@@ -9939,6 +10014,11 @@ static void ai_melee_think(int g)
 		int line = max(AI_CHARGE_DIST, farthest - AI_ADVANCE_STEP), want = max(line, d - AI_ADVANCE_STEP);
 		if (want >= d) return;
 		ai_toward(GRP_S(g, 0x1e), GRP_S(g, 0x20), tx, ty, d - want, &x, &y);
+		// (smooth: a group still walking to a point near this one keeps going, so it isn't re-formed every
+		// think; one that has arrived waits for a step of at least AI_LEG_MIN, not a hop of a cell or two)
+		int left = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(g, 0x22), GRP_S(g, 0x24));
+		if (left > AI_LEG_LEFT && cheb(x, y, GRP_S(g, 0x22), GRP_S(g, 0x24)) <= AI_LEG_SAME) return;
+		if (left <= AI_LEG_LEFT && d - want < AI_LEG_MIN && want > AI_CHARGE_DIST) return;
 		if (ai_order(g, x, y) && g_blog) blog("ai %s g%d %s: advance to %d,%d (%d cells from the enemy, the rearmost %d)", kAiLevel[g_aiLevel], g,
 			ai_kind_name(GRP_B(g, 0x08)), x, y, want, farthest);
 		return;
@@ -9989,6 +10069,7 @@ static void __cdecl h_ai_ranged(void)   // FUN_0048a9d2, the computer archers' h
 {
 	int g = *(int *)0x00568458;
 	if (!ai_part(AI_ARCHERS) || g < 1 || g > 80) { o_ai_ranged(); return; }
+	if (ai_part(AI_MELEE) && (g_btick + g) % 25 == 0) ai_rescue_wake(g);
 	if (++GRP_S(g, 0x1c) > 199 && !GRP_B(g, 0x0d)) {   // a think: every 200 steps, never with a member in melee
 		GRP_S(g, 0x1c) = 0;
 		ai_archers_think(g);
@@ -10566,6 +10647,8 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 // - an enemy that keeps getting away for a second is let go;
 // - after letting go, it ignores that enemy for 3 seconds;
 // - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
+// - only with the odds: its soldiers near that enemy have at least as many men as the enemy has there and
+//   coming up behind (engage_odds_ok);
 // - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
 #define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
 #define ENG_RANGE_KNIGHT 4
@@ -10579,6 +10662,26 @@ static unsigned g_eIgnoreUntil[81], g_eSince[81], g_eLastIdle[81];
 static int cheb(int x0, int y0, int x1, int y1) { int a = abs(x1 - x0), b = abs(y1 - y0); return a > b ? a : b; }
 
 static void engage_forget(int me) { g_eTarget[me] = 0; }
+
+// The odds (the user's rule: only engage when it's to its advantage): the men of the unit's soldiers
+// within ENG_ODDS_R cells of the enemy (those who can join in), itself included, against the enemy's men
+// within ENG_ODDS_FAR of it (those about to arrive too), its archers and crossbowmen counted half. An
+// idle unit goes for that enemy only when its side has at least as many, so a few pikemen holding a gap
+// stay in it when the head of a column comes (a lone straggler is still fought).
+#define ENG_ODDS_R 3
+#define ENG_ODDS_FAR 5
+static BOOL engage_odds_ok(int me, int e)
+{
+	int side = FIG(me)[0x2c], ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22), ours = 0, theirs = 0;
+	for (int k = 1; k < 0x51; k++) {
+		BYTE *u = FIG(k);
+		if (!u[0x2c] || u[0x31] == 2 || u[0x12] >= 7) continue;
+		int d = cheb(ex, ey, FIG_S(k, 0x20), FIG_S(k, 0x22)), men = FIG_S(k, 0x1a0);
+		if (u[0x2c] == side) { if (!u[0x16a] && (k == me || d <= ENG_ODDS_R)) ours += 2 * men; }
+		else if (d <= ENG_ODDS_FAR) theirs += u[0x16a] ? men : 2 * men;
+	}
+	return ours >= theirs;
+}
 
 // Called from h_idle for an idle unit.
 static void engage_idle(int me)
@@ -10612,6 +10715,7 @@ static void engage_idle(int me)
 		             // anyway: no bait in that)
 		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
 		if (n >= 2 && cheb(x, y, ex, ey) > 1 && t[0x31] != 4) continue;
+		if (cheb(x, y, ex, ey) > 1 && !engage_odds_ok(me, e)) continue;   // outnumbered there: holds its ground
 		g_dmMaxDepth = r + 1;
 		int d = dm_dist(e, me);
 		g_dmMaxDepth = 0x7fff;
@@ -11042,7 +11146,7 @@ static void battle_reset(void)
 	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiChargeAtt, 0, sizeof g_aiChargeAtt); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
 	memset(g_aiAttackSince, 0, sizeof g_aiAttackSince);
 	memset(g_aiGrpMen, 0, sizeof g_aiGrpMen); memset(g_aiTarget, 0, sizeof g_aiTarget);
-	memset(g_aiCharged, 0, sizeof g_aiCharged); memset(g_aiBack, 0, sizeof g_aiBack);
+	memset(g_aiCharged, 0, sizeof g_aiCharged); memset(g_aiBack, 0, sizeof g_aiBack); memset(g_aiRescue, 0, sizeof g_aiRescue);
 	// F10, Battles: the fixes switched between battles only, never in the middle of one
 	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
 	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];

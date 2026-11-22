@@ -337,6 +337,28 @@ TEST(ai_hard_melee_advances_no_further_than_a_step_ahead_of_the_rearmost)
 	CHECK_EQ(G_PHASE(5), 1);
 }
 
+TEST(ai_hard_advance_keeps_walking_and_waits_for_a_real_step)
+{
+	t_ai_battle(1); AI_RATIO = 30;
+	t_unit(4, 2, 30, 40, 4); t_group(4, 2, 3, 1, 30, 40); GRP_S(4, 0x22) = 30; GRP_S(4, 0x24) = 40;   // standing at 30,40
+	t_unit(5, 2, 10, 40, 5); t_group(5, 2, 4, 1, 10, 40);
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 5); CHECK_EQ(t_ordX, 16);                      // the knights: 6 cells
+	t_unit_at(5, 12, 40); GRP_S(5, 0x1e) = 12;                      // 4 cells still to go
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 0);                                            // they keep walking (not re-formed)
+	t_unit_at(5, 15, 40); GRP_S(5, 0x1e) = 15;                      // nearly there: the next step
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 5); CHECK_EQ(t_ordX, 21);
+	t_unit_at(5, 26, 40); GRP_S(5, 0x1e) = 26;                      // the knights 24 from the enemy: the line 18
+	t_ai_think_melee(4);
+	CHECK_EQ(t_ordG, 0);                                            // a 2-cell hop: the forward group waits
+	t_unit_at(5, 28, 40); GRP_S(5, 0x1e) = 28;                      // the line 16: a 4-cell step
+	t_ai_think_melee(4);
+	CHECK_EQ(t_ordG, 4); CHECK_EQ(t_ordX, 34);
+}
+
 TEST(ai_hard_melee_in_place_waits_for_the_volleys_then_charges_together)
 {
 	t_ai_battle(1); AI_RATIO = 30;
@@ -417,6 +439,38 @@ TEST(ai_hard_defence_holds_until_the_enemy_is_close_or_it_bleeds)
 	for (int i = 1; i <= 3; i++) t_men(i, 26);                      // shot down to 78: lost 19%
 	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 1);
+}
+
+TEST(ai_hard_nearest_free_melee_goes_to_help_its_archers)
+{
+	t_ai_battle(1); AI_RATIO = 0;                                   // defence
+	t_bow(1, 2, 40, 40, 2, 15); t_group(2, 2, 1, 1, 40, 40);       // its archers
+	t_unit(4, 2, 50, 40, 4); t_group(4, 2, 3, 1, 50, 40);          // swords 10 cells off
+	t_unit(5, 2, 60, 40, 5); t_group(5, 2, 2, 1, 60, 40);          // pikemen 20 off
+	t_human(t_unit(6, 1, 42, 41, 6)); t_group(6, 1, 3, 1, 42, 41); // your swords at the archers
+	G_THINK(4) = 20;
+	ai_rescue_wake(2);
+	CHECK_EQ(G_THINK(4), 199);                                      // the nearest is woken at once
+	t_ai_think_melee(4);
+	CHECK_EQ(t_ordG, 4); CHECK_EQ(t_ordX, 42); CHECK_EQ(t_ordY, 41);   // and walks to the attacker
+	CHECK_EQ(g_aiRescue[4], 2);
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 0); CHECK_EQ(t_nCharged, 0);                   // one is enough for one enemy unit
+	GRP_B(4, 0x0d) = 1;                                             // fighting now: still the helper, no second
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 0);
+	GRP_B(4, 0x0d) = 0;
+	t_unit_at(4, 45, 41); GRP_S(4, 0x1e) = 45; GRP_S(4, 0x20) = 41;   // 3 cells from it: the game's charge
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
+	t_unit_at(6, 70, 70); GRP_S(6, 0x1e) = 70; GRP_S(6, 0x20) = 70;   // the archers are clear: let go
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(g_aiRescue[4], 0);
+	t_ai_battle(1); AI_RATIO = 0;                                   // too far (over 20 cells): nobody goes
+	t_unit_at(6, 42, 41); GRP_S(6, 0x1e) = 42; GRP_S(6, 0x20) = 41;
+	t_unit_at(4, 70, 40); GRP_S(4, 0x1e) = 70; t_unit_at(5, 75, 40); GRP_S(5, 0x1e) = 75;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_ordG, 0); CHECK_EQ(g_aiRescue[4], 0);
 }
 
 TEST(ai_hard_melee_normal_runs_the_games_handlers)
