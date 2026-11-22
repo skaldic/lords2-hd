@@ -115,13 +115,18 @@ On Hard the computer decides once, keeps its archers behind its soldiers, and mo
 | Advance | Moves its melee up towards your nearest unit, never ahead of its rearmost group. A walking group keeps its order; one that has arrived moves only for a real step. | 6 cells a think; stops 6 cells from you; next step at least 4 |
 | Charge in attack | When hit, when units are fighting, when every group is in place and its archers have had time to shoot, or after a long attack with the line close. | In place = within 8; archers 400 steps (about 5 s); long attack = 5000 steps (about 60 s) with the rearmost group within 20 |
 | Charge in defence | When your units come close, its units are fighting, or it has lost men. | 3 of yours within 6 cells; 3 of its units fighting; 15% of its men lost |
-| Together | Once its side charges, every melee group charges at its next step. | — |
+| Together | Once its side charges, every melee group charges at its next step. A group already charging isn't charged again (ad28c87), so its chasers keep their paths. | — |
+| Crossing: park | While attacking or charging, with its melee near a crossing you hold (your units on it or close to it, none of yours further onto its bank), its melee stops chasing and stands in a line on its bank, not in front of the mouth. Units fighting there fight on. Defending, nothing changes. | Looked at every 50 steps; its melee's centre within 20 cells; 6 cells back; groups 4 apart; your units within 4 cells of it count, either bank |
+| Crossing: soften | Its archers walk up beside the lane on its bank to where the far end is in range, as far back as that allows, and shoot. | At least 3 cells off the lane; crossbows 8, bows 15 |
+| Crossing: storm | Once every melee group has stopped at its place, every melee group charges together when your men there are down to half of its melee men (after its archers have shot for a while; at once without archers), or after a long wait when it's the stronger army. When the crossing comes free it storms at once. When yours come over well onto its bank, or it turns to defence, the assault ends and the usual rules take over. | Clocks start in place: 800 steps (about 10 s) of shooting; long wait 5000 steps (about 60 s) |
+| Crossing: wait at a jam | A unit whose new chase route is long only because units are in the way (the walk on an empty field is within its limit) waits where it is and plans again shortly, instead of the long way round. | About 32 steps |
 | Burning oil (sieges) | Its soldiers in burning oil step out to the nearest safe cell, and don't walk back in while it burns. Units marching through keep going. | Looks 5 cells; passing through = in the fire under 40 steps |
 
 **Problems found in the last battle (all computer only):**
 
 - Advance and charge measure the straight line, so it lined up on the near bank of the water and charged "9 cells away" into a 110-cell walk.
-- Each think re-issues the game's charge to groups that already charged. That wipes every chaser's path every 200 steps and they plan again.
+- Each think re-issued the game's charge to groups that already charged, wiping every chaser's path every 200 steps. Fixed (ad28c87).
+- At your bridge it sent everyone at once; the bridge filled with its own men and the units behind walked 103 to 116 cells round the other bridge. Built: the crossing assault above (park, soften, storm, wait at a jam).
 - The rescue order doesn't reach a charging group: its units keep chasing their own targets. Its pikemen and peasants were sent "to the archers" 3 times and none turned round.
 - The archers' group doesn't think while one of its units is in melee. The other crossbowmen stood 1 to 2 cells from that fight, kept shooting, and were caught one by one.
 
@@ -179,13 +184,13 @@ Six reports are fixed and pushed; the last battle left four open problems and th
 
 - [ ] Line holding by water: keep it, or let a holding unit step 1 cell to help a groupmate in a fight?
 - [ ] Far chase targets, your idea: only fast units keep a far target. Knights (move delay 0) and macemen (1) may go round, up to a 60-cell walk. Peasants, archers and crossbowmen (2), swordsmen (3) and pikemen (4) drop a target whose walk is more than twice the straight line plus 10, and take the closest one. Decided: both sides, your Mop-Up units too. Built in 65761eb.
-- [ ] Reading the battlefield, step 1 of 3 (built in 8586885, logged only): at the start the patch finds every narrow crossing (bridge, ford, gap in stakes or hedges, at most 3 cells across) that is the only way or whose closing makes the way round at least 15 steps longer. The log lists each one with its size, the way round and each side's walking distance, and every 200 steps says who holds it. On your river map it finds both bridges, each about 106-109 steps round. Nothing in the play changes yet. Step 2: the computer's decisions use the crossings (storm, flank or hold back). Step 3: its own route planner.
+- [ ] Reading the battlefield, step 1 of 3 (built in 8586885, logged only): at the start the patch finds every narrow crossing (bridge, ford, gap in stakes or hedges, at most 3 cells across) that is the only way or whose closing makes the way round at least 15 steps longer. The log lists each one with its size, the way round and each side's walking distance, and every 200 steps says who holds it. On your river map it finds both bridges, each about 106-109 steps round. Step 2, built at your request: the crossing assault on Hard and Legendary (park, soften, storm; no flank round the other bridge). Step 3: its own route planner.
 - [ ] Legendary target picks: measure by walking distance and skip groups behind water?
 - [ ] Knights on light units: decided and built (e37906e). Knights ×1.5 on peasants, archers and macemen; maces keep ×1.5 on knights; crossbowmen none.
 
 **Computer-only fixes ready to make once you agree (Hard and Legendary, Normal unchanged):**
 
-1. Don't re-issue the charge to groups already charging, so chasers keep their paths.
+1. Don't re-issue the charge to groups already charging, so chasers keep their paths. Done (ad28c87).
 2. A rescue turns a charging group's units onto the units attacking its archers.
 3. Archers step back even while one of their group is in melee.
 4. Advance and charge stop treating units across water as close.

@@ -638,6 +638,239 @@ TEST(ai_charge_is_not_repeated_while_the_group_is_on_it)
 	CHECK_EQ(t_nCharged, 1);                                        // without MopUpFix nothing wakes idle members: repeated
 }
 
+/* ================================ enemy tactics: the crossing assault */
+
+/* a river at rows 39-41 with a bridge 2 cells wide at x 20-21 (the only way over); your pikemen hold it from
+ * the north (60 men, 6 on the bridge, 7 behind it); the computer's swordsmen charge from the south (group 4: 4
+ * and 5 chasing, 8 in melee at the bridge mouth, 70 men in all), attacking; no archers */
+static void t_bridge_battle(int level)
+{
+	t_battle_reset(); t_ai_battle(level); AI_RATIO = 30;
+	t_flags(0, 39, 79, 41, FL_WATER);
+	for (int y = 39; y <= 41; y++) { BCELL(20, y)[1] = 0; BCELL(21, y)[1] = 0; }
+	t_typed(t_unit(4, 2, 20, 52, 4), 3, 25); t_typed(t_unit(5, 2, 22, 52, 4), 3, 25); t_typed(t_unit(8, 2, 21, 42, 4), 3, 20);
+	t_group(4, 2, 3, 3, 21, 52);
+	FIG(4)[0x31] = ST_CHASE; FIG(4)[0x174] = 6; FIG(4)[0x164] = 1;
+	FIG(5)[0x31] = ST_WAIT; FIG(5)[0x2f] = ST_CHASE; FIG(5)[0x174] = 6;
+	FIG(8)[0x31] = ST_MELEE; FIG(8)[0x174] = 6;
+	GROUP_HUNTING(4) = 1; g_aiCharged[4] = 1; g_aiCharge[2] = TRUE;
+	t_typed(t_human(t_unit(6, 1, 20, 40, 6)), 4, 30); t_typed(t_human(t_unit(7, 1, 21, 37, 6)), 4, 30);
+	t_group(6, 1, 2, 2, 20, 38); GRP_B(6, 0x01) = 1;
+	map_read();
+	ai_game_order = t_order6; ai_game_charge = t_charge; t_ordG = 0; t_nCharged = 0; t_calls = 0;
+}
+static int t_south(void) { return g_crossBank[0][52 * 80 + 21]; }   // the computer's bank of the bridge
+static void t_assault_at(unsigned tick) { g_btick = tick; t_ordG = 0; ai_assault_step(); }
+
+TEST(ai_hard_parks_before_a_held_bridge_and_its_fighters_fight_on)
+{
+	static char buf[1 << 16];
+	InitializeCriticalSection(&g_blogLock);
+	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	t_bridge_battle(1);
+	REQUIRE(g_ncross == 1);
+	CHECK(t_south() != 0); CHECK_EQ(g_crossBank[0][30 * 80 + 21], 3 - t_south());
+	t_assault_at(25);
+	CHECK_EQ(g_asPhase[2], 0);                                      // looked at every 50 steps
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 1); CHECK_EQ(g_asCross[2], 1); CHECK(as_parked(2)); CHECK(!as_parked(1));
+	CHECK_EQ(t_ordG, 4);                                            // sent back to its place
+	CHECK_EQ(g_crossBank[0][t_ordY * 80 + t_ordX], t_south());
+	CHECK(t_ordY >= 46 && t_ordY <= 50); CHECK(t_ordX >= 15 && t_ordX <= 26);   // 6 cells out from the mouth
+	CHECK(!as_near(0, t_ordX, t_ordY, 2));
+	CHECK_EQ(FIG(4)[0x31], ST_IDLE); CHECK_EQ(FIG(4)[0x174], 0); CHECK_EQ(FIG(4)[0x164], 0);   // the chasers stop
+	CHECK_EQ(FIG(5)[0x31], ST_IDLE);
+	CHECK_EQ(FIG(8)[0x31], ST_MELEE); CHECK_EQ(FIG(8)[0x174], 6);   // the one fighting at the mouth fights on
+	CHECK_EQ(GROUP_HUNTING(4), 0); CHECK_EQ(g_aiCharged[4], 0);
+	CHECK_EQ(FIG(6)[0x31], ST_IDLE);                                // yours untouched
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 0);                   // parked: no charge over the bridge
+	t_assault_at(100);
+	CHECK_EQ(t_ordG, 0);                                            // already going there: no new order
+	CHECK(g_asIn[2] != 0);                                          // nobody walking: in place
+	t_unit_at(6, 20, 43);                                           // your pikeman steps off the bridge onto its side
+	t_assault_at(150);
+	CHECK_EQ(g_asPhase[2], 1); CHECK_EQ(g_asIn[2], 100);            // still a defender of it: the assault holds
+	t_unit_at(6, 25, 50);                                           // well over on its side
+	t_assault_at(200);
+	CHECK_EQ(g_asPhase[2], 0); CHECK_EQ(G_THINK(4), 199);           // fought as usual
+	buf[g_blogLen] = 0;
+	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
+	DeleteCriticalSection(&g_blogLock);
+	CHECK(strstr(buf, "ai Hard: side 2 parks before crossing 1 at") != NULL);
+	CHECK(strstr(buf, "(2 enemy units, 60 men there; its melee 70 men)") != NULL);
+	CHECK(strstr(buf, "ai Hard: side 2 in place before crossing 1") != NULL);
+	CHECK(strstr(buf, "ai Hard: side 2 ends its assault on crossing 1 (an enemy came over to its side)") != NULL);
+}
+
+TEST(ai_hard_no_storm_from_across_the_field_or_while_walking)
+{
+	t_bridge_battle(1);
+	t_men(6, 5); t_men(7, 0); FIG(7)[0x31] = ST_DYING;             // 5 of yours at the bridge
+	t_unit_at(4, 20, 75); t_unit_at(5, 22, 75); t_unit_at(8, 21, 74); FIG(8)[0x31] = ST_CHASE;   // its army far south
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 0); CHECK_EQ(t_ordG, 0);                 // too far: the usual advance
+	t_assault_at(850);
+	CHECK_EQ(g_asPhase[2], 0);
+	t_unit_at(4, 20, 52); t_unit_at(5, 22, 52); t_unit_at(8, 21, 52);   // come up
+	t_assault_at(900);
+	CHECK_EQ(g_asPhase[2], 1); CHECK_EQ(t_ordG, 4);
+	FIG(4)[0x31] = ST_MARCH;                                        // walking to its place
+	t_assault_at(950);
+	CHECK_EQ(g_asPhase[2], 1); CHECK_EQ(g_asIn[2], 0);              // no storm while walking
+	FIG(4)[0x31] = ST_IDLE;
+	t_assault_at(1000);
+	CHECK_EQ(g_asPhase[2], 2);                                      // in place, 5 men there: storm
+}
+
+TEST(ai_hard_storms_the_bridge_when_its_defenders_are_down_to_half)
+{
+	static char buf[1 << 16];
+	InitializeCriticalSection(&g_blogLock);
+	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	t_bridge_battle(1);
+	t_assault_at(50);
+	REQUIRE(g_asPhase[2] == 1);
+	t_men(7, 5);                                                    // 35 men left there: half of its 70
+	t_assault_at(100);
+	CHECK_EQ(g_asPhase[2], 2); CHECK(g_aiCharge[2]); CHECK(!g_aiChargeAtt[2]);
+	CHECK_EQ(G_THINK(4), 199);                                      // every melee group thinks at its next step
+	CHECK(!as_parked(2));
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);                                        // and charges
+	t_men(7, 30);
+	t_assault_at(150);
+	CHECK_EQ(g_asPhase[2], 2);                                      // a storm runs to the end
+	buf[g_blogLen] = 0;
+	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
+	DeleteCriticalSection(&g_blogLock);
+	CHECK(strstr(buf, "ai Hard: side 2 charges (storms crossing 1: 35 enemy men there, its melee 70)") != NULL);
+}
+
+TEST(ai_hard_archers_soften_the_bridge_before_the_storm)
+{
+	t_bridge_battle(1);
+	t_typed(t_bow(1, 2, 20, 62, 2, 15), 5, 25); t_typed(t_bow(2, 2, 21, 62, 2, 15), 5, 25);   // 50 archers, range 15
+	t_group(2, 2, 1, 2, 20, 62);
+	t_men(7, 5);                                                    // already down to half
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 1);                                      // with archers: they shoot first
+	int x = 0, y = 0;
+	REQUIRE(as_soften_place(2, 2, 15, 20, 62, &x, &y));
+	CHECK_EQ(g_crossBank[0][y * 80 + x], t_south());
+	map_cross *m = &g_cross[0];
+	int fx = t_south() == 1 ? m->bx : m->ax, fy = t_south() == 1 ? m->by : m->ay, ex, ey, dx, dy;
+	CHECK(cheb(x, y, fx, fy) <= 14);                                // the far end in range
+	CHECK(cheb(x, y, fx, fy) >= 12);                                // as far back as that allows
+	as_lane(0, t_south(), &ex, &ey, &dx, &dy);
+	int cr = (x - m->x) * dy - (y - m->y) * dx;
+	CHECK(cr * cr >= AS_LANE * AS_LANE * (dx * dx + dy * dy));      // beside the lane, not in it
+	t_ai_think_archers();
+	CHECK_EQ(t_ordG, 2); CHECK_EQ(t_ordX, x); CHECK_EQ(t_ordY, y);
+	t_assault_at(100);                                              // in place
+	t_assault_at(100 + AS_SOFTEN - 50);
+	CHECK_EQ(g_asPhase[2], 1);
+	t_assault_at(100 + AS_SOFTEN);
+	CHECK_EQ(g_asPhase[2], 2);                                      // after about 10 s of shooting: storm
+	t_bridge_battle(1);                                             // not parked: no such place
+	CHECK(!as_soften_place(2, 2, 15, 20, 62, &x, &y));
+}
+
+TEST(ai_hard_storms_after_the_long_wait_only_when_stronger)
+{
+	t_bridge_battle(1);
+	t_typed(t_bow(1, 2, 20, 62, 2, 15), 5, 25); t_typed(t_bow(2, 2, 21, 62, 2, 15), 5, 25);
+	t_group(2, 2, 1, 2, 20, 62);                                    // 120 men to your 60, but 60 at the bridge
+	t_assault_at(50); t_assault_at(100);
+	t_assault_at(100 + AS_WAIT - 50);
+	CHECK_EQ(g_asPhase[2], 1);
+	t_assault_at(100 + AS_WAIT);
+	CHECK_EQ(g_asPhase[2], 2);
+	t_bridge_battle(1);
+	t_typed(t_bow(1, 2, 20, 62, 2, 15), 5, 5); t_group(2, 2, 1, 1, 20, 62);   // 75 men to your 60...
+	memset(FIG(2), 0, 0x1b0);
+	t_typed(t_human(t_unit(9, 1, 30, 20, 9)), 4, 30); t_group(9, 1, 2, 1, 30, 20);   // ...and 90 of yours
+	t_assault_at(50); t_assault_at(100);
+	t_assault_at(100 + 3 * AS_WAIT);
+	CHECK_EQ(g_asPhase[2], 1);                                      // weaker: it keeps waiting
+}
+
+TEST(ai_hard_storms_a_bridge_that_comes_free_and_ignores_one_you_come_over)
+{
+	static char buf[1 << 16];
+	InitializeCriticalSection(&g_blogLock);
+	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	t_bridge_battle(1);
+	t_assault_at(50);
+	REQUIRE(g_asPhase[2] == 1);
+	t_unit_at(6, 20, 30); t_unit_at(7, 21, 30);                     // yours step back from it
+	t_assault_at(100);
+	CHECK_EQ(g_asPhase[2], 2); CHECK(g_aiCharge[2]);                // over it
+	buf[g_blogLen] = 0;
+	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
+	DeleteCriticalSection(&g_blogLock);
+	CHECK(strstr(buf, "ai Hard: side 2 charges (storms crossing 1: it is free)") != NULL);
+	t_bridge_battle(1);
+	t_typed(t_human(t_unit(9, 1, 30, 50, 9)), 4, 30); t_group(9, 1, 2, 1, 30, 50);   // yours on its side
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 0); CHECK_EQ(t_ordG, 0);                 // fought as usual
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE);
+}
+
+TEST(ai_hard_defending_side_has_no_assault)
+{
+	t_bridge_battle(1); AI_RATIO = 0; g_aiCharge[2] = FALSE;        // defending, no charge
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 0); CHECK_EQ(t_ordG, 0);                 // its defence rules as before
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE);
+	CHECK(!as_parked(2));
+	t_bridge_battle(1);
+	t_assault_at(50);
+	REQUIRE(g_asPhase[2] == 1);
+	AI_RATIO = 0; g_aiCharge[2] = FALSE;                            // turned to defence while parked
+	t_assault_at(100);
+	CHECK_EQ(g_asPhase[2], 0);
+}
+
+TEST(ai_normal_sieges_and_your_side_have_no_assault)
+{
+	t_bridge_battle(0);                                             // Normal
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 0); CHECK_EQ(t_ordG, 0); CHECK_EQ(FIG(4)[0x31], ST_CHASE);
+	t_bridge_battle(1); *(int *)0x0053e8fc = 1;                     // a siege
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 0); CHECK_EQ(FIG(4)[0x31], ST_CHASE);
+	*(int *)0x0053e8fc = 0;
+	t_bridge_battle(1);                                             // the bridge held by the computer, you attacking
+	FIG(6)[0x31] = ST_CHASE; FIG(6)[0x174] = 8;
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[1], 0); CHECK_EQ(FIG(6)[0x31], ST_CHASE);    // your units never park
+}
+
+TEST(ai_hard_chaser_waits_instead_of_a_long_way_round_its_own_men)
+{
+	t_bridge_battle(1);
+	FIG(4)[0x31] = ST_CHASE; FIG(4)[0x174] = 6; FIG(4)[0x164] = 1; FIG_S(4, 0x36) = 110;   // 110 steps round
+	jam_check(4);
+	CHECK_EQ(FIG(4)[0x31], ST_WAIT); CHECK_EQ(FIG(4)[0x2f], ST_CHASE); CHECK_EQ(FIG(4)[0x164], 0);   // waits its turn
+	CHECK(FIG(4)[0x30] > 0);
+	FIG(4)[0x31] = ST_CHASE; FIG(4)[0x164] = 1; FIG_S(4, 0x36) = 14;   // a short route: kept
+	jam_check(4);
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE); CHECK_EQ(FIG(4)[0x164], 1);
+	FIG_S(4, 0x36) = 110;
+	t_human(FIG(4));                                                // yours: kept
+	jam_check(4);
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE);
+	FIG(4)[0x13] = 0;
+	for (int y = 39; y <= 41; y++) { BCELL(20, y)[1] = FL_WATER; BCELL(21, y)[1] = FL_WATER; }   // no bridge: far on an empty field too
+	jam_check(4);
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE); CHECK_EQ(FIG(4)[0x164], 1);
+	for (int y = 39; y <= 41; y++) { BCELL(20, y)[1] = 0; BCELL(21, y)[1] = 0; }
+	g_aiLevel = 0;                                                  // Normal: kept
+	jam_check(4);
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE);
+}
+
 TEST(ai_legendary_targets_only_within_reach_of_the_nearest_enemies)
 {
 	t_ai_battle(2);

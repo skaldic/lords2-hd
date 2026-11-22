@@ -9452,10 +9452,12 @@ static void chase_progress(int me);
 static BOOL engage_chase(int me);
 static BOOL g_fixEngage, g_chaseHookFailed;
 
+static void jam_check(int me);
 static void __cdecl h_chase(void)
 {
 	int me = FIG_CUR;
 	if (fix_on(g_fixEngage) && me > 0 && me < 0x51 && engage_chase(me)) return;   // walked back to its place
+	BYTE hadRoute = me > 0 && me < 0x51 ? FIG_B(me, 0x005545e4) : 1;   // (+0x164: it has a route)
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) chase_progress(me);
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
 		int group = *(short *)(0x005545f8 + me * 0x1b0);
@@ -9469,6 +9471,7 @@ static void __cdecl h_chase(void)
 		}
 	}
 	o_chase();
+	if (!hadRoute) jam_check(me);   // a route it was just given
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -9971,6 +9974,8 @@ static int cheb(int x0, int y0, int x1, int y1);
 static BOOL can_reach_soon(int e, int me);
 typedef void (__cdecl *ai_order_t)(int, int, int, int, int, int);
 typedef int (__cdecl *ai_grp_t)(int);
+static BOOL as_parked(int side);
+static BOOL as_soften_place(int g, int side, int r, int cx, int cy, int *x, int *y);
 static ai_order_t ai_game_order = (ai_order_t)0x00479e90;   // FUN_00479e90(group, x, y, 0, 0, 0)
 static ai_grp_t ai_game_fire = (ai_grp_t)0x0048c974;        // FUN_0048c974(target group): the current group shoots at it
 static ai_fn_t o_ai_ranged;
@@ -10116,6 +10121,9 @@ static void ai_archers_think(int g)
 	else if ((tg = ai_shoot_target(g, v.range)) != 0 && v.inRange * 2 >= v.members) {
 		ai_game_fire(tg);
 		snprintf(what, sizeof what, "shoot at g%d (%d of %d in range)", tg, v.inRange, v.members);
+	}
+	else if (as_soften_place(g, v.side, v.range, v.cx, v.cy, &x, &y)) {   // its side parked before a crossing
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "beside the crossing at %d,%d, in range of its far end", x, y);
 	}
 	else if (v.nearFight < 999 && v.nearFight > v.range - 2) {
 		ai_toward(v.cx, v.cy, v.fx, v.fy, v.nearFight - (v.range - 2), &x, &y);
@@ -10422,6 +10430,7 @@ static void ai_melee_think(int g)
 	int side = GRP_B(g, 0x00);
 	if (side < 1 || side > 2) return;
 	if (ai_rescue(g)) return;
+	if (as_parked(side)) return;   // parked before a crossing the enemy holds: the assault moves it (ai_assault_step)
 	if (g_aiCharge[side]) { ai_charge(g); return; }
 	int farthest = 0, groups = 0, fighting = 0, archers = 0, close = 0, sx = 0, sy = 0, units = 0;
 	BOOL hit = FALSE;
@@ -11916,7 +11925,9 @@ static void fire_step(void)
 // between the ground at its two ends grows by MAP_DETOUR steps or more, or there is no other way (the user's
 // river battle: a bridge 2 cells wide, and a walk of 110 round the east side). During the battle
 // (map_watch, every 200 steps) it logs who holds each crossing (units within MAP_HOLD cells) when that
-// changes.
+// changes. Each crossing also gets a bank map (g_crossBank): with its cells closed, every other cell belongs to
+// the end it is the shorter walk from (1: end a, 2: end b), so which side of it a unit stands on is a lookup.
+// The computer's crossing assault (ai_assault_step, BattleAI) uses these.
 #define MAP_NARROW 3
 #define MAP_DETOUR 15
 #define MAP_HOLD 2
@@ -11925,10 +11936,12 @@ typedef struct {
 	short x, y, cells, width, detour;   // detour: extra steps to go round, -1 = the only way
 	short dist[3];                      // walking steps from each side's nearest unit at the start
 	BYTE water, holder;                 // holder: 0 none, 1 or 2 a side, 3 both
+	short ax, ay, bx, by;               // the open ground at its two ends (bank 1 and bank 2)
 } map_cross;
 static map_cross g_cross[MAP_MAX];
 static int g_ncross;
 static short g_crossOf[6400];           // the crossing a cell belongs to (+1; 0 = none)
+static BYTE g_crossBank[MAP_MAX][6400]; // per crossing: 1 or 2 the bank a cell is on, 0 the crossing or cut off
 static short g_mapMark[6400], g_mapQ[6400], g_mapD[6400];
 
 static BOOL map_open(int c) { return (((BYTE *)0x005440e1)[c * 8] & (0x90 | 0x40 | 0x08)) == 0; }
@@ -12063,6 +12076,7 @@ static void map_read(void)
 		if (detour >= 0 && detour < MAP_DETOUR) continue;
 		map_cross m = { 0 };
 		m.x = (short)(sx / n); m.y = (short)(sy / n); m.cells = (short)n; m.width = (short)width; m.detour = (short)detour; m.water = (BYTE)water;
+		m.ax = (short)(a % 80); m.ay = (short)(a / 80); m.bx = (short)(b % 80); m.by = (short)(b / 80);
 		if (ncand < 64) { cand[ncand] = m; candId[ncand] = (short)id; ncand++; }
 	}
 	// the only ways first, then the longest way round (insertion sort: stable, so ties keep map order)
@@ -12077,6 +12091,17 @@ static void map_read(void)
 	for (int k = 0; k < g_ncross; k++) {
 		g_cross[k] = cand[k];
 		for (int c = 0; c < 6400; c++) if (g_mapMark[c] == candId[k]) g_crossOf[c] = (short)(k + 1);
+	}
+	// the banks: with the crossing closed, the walk from each end (the shorter one wins; ties go to end a)
+	static short da[6400];
+	for (int k = 0; k < g_ncross; k++) {
+		map_cross *m = &g_cross[k];
+		BYTE *bank = g_crossBank[k];
+		map_walk(m->ay * 80 + m->ax, -1, candId[k]);
+		memcpy(da, g_mapD, sizeof da);
+		map_walk(m->by * 80 + m->bx, -1, candId[k]);
+		for (int c = 0; c < 6400; c++)
+			bank[c] = g_crossOf[c] ? 0 : da[c] < 0 && g_mapD[c] < 0 ? 0 : g_mapD[c] < 0 || (da[c] >= 0 && da[c] <= g_mapD[c]) ? 1 : 2;
 	}
 	for (int side = 1; side <= 2; side++) {
 		map_from_side(side);
@@ -12130,9 +12155,267 @@ static void map_watch(void)
 	}
 }
 
+// ---------------------------------------------------------------------------------------------
+// The crossing assault (BattleAI Hard and Legendary, field battles, the computer only; the user's design).
+// At a bridge the player held, the computer's charge sent every unit at the bridge at once: it filled up with
+// its own men, the game's route planner (which steps round occupied cells) sent the units behind on a walk of
+// 90 to 116 cells round the other bridge, and the column trickled in one by one. Now, every AS_EVERY steps,
+// for each computer side that is attacking or charging (defending, it plays as before):
+//   - the crossing: one with enemy units on it or within AS_ZONE cells of it, either bank (the defenders), no
+//     enemy unit further out on the side's own bank (the bank most of its melee stands on), and its melee's
+//     centre within AS_NEAR. An enemy that comes over further than that is fought as usual: the assault ends;
+//   - park: its melee groups stop chasing (members in melee fight on) and stand AS_PARK cells back from the
+//     crossing's near end, side by side AS_SPREAD cells apart, never in the lane. Its archers walk up beside
+//     the lane (not in front of it) to where the far end is in range and shoot (ai_archers_think);
+//   - in place: once every melee group has stopped walking (at the latest AS_WAIT after parking) the clocks
+//     below start; there is no storm before that, so never one from across the field;
+//   - storm: when no defender is left, or the defenders have at most half the men of its melee and its archers
+//     have shot for AS_SOFTEN steps (at once without archers), or after AS_WAIT steps in place with more men
+//     than the enemy, its whole melee charges together (ai_side_charges). A storm runs to the end.
+// A computer chaser whose new route is longer than its limit (chase_limit) only because units stand in the
+// way (the walk on an empty field is within it) doesn't take it: it waits where it is (jam_check), before
+// it has moved a cell, and plans again a moment later.
+#define AS_EVERY 50
+#define AS_ZONE 4
+#define AS_PARK 6
+#define AS_SPREAD 4
+#define AS_LANE 3          // archers stand at least this far to the side of the lane
+#define AS_SOFTEN 800      // about 10 s of shooting
+#define AS_WAIT 5000       // about 60 s
+#define AS_NEAR 20         // its melee's centre at most this far from the crossing
+static BYTE g_asCross[3], g_asPhase[3];   // per side: the crossing (k + 1); 1 parked, 2 storming
+static unsigned g_asSince[3], g_asIn[3];  // when it parked; when every group was in place (0: not yet)
+
+static BOOL as_near(int k, int x, int y, int r)   // a cell of crossing k within r cells of x,y
+{
+	for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
+		int vx = x + dx, vy = y + dy;
+		if (vx >= 0 && vx < 80 && vy >= 0 && vy < 80 && g_crossOf[vy * 80 + vx] == k + 1) return TRUE;
+	}
+	return FALSE;
+}
+static BOOL as_live(int i, int *x, int *y)   // a live soldier on the field
+{
+	BYTE *f = FIG(i);
+	*x = FIG_S(i, 0x20); *y = FIG_S(i, 0x22);
+	return f[0x2c] && f[0x31] != 2 && f[0x12] < 7 && *x >= 0 && *x < 80 && *y >= 0 && *y < 80;
+}
+// The bank of crossing k most of side's computer melee units stand on (0: none of them on either).
+static int as_side_bank(int k, int side)
+{
+	int n[3] = { 0 }, x, y;
+	for (int i = 1; i < 0x51; i++)
+		if (as_live(i, &x, &y) && FIG(i)[0x2c] == side && !FIG(i)[0x13] && !FIG(i)[0x16a]) n[g_crossBank[k][y * 80 + x]]++;
+	return n[1] || n[2] ? (n[2] > n[1] ? 2 : 1) : 0;
+}
+// Crossing k's defenders against side on bank `bank`: enemy units on it or within AS_ZONE of it (either bank).
+// Returns their units; *men their men; *own TRUE when an enemy unit stands on the side's bank further out.
+static int as_defenders(int k, int side, int bank, int *men, BOOL *own)
+{
+	int units = 0, x, y;
+	*men = 0; *own = FALSE;
+	for (int i = 1; i < 0x51; i++) {
+		if (!as_live(i, &x, &y) || FIG(i)[0x2c] == side) continue;
+		if (as_near(k, x, y, AS_ZONE)) { units++; *men += FIG_S(i, 0x1a0); }
+		else if (g_crossBank[k][y * 80 + x] == bank) *own = TRUE;
+	}
+	return units;
+}
+// The near end of crossing k for bank `bank`, and the lane's direction from the crossing out to it.
+static void as_lane(int k, int bank, int *ex, int *ey, int *dx, int *dy)
+{
+	map_cross *m = &g_cross[k];
+	*ex = bank == 1 ? m->ax : m->bx; *ey = bank == 1 ? m->ay : m->by;
+	*dx = *ex - (bank == 1 ? m->bx : m->ax); *dy = *ey - (bank == 1 ? m->by : m->ay);
+	if (!*dx && !*dy) *dx = 1;
+}
+// The open cell on `bank` of crossing k nearest to x,y within 8 cells, at least `clear` cells from the crossing;
+// FALSE when there is none.
+static BOOL as_snap(int k, int bank, int clear, int *x, int *y)
+{
+	int bx = -1, by = -1, bd = 99;
+	for (int vy = *y - 8; vy <= *y + 8; vy++) for (int vx = *x - 8; vx <= *x + 8; vx++) {
+		if (vx < 1 || vx > 78 || vy < 1 || vy > 78) continue;
+		int c = vy * 80 + vx, d = cheb(*x, *y, vx, vy);
+		if (d >= bd || g_crossBank[k][c] != bank || !map_open(c) || as_near(k, vx, vy, clear)) continue;
+		bd = d; bx = vx; by = vy;
+	}
+	if (bx < 0) return FALSE;
+	*x = bx; *y = by;
+	return TRUE;
+}
+// The place for the side's rank-th melee group: AS_PARK cells out from the near end, groups to alternate sides.
+static BOOL as_park_place(int k, int bank, int rank, int *x, int *y)
+{
+	int ex, ey, dx, dy;
+	as_lane(k, bank, &ex, &ey, &dx, &dy);
+	int len = max(abs(dx), abs(dy)), off = (rank + 1) / 2 * AS_SPREAD * (rank & 1 ? 1 : -1);
+	*x = ex + dx * AS_PARK / len - dy * off / len; *y = ey + dy * AS_PARK / len + dx * off / len;
+	return as_snap(k, bank, 2, x, y);
+}
+// Stops group h's chasers (members in melee fight on) and sends it to x,y.
+static void as_park_group(int h, int x, int y)
+{
+	BOOL stopped = FALSE;
+	GRP_B(h, 0x2a) = 0; g_aiCharged[h] = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || FIG_S(i, 0x178) != h || f[0x31] == 2) continue;
+		if (f[0x31] == 8 || (f[0x31] == 1 && f[0x2f] == 8)) {
+			f[0x31] = 5; f[0x2f] = 0; f[0x30] = 0; f[0x174] = 0; f[0x164] = 0;
+			stopped = TRUE;
+		}
+	}
+	int cur = *(int *)0x00568458;
+	*(int *)0x00568458 = h;   // (as when its own handler gives the order)
+	BOOL sent = ai_order(h, x, y);
+	*(int *)0x00568458 = cur;
+	if (!sent && stopped) GRP_S(h, 0x14) = 20;   // already sent there: form up again, so the stopped walk back
+}
+static void as_wake(int side)   // every group of the side thinks at its next step
+{
+	for (int h = 1; h < 0x51; h++)
+		if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;
+}
+
+static void as_storm(int side, const char *why)
+{
+	g_asPhase[side] = 2;
+	ai_side_charges(side, why);
+	g_aiChargeAtt[side] = FALSE;   // (the game's chase over the crossing, not target walks)
+}
+static void as_side(int side)
+{
+	int groups = 0, archers = 0, cx = 0, cy = 0, n = 0, x, y;
+	char why[96];
+	if (g_asPhase[side] == 2) return;   // a storm runs to the end
+	for (int h = 1; h < 0x51; h++) {
+		if (ai_melee_group(h, side)) groups++;
+		else if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) == 1) archers++;
+	}
+	if (!groups) return;
+	for (int i = 1; i < 0x51; i++)
+		if (as_live(i, &x, &y) && FIG(i)[0x2c] == side && !FIG(i)[0x13] && !FIG(i)[0x16a]) { cx += x; cy += y; n++; }
+	if (!n) return;
+	cx /= n; cy /= n;
+	BOOL attack = *(int *)0x004eea98 > *(int *)0x0057c8b4 || g_aiCharge[side];
+	// the crossing: defenders at it, no enemy further out on the side's own bank, its melee within AS_NEAR;
+	// the nearest one
+	int k = -1, bank = 0, men = 0, units = 0, bd = AS_NEAR + 1;
+	for (int c = 0; c < g_ncross && attack; c++) {
+		int b = as_side_bank(c, side), m;
+		BOOL own;
+		if (!b) continue;
+		int u = as_defenders(c, side, b, &m, &own);
+		if (own || !u) continue;
+		int d = cheb(cx, cy, g_cross[c].x, g_cross[c].y);
+		if (d < bd) { bd = d; k = c; bank = b; men = m; units = u; }
+	}
+	if (k < 0) {
+		if (!g_asPhase[side]) return;
+		int k0 = g_asCross[side] - 1, b0 = as_side_bank(k0, side), m0;
+		BOOL own0 = TRUE;
+		if (attack && b0 && !as_defenders(k0, side, b0, &m0, &own0) && !own0) {   // the defenders gone: over it
+			snprintf(why, sizeof why, "storms crossing %d: it is free", k0 + 1);
+			as_storm(side, why);
+			return;
+		}
+		if (g_blog) blog("ai %s: side %d ends its assault on crossing %d (%s)", kAiLevel[g_aiLevel], side, k0 + 1,
+			!attack ? "it defends" : own0 ? "an enemy came over to its side" : "its melee is no longer near");
+		g_asPhase[side] = 0; g_asCross[side] = 0;
+		as_wake(side);
+		return;
+	}
+	int own = 0;
+	for (int i = 1; i < 0x51; i++)
+		if (as_live(i, &x, &y) && FIG(i)[0x2c] == side && !FIG(i)[0x13] && !FIG(i)[0x16a]) own += FIG_S(i, 0x1a0);
+	if (g_asCross[side] != k + 1) {
+		g_asCross[side] = (BYTE)(k + 1); g_asPhase[side] = 1; g_asSince[side] = g_btick; g_asIn[side] = 0;
+		if (g_blog) blog("ai %s: side %d parks before crossing %d at %d,%d (%d enemy units, %d men there; its melee %d men)", kAiLevel[g_aiLevel],
+			side, k + 1, g_cross[k].x, g_cross[k].y, units, men, own);
+		as_wake(side);
+	}
+	// in place: every melee group has stopped walking (looked at from the next look on; at the latest AS_WAIT
+	// after parking). The storm's clocks run from then, so it never storms from across the field.
+	if (!g_asIn[side] && g_btick - g_asSince[side] >= AS_EVERY) {
+		BOOL walking = FALSE;
+		for (int h = 1; h < 0x51; h++) if (ai_melee_group(h, side) && ai_group_walking(h)) walking = TRUE;
+		if (!walking || g_btick - g_asSince[side] >= AS_WAIT) {
+			g_asIn[side] = g_btick ? g_btick : 1;
+			if (g_blog) blog("ai %s: side %d in place before crossing %d", kAiLevel[g_aiLevel], side, k + 1);
+		}
+	}
+	if (g_asIn[side]) {
+		unsigned parked = g_btick - g_asIn[side];
+		int enemy = 0;
+		for (int i = 1; i < 0x51; i++) if (as_live(i, &x, &y) && FIG(i)[0x2c] != side) enemy += FIG_S(i, 0x1a0);
+		why[0] = 0;
+		if (men * 2 <= own && (!archers || parked >= AS_SOFTEN)) snprintf(why, sizeof why, "storms crossing %d: %d enemy men there, its melee %d", k + 1, men, own);
+		else if (parked >= AS_WAIT && ai_side_men(side) > enemy) snprintf(why, sizeof why, "storms crossing %d after %u steps: %d men to the enemy's %d", k + 1, parked, ai_side_men(side), enemy);
+		if (why[0]) { as_storm(side, why); return; }
+	}
+	int rank = 0;
+	for (int h = 1; h < 0x51; h++) {
+		if (!ai_melee_group(h, side)) continue;
+		if (as_park_place(k, bank, rank++, &x, &y)) as_park_group(h, x, y);
+	}
+}
+static void ai_assault_step(void)
+{
+	if (!ai_part(AI_MELEE) || !g_ncross || g_btick % AS_EVERY) return;
+	for (int side = 1; side <= 2; side++) as_side(side);
+}
+static BOOL as_parked(int side) { return side >= 1 && side <= 2 && g_asPhase[side] == 1; }
+// Where archer group g (centre cx,cy, range r) of side shoots from while its side is parked: beside the lane
+// (at least AS_LANE cells off it; groups alternate sides), on its own bank, with the far end within r - 1,
+// as far back as that allows; FALSE when there's no such place.
+static BOOL as_soften_place(int g, int side, int r, int cx, int cy, int *x, int *y)
+{
+	int k = g_asCross[side] - 1;
+	if (!as_parked(side) || k < 0) return FALSE;
+	int bank = as_side_bank(k, side);
+	if (!bank) return FALSE;
+	map_cross *m = &g_cross[k];
+	int fx = bank == 1 ? m->bx : m->ax, fy = bank == 1 ? m->by : m->ay, ex, ey, dx, dy, q = 0;
+	as_lane(k, bank, &ex, &ey, &dx, &dy);
+	for (int h = 1; h < g; h++) if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) == 1) q++;
+	int want = q & 1 ? 1 : -1, bx = -1, by = -1, best = -1, bclose = 999;
+	for (int vy = 1; vy <= 78; vy++) for (int vx = 1; vx <= 78; vx++) {
+		int c = vy * 80 + vx, d = cheb(vx, vy, fx, fy);
+		if (d > r - 1 || g_crossBank[k][c] != bank || !map_open(c) || as_near(k, vx, vy, 1)) continue;
+		int cr = (vx - m->x) * dy - (vy - m->y) * dx;   // which side of the lane, and how far (squared)
+		if ((cr > 0 ? 1 : -1) != want || cr * cr < AS_LANE * AS_LANE * (dx * dx + dy * dy)) continue;
+		int to = cheb(vx, vy, cx, cy);
+		if (d > best || (d == best && to < bclose)) { best = d; bclose = to; bx = vx; by = vy; }
+	}
+	if (bx < 0) return FALSE;
+	*x = bx; *y = by;
+	return TRUE;
+}
+
+// A computer chaser just given a route longer than its limit only because units stand in the way waits
+// (see above); called after the game's chase step that planned it.
+static void jam_check(int me)
+{
+	BYTE *f = FIG(me);
+	if (!ai_part(AI_MELEE) || !f[0x2c] || f[0x13] || f[0x16a] || f[0x12] >= 7 || f[0x31] != 8 || !f[0x164]) return;
+	int t = f[0x174];
+	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) return;
+	int left = FIG_S(me, 0x36), lim = chase_limit(me, cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), FIG_S(t, 0x20), FIG_S(t, 0x22)));
+	if (left <= lim) return;
+	g_dmMaxDepth = lim;
+	int d = dm_dist(t, me);
+	g_dmMaxDepth = 0x7fff;
+	if (d == DM_FAR || d > lim) return;   // far round on an empty field too: the far-target rule's case
+	f[0x164] = 0; f[0x2f] = 8; f[0x31] = 1; f[0x30] = 8;   // (counted down one step in four: ~32 steps)
+	if (g_blog && g_battleLog >= 1) blog("jam fig %d at %d,%d: route of %d steps to target %d, %d on an empty field: waits", me,
+		FIG_S(me, 0x20), FIG_S(me, 0x22), left, t, d);
+}
+
 static void battle_reset(void)
 {
 	g_btick = 0;
+	g_ncross = 0; memset(g_asCross, 0, sizeof g_asCross); memset(g_asPhase, 0, sizeof g_asPhase); memset(g_asSince, 0, sizeof g_asSince); memset(g_asIn, 0, sizeof g_asIn);
 	memset(g_fHold, 0, sizeof g_fHold); memset(g_fLogNext, 0, sizeof g_fLogNext); g_bfire = 0;
 	memset(g_fEnter, 0, sizeof g_fEnter);
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
@@ -12184,6 +12467,7 @@ static void __cdecl h_fig_loop(void)
 	g_dmFullThisStep = 0;
 	if (fix_on(g_fixGroupMove)) gr_step();
 	fire_step();
+	ai_assault_step();
 	o_fig_loop();
 	map_watch();
 	QueryPerformanceCounter(&c1);

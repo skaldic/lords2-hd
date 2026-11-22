@@ -111,6 +111,11 @@ On Hard, in field battles, the computer picks attack or defence once instead of 
 seconds, keeps its archers behind its soldiers (shooting, stepping back from yours, and walking up into
 range when its soldiers are fighting out of their reach), sends its
 nearest soldiers to help archers you reach, and moves its soldiers up together and charges together.
+When it attacks a bridge or other narrow crossing you hold, it no longer pours everyone onto it at once (the
+ones behind used to set off on the long way round): its soldiers wait in a line on their bank while its
+archers shoot at your men there from the side, and once they're all in place they storm it together when
+your men there are down to half of its soldiers (after about 10 s of shooting), when it's free, or after
+about a minute when it's the stronger army.
 In sieges too, its soldiers step out of your burning oil and don't walk back in while it burns (they used
 to stand in it until they died).
 Legendary plays like Hard, and also:
