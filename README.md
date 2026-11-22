@@ -215,6 +215,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Display | Shore waves | On, Off | On | `ShoreWaves` |
 | Display | Widescreen * | On, Off | On | `Wide` |
 | Display | County map zoom-out | On, Off | On | `CountyZoom` |
+| Display | Seasonal Town Center | On, Off (original) | On | `Seasons` |
 | Performance | Upscaling | AMD FSR 1 (sharpest), Catmull-Rom (sharp), Bilinear (soft) | AMD FSR 1 | `Upscale` |
 | Performance | Drawing * | Graphics card, Processor | Graphics card | `Renderer` |
 | Performance | Frame limit | 120 a second, Off (as the original) | 120 a second | `FrameLimit` |

@@ -160,6 +160,7 @@ static BOOL gpu_drawing(void);  // the GPU draws the window (or is about to try)
 static double gpu_ms(void);     // the card's time for a recent frame
 static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
 static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
+static BOOL g_seasons = TRUE; // [Display] Seasons: the Town Center's picture follows the season (season_name)
 static int g_wheelZoom = 1;     // [Display] WheelZoom: the wheel zooms a zoomed-out battle's field in and out (wz_wheel): 0 off,
                                 // 1 up to 2x (the game's normal size), 2 up to 4x
 static BOOL g_countyZoom = TRUE; // [Display] CountyZoom: the wheel shows the county map zoomed out (cz_draw)
@@ -229,6 +230,7 @@ static void read_settings(void)
 	g_wheelZoom = max(0, min(2, (int)GetPrivateProfileIntA("Display", "WheelZoom", 1, g_iniPath)));
 	g_countyZoom = GetPrivateProfileIntA("Display", "CountyZoom", 1, g_iniPath) != 0;
 	g_czCheckAll = GetPrivateProfileIntA("Debug", "CountyZoomCheck", 0, g_iniPath) != 0;
+	g_seasons = GetPrivateProfileIntA("Display", "Seasons", 1, g_iniPath) != 0;
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -2070,13 +2072,36 @@ static BYTE *sprite_set_read(AFILE *f, int frame, long *bytes)
 	return data;
 }
 
+// Seasonal art: lords2hd\sprites\<file>_<season>.bin, where there is one, stands in for <file>.bin in
+// that season (the Town Center's picture and overlays). The game keeps the season at 0x57c934 (1..4)
+// and loads the Town Center's files again each time it opens, so a new season shows from the next visit.
+// [Display] Seasons=0 (F10, Display: "Seasonal Town Center") keeps the original Town Center all year.
+static const char *season_name(void)
+{
+	static const char *names[] = { "spring", "summer", "autumn", "winter" };
+	if (!g_seasons) return NULL;
+	int s = *(const int *)0x0057c934;
+	return s >= 1 && s <= 4 ? names[s - 1] : NULL;
+}
+
 // The game has put file `name` (or its frame `frame`, if >= 0) into `buffer`: that buffer's HD set.
 static void sprite_set_bind(const char *name, int frame, const void *buffer)
 {
 	if (!g_hdTiles) return;
-	char key[40];
-	if (frame < 0) lstrcpynA(key, name, sizeof key);
-	else snprintf(key, sizeof key, "%s#%d", name, frame);
+	char key[40], base[32], file[48], path[MAX_PATH];
+	lstrcpynA(base, name, sizeof base);
+	char *dot = strrchr(base, '.');
+	if (dot) *dot = 0;
+	CharLowerA(base);
+	lstrcpynA(file, base, sizeof file);
+	const char *season = frame < 0 ? season_name() : NULL;
+	if (season) {
+		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s_%s.bin", g_gameDir, base, season);
+		if (aexists(path)) snprintf(file, sizeof file, "%s_%s", base, season);
+	}
+	if (frame >= 0) snprintf(key, sizeof key, "%s#%d", name, frame);
+	else if (lstrcmpA(file, base)) lstrcpynA(key, file, sizeof key);
+	else lstrcpynA(key, name, sizeof key);
 	int slot = -1;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
 		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, key)) return; // already
@@ -2090,12 +2115,7 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 		g_layerGen++;
 		return;
 	}
-	char base[32], path[MAX_PATH];
-	lstrcpynA(base, name, sizeof base);
-	char *dot = strrchr(base, '.');
-	if (dot) *dot = 0;
-	CharLowerA(base);
-	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
+	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, file);
 	AFILE *f = afopen(path);
 	if (!f) return;
 	// Room: sets no buffer holds go, oldest first, while they take more than SPRITE_SPARE or no slot is free.
@@ -2129,7 +2149,7 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
 	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 	read_palette(path, g_spriteSets[slot].pal);
-	logf_("HD sprites %s", key);
+	logf_("HD sprites %s (season %d)", key, *(const int *)0x0057c934);
 }
 
 static void sprites_loaded(const char *name, const void *buffer) { sprite_set_bind(name, -1, buffer); }
@@ -3843,17 +3863,17 @@ static int g_aiLevelSet;
 static BOOL g_aiOk;
 static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
-	M_COUNTY, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
+	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY; } // marked "new"
+static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY || i == M_SEASONS; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3881,6 +3901,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
 	case M_WHEEL: snprintf(v, n, "%s", g_wheelZoom == 2 ? "Up to 4x" : g_wheelZoom ? "Up to 2x (normal size)" : "Off"); break;
 	case M_COUNTY: snprintf(v, n, "%s", g_countyZoom ? "On" : "Off"); break;
+	case M_SEASONS: snprintf(v, n, "%s", g_seasons ? "On" : "Off (original)"); break;
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: { // from the next battle
 		int f = i - M_BF_PATH;
 		snprintf(v, n, "%s", g_bfSet[f] ? "On" : "Off");
@@ -3893,7 +3914,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
-	"Wheel zoom", "County map zoom-out", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
+	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -3966,6 +3987,7 @@ static void resound_sample(void)
 		g_countyZoom = !g_countyZoom; ini_set("Display", "CountyZoom", g_countyZoom);
 		if (!g_countyZoom) InterlockedExchange(&g_czOut, 0);
 		break;
+	case M_SEASONS: g_seasons = !g_seasons; ini_set("Display", "Seasons", g_seasons); break; // from the next visit (season_name)
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
 		int f = i - M_BF_PATH;
 		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);
@@ -4117,7 +4139,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	if (g_menuTab == 0 || g_menuTab == 3) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
 		DrawTextA(dc, g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
-			: "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
 	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -8258,6 +8280,36 @@ static void army_panel_keep(void)
 #define MS_H (17 * 16)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
+// The HD sprite layer under it, kept with g_msUnder: the scroll's own stamps replace it, and a picture
+// the game draws once (the Town Center's) fell back to its 1x pixels when the panel closed.
+static DWORD *g_msLayer; static BYTE *g_msShadow, *g_msValid; static BOOL g_msLayerKept;
+static void ms_layer(BOOL restore)
+{
+	if (!restore) {
+		g_msLayerKept = FALSE;
+		if (!g_sprLayer || !g_sprShadow || !g_sprValid) return;
+		if (!g_msLayer) {
+			g_msLayer = malloc((size_t)MS_W * MS_H * 4 * 4);
+			g_msShadow = malloc(MS_W * MS_H); g_msValid = malloc(MS_W * MS_H);
+			if (!g_msLayer || !g_msShadow || !g_msValid) { free(g_msLayer); free(g_msShadow); free(g_msValid); g_msLayer = NULL; return; }
+		}
+	}
+	else if (!g_msLayerKept || !g_sprLayer) return;
+	int fx = g_msX + g_back->org;
+	if (fx < 0 || fx + MS_W > MAX_W || g_msY < 0 || g_msY + MS_H > GAME_H) return;
+	for (int r = 0; r < MS_H; r++) {
+		int fy = g_msY + r;
+		for (int k = 0; k < 2; k++) {
+			DWORD *l = g_sprLayer + (size_t)(2 * fy + k) * (2 * MAX_W) + 2 * fx, *m = g_msLayer + (size_t)(2 * r + k) * (2 * MS_W);
+			if (restore) memcpy(l, m, MS_W * 8); else memcpy(m, l, MS_W * 8);
+		}
+		BYTE *s = g_sprShadow + (size_t)fy * MAX_W + fx, *v = g_sprValid + (size_t)fy * MAX_W + fx;
+		if (restore) { memcpy(s, g_msShadow + r * MS_W, MS_W); memcpy(v, g_msValid + r * MS_W, MS_W); }
+		else { memcpy(g_msShadow + r * MS_W, s, MS_W); memcpy(g_msValid + r * MS_W, v, MS_W); }
+	}
+	if (restore) { rows_dirty(g_sprDirty, g_msY, g_msY + MS_H); g_layerGen++; g_msLayerKept = FALSE; }
+	else g_msLayerKept = TRUE;
+}
 static BOOL ms_region(BYTE *buf, int op) // 0 compare, 1 save, 2 put back
 {
 	for (int r = 0; r < MS_H; r++) {
@@ -8317,7 +8369,10 @@ static void menu_scroll_draw(void)
 		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
-	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink); // under the last of 8 rows
+	if (g_menuTab == 0) { // under its 7 rows (the last ends at y0 + 177)
+		ctext("Seasons show from the next Town Center visit", x0, y0 + 188, MS_W, small, ink);
+		ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink);
+	}
 	if (g_menuTab == 3) { // under its 8 rows (the last ends at y0 + 192), above the keys (y0 + 234)
 		ctext("* after a restart; the fixes from the next battle", x0, y0 + 200, MS_W, small, ink);
 		ctext("The fixes stay off in multiplayer games", x0, y0 + 214, MS_W, small, ink);
@@ -8338,6 +8393,7 @@ static void menu_scroll_keep(void)
 			g_msDrawn = 0;
 			InterlockedExchange(&g_ovl[1].on, 0);
 			ms_region(g_msUnder, 2);
+			ms_layer(TRUE);
 			dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);
 			g_apSig = 2; // the army scroll again
 		}
@@ -8354,7 +8410,7 @@ static void menu_scroll_keep(void)
 		}
 	}
 	if (g_msDrawn && g_msGen == g_menuGen && ms_region(g_msSnap, 0)) return;
-	if (!g_msDrawn) ms_region(g_msUnder, 1); // what the game had there when it opened (later it may be the scroll itself)
+	if (!g_msDrawn) { ms_region(g_msUnder, 1); ms_layer(FALSE); } // what the game had there when it opened (later it may be the scroll itself)
 	g_msGen = g_menuGen;
 	g_drawingLeft = g_msX < 0; // left of the game's x = 0 (h_clip_x, h_frame)
 	g_drawingLow = g_msY + MS_H > GAME_H; // and below row 480 (h_clip_y)

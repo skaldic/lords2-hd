@@ -197,6 +197,7 @@ static int t_panel(int i)
 	case M_LETTERS: return g_letters;     case M_RESOUND: return g_resounded;   case M_RENDERER: return g_gpuWantedSet;
 	case M_FPS: return g_statsOn;         case M_MINIPOP: return g_miniPop;     case M_ARROWS: return g_arrowsOn;
 	case M_WHEEL: return g_wheelZoom;     case M_AI: return g_aiLevelSet;       case M_COUNTY: return g_countyZoom;
+	case M_SEASONS: return g_seasons;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }
