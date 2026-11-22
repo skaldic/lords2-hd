@@ -839,3 +839,20 @@ TEST(ai_fire_siege_marchers_at_the_wall_step_out_too)
 	fire_step();
 	CHECK_EQ(FIG(5)[0x31], ST_MARCH); CHECK_EQ(FIG_S(5, 0x24), hx); CHECK_EQ(FIG_S(5, 0x26), hy);
 }
+TEST(ai_hard_archers_out_of_reach_walk_up_to_their_soldiers_fight)
+{
+	t_ai_battle(2);                                                 // Legendary (Hard's rule)
+	t_bow(1, 2, 20, 60, 2, 15); t_bow(2, 2, 21, 60, 2, 15); t_bow(3, 2, 22, 60, 2, 15);
+	t_group(2, 2, 1, 3, 21, 60);                                    // its archers, left of the field
+	t_unit(4, 2, 40, 50, 4); t_group(4, 2, 3, 1, 40, 50);           // its pikemen at the bridge...
+	t_human(t_unit(5, 1, 40, 49, 5)); t_group(5, 1, 3, 1, 33, 52);  // ...fighting your swords (your group's
+	FIG(4)[0x31] = ST_MELEE; FIG(5)[0x31] = ST_MELEE;               // centre is 12 cells from the archers')
+	FIG(4)[0x17e] = 5; FIG(5)[0x17e] = 4;
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 0);                                          // no fire order none of them can carry out
+	CHECK_EQ(t_ordG, 2);                                            // they walk up to the fight
+	CHECK(cheb(t_ordX, t_ordY, 40, 49) <= 13); CHECK(cheb(t_ordX, t_ordY, 40, 49) >= 12);
+	t_unit_at(1, 30, 52); t_unit_at(2, 31, 52); t_unit_at(3, 32, 52); GRP_S(2, 0x1e) = 31; GRP_S(2, 0x20) = 52;
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 5);                                          // in range now: they shoot
+}

@@ -107,7 +107,8 @@ Bugs of the original game are fixed in single player, each with its own switch u
 
 Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal is the game's own battle AI.
 On Hard, in field battles, the computer picks attack or defence once instead of switching every few
-seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), sends its
+seconds, keeps its archers behind its soldiers (shooting, stepping back from yours, and walking up into
+range when its soldiers are fighting out of their reach), sends its
 nearest soldiers to help archers you reach, and moves its soldiers up together and charges together.
 In sieges too, its soldiers step out of your burning oil and don't walk back in while it burns (they used
 to stand in it until they died).
