@@ -164,6 +164,14 @@ TEST(wheel_zoom_only_on_the_bare_battlefield)
 	CHECK_EQ(x, PANEL_X - battle_map_w() + 200); CHECK_EQ(y, 24 + 352);   // clicks as at 1x
 	*(BYTE *)0x004eac50 = 41;            // gone: the zoom is back
 	CHECK(wz_shown());
+	int zx = 300, zy = 300;
+	client_to_game(&zx, &zy);
+	*(BYTE *)0x004eac50 = 42;            // a mouse button held on the field (a selection box): still zoomed
+	CHECK(wz_shown());
+	int dx = 300, dy = 300;
+	client_to_game(&dx, &dy);
+	CHECK_EQ(dx, zx); CHECK_EQ(dy, zy);  // (mapped as on 41, not as at 1x)
+	*(BYTE *)0x004eac50 = 41;
 	g_menuOpen = 1;                      // the F10 panel
 	CHECK(!wz_shown());
 	g_menuOpen = 0;
@@ -216,37 +224,63 @@ TEST(wheel_zoom_picture_enlarges_only_the_field)
 /* Zoomed in, a screen edge or a scroll key first slides the shown part across the field; the game scrolls the
  * battlefield only once the part is at the field's edge on that side. Before, the part stayed where it was and the
  * field beside it couldn't be reached where the game's view was already at the end of the battlefield. */
+static int t_due = 1;   // the game's scroll clock, played by the test
+static int __cdecl t_scroll_due(void) { return t_due; }
 TEST(wheel_zoom_edges_slide_the_shown_part_first)
 {
 	t_zoomed_battle();
+	int (__cdecl *due)(void) = wz_scroll_due;
+	wz_scroll_due = t_scroll_due; t_due = 1;
 	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
-	InterlockedExchange(&g_wzLevel, 3); g_wzX = 0; g_wzY = 0;   // x2, at the field's top-left
-	CHECK_EQ(wz_pan_step(1, 0.1f), 1);                           // left: already there, the game scrolls
+	float maxX = fw - fw / 4.0f;
+	InterlockedExchange(&g_wzLevel, WZ_STEPS - 1); g_wzX = 0; g_wzY = 0;   // x4, at the field's top-left
+	*(int *)0x0055ce70 = 10; *(int *)0x005678a0 = 5;            // the game's view (col, row)
+	CHECK_EQ(wz_pan(1), 1);                                      // left: already there, the game scrolls
 	CHECK_EQ(g_wzHeld, 0);
-	CHECK_EQ(wz_pan_step(2, 0.1f), 0);                           // right: the part slides, the game doesn't scroll
+	CHECK_EQ(wz_pan(2), 0);                                      // right: the part slides, the game doesn't scroll
 	CHECK_EQ(g_wzHeld, 2);
-	CHECK(fabsf(g_wzX - WZ_PAN_SPEED / 2 * 0.1f) < 0.01f);       // (900 shown px a second: 450 field px at x2)
-	CHECK_EQ(wz_pan_step(2 | 8, 0.1f), 0);                       // diagonal
-	CHECK(fabsf(g_wzX - 90) < 0.01f); CHECK(fabsf(g_wzY - 45) < 0.01f);
-	g_wzX = fw - fw / 2.0f;                                      // at the right edge: the game scrolls, the part stays
-	CHECK_EQ(wz_pan_step(2, 0.1f), 2);
-	CHECK_EQ(g_wzX, fw - fw / 2.0f);
-	g_wzY = fh - fh / 2.0f;
-	CHECK_EQ(wz_pan_step(8, 0.1f), 8);
+	wz_pan_frame(0, 0);
+	CHECK(fabsf(g_wzX - 8) < 0.01f);                             // a cell on the screen a frame: 32 / 4 field px
+	t_due = 0;                                                   // between the game's scroll steps: still
+	wz_pan_frame(0, 0);
+	CHECK(fabsf(g_wzX - 8) < 0.01f);
+	t_due = 1;
+	CHECK_EQ(wz_pan(2 | 8), 0);                                  // diagonal
+	wz_pan_frame(0, 0);
+	CHECK(fabsf(g_wzX - 16) < 0.01f); CHECK(fabsf(g_wzY - 8) < 0.01f);
+	// at the right edge the game scrolls a cell; the part goes back a cell less a frame's slide, so the field goes on
+	// at a cell on the screen a frame and the game scrolls again every 4th frame (it rushed past at x4 before)
+	g_wzX = maxX; g_wzY = 0;
+	CHECK_EQ(wz_pan(2), 2);
+	*(int *)0x0055ce70 = 11;
+	wz_pan_frame(1, 0);
+	CHECK(fabsf(g_wzX - (maxX - 24)) < 0.01f);
+	CHECK_EQ(g_wzPendView, 11 + 5 * 256);                        // frames of the old view: the part where it was
+	CHECK(fabsf(g_wzPendX - 32) < 0.01f);
+	for (int f = 0; f < 3; f++) { CHECK_EQ(wz_pan(2), 0); wz_pan_frame(0, 0); }
+	CHECK(fabsf(g_wzX - maxX) < 0.01f);
+	CHECK_EQ(wz_pan(2), 2);                                      // the 4th frame: the game's scroll again
+	enum { W = 500, H = 348 };                                   // a frame of the new view reaches the screen: caught up
+	static DWORD pic[W * H];
+	InterlockedExchange(&g_primaryView, 11 + 5 * 256);
+	wz_apply(pic, W, H, 1, 400);
+	CHECK_EQ(g_wzPendView, -1); CHECK_EQ(g_wzPendX, 0.0f);
+	InterlockedExchange(&g_primaryView, -1);
 	// the scroll keys: a key panning the part isn't passed on as an edge
 	BOOL w = g_wasdOn; g_wasdOn = TRUE;
 	POINT p = { 300, 200 };
-	g_wasd = 1; wz_pan_step(1, 0.1f);
+	g_wasd = 1; wz_pan(1);
 	REQUIRE(g_wzHeld == 1);
 	wasd_edges(&p, 600, 400);
 	CHECK_EQ(p.x, 300);
-	g_wzX = fw - fw / 2.0f;                                      // (the left key slid it off the right edge)
-	g_wasd = 2; wz_pan_step(2, 0.1f);                            // at the right edge: the game's scroll again
+	g_wasd = 2; wz_pan(2);                                       // at the right edge: the game's scroll again
 	wasd_edges(&p, 600, 400);
 	CHECK_EQ(p.x, 600);
 	g_wasd = 0; g_wasdOn = w;
 	InterlockedExchange(&g_wzLevel, 0);                          // not zoomed: every edge is the game's
-	CHECK_EQ(wz_pan_step(15, 0.1f), 15);
+	CHECK_EQ(wz_pan(15), 15);
+	*(int *)0x0055ce70 = 0; *(int *)0x005678a0 = 0;
+	wz_scroll_due = due;
 	t_zoomed_battle_end();
 }
 

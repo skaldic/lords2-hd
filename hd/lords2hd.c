@@ -4776,6 +4776,12 @@ static const float kWzStep[] = { 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f };
 static volatile LONG g_wzLevel;   // index into kWzStep; 0 = the whole field
 static volatile float g_wzX, g_wzY;   // the shown part's top-left, in field px of the zoomed-out picture (lw x lh)
 static int g_wzAcc;               // wheel turn not yet a whole notch (smooth-scrolling wheels send less)
+#define WZ_CELL 32                // a battle cell, in field px: the game's edge scroll moves its view a cell a frame
+#define BATTLE_VIEW_NOW() (*(int *)0x0055ce70 + *(int *)0x005678a0 * 256)   // as g_primaryView packs it
+// Panning (wz_pan_frame) moved the part with the game's view: until a frame of the new view (g_wzPendView)
+// reaches the screen, the part is shown g_wzPendX, Y field px further, where it was on the frames before.
+static volatile LONG g_wzPendView = -1;
+static volatile float g_wzPendX, g_wzPendY;
 
 // The part of a fw x fh field shown at zoom z: its top-left (x, y), kept inside the field.
 static void wz_clamp(float z, int fw, int fh, float *x, float *y)
@@ -4801,10 +4807,14 @@ static void wz_map(float z, float x0, float y0, int fw, int fh, int *px, int *py
 	*px = max(0, min(fw - 1, x));
 	*py = max(0, min(fh - 1, y));
 }
+// The bare battlefield: screen 41, or 42 while a mouse button is held on it (a selection box, an order).
+// With 41 alone, every click showed the whole field until the button came up, and a drag's clicks were
+// mapped as at 1x.
+static BOOL wz_field_screen(void) { BYTE s = *(BYTE *)0x004eac50; return s == 41 || s == 42; }
 // Is the zoom on the screen now? (else the whole field, as without it)
 static BOOL wz_shown(void)
 {
-	return g_wheelZoom && g_wzLevel > 0 && g_wzLevel < WZ_STEPS && battle_zoom_on() && *(BYTE *)0x004eac50 == 41 && !menu_doubled() && !g_menuOpen;
+	return g_wheelZoom && g_wzLevel > 0 && g_wzLevel < WZ_STEPS && battle_zoom_on() && wz_field_screen() && !menu_doubled() && !g_menuOpen;
 }
 // A field point of the zoomed-out picture (field px: x from the field's left, y from its top) as the game's
 // point under it while zoomed. Called by client_to_game.
@@ -4818,7 +4828,7 @@ static void wz_battle_check(void)
 {
 	static int lastStep = -1;
 	int step = *(int *)0x0057c998;
-	if (step < lastStep && g_wzLevel) { InterlockedExchange(&g_wzLevel, 0); g_wzAcc = 0; }
+	if (step < lastStep && g_wzLevel) { InterlockedExchange(&g_wzLevel, 0); g_wzAcc = 0; InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0; }
 	lastStep = step;
 }
 
@@ -4863,6 +4873,11 @@ static const DWORD *wz_apply(const DWORD *src, int sw, int sh, int s, int mapW)
 	}
 	if (!out || !axCap) return src;
 	float z = kWzStep[g_wzLevel], x0 = g_wzX, y0 = g_wzY;
+	LONG pend = g_wzPendView;
+	if (pend >= 0) {
+		if (g_primaryView == pend) { InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0; }   // caught up
+		else { x0 += g_wzPendX; y0 += g_wzPendY; }   // a frame from before the view moved
+	}
 	wz_clamp(z, fw / s, fh / s, &x0, &y0);
 	x0 *= s; y0 *= s;
 	for (int x = 0; x < fw; x++) {   // the source column (and the weight of the next) of each shown column
@@ -4887,7 +4902,7 @@ static const DWORD *wz_apply(const DWORD *src, int sw, int sh, int s, int mapW)
 // The wheel over the window. TRUE: it was ours (a battle's field with the zoom on).
 static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 {
-	if (!g_wheelZoom || !battle_zoom_on() || *(BYTE *)0x004eac50 != 41 || menu_doubled() || g_menuOpen) { g_wzAcc = 0; return FALSE; }
+	if (!g_wheelZoom || !battle_zoom_on() || !wz_field_screen() || menu_doubled() || g_menuOpen) { g_wzAcc = 0; return FALSE; }
 	POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };   // (screen coordinates)
 	ScreenToClient(g_hwnd, &p);
 	RECT v;
@@ -4904,6 +4919,7 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 		float x = from ? g_wzX : 0, y = from ? g_wzY : 0;
 		wz_zoom_about(kWzStep[from], kWzStep[to], px, py, fw, fh, &x, &y);
 		g_wzX = x; g_wzY = y;
+		InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0;
 		InterlockedExchange(&g_wzLevel, to);
 		if (g_clickLog) logf_("wheel zoom: x%.2f at field %d,%d (shown from %.0f,%.0f)", kWzStep[to], px, py, x, y);
 		InterlockedExchange(&g_forcePresent, 1);
@@ -4912,42 +4928,58 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 	return TRUE;
 }
 // Panning while zoomed in: the cursor at a screen edge (or WASD, the arrow keys) first slides the shown part
-// across the field; only once it is at the field's edge on that side does the game scroll the battlefield,
-// the shown part staying at that edge. Without this, the part of the field beside the shown one couldn't be
-// reached where the game's view was already at the end of the battlefield. dirs: 1 left, 2 right, 4 up,
-// 8 down; dt in seconds. Returns the directions left to the game's own edge scroll (g_wzHeld: the others).
-#define WZ_PAN_SPEED 900.0f   // shown picture px a second (the field px it covers: this over the zoom)
+// across the field; only once it is at the field's edge on that side does the game scroll the battlefield.
+// Without this, the part of the field beside the shown one couldn't be reached where the game's view was
+// already at the end of the battlefield. The picture moves as fast on the screen at every zoom as the game's
+// own scroll does zoomed out: a cell (32 picture px) a step of its scroll clock (wz_scroll_due). So the part
+// slides a cell over the zoom each step, and when the game scrolls a whole cell under it the part goes back by
+// a cell less that step's slide (wz_pan_frame): the game then scrolls once every zoom-th step and the field
+// goes on at the same pace instead of rushing past at the zoom times the speed.
+// wz_pan (from GetCursorPos): dirs 1 left, 2 right, 4 up, 8 down; sets g_wzHeld, the directions the part can
+// still slide, and returns the others, left to the game's own edge scroll.
 static int g_wzHeld;
-static int wz_pan_step(int dirs, float dt)
+static int wz_pan(int dirs)
 {
 	g_wzHeld = 0;
 	if (!dirs || !wz_shown()) return dirs;
 	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
-	float z = kWzStep[g_wzLevel], x = g_wzX, y = g_wzY, d = WZ_PAN_SPEED / z * dt;
+	float z = kWzStep[g_wzLevel], x = g_wzX, y = g_wzY;
 	wz_clamp(z, fw, fh, &x, &y);
 	float maxX = fw - fw / z, maxY = fh - fh / z;
-	if ((dirs & 1) && x > 0) { x -= d; g_wzHeld |= 1; }
-	else if ((dirs & 2) && !(dirs & 1) && x < maxX) { x += d; g_wzHeld |= 2; }
-	if ((dirs & 4) && y > 0) { y -= d; g_wzHeld |= 4; }
-	else if ((dirs & 8) && !(dirs & 4) && y < maxY) { y += d; g_wzHeld |= 8; }
-	if (g_wzHeld && d > 0) {
-		wz_clamp(z, fw, fh, &x, &y);
-		g_wzX = x; g_wzY = y;
-		InterlockedExchange(&g_forcePresent, 1);
-		mark_dirty();
-	}
+	if ((dirs & 1) && x > 0) g_wzHeld |= 1;
+	else if ((dirs & 2) && !(dirs & 1) && x < maxX) g_wzHeld |= 2;
+	if ((dirs & 4) && y > 0) g_wzHeld |= 4;
+	else if ((dirs & 8) && !(dirs & 4) && y < maxY) g_wzHeld |= 8;
 	return dirs & ~g_wzHeld;
 }
-// The same with the time since the last call (the game asks for the cursor every frame, or more often).
-static int wz_pan(int dirs)
+// The game's scroll clock (FUN_004bbbe3): TRUE once a scroll step is due (every 12 * (100 - its scroll speed
+// option) / 10 + 2 ms), and it starts the next wait. The edge scroll is called many times a step and moves the
+// view only when this says so; the part's slide goes by the same clock.
+static int (__cdecl *wz_scroll_due)(void) = (int (__cdecl *)(void))0x004bbbe3;
+// After the game's edge scroll (h_edge_scroll): dc, dr the cells its view just moved (on a step of the clock).
+// Frames copied before that move are shown with the part where it was (g_wzPend*), so the picture doesn't jump.
+static void wz_pan_frame(int dc, int dr)
 {
-	static LARGE_INTEGER last;
-	LARGE_INTEGER now, f;
-	QueryPerformanceCounter(&now);
-	QueryPerformanceFrequency(&f);
-	float dt = last.QuadPart ? (float)(now.QuadPart - last.QuadPart) / (float)f.QuadPart : 0;
-	last = dirs && wz_shown() ? now : (LARGE_INTEGER){ 0 };   // a new push starts from still
-	return wz_pan_step(dirs, min(dt, 0.05f));
+	if (!wz_shown() || (!g_wzHeld && !dc && !dr)) return;
+	if (!dc && !dr && !wz_scroll_due()) return;   // (a step the view took has used the clock already)
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], s = WZ_CELL / z, x = g_wzX, y = g_wzY;
+	wz_clamp(z, fw, fh, &x, &y);
+	if (g_wzHeld & 1) x -= s;
+	if (g_wzHeld & 2) x += s;
+	if (g_wzHeld & 4) y -= s;
+	if (g_wzHeld & 8) y += s;
+	x -= dc * (WZ_CELL - s);   // the view a cell right: the field moved a cell left under the part
+	y -= dr * (WZ_CELL - s);
+	wz_clamp(z, fw, fh, &x, &y);
+	g_wzX = x; g_wzY = y;
+	if (dc || dr) {
+		g_wzPendX += dc * WZ_CELL; g_wzPendY += dr * WZ_CELL;
+		InterlockedExchange(&g_wzPendView, BATTLE_VIEW_NOW());
+		if (g_clickLog) logf_("wheel zoom pan: the view moved %d,%d, the part back to %.1f,%.1f", dc, dr, x, y);
+	}
+	InterlockedExchange(&g_forcePresent, 1);
+	mark_dirty();
 }
 
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
@@ -8214,13 +8246,17 @@ static battle_clamp_t o_battle_clamp;
 #define BATTLE_COL (*(int *)0x0055ce70)
 typedef int (__cdecl *edge_scroll_t)(void);
 static edge_scroll_t o_edge_scroll;
-static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x
+static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x; once a frame on the battlefield
 {
-	if (battle_left_x() >= 1) return o_edge_scroll();
-	int saved = *(int *)0x004e6594;
-	*(int *)0x004e6594 = g_battleLeftEdge ? 0 : max(1, saved);
-	int r = o_edge_scroll();
-	*(int *)0x004e6594 = saved;
+	int col = BATTLE_COL, row = BATTLE_ROW, r;
+	if (battle_left_x() >= 1) r = o_edge_scroll();
+	else {
+		int saved = *(int *)0x004e6594;
+		*(int *)0x004e6594 = g_battleLeftEdge ? 0 : max(1, saved);
+		r = o_edge_scroll();
+		*(int *)0x004e6594 = saved;
+	}
+	wz_pan_frame(BATTLE_COL - col, BATTLE_ROW - row);   // zoomed in with the wheel: the part pans with it
 	return r;
 }
 
