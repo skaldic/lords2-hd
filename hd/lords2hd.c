@@ -9631,11 +9631,14 @@ static int ai_nearest_group(int g, int maxd)
 }
 
 // The group the archers of group g shoot at: the nearest enemy group in range; on Legendary (AI_FOCUS) the
-// nearest enemy archers in range come first, as they're the ones shooting at its melee as it advances.
+// nearest enemy archers in range come first, as they're the ones shooting at its melee as it advances,
+// unless enemy melee is within AI_FOCUS_NEAR cells: then that, as on Hard.
+#define AI_FOCUS_NEAR 8
 static int ai_shoot_target(int g, int range)
 {
 	int best = ai_nearest_group(g, range);
 	if (!best || GRP_B(best, 0x08) == 1 || !ai_legend(AI_FOCUS)) return best;
+	if (cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(best, 0x1e), GRP_S(best, 0x20)) <= AI_FOCUS_NEAR) return best;
 	int bd = range + 1, bows = 0;
 	for (int h = 1; h < 0x51; h++) {
 		if (!GRP_B(h, 0x00) || GRP_B(h, 0x00) == GRP_B(g, 0x00) || !GRP_B(h, 0x02) || GRP_B(h, 0x08) != 1) continue;
@@ -9742,11 +9745,12 @@ static int ai_nearest_enemy_at(int side, int x, int y, int *ux, int *uy, BOOL me
 	return best;
 }
 
-static BOOL g_aiChargeAtt[3];        // it charged from attack (Legendary's target picks; per battle)
+static BOOL g_aiChargeAtt[3];        // it charged from attack at a moment it picked, before contact (Legendary's
+                                     // target picks; per battle)
 static void ai_side_charges(int side, const char *why)
 {
 	g_aiCharge[side] = TRUE;
-	g_aiChargeAtt[side] = g_aiAttackSince[side] != 0;
+	g_aiChargeAtt[side] = FALSE;         // (the attack branch sets it for a planned charge)
 	for (int h = 1; h < 0x51; h++)
 		if (ai_melee_group(h, side) && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;   // they all think at their next step
 	if (g_blog) blog("ai %s: side %d charges (%s)", kAiLevel[g_aiLevel], side, why);
@@ -9757,7 +9761,8 @@ static void ai_side_charges(int side, const char *why)
 //     enemy (all its units, the player's too) has at least as many men as its side, it falls
 //     back AI_REGROUP_BACK cells behind its side's archers (or straight away from the enemy) and stays there
 //     until the enemy has fewer than AI_REJOIN_PCT percent of the side's men left; then it charges again;
-//   - target (AI_TARGETS, only when the side charged from attack: a defending side fights what came at it):
+//   - target (AI_TARGETS, only when the side charged from attack at a moment it picked, before any contact;
+//     a side made to charge by contact, or a defending side, fights what came at it with the game's chase):
 //     it walks to the enemy group it picked (ai_pick_target) and charges once within
 //     AI_TARGET_REACH cells of it, or at once when an enemy unit is within 2 cells of one of its units or it
 //     is hit; the game's charge then sends each unit at the nearest enemy, which is the target's;
@@ -9790,10 +9795,14 @@ static int ai_group_type(int h)   // the unit type of the group's first live uni
 }
 // The enemy group melee group g goes for: the lowest score of the distance between centres, less 8 for
 // archers (12 for knights going for them), less 6 for a group its type counters and plus 8 for one that
-// counters it (ai_counter), less 4 for one with under half its men, plus 4 for each other group of its side
-// already going for it. Only groups at most AI_TARGET_SLACK cells farther than the nearest one count, so a
-// group never walks across the field past the enemies at hand.
+// counters it (ai_counter), less 4 for one with under half its men, plus AI_TARGET_SPREAD for each other
+// group of its side already going for it; one that AI_TARGET_MAX groups already go for only when every
+// other is taken too, so its melee spreads over your groups instead of all piling on one. Only groups at
+// most AI_TARGET_SLACK cells farther than the nearest one count, so a group never walks across the field
+// past the enemies at hand.
 #define AI_TARGET_SLACK 10
+#define AI_TARGET_SPREAD 10
+#define AI_TARGET_MAX 2
 static int ai_pick_target(int g)
 {
 	int side = GRP_B(g, 0x00), my = ai_group_type(g), myMen = ai_group_men(g), best = 0, bs = 1 << 30, nearest = 1 << 30;
@@ -9812,7 +9821,9 @@ static int ai_pick_target(int g)
 		if (my >= 0 && ai_counter(my, t) > 100) s -= 6;
 		if (my >= 0 && ai_counter(t, my) > 100) s += 8;
 		if (ai_group_men(h) * 2 < myMen) s -= 4;
-		for (int o = 1; o < 0x51; o++) if (o != g && g_aiTarget[o] == h && ai_melee_group(o, side)) s += 4;
+		int others = 0;
+		for (int o = 1; o < 0x51; o++) if (o != g && g_aiTarget[o] == h && ai_melee_group(o, side)) others++;
+		s += others * AI_TARGET_SPREAD + (others >= AI_TARGET_MAX ? 1000 : 0);
 		if (s < bs) { bs = s; best = h; }
 	}
 	return best;
@@ -9905,6 +9916,7 @@ static void ai_melee_think(int g)
 		if (!g_aiReadySince[side] && groups && farthest <= AI_CHARGE_DIST + AI_LINE_SLACK) g_aiReadySince[side] = g_btick + 1;
 		unsigned attacking = g_btick + 1 - g_aiAttackSince[side];
 		char why[64] = "";
+		BOOL planned = !hit && !fighting;   // (no contact yet: the side picks its moment)
 		if (hit && ai_legend(AI_UNDER_FIRE) && units) {
 			// Legendary: shot at from afar, the line keeps closing in; it charges when hit once the enemy is
 			// within AI_FIRE_NEAR of its melee's centre or the side has lost AI_FIRE_LOSS percent of its men
@@ -9920,7 +9932,7 @@ static void ai_melee_think(int g)
 		else if (attacking >= AI_CHARGE_STEPS) snprintf(why, sizeof why, "attacking for %u steps", attacking);
 		else if (g_aiReadySince[side] && (!archers || g_btick + 1 - g_aiReadySince[side] >= AI_VOLLEY_STEPS))
 			snprintf(why, sizeof why, "in place, %d cells away", farthest);
-		if (why[0]) { ai_side_charges(side, why); ai_charge(g); return; }
+		if (why[0]) { ai_side_charges(side, why); g_aiChargeAtt[side] = planned; ai_charge(g); return; }
 		int tx, ty, x, y;
 		if (!units || ai_nearest_enemy_at(side, sx / units, sy / units, &tx, &ty, FALSE) >= 999) return;
 		int d = ai_nearest_enemy_at(side, GRP_S(g, 0x1e), GRP_S(g, 0x20), NULL, NULL, FALSE);

@@ -104,10 +104,11 @@ Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal 
 On Hard, in field battles, the computer picks attack or defence once instead of switching every few
 seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), and moves its
 soldiers up together and charges together. Legendary plays like Hard, and also:
-- when it attacks, its knights ride for your archers and its pikemen for your knights;
+- when it attacks, its knights ride for your archers and its pikemen for your knights, no more than two
+  groups on one of yours;
 - shot at from afar, it keeps closing in instead of charging at once;
 - a beaten group falls back behind its archers while the battle goes badly, and comes back to finish you off;
-- its archers shoot your archers first;
+- its archers shoot your archers first, unless your soldiers are close;
 - a weaker army still attacks after a long wait, instead of waiting for you forever;
 - units counter each other, for both sides: pikemen hit knights twice as hard and knights hit pikemen softer,
   swordsmen are strong against pikemen and maces against knights.

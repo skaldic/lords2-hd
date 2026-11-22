@@ -354,7 +354,7 @@ TEST(ai_hard_melee_in_place_waits_for_the_volleys_then_charges_together)
 	g_btick = 1000 + AI_VOLLEY_STEPS;
 	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_charged[0], 4);
-	CHECK(g_aiCharge[2]);
+	CHECK(g_aiCharge[2]); CHECK(g_aiChargeAtt[2]);                  // (a planned charge: Legendary's targets would run)
 	CHECK_EQ(G_THINK(5), 199);                                      // the pikemen think at their next step...
 	t_ai_think_melee(5);
 	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_charged[0], 5);             // ...and charge too
@@ -391,6 +391,11 @@ TEST(ai_hard_melee_charges_at_once_when_hit_in_attack)
 	GRP_B(2, 0x0c) = 50; GRP_S(2, 0x0a) = 6;                        // its archers are shot at by group 6
 	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]);
+	CHECK(!g_aiChargeAtt[2]);                                       // (made to charge: no target walks)
+	t_ai_battle(1); AI_RATIO = 30; GRP_B(2, 0x0c) = 0;
+	FIG(4)[0x31] = 4;                                               // one of its units fighting: the same
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK(!g_aiChargeAtt[2]);
 }
 
 TEST(ai_hard_defence_holds_until_the_enemy_is_close_or_it_bleeds)
@@ -514,6 +519,21 @@ TEST(ai_legendary_targets_only_within_reach_of_the_nearest_enemies)
 	CHECK_EQ(ai_pick_target(4), 7);
 }
 
+TEST(ai_legendary_targets_spread_at_most_two_groups_on_one)
+{
+	t_ai_battle(2);
+	t_typed(t_unit(4, 2, 40, 40, 4), 4, 30); t_group(4, 2, 2, 1, 40, 40);              // three computer pikemen
+	t_typed(t_unit(5, 2, 40, 42, 5), 4, 30); t_group(5, 2, 2, 1, 40, 42);
+	t_typed(t_unit(9, 2, 40, 44, 9), 4, 30); t_group(9, 2, 2, 1, 40, 44);
+	t_typed(t_human(t_unit(6, 1, 46, 42, 6)), 6, 30); t_group(6, 1, 4, 1, 46, 42);     // your knights, 6 cells away
+	t_typed(t_human(t_unit(7, 1, 50, 42, 7)), 3, 30); t_group(7, 1, 3, 1, 50, 42);     // your swords, 10 (they counter pikes)
+	CHECK_EQ(g_aiTarget[4] = (BYTE)ai_pick_target(4), 6);           // the knights
+	CHECK_EQ(g_aiTarget[5] = (BYTE)ai_pick_target(5), 6);           // a second on them
+	CHECK_EQ(ai_pick_target(9), 7);                                 // the third takes the swords
+	t_unit_at(7, 70, 42); GRP_S(7, 0x1e) = 70;                      // the swords out of reach: nothing else left
+	CHECK_EQ(ai_pick_target(9), 6);
+}
+
 TEST(ai_legendary_group_with_no_men_left_does_nothing)
 {
 	t_ai_battle(2); AI_RATIO = 30;
@@ -559,7 +579,7 @@ TEST(ai_legendary_line_keeps_closing_in_under_fire_from_afar)
 	CHECK_EQ(t_nCharged, 0);
 	t_men(4, 25);                                                   // 11%: it charges
 	t_ai_think_melee(4);
-	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]); CHECK(g_aiChargeAtt[2]);   // (from attack)
+	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]); CHECK(!g_aiChargeAtt[2]);  // (made to charge by the shots)
 	t_ai_battle(2); AI_RATIO = 30; t_men(4, 30); g_aiParts = AI_ALL & ~AI_TARGETS;
 	t_unit_at(4, 39, 40); GRP_S(4, 0x1e) = 39;                      // 11 cells away: hit, it charges
 	GRP_B(2, 0x0c) = 50; GRP_S(2, 0x0a) = 6;
@@ -602,6 +622,10 @@ TEST(ai_legendary_archers_shoot_the_enemy_archers_first)
 	t_human(t_archer(4, 1, 52, 46, 4)); t_group(4, 1, 1, 1, 52, 46);   // your archers 12 away
 	t_ai_think_archers();
 	CHECK_EQ(t_fireAt, 4);
+	t_unit_at(3, 47, 40); GRP_S(3, 0x1e) = 47;                      // your swords 7 cells away: they come first
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 3);
+	t_unit_at(3, 50, 40); GRP_S(3, 0x1e) = 50;
 	t_ai_battle(1);                                                 // Hard: the nearest
 	t_ai_think_archers();
 	CHECK_EQ(t_fireAt, 3);
