@@ -10542,7 +10542,8 @@ static void __cdecl h_ai_ranged(void)   // FUN_0048a9d2, the computer archers' h
 //   swordsmen on pikemen x1.5 (pikemen still ahead, 1.3 to 1), maces on knights x1.5 (good against armour),
 //   knights on the lightly armoured x1.5: peasants, archers and maces (the user's rule: maces hit hard and
 //   die fast; knights against maces about the original 2.7 to 1 again, in shorter fights). Crossbowmen
-//   are armoured: no counter.
+//   are armoured: no counter. Swordsmen on the same soft targets x1.5 too (the user's rule: knights
+//   without the horse).
 // Unit types: 0 peasants, 1 crossbowmen, 2 maces, 3 swords, 4 pikemen, 5 archers, 6 knights.
 static ai_fn_t o_melee_hit;
 static int ai_counter(int by, int on)   // percent of the damage unit type `by` deals to type `on`
@@ -10551,7 +10552,7 @@ static int ai_counter(int by, int on)   // percent of the damage unit type `by` 
 	if (by == 6 && on == 4) return 75;
 	if (by == 3 && on == 4) return 150;
 	if (by == 2 && on == 6) return 150;
-	if (by == 6 && (on == 0 || on == 5 || on == 2)) return 150;
+	if ((by == 6 || by == 3) && (on == 0 || on == 5 || on == 2)) return 150;
 	return 100;
 }
 static void __cdecl h_melee_hit(void)

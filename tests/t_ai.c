@@ -563,6 +563,17 @@ TEST(ai_legendary_knights_stomp_light_units)
 	t_hit(6, 0); CHECK_EQ(t_hitFirst, 300);                         // the knights' own first strike on peasants
 }
 
+TEST(ai_legendary_swordsmen_cut_down_light_units)
+{
+	t_ai_battle(2);
+	t_hit(0, 3); CHECK_EQ(t_hitDmg, 30);                            // peasants hit by swordsmen: x1.5
+	t_hit(5, 3); CHECK_EQ(t_hitDmg, 30);                            // archers
+	t_hit(2, 3); CHECK_EQ(t_hitDmg, 30);                            // maces
+	t_hit(1, 3); CHECK_EQ(t_hitDmg, 20);                            // crossbowmen are armoured: none
+	t_hit(6, 3); CHECK_EQ(t_hitDmg, 20);                            // knights: none
+	t_ai_battle(1); t_hit(0, 3); CHECK_EQ(t_hitDmg, 20);            // Hard: none
+}
+
 TEST(ai_counters_only_on_legendary_in_field_battles)
 {
 	t_ai_battle(1); t_hit(6, 4);                                    // Hard: none
