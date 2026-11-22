@@ -9108,6 +9108,7 @@ static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81]
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked, g_bresync;
 static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
+static int g_bsupport;   // archers' shots turned to back up a fight (h_pick)
 static int g_bshotsBy[3];   // shots in the last second by side
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
@@ -9356,10 +9357,10 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d support %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, tw, cols);
-	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = 0;
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, g_bsupport, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = g_bsupport = 0;
 	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
 	blog("cpu units %.1f ms, searches %.1f ms (in the last second); selected group %d", g_bcpuLoop * 1000.0 / fq.QuadPart,
 		g_bcpuBfs * 1000.0 / fq.QuadPart, *(int *)0x0053e984);
@@ -10683,7 +10684,8 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 // - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
 // - only with the odds: its soldiers near that enemy have at least as many men as the enemy has there and
 //   coming up behind (engage_odds_ok);
-// - one standing next to an obstacle (stakes, stones, water) holds that line: only an enemy beside it;
+// - one whose formation stands next to an obstacle (stakes, stones, water) holds that line: only an enemy
+//   beside it (engage_line_held);
 // - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
 #define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
 #define ENG_RANGE_KNIGHT 4
@@ -10731,6 +10733,28 @@ static BOOL engage_by_obstacle(int x, int y)
 	return FALSE;
 }
 
+// The line is the unit's formation: it holds when it, or any unit of its group joined to it through
+// groupmates no more than 2 cells apart, stands next to an obstacle. So the pikeman beside the one at the
+// stakes holds too, and the formation doesn't break (the user's report).
+static BOOL engage_line_held(int me)
+{
+	int g = FIG_S(me, 0x178), side = FIG(me)[0x2c];
+	BYTE seen[0x51] = { 0 };
+	int q[0x51], head = 0, tail = 0;
+	q[tail++] = me; seen[me] = 1;
+	while (head < tail) {
+		int u = q[head++], ux = FIG_S(u, 0x20), uy = FIG_S(u, 0x22);
+		if (ux >= 0 && ux < 80 && uy >= 0 && uy < 80 && engage_by_obstacle(ux, uy)) return TRUE;
+		for (int k = 1; k < 0x51; k++) {
+			BYTE *t = FIG(k);
+			if (seen[k] || !t[0x2c] || t[0x2c] != side || t[0x31] == 2 || FIG_S(k, 0x178) != g) continue;
+			if (cheb(ux, uy, FIG_S(k, 0x20), FIG_S(k, 0x22)) > 2) continue;
+			seen[k] = 1; q[tail++] = k;
+		}
+	}
+	return FALSE;
+}
+
 // Called from h_idle for an idle unit.
 static void engage_idle(int me)
 {
@@ -10749,7 +10773,7 @@ static void engage_idle(int me)
 	g_eLastIdle[me] = g_btick;
 	engage_forget(me);
 	if ((unsigned)(me + g_btick) % 8) return;
-	BOOL held = engage_by_obstacle(x, y);   // holding a line by stakes, stones or water: only one beside it
+	BOOL held = engage_line_held(me);   // its formation holds a line by stakes, stones or water: only one beside it
 	int range = f[0x12] == 6 ? ENG_RANGE_KNIGHT : ENG_RANGE;
 	int best = 0, bestD = 99;
 	for (int e = 1; e < 0x51; e++) {
@@ -10845,6 +10869,44 @@ static BOOL archer_step_away(int me, int threat, const char *why)
 			return TRUE;
 		}
 	return FALSE;
+}
+
+// Archers back up their soldiers (the user's request). The game's shot (FUN_00483337, the call returning to
+// 0x483491) asks FUN_004956cc(range, unit, 0) for a target: the group's ordered one, else the nearest enemy
+// in range, so they shot at whoever was closest while the fight went on beside them. With no ordered
+// target, an archer or crossbowman now shoots the nearest enemy in range that is fighting one of its side's
+// units (in melee, its opponent one of ours); with none, the game's pick. FUN_004956cc returns in al with
+// the rest of eax left over, so its own result is passed back untouched. Both sides.
+typedef int (__cdecl *pick_t)(int, int, int);
+static pick_t o_pick;
+static int support_target(int me, int range)
+{
+	BYTE *f = FIG(me);
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), best = 0, bd = range + 1;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] != 4 || t[0x12] >= 7) continue;
+		int o = t[0x17e];
+		if (o < 1 || o > 0x50 || FIG(o)[0x2c] != f[0x2c] || FIG(o)[0x31] == 2) continue;   // fighting one of ours
+		int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
+		if (d < bd) { bd = d; best = e; }
+	}
+	return best;
+}
+static int __cdecl h_pick(int range, int me, int only)
+{
+	int r = o_pick(range, me, only);
+	if (__builtin_return_address(0) != (void *)0x00483491 || only || !fix_on(g_fixEngage) || me < 1 || me > 0x50) return r;
+	BYTE *f = FIG(me);
+	int g = FIG_S(me, 0x178);
+	if (!f[0x16a] || (g >= 0 && g < 80 && *(BYTE *)(0x0056654c + g * 0x34))) return r;   // an ordered target stays
+	int e = support_target(me, range);
+	if (!e) return r;
+	if (g_blog && g_battleLog >= 1 && f[0x174] != e)
+		blog("support fig %d (side %d) shoots enemy %d, fighting fig %d", me, f[0x2c], e, FIG(e)[0x17e]);
+	*(DWORD *)0x0052eff4 = (DWORD)e;
+	g_bsupport++;
+	return 1;
 }
 
 // State 4 (melee) for an archer or crossbowman: once a friendly soldier stands beside its enemy and can
@@ -11703,6 +11765,8 @@ static void install_game_fixes(void)
 			static const BYTE kMelee[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
 			meleeOk = hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee);
 			logf_("archers leaving melee %s", meleeOk ? "on" : "failed");
+			static const BYTE kPick[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };   // push ebp; mov ebp,esp; sub esp,10h
+			logf_("archers backing up a fight %s", hook_code((BYTE *)0x004956cc, kPick, sizeof kPick, h_pick, &o_pick) ? "on" : "failed");
 		}
 	}
 	// (F10, Battles) each fix's choice as read, and whether it can be switched on without a restart: only

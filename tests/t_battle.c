@@ -311,6 +311,34 @@ TEST(engage_holds_the_line_next_to_an_obstacle)
 	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
 }
 
+TEST(engage_the_whole_formation_holds_by_an_obstacle)
+{
+	t_unit(10, 1, 20, 20, 2);                                       // a pikeman beside the stakes...
+	t_flags(19, 21, 19, 21, FL_BLOCKED);
+	t_unit(8, 1, 21, 20, 2);                                        // ...and its neighbour in the open
+	t_unit(9, 2, 24, 20, 3);                                        // an enemy 3 cells from the neighbour
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // the formation holds
+	FIG_S(10, 0x178) = 4; FIG_S(8, 0x178) = 2;                      // the one at the stakes in another group
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);                               // nothing holds this one
+	BCELL(19, 21)[1] = 0;
+}
+
+TEST(archers_back_up_a_fight_of_their_side)
+{
+	t_archer(8, 1, 20, 20, 2);
+	t_unit(9, 2, 23, 20, 3);                                        // the nearest enemy, standing
+	t_unit(10, 2, 26, 20, 4); FIG(10)[0x31] = ST_MELEE;             // fighting our pikeman 11
+	t_unit(11, 1, 27, 20, 5); FIG(11)[0x31] = ST_MELEE;
+	FIG(10)[0x17e] = 11; FIG(11)[0x17e] = 10;
+	CHECK_EQ(support_target(8, 8), 10);                             // it shoots the one fighting ours
+	CHECK_EQ(support_target(8, 5), 0);                              // out of range: the game's pick
+	FIG(10)[0x17e] = 9;                                             // in a fight, but not with one of ours
+	CHECK_EQ(support_target(8, 8), 0);
+}
+
 TEST(engage_counts_the_column_behind_the_first_enemy)
 {
 	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // two of our pikemen at a gap, 60 men
@@ -819,6 +847,7 @@ static const struct { DWORD at; BYTE code[6]; } kFixSites[] = {
 	{ 0x004831d8, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } }, { 0x0047fc01, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } },
 	{ 0x0048a9d2, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 } }, { 0x0048acd2, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
 	{ 0x0048b02b, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } }, { 0x00494908, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } },
+	{ 0x004956cc, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } },
 };
 /* Runs the patch's start-up of the game fixes on fake code: every site but `missing` (0 = none) as expected. */
 static void t_install_fixes(DWORD missing, const char *ini)
