@@ -9324,6 +9324,7 @@ static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked, g_bresync;
 static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
 static int g_bsupport;   // archers' shots turned to back up a fight (h_pick)
+static int g_bfire;      // computer units sent out of burning oil (fire_step)
 static int g_bshotsBy[3];   // shots in the last second by side
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
@@ -9572,10 +9573,10 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d support %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d support %d fire %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, g_bsupport, tw, cols);
-	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = g_bsupport = 0;
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, g_bsupport, g_bfire, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = g_bsupport = g_bfire = 0;
 	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
 	blog("cpu units %.1f ms, searches %.1f ms (in the last second); selected group %d", g_bcpuLoop * 1000.0 / fq.QuadPart,
 		g_bcpuBfs * 1000.0 / fq.QuadPart, *(int *)0x0053e984);
@@ -11495,9 +11496,127 @@ static BOOL engage_chase(int me)
 	return FALSE;
 }
 
+// ---------------------------------------------------------------------------------------------
+// The computer's soldiers step out of burning oil (BattleAI Hard and Legendary; the user's siege report: they
+// stood in it like sheep and burned alive). Oil poured from a wall (FUN_0047a814) sets the cell it hits and the
+// four beside it burning for about 7 s (FUN_00485675: cell type 10, the old type put back after; spreading fire
+// 0x10, 0x11), and each step every unit standing on a burning cell loses men (FUN_004822ed calls FUN_0049459a).
+// Nothing in the game moved them: they kept waiting or chasing the men on the wall. Now, each step:
+// - a computer unit standing in fire (waiting, walking, fighting, idle, after a fight or chasing; not one just
+//   walking through it) walks to the nearest free cell out of it within FIRE_LOOK steps, one not beside the
+//   fire when that's not much further;
+// - while that fire burns, it doesn't walk back in: a walk into the fire is turned back to where it went, and
+//   one whose next step (towards its target or destination) is into the fire stops there.
+// Your units are left to you; siege engines stay. In sieges too (the rest of BattleAI stays out of them).
+#define FIRE_LOOK 5        // cells searched for a way out
+#define FIRE_PASSING 40    // a walking unit that changed cell within this many steps is passing through
+static BYTE g_fHold[81];
+static short g_fX[81], g_fY[81], g_fLX[81], g_fLY[81];
+static unsigned g_fSince[81], g_fLogNext[81];
+
+static BOOL fire_on(void) { return g_aiLevel >= 1 && fix_on(TRUE); }
+static BOOL fire_at(int x, int y)
+{
+	if (x < 0 || x > 79 || y < 0 || y > 79) return FALSE;
+	BYTE t = BCELL(x, y)[7];
+	return t == 10 || t == 0x10 || t == 0x11;
+}
+static BOOL fire_near(int x, int y, int r)
+{
+	for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) if (fire_at(x + dx, y + dy)) return TRUE;
+	return FALSE;
+}
+
+// The nearest free cell out of the fire that unit me can walk to within FIRE_LOOK steps, not one another unit
+// is heading for; a cell beside the fire counts 1.5 steps further. FALSE when it's boxed in.
+static BOOL fire_way_out(int me, int *ox, int *oy)
+{
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), best = 0x7fffffff;
+	g_dmMaxDepth = FIRE_LOOK;
+	dm_from(me, -1);
+	g_dmMaxDepth = 0x7fff;
+	for (int vy = y - FIRE_LOOK; vy <= y + FIRE_LOOK; vy++) for (int vx = x - FIRE_LOOK; vx <= x + FIRE_LOOK; vx++) {
+		if (vx < 1 || vx > 78 || vy < 1 || vy > 78 || fire_at(vx, vy)) continue;
+		int d = g_dscratch[vy * 80 + vx];
+		if (d == 0xffff) continue;
+		BYTE *c = BCELL(vx, vy);
+		if (c[5] || (c[1] & (0x90 | 0x40 | 0x08 | 0x20))) continue;
+		BOOL taken = FALSE;
+		for (int k = 1; k < 0x51 && !taken; k++)
+			if (k != me && FIG(k)[0x2c] && FIG(k)[0x31] != 2 && FIG_S(k, 0x24) == vx && FIG_S(k, 0x26) == vy) taken = TRUE;
+		if (taken) continue;
+		int s = d * 4 + (fire_near(vx, vy, 1) ? 6 : 0);
+		if (s < best) { best = s; *ox = vx; *oy = vy; }
+	}
+	return best != 0x7fffffff;
+}
+
+static void fire_send(int me, int x, int y)
+{
+	BYTE *f = FIG(me);
+	FIG_S(me, 0x24) = (short)x; FIG_S(me, 0x26) = (short)y;
+	f[0x164] = 0; f[0x174] = 0;
+	f[0x31] = 3;
+}
+
+static BOOL fire_log_ok(int me)
+{
+	if (!g_blog || g_battleLog < 1 || g_btick < g_fLogNext[me]) return FALSE;
+	g_fLogNext[me] = g_btick + 82;
+	return TRUE;
+}
+
+static void fire_step(void)
+{
+	if (!fire_on()) return;
+	for (int me = 1; me < 0x51; me++) {
+		BYTE *f = FIG(me);
+		if (!f[0x2c] || f[0x13] || f[0x31] == 2 || f[0x12] >= 7) { g_fHold[me] = 0; continue; }
+		int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), st = f[0x31];
+		if (x < 0 || x > 79 || y < 0 || y > 79) continue;
+		if (x != g_fLX[me] || y != g_fLY[me]) { g_fLX[me] = (short)x; g_fLY[me] = (short)y; g_fSince[me] = g_btick; }
+		int dx = FIG_S(me, 0x24), dy = FIG_S(me, 0x26);
+		if (fire_at(x, y)) {
+			if (st == 3 && g_fHold[me] && dx == g_fX[me] && dy == g_fY[me]) continue;              // on its way out
+			if (st == 3 && !fire_at(dx, dy) && g_btick - g_fSince[me] < FIRE_PASSING) continue;   // walking through
+			if (st != 1 && st != 3 && st != 4 && st != 5 && st != 7 && st != 8) {
+				if (fire_log_ok(me)) blog("burn fig %d (side %d) stays in the fire at %d,%d: state %d", me, f[0x2c], x, y, st);
+				continue;
+			}
+			int nx, ny;
+			if (!fire_way_out(me, &nx, &ny)) {
+				if (fire_log_ok(me)) blog("burn fig %d (side %d, state %d) boxed in at %d,%d", me, f[0x2c], st, x, y);
+				continue;
+			}
+			fire_send(me, nx, ny);
+			g_fHold[me] = 1; g_fX[me] = (short)nx; g_fY[me] = (short)ny;
+			g_bfire++;
+			if (g_blog && g_battleLog >= 1) blog("burn fig %d (side %d, state %d) steps out of the fire: %d,%d -> %d,%d", me, f[0x2c], st, x, y, nx, ny);
+			continue;
+		}
+		if (!g_fHold[me]) continue;
+		if (!fire_near(g_fX[me], g_fY[me], 2) && !fire_near(x, y, 2)) { g_fHold[me] = 0; continue; }   // burnt out: free again
+		if (st == 3 && fire_at(dx, dy)) {
+			fire_send(me, g_fX[me], g_fY[me]);
+			if (fire_log_ok(me)) blog("burn fig %d (side %d) kept out of the fire: %d,%d -> back to %d,%d", me, f[0x2c], dx, dy, g_fX[me], g_fY[me]);
+			continue;
+		}
+		if (st != 1 && st != 3 && st != 8) continue;
+		int tx = dx, ty = dy, t = f[0x174];
+		if (st == 8 && t >= 1 && t <= 0x50 && FIG(t)[0x2c]) { tx = FIG_S(t, 0x20); ty = FIG_S(t, 0x22); }
+		if (tx == x && ty == y) continue;
+		if (fire_at(x + (tx > x) - (tx < x), y + (ty > y) - (ty < y))) {
+			fire_send(me, x, y);
+			if (fire_log_ok(me)) blog("burn fig %d (side %d, state %d) stops beside the fire at %d,%d", me, f[0x2c], st, x, y);
+		}
+	}
+}
+
 static void battle_reset(void)
 {
 	g_btick = 0;
+	memset(g_fHold, 0, sizeof g_fHold); memset(g_fLogNext, 0, sizeof g_fLogNext); g_bfire = 0;
+	memset(g_fLX, -1, sizeof g_fLX); memset(g_fLY, -1, sizeof g_fLY);
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
 	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
 	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiChargeAtt, 0, sizeof g_aiChargeAtt); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
@@ -11545,6 +11664,7 @@ static void __cdecl h_fig_loop(void)
 	QueryPerformanceCounter(&c0);
 	g_dmFullThisStep = 0;
 	if (fix_on(g_fixGroupMove)) gr_step();
+	fire_step();
 	o_fig_loop();
 	QueryPerformanceCounter(&c1);
 	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
