@@ -164,7 +164,7 @@ static void __cdecl t_weigh(void)
 /* a new field battle in single player at `level`, with its hooks in */
 static void t_ai_battle(int level)
 {
-	g_aiOk = TRUE; g_aiLevelSet = level; g_aiParts = 7;
+	g_aiOk = TRUE; g_aiLevelSet = level; g_aiParts = AI_ALL;
 	*(int *)0x0053e8fc = 0; *(int *)0x00553030 = 0;
 	AI_THRESHOLD = 5;
 	o_strength = t_weigh;
@@ -401,6 +401,157 @@ TEST(ai_hard_melee_normal_runs_the_games_handlers)
 	t_ai_battle(1); g_aiParts = AI_STEADY | AI_ARCHERS;
 	t_ai_think_melee(4);
 	CHECK_EQ(t_calls, 1); CHECK_EQ(G_THINK(4), 200);
+}
+
+/* ================================ enemy tactics: Legendary's unit counters */
+
+/* the game's melee hit stand-in: records the opponent's damage and the current unit's first strike it sees */
+static int t_hitDmg, t_hitFirst;
+static void __cdecl t_melee_hit(void) { t_calls++; t_hitDmg = FIG_S(*(int *)0x0052eff4, 0x19c); t_hitFirst = FIG_S(FIG_CUR, 0x198); }
+/* unit `me` (type mt) is hit by `opp` (type ot): damage 20, first strike 200 each; returns what the game saw */
+static void t_hit(int mt, int ot)
+{
+	t_unit(1, 2, 40, 40, 1); FIG(1)[0x12] = (BYTE)mt; FIG_S(1, 0x19c) = 20; FIG_S(1, 0x198) = 200;
+	t_unit(2, 1, 41, 40, 2); FIG(2)[0x12] = (BYTE)ot; FIG_S(2, 0x19c) = 20; FIG_S(2, 0x198) = 200;
+	FIG_CUR = 1; *(int *)0x0052eff4 = 2;
+	o_melee_hit = t_melee_hit; t_calls = 0; t_hitDmg = t_hitFirst = -1;
+	h_melee_hit();
+}
+
+TEST(ai_legendary_counters_scale_the_pair_and_put_it_back)
+{
+	t_ai_battle(2);
+	t_hit(6, 4);                                                    // knights hit by pikemen
+	CHECK_EQ(t_calls, 1); CHECK_EQ(t_hitDmg, 40); CHECK_EQ(t_hitFirst, 150);   // pikes x2 on them, their first strike x0.75
+	CHECK_EQ(FIG_S(2, 0x19c), 20); CHECK_EQ(FIG_S(1, 0x198), 200);  // both put back
+	t_hit(4, 6);                                                    // pikemen hit by knights
+	CHECK_EQ(t_hitDmg, 15); CHECK_EQ(t_hitFirst, 400);
+	t_hit(4, 3);                                                    // pikemen hit by swordsmen
+	CHECK_EQ(t_hitDmg, 30); CHECK_EQ(t_hitFirst, 200);
+	t_hit(6, 2);                                                    // knights hit by maces
+	CHECK_EQ(t_hitDmg, 30); CHECK_EQ(t_hitFirst, 200);
+	t_hit(3, 6);                                                    // no counter: as the game has it
+	CHECK_EQ(t_hitDmg, 20); CHECK_EQ(t_hitFirst, 200);
+	t_hit(5, 4); CHECK_EQ(t_hitDmg, 20);
+}
+
+TEST(ai_counters_only_on_legendary_in_field_battles)
+{
+	t_ai_battle(1); t_hit(6, 4);                                    // Hard: none
+	CHECK_EQ(t_calls, 1); CHECK_EQ(t_hitDmg, 20); CHECK_EQ(t_hitFirst, 200);
+	t_ai_battle(0); t_hit(6, 4); CHECK_EQ(t_hitDmg, 20);            // Normal
+	t_ai_battle(2); *(int *)0x0053e8fc = 1; t_hit(6, 4);            // a siege
+	CHECK_EQ(t_hitDmg, 20);
+	t_ai_battle(2); *(int *)0x00553030 = 1; g_mpFixes = FALSE; t_hit(6, 4);   // multiplayer without MultiplayerFixes
+	CHECK_EQ(t_hitDmg, 20);
+	g_mpFixes = TRUE; t_hit(6, 4); CHECK_EQ(t_hitDmg, 40);          // with them (every player on Legendary)
+	g_mpFixes = FALSE; *(int *)0x00553030 = 0;
+	t_ai_battle(2); g_aiParts = AI_ALL & ~AI_COUNTERS; t_hit(6, 4);   // switched off for measuring
+	CHECK_EQ(t_hitDmg, 20);
+	t_ai_battle(2); t_hit(6, 4); FIG(2)[0x12] = 8;                  // a siege engine: left alone
+	t_calls = 0; h_melee_hit(); CHECK_EQ(t_calls, 1); CHECK_EQ(t_hitDmg, 20);
+}
+
+/* ================================ enemy tactics: Legendary's tactics */
+
+static BYTE *t_typed(BYTE *f, int type, int men) { f[0x12] = (BYTE)type; FIG_S((int)((f - FIG(0)) / 0x1b0), 0x1a0) = (short)men; return f; }
+
+TEST(ai_legendary_knights_go_for_the_archers_and_pikemen_for_the_knights)
+{
+	t_ai_battle(2);
+	t_typed(t_unit(4, 2, 40, 40, 4), 6, 30); t_group(4, 2, 4, 1, 40, 40);              // computer knights
+	t_typed(t_unit(5, 2, 40, 50, 5), 4, 30); t_group(5, 2, 2, 1, 40, 50);              // computer pikemen
+	t_typed(t_human(t_unit(6, 1, 50, 40, 6)), 3, 30); t_group(6, 1, 3, 1, 50, 40);     // your swords, 10 cells from the knights
+	t_typed(t_human(t_archer(7, 1, 58, 44, 7)), 5, 30); t_group(7, 1, 1, 1, 58, 44);   // your archers, 18 cells away
+	t_typed(t_human(t_unit(8, 1, 52, 50, 8)), 6, 30); t_group(8, 1, 4, 1, 52, 50);     // your knights, 12 from the pikemen
+	CHECK_EQ(ai_pick_target(4), 7);                                 // the knights ride for the archers
+	CHECK_EQ(ai_pick_target(5), 8);                                 // the pikemen for the knights (not the swords, 10 away)
+	g_aiCharge[2] = TRUE; AI_RATIO = 30;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 4); CHECK_EQ(t_ordX, 58); CHECK_EQ(t_ordY, 44);   // walks to its target
+	CHECK_EQ(g_aiTarget[4], 7);
+	GRP_S(4, 0x1e) = 55; GRP_S(4, 0x20) = 43; t_unit_at(4, 55, 43);  // within reach
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharged[4]);                 // the game's charge
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);                   // and stays with it
+}
+
+TEST(ai_legendary_target_walk_charges_at_once_when_engaged_and_hard_has_none)
+{
+	t_ai_battle(2);
+	t_typed(t_unit(4, 2, 40, 40, 4), 6, 30); t_group(4, 2, 4, 1, 40, 40);
+	t_typed(t_human(t_archer(7, 1, 60, 40, 7)), 5, 30); t_group(7, 1, 1, 1, 60, 40);
+	t_typed(t_human(t_unit(6, 1, 42, 40, 6)), 4, 30); t_group(6, 1, 2, 1, 42, 40);     // pikemen 2 cells away
+	CHECK_EQ(ai_pick_target(4), 7);                                 // (pikes counter knights: it goes for the archers)
+	g_aiCharge[2] = TRUE; AI_RATIO = 30;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);                   // engaged on the way: charges where it is
+	t_ai_battle(1);                                                 // Hard: the game's charge straight away
+	t_unit_at(6, 70, 70); GRP_S(6, 0x1e) = 70; GRP_S(6, 0x20) = 70;
+	g_aiCharge[2] = TRUE; AI_RATIO = 30;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);
+}
+
+TEST(ai_legendary_line_keeps_closing_in_under_fire_from_afar)
+{
+	t_ai_battle(2); AI_RATIO = 30; g_aiParts = AI_ALL & ~AI_TARGETS;   // (the charge itself without target picks)
+	t_typed(t_unit(4, 2, 20, 40, 4), 3, 30); t_group(4, 2, 3, 1, 20, 40);
+	t_typed(t_human(t_unit(6, 1, 50, 40, 6)), 5, 30); t_group(6, 1, 1, 1, 50, 40);
+	t_bow(1, 2, 18, 40, 2, 15); t_men(1, 15); t_group(2, 2, 1, 1, 18, 40);   // the side: 45 men
+	GRP_B(2, 0x0c) = 50; GRP_S(2, 0x0a) = 6;                        // shot at by group 6, 30 cells away
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 4);                   // no charge: it advances
+	CHECK(!g_aiCharge[2]);
+	t_men(4, 26);                                                   // lost 4 of 45 men (9%): still advancing
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);
+	t_men(4, 25);                                                   // 11%: it charges
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]);
+	t_ai_battle(2); AI_RATIO = 30; t_men(4, 30); g_aiParts = AI_ALL & ~AI_TARGETS;
+	t_unit_at(4, 39, 40); GRP_S(4, 0x1e) = 39;                      // 11 cells away: hit, it charges
+	GRP_B(2, 0x0c) = 50; GRP_S(2, 0x0a) = 6;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
+}
+
+TEST(ai_legendary_beaten_group_falls_back_and_rejoins_when_the_enemy_is_spent)
+{
+	t_ai_battle(2); AI_RATIO = 30; g_aiParts = AI_ALL & ~AI_TARGETS;
+	t_typed(t_unit(4, 2, 40, 40, 4), 3, 40); t_group(4, 2, 3, 1, 40, 40);              // swords, 40 men
+	t_typed(t_unit(5, 2, 40, 44, 5), 3, 60); t_group(5, 2, 3, 1, 40, 44);
+	t_bow(1, 2, 30, 40, 2, 15); t_men(1, 30); t_group(2, 2, 1, 1, 30, 40);             // archers at 30,40
+	t_typed(t_human(t_unit(6, 1, 46, 40, 6)), 3, 100); t_group(6, 1, 3, 1, 46, 40);
+	g_aiCharge[2] = TRUE;
+	t_ai_think_melee(4);                                            // (its men counted: 40)
+	CHECK_EQ(t_nCharged, 1);
+	t_men(4, 13);                                                   // down to 32%
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 4);
+	CHECK_EQ(t_ordX, 26); CHECK_EQ(t_ordY, 40);                     // 4 cells behind its archers
+	CHECK_EQ(g_aiBack[4], 1);
+	t_men(6, 42);                                                   // the enemy (your men count) down to 42 of the side's 103
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);
+	t_men(6, 41);                                                   // 41: under 40%
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(g_aiBack[4], 2);              // rejoins the fight
+}
+
+TEST(ai_legendary_archers_shoot_the_enemy_archers_first)
+{
+	t_ai_battle(2);
+	t_bow(1, 2, 40, 40, 2, 15); t_group(2, 2, 1, 1, 40, 40);
+	t_unit(5, 2, 44, 40, 5); t_group(5, 2, 3, 1, 44, 40);           // its own melee in front: covered
+	t_human(t_unit(3, 1, 50, 40, 3)); t_group(3, 1, 3, 1, 50, 40);  // your swords 10 cells away
+	t_human(t_archer(4, 1, 52, 46, 4)); t_group(4, 1, 1, 1, 52, 46);   // your archers 12 away
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 4);
+	t_ai_battle(1);                                                 // Hard: the nearest
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 3);
 }
 
 TEST(ai_hard_archers_wait_while_a_member_fights_and_normal_runs_the_game)

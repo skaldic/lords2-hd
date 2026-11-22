@@ -1,6 +1,6 @@
 # Tests
 
-Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 112 tests in about 7 seconds. They need only the compiler
+Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 119 tests in about 8 seconds. They need only the compiler
 that builds the patch (llvm-mingw, 32-bit). The five hook tests also need a copy of the game's exe.
 
 ```powershell
@@ -25,7 +25,13 @@ tests\run.ps1 -GameExe "D:\L2HD-test\Lords of the Realm II\Lords2.exe" -Integrat
   (the custom battle screen's advantage arrows: computer stronger, even, weaker), seeded and hidden. Per battle it
   prints how often the computer switched between attack and defence, its charges, the first contact, the seconds its
   archers stood isolated or in melee, each side's shots, and the men left on each side. `-Ini Game.BattleAI=1`
-  plays Hard; `Debug.AiParts=1/2/4` runs only one of its rules (steady mode, archers, melee).
+  plays Hard and `Game.BattleAI=2` Legendary; `Debug.AiParts` (a sum of 1 steady mode, 2 archers, 4 melee, 8 unit
+  counters, 16 target picks, 32 advancing under fire, 64 regrouping, 128 the archers' target) runs only those rules.
+  - `-Roles cpuatt,cpudef`: the computer attacks (you defend, the screen's default) or defends; `-Players
+    stand,charge`: you stand, or Mop-Up at the start; maps include the sieges `palisade`, `acre` and `keep`.
+  - Battles end at a wall-clock cut, so under load they reach different battle seconds: `-Logs <saved logs>
+    -AtSec 150` summarises saved battle logs at one battle second, playing nothing. Compare two runs of the same
+    battle second by second over the seconds both have, not by their last hash.
 
 Set `L2HD_TOOLS` to the tools folder if llvm-mingw is not on PATH (as for `hd\build.ps1`). Output goes to
 `tests\out` (not in git). A failing run keeps its temp folder and prints where the patch's log of the run is.
@@ -36,7 +42,7 @@ Set `L2HD_TOOLS` to the tools folder if llvm-mingw is not on PATH (as for `hd\bu
 |---|---|
 | `t_core.c` | the memory guard, the art pack, the upscalers, HD video frames, WAV files and the music cut, CRC-32 |
 | `t_battle.c` | walking distances, Mop-Up, engagement, archers, group routes, the jitter fixes, the battle minimap, the F10 Battles switches |
-| `t_ai.c` | the battle log's computer AI lines (each group's decisions, the archers' cover count); enemy tactics on Hard: the steady mode, the archers, the melee advancing and charging together |
+| `t_ai.c` | the battle log's computer AI lines (each group's decisions, the archers' cover count); enemy tactics on Hard: the steady mode, the archers, the melee advancing and charging together; on Legendary: the unit counters, target picks, advancing under fire, regrouping, the archers' target |
 | `t_campaign.c` | the wheat, castle cap and besieged castle fixes |
 | `t_settings.c` | the code's defaults and the shipped ini; F10 changes saved and read back; the README's F10 table |
 | `t_input.c` | the scroll keys (WASD, arrow keys), A in battles, frame copy numbering, the half-drawn guard, moved windows |
