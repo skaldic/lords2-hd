@@ -2,7 +2,7 @@
 
 Nov 22, 2026 · @Skaldic
 
-Every battle rule the HD patch adds on the v1.6.0 line (pushed as b3d1fff), with its numbers, so we can agree what each unit should do before changing more. Each rule names its setting and whose units it moves.
+Every battle rule the HD patch adds on the v1.6.0 line (pushed up to 8586885), with its numbers, so we can agree what each unit should do before changing more. Each rule names its setting and whose units it moves.
 
 ## How to read this
 
@@ -87,18 +87,18 @@ An idle soldier now steps out to a close enemy, but never far and never into bad
 
 ## Chasing (MopUpFix)
 
-A charging unit picks the nearest enemy it can walk to and keeps chasing until the battle ends. The weak spot is that a far target is never swapped for a near one. Both sides follow these rules, the computer's charges included.
+A charging unit picks the nearest enemy it can walk to and keeps chasing until the battle ends. Only knights and macemen go a long way round for a target; slower units take the enemy at hand. Both sides follow these rules, the computer's charges included.
 
 | Rule | What it does | Numbers |
 | --- | --- | --- |
 | Next target | A unit whose target falls goes after the nearest enemy instead of standing idle. | — |
 | Pick by walking | Nearest by walking distance; not one on a wall, across water or a level up. Archers still count at half distance, and each unit already on a target makes it count 2 cells further (both from the original). | Up to 4 walking searches per step; past that, the game's own pick by straight distance |
 | Give up | A target it can't reach, or a close one it isn't getting to, is dropped and avoided. | Close = a walk of 6 or less, no closer for 2 s (2 or less: 1 s); avoided for 4 s |
-| Far targets | A far target that keeps its distance is still chased. | No limit |
+| Far targets | Knights and macemen may go round for a target. Slower units drop a target that is too far round, checked while they chase, and take a closer one within their limit; with none, they keep the nearest (built 65761eb). | Knights and macemen: a walk up to 60. Others: up to twice the straight line plus 10 |
 | Back to chasing | An idle unit of a charging group starts chasing again. | Every 16 steps |
 | Your orders | A box selection keeps the charge; your move or attack order ends it, so the group obeys. | — |
 
-**OK?** In the last battle the computer charged and 20 of its 24 units got the game's straight-distance pick. All 24 went for your archers and crossbowmen behind the water, on walks of 105 to 124 cells, past your peasants. Proposal for the computer (Hard and Legendary): drop a target whose walk is more than twice the straight line plus 10, and swap a far target for an enemy much closer by walking. Same for your units on Mop-Up, or the computer only?
+**Decided and built (65761eb):** in the river battle all 24 of the computer's melee units went for your archers and crossbowmen behind the water, on walks of 105 to 124 cells, past your peasants. Now only knights and macemen may go round like that (up to a 60-cell walk); peasants, archers, crossbowmen, swordsmen and pikemen take an enemy within twice the straight line plus 10. Both sides, your Mop-Up units too.
 
 ## Computer tactics: Hard (BattleAI=1)
 
@@ -131,7 +131,7 @@ Legendary is every Hard rule plus six more. Only the unit counters touch your un
 
 | Rule | What it does | Numbers |
 | --- | --- | --- |
-| Unit counters (both sides) | Damage between some unit pairs in melee is scaled. | Pikes on knights ×2; knights on pikes ×0.75; swords on pikes ×1.5; maces on knights ×1.5; knights on peasants, archers and maces ×1.5 |
+| Unit counters (both sides) | Damage between some unit pairs in melee is scaled. | Pikes on knights ×2; knights on pikes ×0.75; swords on pikes ×1.5; maces on knights ×1.5; knights and swords on peasants, archers and maces ×1.5 |
 | Target picks | When it charges at a moment it chose, each melee group goes for one of your groups: archers first, then ones it counters, then weakened ones. Not after a charge set off by hits or contact. | At most 2 groups per target; only targets within 10 cells more than the nearest; charges within 4 cells |
 | Closing in under fire | Shot at from afar, the line keeps advancing instead of charging at the first hit. | Charges within 12 cells, or after losing 10% of its men |
 | Regrouping | A badly beaten group falls back behind its archers while its side is losing; it rejoins when you're worn down. | Down to 35% of its men; 4 cells behind; rejoins when you have under 40% of its side's men |
@@ -142,19 +142,21 @@ Legendary is every Hard rule plus six more. Only the unit counters touch your un
 
 **Added at your request (e37906e): knights stomp the lightly armoured.** Knights deal ×1.5 to peasants, archers and macemen. Macemen keep their ×1.5 on knights, so they hit hard and fall fast. Pikemen stay the anti-knight unit. Crossbowmen are armoured, so they get no counter.
 
+**Added at your request: swordsmen cut down the lightly armoured too** ("knights without the steed"). Swordsmen deal ×1.5 to peasants, archers and macemen, on top of their ×1.5 on pikemen. Crossbowmen and knights get no counter from them.
+
 ## Unit types
 
 Only knights and the two ranged types differ in the rules above; the four foot soldier types differ only by the Legendary counters.
 
 | Unit | Steps out to (idle) | Shooting range | Legendary counters | Notes |
 | --- | --- | --- | --- | --- |
-| Peasants | 3 cells (5 for your archers) | — | Take ×1.5 from knights | Grouped with pikemen by the computer's handler; faster than swordsmen and pikemen, so they arrived first when a charge started far away. |
+| Peasants | 3 cells (5 for your archers) | — | Take ×1.5 from knights and swordsmen | Grouped with pikemen by the computer's handler; faster than swordsmen and pikemen, so they arrived first when a charge started far away. |
 | Pikemen | 3 cells (5 for your archers) | — | Deal ×2 to knights; take ×0.75 from knights | The anti-knight unit; toughest foot unit in the original game. |
-| Swordsmen | 3 cells (5 for your archers) | — | Deal ×1.5 to pikemen | — |
-| Macemen | 3 cells (5 for your archers) | — | Deal ×1.5 to knights; take ×1.5 from knights | Fast, good against armour, poorly armoured: hit hard and fall fast. |
+| Swordsmen | 3 cells (5 for your archers) | — | Deal ×1.5 to pikemen, peasants, archers and maces | Knights without the horse: hit soft targets hard. |
+| Macemen | 3 cells (5 for your archers) | — | Deal ×1.5 to knights; take ×1.5 from knights and swordsmen | Fast, good against armour, poorly armoured: hit hard and fall fast. |
 | Knights | 4 cells (5 for your archers) | — | Take ×2 from pikes, ×1.5 from maces; deal ×0.75 to pikes, ×1.5 to peasants, archers and maces | — |
 | Crossbowmen | never | 8 cells | none (armoured) | Strong shot (power 200). Count at half distance as a chase target. Step back, never chase after a fight. |
-| Archers | never | 15 cells | Take ×1.5 from knights | Weak shot (power 50). Same half distance, step back and no chase as crossbowmen. |
+| Archers | never | 15 cells | Take ×1.5 from knights and swordsmen | Weak shot (power 50). Same half distance, step back and no chase as crossbowmen. |
 
 ## Problems seen in your battles
 
