@@ -590,7 +590,7 @@ TEST(moved_window_moves_only_its_own_rows)
 	int off = g_off, snap = g_snapW;
 	g_off = 600; g_snapW = TW_SW; g_winLockS = 0; g_winLeftT = 0;
 	t_window_scene(TRUE, TRUE, FALSE);
-	window_shift(2, 0, TW_SW);   // the Town Center (screen 2)
+	window_shift(2, 0, TW_SW, NULL);   // the Town Center (screen 2)
 	int s = g_winShift;
 	REQUIRE(s > 2);
 	CHECK_EQ(s, (850 + 1050) / 2 - (600 + 478) / 2);    // the box's middle onto the middle of the map on screen
@@ -610,18 +610,53 @@ TEST(moved_window_after_closing_only_while_still_there)
 	int off = g_off, snap = g_snapW;
 	g_off = 600; g_snapW = TW_SW; g_winLockS = 0; g_winLeftT = 0;
 	t_window_scene(TRUE, FALSE, FALSE);
-	window_shift(2, 0, TW_SW);                           // up: moved, its box remembered
+	window_shift(2, 0, TW_SW, NULL);                           // up: moved, its box remembered
 	int s = g_winShift;
 	REQUIRE(s > 2);
 	g_winLeftT = GetTickCount();                         // then closed with a right-click
 	t_window_scene(TRUE, FALSE, FALSE);                  // the game's frame still holds it
-	window_shift(0, 0, TW_SW);
+	window_shift(0, 0, TW_SW, NULL);
 	CHECK_EQ(g_winShift, s);
 	CHECK_EQ(TW_PX(900 - s, 120), TW_WIN);
 	t_window_scene(FALSE, FALSE, TRUE);                  // the map redrawn; only a flag waving
-	window_shift(0, 0, TW_SW);
+	window_shift(0, 0, TW_SW, NULL);
 	CHECK_EQ(g_winShift, 0);
 	CHECK_EQ(g_snapW, 0);
 	CHECK_EQ(TW_PX(300, 45), 0x00ee00);                  // the flag where it is
+	g_off = off; g_snapW = snap; g_winLockS = 0; g_winLeftT = 0;
+}
+
+/* The county map zoomed out with a window over it (the Town Center, a field's box): the window as the game drew it,
+ * moved to the middle as ever, and the zoomed-out map round it and where it was - not the kept map at normal size. */
+TEST(county_zoom_window_keeps_the_zoomed_map_round_it)
+{
+	int off = g_off, snap = g_snapW; BOOL tiles = g_showTiles; DWORD lut7 = g_lut[7]; Surface *back = g_back;
+	static Surface sb;
+	sb.pitch = 2300; g_back = &sb;
+	cz_buf v = { 0 };
+	v.w = 2 * (600 + PANEL_X); v.h = 2 * (GAME_H - 24); v.sw = TW_SW;    // the field: frame columns 0 .. game x PANEL_X
+	REQUIRE((v.pix = malloc((size_t)sb.pitch * (CZ_M + 24 + v.h + CZ_BELOW))) != NULL);
+	memset(v.pix, 7, (size_t)sb.pitch * (CZ_M + 24 + v.h + CZ_BELOW));
+	g_lut[7] = 0x123456; g_showTiles = FALSE;
+	g_off = 600; g_snapW = TW_SW; g_winLockS = 0; g_winLeftT = 0;
+	t_window_scene(TRUE, FALSE, FALSE);
+	REQUIRE(cz_win_spans(0, TW_SW));
+	CHECK_EQ(g_czWinA[120], 900); CHECK_EQ(g_czWinB[120], 1000);
+	CHECK(g_czWinA[50] >= g_czWinB[50]);                 // a row without it
+	cz_field(&v, TW_SW, TRUE);
+	CHECK_EQ(TW_PX(950, 120), TW_WIN);                   // the window left as drawn
+	CHECK_EQ(TW_PX(500, 120), 0x123456);                 // the zoomed-out map beside it
+	CHECK_EQ(TW_PX(950, 400), 0x123456);                 // and below it
+	window_shift(2, 0, TW_SW, &v);
+	int s = g_winShift;
+	REQUIRE(s > 2);
+	CHECK_EQ(TW_PX(900 - s, 120), TW_WIN);               // moved to the middle
+	CHECK_EQ(TW_PX(990, 120), 0x123456);                 // where it was: the zoomed-out map (not the kept map's 1980)
+	// the map behind it moved (nearly everything differs): no window found, the normal view
+	g_winLockS = 0; InterlockedExchange(&g_winShift, 0);
+	memset(g_frame8, 5, TW_SW * GAME_H);
+	CHECK(!cz_win_spans(0, TW_SW));
+	free(v.pix);
+	g_back = back; g_lut[7] = lut7; g_showTiles = tiles;
 	g_off = off; g_snapW = snap; g_winLockS = 0; g_winLeftT = 0;
 }

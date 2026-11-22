@@ -5548,7 +5548,59 @@ static BOOL window_screen(int screen)
 // there, and that frame showed it at its old place for a moment (a flash on a right-click close). For
 // half a second after, what still differs from the map is moved as before.
 static DWORD g_winLeftT;
-static void window_shift(int screen, int sx, int sw)
+// The box round what differs from the kept map (frame columns bx0..bx1, rows by0..by1; -1: none), in the
+// map's part of the frame (frame columns x0g .. x1g, game x 0 .. PANEL_X).
+static void win_box(int sw, int x0g, int x1g, int *bx0, int *bx1, int *by0, int *by1)
+{
+	static int colN[MAX_W], rowN[GAME_H];
+	memset(colN, 0, sizeof colN); memset(rowN, 0, sizeof rowN);
+	for (int y = 24; y < GAME_H; y++) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		for (int x = x0g; x < x1g; x++) if (a[x] != b[x]) { colN[x]++; rowN[y]++; }
+	}
+	*bx0 = *bx1 = *by0 = *by1 = -1;
+	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (*bx0 < 0) *bx0 = x; *bx1 = x + 1; }
+	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (*by0 < 0) *by0 = y; *by1 = y + 1; }
+}
+// The box is a window over the map kept: large enough, and the map round it (nearly) the same.
+static BOOL win_box_ok(int sw, int x0g, int x1g, int bx0, int bx1, int by0, int by1)
+{
+	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return FALSE;
+	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
+	// the kept picture is of somewhere else - then the window stays where the game put it.
+	if (bx1 - bx0 > (x1g - x0g) * 9 / 10 && by1 - by0 > (GAME_H - 24) * 9 / 10) return FALSE;
+	int out = 0, n = 0; // pixels outside the window that differ
+	for (int y = 24; y < GAME_H; y += 3) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		for (int x = x0g; x < x1g; x += 3) {
+			if (y >= by0 && y < by1 && x >= bx0 && x < bx1) continue;
+			n++; out += a[x] != b[x];
+		}
+	}
+	return !(n && out * 10 > n); // not more than 10% of the map around it changed
+}
+// The county map zoomed out under a window (CountyZoom): each row's span of the window, frame columns
+// g_czWinA[y] .. g_czWinB[y] where the game drew it (none: A >= B). cz_field leaves it; window_shift moves it.
+static int g_czWinA[GAME_H], g_czWinB[GAME_H];
+static BOOL cz_win_spans(int sx, int sw)
+{
+	for (int y = 0; y < GAME_H; y++) g_czWinA[y] = g_czWinB[y] = 0;
+	int x0g = g_off - sx, x1g = x0g + PANEL_X, bx0, bx1, by0, by1;
+	if (!g_snapW || g_snapW != sw || x0g < 0 || x1g > sw) return FALSE;
+	win_box(sw, x0g, x1g, &bx0, &bx1, &by0, &by1);
+	if (!win_box_ok(sw, x0g, x1g, bx0, bx1, by0, by1)) return FALSE;
+	for (int y = by0; y < by1; y++) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		int rx0 = bx0, rx1 = bx1;
+		while (rx0 < rx1 && a[rx0] == b[rx0]) rx0++;
+		while (rx1 > rx0 && a[rx1 - 1] == b[rx1 - 1]) rx1--;
+		g_czWinA[y] = rx0; g_czWinB[y] = rx1;
+	}
+	return TRUE;
+}
+static void cz_span(const cz_buf *cz, int sw, int Y, int x0, int x1);
+// cz: the county map zoomed out shows where the window was (else the kept map at the normal size).
+static void window_shift(int screen, int sx, int sw, const cz_buf *cz)
 {
 	InterlockedExchange(&g_winShift, 0);
 	BOOL linger = screen == 0 && g_winLeftT && GetTickCount() - g_winLeftT < 500;
@@ -5556,15 +5608,8 @@ static void window_shift(int screen, int sx, int sw)
 	if (!g_snapW || g_snapW != sw || (!window_screen(screen) && !linger)) return;
 	int x0g = g_off - sx, x1g = x0g + PANEL_X; // frame columns of game x 0 and PANEL_X
 	if (x0g < 0 || x1g > sw) return;
-	static int colN[MAX_W], rowN[GAME_H];
-	memset(colN, 0, sizeof colN); memset(rowN, 0, sizeof rowN);
-	for (int y = 24; y < GAME_H; y++) {
-		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
-		for (int x = x0g; x < x1g; x++) if (a[x] != b[x]) { colN[x]++; rowN[y]++; }
-	}
-	int bx0 = -1, bx1 = -1, by0 = -1, by1 = -1;
-	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
-	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
+	int bx0, bx1, by0, by1;
+	win_box(sw, x0g, x1g, &bx0, &bx1, &by0, &by1);
 	static int lb0, lb1, lt0, lt1;   // the box last moved (frame columns, rows)
 	if (linger) {
 		// After closing, only while what differs is still the window (the same box as last moved): once the
@@ -5573,21 +5618,7 @@ static void window_shift(int screen, int sx, int sw)
 		BOOL same = bx0 >= 0 && by0 >= 0 && abs(bx0 - lb0) <= 4 && abs(bx1 - lb1) <= 4 && abs(by0 - lt0) <= 4 && abs(by1 - lt1) <= 4;
 		if (!same) { g_winLeftT = 0; g_snapW = 0; g_winLockS = 0; return; }
 	}
-	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
-	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
-	// the kept picture is of somewhere else - then the window stays where the game put it.
-	if (bx1 - bx0 > (x1g - x0g) * 9 / 10 && by1 - by0 > (GAME_H - 24) * 9 / 10) return;
-	{
-		int out = 0, n = 0; // pixels outside the window that differ
-		for (int y = 24; y < GAME_H; y += 3) {
-			const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
-			for (int x = x0g; x < x1g; x += 3) {
-				if (y >= by0 && y < by1 && x >= bx0 && x < bx1) continue;
-				n++; out += a[x] != b[x];
-			}
-		}
-		if (n && out * 10 > n) return; // more than 10% of the map around it changed
-	}
+	if (!win_box_ok(sw, x0g, x1g, bx0, bx1, by0, by1)) return;
 	// the window's middle onto the middle of the map on screen (frame columns 0 .. x1g)
 	int s = g_winLockS ? g_winLockS : (bx0 + bx1) / 2 - x1g / 2;
 	s = min(s, bx0); // never past the left edge
@@ -5609,7 +5640,8 @@ static void window_shift(int screen, int sx, int sw)
 			DWORD *o = g_frame2x + (2 * y + r) * W2;
 			const DWORD *m = g_snap2x + (2 * y + r) * W2;
 			memcpy(row, o + 2 * rx0, w * 2 * sizeof(DWORD));             // the window
-			memcpy(o + 2 * rx0, m + 2 * rx0, w * 2 * sizeof(DWORD));     // the map where it was
+			if (cz) cz_span(cz, sw, 2 * y + r, 2 * rx0, 2 * rx1);        // the map where it was: zoomed out
+			else memcpy(o + 2 * rx0, m + 2 * rx0, w * 2 * sizeof(DWORD)); // or as kept
 			memcpy(o + 2 * (rx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
 		}
 	}
@@ -5628,16 +5660,25 @@ static void win_click(int *x, int *y)
 }
 
 // The zoomed-out county map over the map's field of the doubled picture, at its own size: one game
-// pixel to one picture pixel, half the size of the normal view.
-static void cz_field(const cz_buf *cz, int sw)
+// pixel to one picture pixel, half the size of the normal view. Row Y of the picture (48 on), x0 .. x1.
+static void cz_span(const cz_buf *cz, int sw, int Y, int x0, int x1)
 {
-	int W2 = 2 * sw, pitch = g_back->pitch;
-	for (int y = 0; y < cz->h && 48 + y < 2 * GAME_H; y++) {
-		const BYTE *s = cz->pix + (CZ_M + 24 + y) * pitch + CZ_M;
-		DWORD *d = g_frame2x + (48 + y) * W2;
-		const DWORD *h = g_showTiles && cz->hd ? cz->hd + y * cz->w : NULL;
-		if (h) for (int x = 0; x < cz->w; x++) d[x] = h[x] ? h[x] & 0xffffff : g_lut[s[x]];
-		else for (int x = 0; x < cz->w; x++) d[x] = g_lut[s[x]];
+	int y = Y - 48, pitch = g_back->pitch;
+	if (y < 0 || y >= cz->h || Y >= 2 * GAME_H) return;
+	x0 = max(0, x0); x1 = min(x1, cz->w);
+	const BYTE *s = cz->pix + (CZ_M + 24 + y) * pitch + CZ_M;
+	DWORD *d = g_frame2x + Y * 2 * sw;
+	const DWORD *h = g_showTiles && cz->hd ? cz->hd + y * cz->w : NULL;
+	if (h) for (int x = x0; x < x1; x++) d[x] = h[x] ? h[x] & 0xffffff : g_lut[s[x]];
+	else for (int x = x0; x < x1; x++) d[x] = g_lut[s[x]];
+}
+// win: a window is over the map (cz_win_spans): its pixels are left as the game drew them.
+static void cz_field(const cz_buf *cz, int sw, BOOL win)
+{
+	for (int Y = 48; Y < 48 + cz->h && Y < 2 * GAME_H; Y++) {
+		int a = win ? 2 * g_czWinA[Y / 2] : 0, b = win ? 2 * g_czWinB[Y / 2] : 0;
+		if (a < b) { cz_span(cz, sw, Y, 0, a); cz_span(cz, sw, Y, b, cz->w); }
+		else cz_span(cz, sw, Y, 0, cz->w);
 	}
 }
 
@@ -5713,8 +5754,10 @@ static BOOL present(void)
 	LeaveCriticalSection(&g_lock);
 	// The county map zoomed out: its own picture takes the map's field (cz_field).
 	const cz_buf *cz = g_czShown;
-	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && screen == 0 && g_wideScreen && MAP_ZOOM_NOW() == 0 && !g_snapW &&
-		cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
+	// (Under a window over the map - the Town Center, the boxes a click on the map opens - too: the window
+	// stays as the game drew it, moved to the middle as ever, the zoomed-out map round it. czWin below.)
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (screen == 0 || (window_screen(screen) && g_snapW == sw)) &&
+		g_wideScreen && MAP_ZOOM_NOW() == 0 && cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
 	InterlockedExchange(&g_czShowing, czOn);
 	static BOOL czWas;
 	if (czOn != czWas) { czWas = czOn; czNew = TRUE; }
@@ -5790,13 +5833,19 @@ static BOOL present(void)
 		if (g_showTiles) screen_sprites(pal, sx, sw); ct_add(1, &ct);
 		if (g_showTiles) tile_overlay(pal, sx, sw); ct_add(2, &ct);
 		text_overlay(sx, sw); ct_add(3, &ct);
-		if (czOn) cz_field(cz, sw);
+		// A window over the zoomed-out map: where it is (no window found there - the map behind it moved: the
+		// normal view, as without the zoom).
+		BOOL czWin = czOn && screen != 0;
+		if (czWin && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
+		if (czOn) cz_field(cz, sw, czWin);
 		scroll_overlays(sx, sw);
 		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		hv_overlay(pal, sx, sw);
-		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
+		// (Zoomed out with the window closed, the map covers what the frame still holds of it: nothing to move.)
+		if (g_wideScreen && !(czOn && screen == 0)) window_shift(screen, sx, sw, czOn ? cz : NULL);
+		else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
@@ -6635,6 +6684,7 @@ static void client_to_game_(int *x, int *y, const int *x0, const int *y0)
 	}
 	*y = max(0, min(GAME_H - 1, gy));
 	win_click(x, y);
+	if (g_czMouse.on) g_czMouse.gx = *x;   // (the game's x as a moved window leaves it: cz_pick matches on it)
 }
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
@@ -8633,6 +8683,8 @@ static int __cdecl h_pick_cell(int arg)
 	if (cz_pick(arg, &r)) return r;
 	if (begin_wide_view()) { r = o_pick_cell(arg); end_wide_view(); PICKED_COL -= g_view.k; }
 	else r = o_pick_cell(arg);
+	if (g_clickLog && arg) logf_("map click at %d,%d: cell %d,%d (record %d)%s", *(int *)0x004e65fc, *(int *)0x004e65f4,
+		MAP_FIRST_COL + PICKED_COL, *(int *)0x005651b8 + *(int *)0x005681f4, *(int *)0x00568974, r ? "" : ", none");
 	return r;
 }
 
@@ -9029,7 +9081,7 @@ static void cz_hd(cz_buf *b, int pitch)
 static void cz_draw(void)
 {
 	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
-		SCREEN_ID != 0 || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;
+		(SCREEN_ID != 0 && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
 	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
 	int rowsAll = CZ_M + 24 + H + CZ_BELOW;
 	if (pitch - W < 2 * CZ_M + 64) return;   // (the frame is as wide as the zoomed-out battlefield: not without BattleZoom)
