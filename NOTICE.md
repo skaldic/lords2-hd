@@ -35,6 +35,10 @@ Lords of the Realm II community: Wolfe (the replacement DirectPlay layer, the pe
 repair, the host checks and the game's multiplayer desync fixes) and Socius (GameRanger support). It
 is included with Wolfe's and Socius's permission; see `multiplayer/CREDITS.md`.
 
+The wheel zoom in battles (`[Display] WheelZoom`) follows the wheel zoom of Wolfe's LotR2 Fix (a
+notch zooms by a quarter, around the point under the cursor). It is written anew for this patch; none
+of the LotR2 Fix's display code is included.
+
 ## AMD FidelityFX Super Resolution 1
 
 The FSR upscaling (`[Display] Upscale=fsr`) is a port of the two passes of AMD FidelityFX Super
