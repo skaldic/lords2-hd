@@ -10323,7 +10323,8 @@ static void __cdecl h_strength(void)
 //   1. enemy melee within AI_ARCH_THREAT of the group's centre and none of its own melee within
 //      AI_ARCH_COVER: step AI_ARCH_STEP cells straight away from it;
 //   2. an enemy group within range (the members' shortest, centre to centre) and at least half its archers
-//      with an enemy unit within their own range: the game's own fire order (FUN_0048c974, as its handler gives
+//      with a unit of it AI_FIRE_INSIDE inside their own range (ai_fire_ready; members holding an order on a
+//      unit out of that reach go idle first, ai_fire_release): the game's own fire order (FUN_0048c974, as its handler gives
 //      it). That order reaches only archers already close to the target group (its pick uses range 0x28), so
 //      with the group's centre in range but most archers not, they stood shooting nothing while their
 //      soldiers fought at a bridge (the user's Legendary battle: 1-5 shots a second against the player's 14);
@@ -10475,19 +10476,62 @@ static BOOL ai_archers_reachable(int g, const ai_view *v)
 	return FALSE;
 }
 
+// The game's fire order (FUN_0048c974) gives each archer the nearest unit of the target group (within 40
+// cells) and state 17, whose handler (FUN_00484bf9) shoots only while that unit is at least 2 cells inside
+// the archer's range (the larger of dx and dy); further away it walks at it, or with 0x1a4 = 1 stands where
+// it is. Standing still the archers then shot nothing (the user's bridge battle: from step 5602 to 7246
+// seven archers held a target 14 cells off with range 15, and shot 2-3 times a second against 14). Idle
+// (state 5) they shoot the nearest enemy within their full range (FUN_00483337) on their own.
+// AI_FIRE_INSIDE: how far inside its range the order's target has to be.
+#define AI_FIRE_INSIDE 2
+// The members of archer group g whose nearest unit of enemy group tg is within their range less AI_FIRE_INSIDE.
+static int ai_fire_ready(int g, int tg)
+{
+	int n = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || FIG_S(i, 0x178) != g || !f[0x16a] || f[0x31] == 2) continue;
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), r = FIG_S(i, 0x170) / 8 - AI_FIRE_INSIDE, best = 999;
+		for (int e = 1; e < 0x51; e++)
+			if (FIG(e)[0x2c] && FIG(e)[0x2c] != f[0x2c] && FIG(e)[0x31] != 2 && FIG_S(e, 0x178) == tg) {
+				int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
+				if (d < best) best = d;
+			}
+		if (best <= r) n++;
+	}
+	return n;
+}
+// Members of group g holding a fire order on a unit that is gone or out of reach (see above) stand down
+// to idle, where the game shoots whatever is in range; returns how many.
+static int ai_fire_release(int g)
+{
+	int n = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || FIG_S(i, 0x178) != g || !f[0x16a] || f[0x31] != 17) continue;
+		int t = f[0x174];
+		if (t >= 1 && t <= 0x50 && FIG(t)[0x2c] && FIG(t)[0x31] != 2 &&
+			cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(t, 0x20), FIG_S(t, 0x22)) <= FIG_S(i, 0x170) / 8 - AI_FIRE_INSIDE) continue;
+		f[0x31] = 5; f[0x174] = 0; f[0x164] = 0;
+		n++;
+	}
+	return n;
+}
+
 static void ai_archers_think(int g)
 {
 	ai_view v;
 	ai_view_take(g, &v);
-	int x, y, tg;
+	int x, y, tg, ready = 0;
 	char what[80] = "";
+	int freed = ai_fire_release(g);
 	if (v.nearMelee <= AI_ARCH_THREAT && !v.cover && ai_archers_reachable(g, &v)) {
 		ai_toward(v.cx, v.cy, v.nmx, v.nmy, -AI_ARCH_STEP, &x, &y);
 		if (ai_order(g, x, y)) snprintf(what, sizeof what, "step back from enemy melee %d cells away", v.nearMelee);
 	}
-	else if ((tg = ai_shoot_target(g, v.range)) != 0 && v.inRange * 2 >= v.members) {
+	else if ((tg = ai_shoot_target(g, v.range)) != 0 && (ready = ai_fire_ready(g, tg)) * 2 >= v.members && ready) {
 		ai_game_fire(tg);
-		snprintf(what, sizeof what, "shoot at g%d (%d of %d in range)", tg, v.inRange, v.members);
+		snprintf(what, sizeof what, "shoot at g%d (%d of %d in reach)", tg, ready, v.members);
 	}
 	else if (as_soften_place(g, v.side, v.range, v.cx, v.cy, &x, &y)) {   // its side parked before a crossing
 		if (ai_order(g, x, y)) snprintf(what, sizeof what, "beside the crossing at %d,%d, in range of its far end", x, y);
@@ -10504,6 +10548,7 @@ static void ai_archers_think(int g)
 		ai_toward(v.cx, v.cy, v.nax, v.nay, v.nearAny - (v.range - 2), &x, &y);
 		if (ai_order(g, x, y)) snprintf(what, sizeof what, "into range (%d), the nearest enemy %d cells away", v.range, v.nearAny);
 	}
+	if (!what[0] && freed) snprintf(what, sizeof what, "%d stand down from a target out of reach and shoot what is in range", freed);
 	if (g_blog && what[0]) blog("ai %s g%d archers: %s", kAiLevel[g_aiLevel], g, what);
 }
 
@@ -12550,6 +12595,8 @@ static void map_watch(void)
 #define AS_SOFTEN 800      // about 10 s of shooting
 #define AS_WAIT 5000       // about 60 s
 #define AS_NEAR 20         // its melee's centre at most this far from the crossing
+#define AS_OVER 10         // an enemy on its bank this close to one of its units calls the assault off
+#define AS_JAM_EVERY 8     // jam_scan's period
 static BYTE g_asCross[3], g_asPhase[3];   // per side: the crossing (k + 1); 1 parked, 2 storming
 static unsigned g_asSince[3], g_asIn[3];  // when it parked; when every group was in place (0: not yet)
 
@@ -12576,15 +12623,20 @@ static int as_side_bank(int k, int side)
 	return n[1] || n[2] ? (n[2] > n[1] ? 2 : 1) : 0;
 }
 // Crossing k's defenders against side on bank `bank`: enemy units on it or within AS_ZONE of it (either bank).
-// Returns their units; *men their men; *own TRUE when an enemy unit stands on the side's bank further out.
+// Returns their units; *men their men; *own TRUE when an enemy unit stands on the side's bank further out
+// and within AS_OVER cells of one of the side's units (a flank far off along its bank doesn't call it off: the
+// user's battle, 8 of his units over the other bridge 50 cells east ended it, and the charge that followed
+// jammed the bridge and sent units round).
 static int as_defenders(int k, int side, int bank, int *men, BOOL *own)
 {
-	int units = 0, x, y;
+	int units = 0, x, y, ux, uy;
 	*men = 0; *own = FALSE;
 	for (int i = 1; i < 0x51; i++) {
 		if (!as_live(i, &x, &y) || FIG(i)[0x2c] == side) continue;
-		if (as_near(k, x, y, AS_ZONE)) { units++; *men += FIG_S(i, 0x1a0); }
-		else if (g_crossBank[k][y * 80 + x] == bank) *own = TRUE;
+		if (as_near(k, x, y, AS_ZONE)) { units++; *men += FIG_S(i, 0x1a0); continue; }
+		if (*own || g_crossBank[k][y * 80 + x] != bank) continue;
+		for (int j = 1; j < 0x51 && !*own; j++)
+			if (as_live(j, &ux, &uy) && FIG(j)[0x2c] == side && cheb(x, y, ux, uy) <= AS_OVER) *own = TRUE;
 	}
 	return units;
 }
@@ -12734,8 +12786,10 @@ static void ai_assault_step(void)
 }
 static BOOL as_parked(int side) { return side >= 1 && side <= 2 && g_asPhase[side] == 1; }
 // Where archer group g (centre cx,cy, range r) of side shoots from while its side is parked: beside the lane
-// (at least AS_LANE cells off it; groups alternate sides), on its own bank, with the far end within r - 1,
+// (at least AS_LANE cells off it; groups alternate sides), on its own bank, with the far end within
+// r - AS_REACH (a fire order needs its target 2 inside range, and the defenders stand round the far end),
 // as far back as that allows; FALSE when there's no such place.
+#define AS_REACH 3
 static BOOL as_soften_place(int g, int side, int r, int cx, int cy, int *x, int *y)
 {
 	int k = g_asCross[side] - 1;
@@ -12749,7 +12803,7 @@ static BOOL as_soften_place(int g, int side, int r, int cx, int cy, int *x, int 
 	int want = q & 1 ? 1 : -1, bx = -1, by = -1, best = -1, bclose = 999;
 	for (int vy = 1; vy <= 78; vy++) for (int vx = 1; vx <= 78; vx++) {
 		int c = vy * 80 + vx, d = cheb(vx, vy, fx, fy);
-		if (d > r - 1 || g_crossBank[k][c] != bank || !map_open(c) || as_near(k, vx, vy, 1)) continue;
+		if (d > r - AS_REACH || g_crossBank[k][c] != bank || !map_open(c) || as_near(k, vx, vy, 1)) continue;
 		int cr = (vx - m->x) * dy - (vy - m->y) * dx;   // which side of the lane, and how far (squared)
 		if ((cr > 0 ? 1 : -1) != want || cr * cr < AS_LANE * AS_LANE * (dx * dx + dy * dy)) continue;
 		int to = cheb(vx, vy, cx, cy);
@@ -12777,6 +12831,15 @@ static void jam_check(int me)
 	f[0x164] = 0; f[0x2f] = 8; f[0x31] = 1; f[0x30] = 8;   // (counted down one step in four: ~32 steps)
 	if (g_blog && g_battleLog >= 1) blog("jam fig %d at %d,%d: route of %d steps to target %d, %d on an empty field: waits", me,
 		FIG_S(me, 0x20), FIG_S(me, 0x22), left, t, d);
+}
+// The chase step isn't the only place a route is planned: a chaser whose step is blocked plans again while
+// walking (the user's bridge battle: swordsman 4 on the bridge 6 cells from its target got a route round the
+// other bridge and walked off east, no jam line). So on a field with crossings every computer chaser is
+// looked at every AS_JAM_EVERY steps too.
+static void jam_scan(void)
+{
+	if (!g_ncross || g_btick % AS_JAM_EVERY || !ai_part(AI_MELEE)) return;
+	for (int i = 1; i < 0x51; i++) jam_check(i);
 }
 
 static void battle_reset(void)
@@ -12836,6 +12899,7 @@ static void __cdecl h_fig_loop(void)
 	fire_step();
 	ai_assault_step();
 	o_fig_loop();
+	jam_scan();
 	map_watch();
 	QueryPerformanceCounter(&c1);
 	g_bcpuLoop += c1.QuadPart - c0.QuadPart;

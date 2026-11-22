@@ -760,8 +760,8 @@ TEST(ai_hard_archers_soften_the_bridge_before_the_storm)
 	CHECK_EQ(g_crossBank[0][y * 80 + x], t_south());
 	map_cross *m = &g_cross[0];
 	int fx = t_south() == 1 ? m->bx : m->ax, fy = t_south() == 1 ? m->by : m->ay, ex, ey, dx, dy;
-	CHECK(cheb(x, y, fx, fy) <= 14);                                // the far end in range
-	CHECK(cheb(x, y, fx, fy) >= 12);                                // as far back as that allows
+	CHECK(cheb(x, y, fx, fy) <= 15 - AS_REACH);                     // the far end well inside range
+	CHECK_EQ(cheb(x, y, fx, fy), 15 - AS_REACH);                    // as far back as that allows
 	as_lane(0, t_south(), &ex, &ey, &dx, &dy);
 	int cr = (x - m->x) * dy - (y - m->y) * dx;
 	CHECK(cr * cr >= AS_LANE * AS_LANE * (dx * dx + dy * dy));      // beside the lane, not in it
@@ -845,6 +845,52 @@ TEST(ai_normal_sieges_and_your_side_have_no_assault)
 	FIG(6)[0x31] = ST_CHASE; FIG(6)[0x174] = 8;
 	t_assault_at(50);
 	CHECK_EQ(g_asPhase[1], 0); CHECK_EQ(FIG(6)[0x31], ST_CHASE);    // your units never park
+}
+
+TEST(ai_hard_archers_fire_only_inside_reach_and_stand_down_from_a_far_target)
+{
+	t_ai_battle(1);
+	t_bow(1, 2, 20, 60, 2, 15); t_bow(2, 2, 21, 60, 2, 15); t_group(2, 2, 1, 2, 20, 60);
+	t_unit(4, 2, 20, 52, 4); t_group(4, 2, 3, 1, 20, 52);           // its melee in front
+	t_human(t_unit(6, 1, 20, 46, 6)); t_group(6, 1, 3, 1, 20, 46);  // yours 14 cells off: in range 15, not 2 inside
+	FIG(1)[0x31] = 17; FIG(1)[0x174] = 6;                           // holding a fire order on it (shoots nothing)
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 0);                                          // no new order the game won't shoot
+	CHECK_EQ(FIG(1)[0x31], ST_IDLE); CHECK_EQ(FIG(1)[0x174], 0);    // idle: the game shoots what is in range
+	t_unit_at(6, 20, 47); GRP_S(6, 0x20) = 47;                      // 13 cells
+	FIG(1)[0x31] = 17; FIG(1)[0x174] = 6;
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 6);
+	CHECK_EQ(FIG(1)[0x31], 17);                                     // a target in reach is kept
+	CHECK_EQ(ai_fire_ready(2, 6), 2);
+	t_unit_at(2, 21, 61);                                           // one archer 14 off: half the group still fires
+	CHECK_EQ(ai_fire_ready(2, 6), 1);
+	t_ai_think_archers();
+	CHECK_EQ(t_fireAt, 6);
+}
+
+TEST(ai_hard_a_flank_far_along_its_bank_doesnt_call_off_the_assault)
+{
+	t_bridge_battle(1);
+	t_typed(t_human(t_unit(9, 1, 70, 60, 9)), 4, 30); t_group(9, 1, 2, 1, 70, 60);   // over the river far east
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[2], 1);
+	t_unit_at(9, 31, 52);                                           // 9 cells from its swordsmen
+	t_assault_at(100);
+	CHECK_EQ(g_asPhase[2], 0);
+}
+
+TEST(ai_hard_jam_scan_catches_a_route_planned_while_walking)
+{
+	t_bridge_battle(1);
+	FIG(4)[0x31] = ST_CHASE; FIG(4)[0x174] = 6; FIG(4)[0x164] = 1; FIG_S(4, 0x36) = 110;
+	g_btick = AS_JAM_EVERY + 1; jam_scan();
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE);                               // looked at every AS_JAM_EVERY steps
+	g_btick = 2 * AS_JAM_EVERY; jam_scan();
+	CHECK_EQ(FIG(4)[0x31], ST_WAIT); CHECK_EQ(FIG(4)[0x2f], ST_CHASE);
+	FIG(4)[0x31] = ST_CHASE; FIG(4)[0x164] = 1; g_ncross = 0;       // no crossings on the field: not looked at
+	jam_scan();
+	CHECK_EQ(FIG(4)[0x31], ST_CHASE);
 }
 
 TEST(ai_hard_chaser_waits_instead_of_a_long_way_round_its_own_men)
