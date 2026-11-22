@@ -619,6 +619,25 @@ TEST(ai_legendary_knights_go_for_the_archers_and_pikemen_for_the_knights)
 	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);                   // and stays with it
 }
 
+TEST(ai_charge_is_not_repeated_while_the_group_is_on_it)
+{
+	t_battle_reset(); t_ai_battle(1); AI_RATIO = 30;
+	t_typed(t_unit(4, 2, 40, 40, 4), 3, 30); t_group(4, 2, 3, 1, 40, 40);
+	t_typed(t_human(t_unit(6, 1, 43, 40, 6)), 3, 30); t_group(6, 1, 3, 1, 43, 40);
+	g_aiCharge[2] = TRUE;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
+	GROUP_HUNTING(4) = 1;                                           // (what the game's charge sets)
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);                                        // still on it: its chasers keep their routes
+	GROUP_HUNTING(4) = 0;                                           // off it (an order)
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
+	GROUP_HUNTING(4) = 1; g_bfSet[BF_MOPUP] = FALSE; battle_reset(); g_aiCharge[2] = TRUE; g_aiCharged[4] = 1;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);                                        // without MopUpFix nothing wakes idle members: repeated
+}
+
 TEST(ai_legendary_targets_only_within_reach_of_the_nearest_enemies)
 {
 	t_ai_battle(2);

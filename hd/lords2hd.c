@@ -10337,6 +10337,11 @@ static void ai_charge(int g)
 			return;
 		}
 	}
+	// A group the game's charge already sent, still on it (its hunting flag), isn't sent again: the charge sets
+	// every member to chase afresh and drops its route, so each think (every 2.4 s) restarted every chaser and
+	// pulled fighting members out of their melee (the user's river battle). MopUpFix wakes its idle members
+	// (h_idle); without it the charge is repeated, as before, for that.
+	if (g_aiCharged[g] && GRP_B(g, 0x2a) && fix_on(g_fixMopUp)) return;
 	g_aiCharged[g] = 1;
 	ai_game_charge(g);
 }
