@@ -730,3 +730,90 @@ TEST(ai_hard_archers_wait_while_a_member_fights_and_normal_runs_the_game)
 	t_ai_think_archers();
 	CHECK_EQ(t_calls, 1); CHECK_EQ(t_ordG, 0); CHECK_EQ(G_THINK(2), 200);
 }
+
+/* ================================ burning oil (Hard, sieges too) */
+
+/* oil poured at x,y: that cell and the four beside it burn (the game's cell type 10) */
+static void t_oil(int x, int y, BYTE t)
+{
+	BCELL(x, y)[7] = t; BCELL(x - 1, y)[7] = t; BCELL(x + 1, y)[7] = t; BCELL(x, y - 1)[7] = t; BCELL(x, y + 1)[7] = t;
+}
+
+TEST(ai_hard_soldiers_step_out_of_burning_oil)
+{
+	t_ai_battle(1); *(int *)0x0053e8fc = 1;                         // a siege
+	t_human(t_unit(60, 1, 40, 49, 9));                              // your men on the wall
+	t_unit(5, 2, 40, 52, 3); FIG(5)[0x31] = ST_CHASE; FIG(5)[0x174] = 60;   // the computer's, chasing them
+	t_oil(40, 52, 10);
+	fire_step();
+	CHECK_EQ(FIG(5)[0x31], ST_MARCH);
+	int x = FIG_S(5, 0x24), y = FIG_S(5, 0x26);
+	CHECK(!fire_at(x, y));                                          // out of the fire
+	CHECK(!fire_near(x, y, 1));                                     // and not beside it (2 steps away)
+	CHECK_EQ(cheb(40, 52, x, y), 2);
+	CHECK_EQ(FIG(5)[0x174], 0);
+	CHECK_EQ(g_bfire, 1);
+	fire_step();                                                    // on its way out: not sent again
+	CHECK_EQ(FIG_S(5, 0x24), x); CHECK_EQ(FIG_S(5, 0x26), y); CHECK_EQ(g_bfire, 1);
+	t_unit(6, 2, 30, 30, 3); FIG(6)[0x31] = ST_MELEE;               // spreading fire (0x11), in a fight: steps out too
+	t_oil(30, 30, 0x11);
+	fire_step();
+	CHECK_EQ(FIG(6)[0x31], ST_MARCH); CHECK(!fire_at(FIG_S(6, 0x24), FIG_S(6, 0x26)));
+}
+
+TEST(ai_fire_leaves_your_units_engines_and_normal_alone)
+{
+	t_ai_battle(1); *(int *)0x0053e8fc = 1;
+	t_human(t_unit(5, 1, 40, 52, 3));                               // yours: left to you
+	t_unit(7, 2, 20, 52, 4); FIG(7)[0x12] = 8;                      // a siege engine
+	t_oil(40, 52, 10); t_oil(20, 52, 10);
+	fire_step();
+	CHECK_EQ(FIG(5)[0x31], ST_IDLE); CHECK_EQ(FIG(7)[0x31], ST_IDLE);
+	t_ai_battle(0);                                                 // Normal: the game's own
+	t_unit(8, 2, 60, 52, 5); t_oil(60, 52, 10);
+	fire_step();
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
+	t_ai_battle(1); *(int *)0x00553030 = 1; g_mpFixes = FALSE;      // multiplayer, MultiplayerFixes off
+	fire_step();
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
+	*(int *)0x00553030 = 0;
+}
+
+TEST(ai_fire_boxed_in_unit_stays_and_a_unit_walking_through_goes_on)
+{
+	t_ai_battle(1);
+	t_unit(5, 2, 40, 52, 3); t_oil(40, 52, 10);
+	for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) if (dx || dy) BCELL(40 + dx, 52 + dy)[1] |= FL_BLOCKED;
+	fire_step();                                                    // walled in: nowhere to go
+	CHECK_EQ(FIG(5)[0x31], ST_IDLE); CHECK_EQ(g_bfire, 0);
+	t_unit(6, 2, 20, 52, 4); t_oil(20, 52, 10);
+	FIG(6)[0x31] = ST_MARCH; FIG_S(6, 0x24) = 20; FIG_S(6, 0x26) = 60;   // walking on, through the fire
+	g_btick = 100;
+	fire_step();
+	CHECK_EQ(FIG_S(6, 0x26), 60);                                   // just stepped in: goes on
+	g_btick = 100 + FIRE_PASSING;                                   // stuck there: steps out
+	fire_step();
+	CHECK(FIG_S(6, 0x26) != 60); CHECK(!fire_at(FIG_S(6, 0x24), FIG_S(6, 0x26)));
+}
+
+TEST(ai_fire_soldiers_dont_walk_back_in_while_it_burns)
+{
+	t_ai_battle(1); *(int *)0x0053e8fc = 1;
+	t_human(t_unit(60, 1, 40, 47, 9));
+	t_unit(5, 2, 40, 52, 3); t_oil(40, 52, 10);
+	fire_step();
+	int hx = FIG_S(5, 0x24), hy = FIG_S(5, 0x26);
+	t_unit_at(5, hx, hy); FIG(5)[0x31] = ST_IDLE;                   // got there
+	FIG(5)[0x31] = ST_MARCH; FIG_S(5, 0x24) = 40; FIG_S(5, 0x26) = 52;   // sent back into the fire
+	fire_step();
+	CHECK_EQ(FIG_S(5, 0x24), hx); CHECK_EQ(FIG_S(5, 0x26), hy);    // turned back to where it went
+	FIG(5)[0x31] = ST_CHASE; FIG(5)[0x174] = 60;                    // chasing your men on the wall, across the fire
+	t_unit_at(5, 40, 54);
+	fire_step();
+	CHECK_EQ(FIG(5)[0x31], ST_MARCH); CHECK_EQ(FIG_S(5, 0x24), 40); CHECK_EQ(FIG_S(5, 0x26), 54);   // stops beside it
+	t_oil(40, 52, 0);                                               // burnt out
+	FIG(5)[0x31] = ST_MARCH; FIG_S(5, 0x24) = 40; FIG_S(5, 0x26) = 52;
+	fire_step();
+	CHECK_EQ(FIG_S(5, 0x26), 52);                                   // free to go again
+	CHECK_EQ(g_fHold[5], 0);
+}

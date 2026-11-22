@@ -109,6 +109,8 @@ Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal 
 On Hard, in field battles, the computer picks attack or defence once instead of switching every few
 seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), sends its
 nearest soldiers to help archers you reach, and moves its soldiers up together and charges together.
+In sieges too, its soldiers step out of your burning oil and don't walk back in while it burns (they used
+to stand in it until they died).
 Legendary plays like Hard, and also:
 - when it attacks, its knights ride for your archers and its pikemen for your knights, no more than two
   groups on one of yours;
