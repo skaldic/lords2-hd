@@ -176,6 +176,71 @@ TEST(mopup_keeps_chasing_a_far_target)
 	CHECK_EQ(FIG(16)[0x174], 2);
 }
 
+/* ================================ reading the battlefield (crossings) */
+
+/* a river across the map at rows 39-41, a bridge 2 cells wide at x 20-21 and a wide ford at the east edge */
+static void t_river(void)
+{
+	t_flags(0, 39, 79, 41, FL_WATER);
+	for (int y = 39; y <= 41; y++) { BCELL(20, y)[1] = 0; BCELL(21, y)[1] = 0; for (int x = 75; x <= 79; x++) BCELL(x, y)[1] = 0; }
+	t_unit(1, 1, 20, 30, 1);
+	t_unit(2, 2, 20, 60, 2);
+}
+TEST(map_finds_the_bridge_and_the_way_round)
+{
+	t_river();
+	map_read();
+	REQUIRE(g_ncross == 1);                     // the ford is 5 wide and at the map's edge: open ground
+	map_cross *m = &g_cross[0];
+	CHECK(m->x == 20 || m->x == 21); CHECK_EQ(m->y, 40);
+	CHECK_EQ(m->width, 2); CHECK_EQ(m->cells, 6); CHECK_EQ(m->water, 1);
+	CHECK(m->detour > 90);                      // round by the ford
+	CHECK_EQ(m->dist[1], 9); CHECK_EQ(m->dist[2], 19);
+	for (int y = 39; y <= 41; y++) for (int x = 75; x <= 79; x++) BCELL(x, y)[1] = FL_WATER;
+	map_read();                                 // no ford: the only way
+	REQUIRE(g_ncross == 1);
+	CHECK_EQ(g_cross[0].detour, -1);
+}
+TEST(map_open_field_and_short_detours_are_no_crossings)
+{
+	t_unit(1, 1, 10, 10, 1);
+	map_read();
+	CHECK_EQ(g_ncross, 0);
+	t_flags(30, 30, 34, 31, FL_BLOCKED);        // two small blocks with a gap: round them is a few steps
+	t_flags(37, 30, 41, 31, FL_BLOCKED);
+	map_read();
+	CHECK_EQ(g_ncross, 0);
+}
+TEST(map_a_gap_in_a_line_of_stakes)
+{
+	t_flags(0, 50, 79, 50, FL_BLOCKED);
+	BCELL(40, 50)[1] = 0;                       // one cell wide, the only way through
+	t_unit(1, 1, 40, 45, 1);
+	map_read();
+	REQUIRE(g_ncross == 1);
+	CHECK_EQ(g_cross[0].width, 1); CHECK_EQ(g_cross[0].water, 0); CHECK_EQ(g_cross[0].detour, -1);
+	CHECK_EQ(g_cross[0].dist[1], 5); CHECK_EQ(g_cross[0].dist[2], -1);   // no side 2 on the field
+}
+TEST(map_watch_tells_who_holds_the_bridge)
+{
+	t_river();
+	map_read();
+	REQUIRE(g_ncross == 1);
+	g_btick = 0; map_watch();
+	CHECK_EQ(g_cross[0].holder, 0);
+	t_unit(3, 1, 20, 37, 1);                    // yours, 2 cells from it
+	g_btick = 100; map_watch();
+	CHECK_EQ(g_cross[0].holder, 0);             // looked at every 200 steps
+	g_btick = 200; map_watch();
+	CHECK_EQ(g_cross[0].holder, 1);
+	t_unit(4, 2, 21, 43, 2);
+	g_btick = 400; map_watch();
+	CHECK_EQ(g_cross[0].holder, 3);             // fought over
+	FIG(3)[0x31] = ST_DYING;
+	g_btick = 600; map_watch();
+	CHECK_EQ(g_cross[0].holder, 2);
+}
+
 /* an archer 8 cells away behind a wall with a gap 20 cells down (a walk of about 40), and a foot soldier 30
  * cells away on open ground: the archer counts half, so the original pick took it */
 static void t_far_field(int delay)

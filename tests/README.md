@@ -1,6 +1,6 @@
 # Tests
 
-Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 157 tests in about 8 seconds. They need only the compiler
+Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 161 tests in about 8 seconds. They need only the compiler
 that builds the patch (llvm-mingw, 32-bit). The five hook tests also need a copy of the game's exe.
 
 ```powershell
@@ -42,7 +42,7 @@ Set `L2HD_TOOLS` to the tools folder if llvm-mingw is not on PATH (as for `hd\bu
 | File | What |
 |---|---|
 | `t_core.c` | the memory guard, the art pack, the upscalers, HD video frames, WAV files and the music cut, CRC-32 |
-| `t_battle.c` | walking distances, Mop-Up, engagement, archers, group routes, the jitter fixes, the battle minimap, the F10 Battles switches |
+| `t_battle.c` | walking distances, Mop-Up, engagement, archers, group routes, the jitter fixes, reading the field's crossings, the battle minimap, the F10 Battles switches |
 | `t_ai.c` | the battle log's computer AI lines (each group's decisions, the archers' cover count); enemy tactics on Hard: the steady mode, the archers, soldiers helping attacked archers, the melee advancing smoothly and charging together, soldiers stepping out of burning oil (sieges too); on Legendary: the unit counters, target picks, advancing under fire, regrouping, the archers' target |
 | `t_campaign.c` | the wheat, castle cap and besieged castle fixes |
 | `t_settings.c` | the code's defaults and the shipped ini; F10 changes saved and read back; the README's F10 table |

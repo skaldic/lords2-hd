@@ -11900,6 +11900,230 @@ static void fire_step(void)
 	}
 }
 
+// ---------------------------------------------------------------------------------------------
+// Reading the battlefield (the user's request: the computer should know the choke points before the battle
+// starts). For now it is only read and logged: nothing here changes what anyone does.
+// At the start (map_read), a crossing is narrow ground: a cell with at most MAP_NARROW cells of walkable
+// ground across it between obstacles on both sides (water, stakes, stones, forest, a cliff, a wall; not the
+// map's edge) along one of the four directions, and more than that the other way; touching narrow cells
+// make one crossing. It counts only when going round it is much longer: with its cells closed, the walk
+// between the ground at its two ends grows by MAP_DETOUR steps or more, or there is no other way (the user's
+// river battle: a bridge 2 cells wide, and a walk of 110 round the east side). During the battle
+// (map_watch, every 200 steps) it logs who holds each crossing (units within MAP_HOLD cells) when that
+// changes.
+#define MAP_NARROW 3
+#define MAP_DETOUR 15
+#define MAP_HOLD 2
+#define MAP_MAX 12
+typedef struct {
+	short x, y, cells, width, detour;   // detour: extra steps to go round, -1 = the only way
+	short dist[3];                      // walking steps from each side's nearest unit at the start
+	BYTE water, holder;                 // holder: 0 none, 1 or 2 a side, 3 both
+} map_cross;
+static map_cross g_cross[MAP_MAX];
+static int g_ncross;
+static short g_crossOf[6400];           // the crossing a cell belongs to (+1; 0 = none)
+static short g_mapMark[6400], g_mapQ[6400], g_mapD[6400];
+
+static BOOL map_open(int c) { return (((BYTE *)0x005440e1)[c * 8] & (0x90 | 0x40 | 0x08)) == 0; }
+
+// Walkable cells through x,y along dx,dy (both ways); *walled = both ends are obstacles, not the map's edge.
+static int map_run(int x, int y, int dx, int dy, BOOL *walled)
+{
+	int n = 1;
+	*walled = TRUE;
+	for (int s = -1; s <= 1; s += 2) {
+		int px = x, py = y;
+		while (n <= 40) {
+			int nx = px + s * dx, ny = py + s * dy;
+			if (nx < 0 || nx > 79 || ny < 0 || ny > 79) { *walled = FALSE; break; }
+			if (!dm_step_ok(py * 80 + px, ny * 80 + nx)) break;
+			n++; px = nx; py = ny;
+		}
+	}
+	return n;
+}
+// The narrowest walled run through x,y with open ground the other way (0 = not narrow).
+static int map_narrow(int x, int y)
+{
+	static const int dir[4][2] = { { 1, 0 }, { 0, 1 }, { 1, 1 }, { 1, -1 } }, perp[4] = { 1, 0, 3, 2 };
+	int best = 0;
+	for (int k = 0; k < 4; k++) {
+		BOOL walled, w2;
+		int n = map_run(x, y, dir[k][0], dir[k][1], &walled);
+		if (!walled || n > MAP_NARROW) continue;
+		if (map_run(x, y, dir[perp[k]][0], dir[perp[k]][1], &w2) <= MAP_NARROW) continue;
+		if (!best || n < best) best = n;
+	}
+	return best;
+}
+// Steps from cell a to cell b, not entering cells marked `skip` in g_mapMark (0: none); DM_FAR if none
+// (b = -1: fill g_mapD from a everywhere, -1 where it can't go).
+static int map_walk(int a, int b, int skip)
+{
+	for (int c = 0; c < 6400; c++) g_mapD[c] = -1;
+	int head = 0, tail = 0;
+	g_mapD[a] = 0; g_mapQ[tail++] = (short)a;
+	while (head < tail) {
+		int u = g_mapQ[head++], ux = u % 80, uy = u / 80;
+		if (u == b) return g_mapD[u];
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int vx = ux + dx, vy = uy + dy;
+			if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (g_mapD[v] >= 0 || (skip && g_mapMark[v] == skip) || !dm_step_ok(u, v)) continue;
+			g_mapD[v] = (short)(g_mapD[u] + 1); g_mapQ[tail++] = (short)v;
+		}
+	}
+	return DM_FAR;
+}
+// Walking steps from side `side`'s nearest live unit to every cell, into g_mapD (-1: can't reach).
+static void map_from_side(int side)
+{
+	for (int c = 0; c < 6400; c++) g_mapD[c] = -1;
+	int head = 0, tail = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22);
+		if (f[0x2c] != side || f[0x31] == 2 || f[0x12] >= 7 || x < 0 || x > 79 || y < 0 || y > 79 || g_mapD[y * 80 + x] >= 0) continue;
+		g_mapD[y * 80 + x] = 0; g_mapQ[tail++] = (short)(y * 80 + x);
+	}
+	while (head < tail) {
+		int u = g_mapQ[head++], ux = u % 80, uy = u / 80;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int vx = ux + dx, vy = uy + dy;
+			if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (g_mapD[v] >= 0 || !dm_step_ok(u, v)) continue;
+			g_mapD[v] = (short)(g_mapD[u] + 1); g_mapQ[tail++] = (short)v;
+		}
+	}
+}
+static BOOL map_side_human(int side)
+{
+	for (int i = 1; i < 0x51; i++) if (FIG(i)[0x2c] == side && FIG(i)[0x13]) return TRUE;
+	return FALSE;
+}
+
+static void map_read(void)
+{
+	static BYTE narrow[6400];
+	static short cells[6400], ends[512];
+	static map_cross cand[64];
+	static short candId[64];
+	int ncand = 0, nid = 0;
+	g_ncross = 0;
+	memset(g_mapMark, 0, sizeof g_mapMark); memset(g_crossOf, 0, sizeof g_crossOf);
+	for (int c = 0; c < 6400; c++) narrow[c] = map_open(c) ? (BYTE)map_narrow(c % 80, c / 80) : 0;
+	for (int c0 = 0; c0 < 6400; c0++) {
+		if (!narrow[c0] || g_mapMark[c0]) continue;
+		// one crossing: the narrow cells touching this one
+		int id = ++nid, n = 0, sx = 0, sy = 0, width = MAP_NARROW, water = 0, ne = 0;
+		g_mapMark[c0] = (short)id; cells[n++] = (short)c0;
+		for (int k = 0; k < n; k++) {
+			int u = cells[k], ux = u % 80, uy = u / 80;
+			sx += ux; sy += uy;
+			if (narrow[u] < width) width = narrow[u];
+			for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+				int vx = ux + dx, vy = uy + dy;
+				if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+				int v = vy * 80 + vx;
+				if (BCELL(vx, vy)[1] & 0x40) water = 1;
+				if (!dm_step_ok(u, v) || g_mapMark[v] == id) continue;
+				if (narrow[v] && !g_mapMark[v]) { g_mapMark[v] = (short)id; cells[n++] = (short)v; }
+				else if (!narrow[v] && ne < 512) {   // the open ground at its ends
+					int seen = 0;
+					for (int e = 0; e < ne && !seen; e++) seen = ends[e] == v;
+					if (!seen) ends[ne++] = (short)v;
+				}
+			}
+		}
+		if (ne < 2) continue;   // a dead end
+		// the two ends on opposite sides: the furthest round with the crossing shut (ends on the same
+		// bank are a few steps apart along it; straight-line distance can't tell the sides apart)
+		int a = ends[0], b = a;
+		for (int pass = 0; pass < 2; pass++) {
+			int from = pass ? b : a, pick = from, bd = -1;
+			map_walk(from, -1, id);
+			for (int e = 0; e < ne; e++) {
+				int s = g_mapD[ends[e]], d = s < 0 ? 0x7fff : s - cheb(from % 80, from / 80, ends[e] % 80, ends[e] / 80);
+				if (d > bd) { bd = d; pick = ends[e]; }
+			}
+			if (pass) a = pick; else b = pick;
+		}
+		int open = map_walk(a, b, 0), shut = map_walk(a, b, id);
+		if (open == DM_FAR) continue;
+		int detour = shut == DM_FAR ? -1 : shut - open;
+		if (detour >= 0 && detour < MAP_DETOUR) continue;
+		map_cross m = { 0 };
+		m.x = (short)(sx / n); m.y = (short)(sy / n); m.cells = (short)n; m.width = (short)width; m.detour = (short)detour; m.water = (BYTE)water;
+		if (ncand < 64) { cand[ncand] = m; candId[ncand] = (short)id; ncand++; }
+	}
+	// the only ways first, then the longest way round (insertion sort: stable, so ties keep map order)
+	for (int i = 1; i < ncand; i++) {
+		map_cross m = cand[i];
+		short id = candId[i];
+		int key = m.detour < 0 ? 0x7fff : m.detour, j = i;
+		while (j > 0 && (cand[j - 1].detour < 0 ? 0x7fff : cand[j - 1].detour) < key) { cand[j] = cand[j - 1]; candId[j] = candId[j - 1]; j--; }
+		cand[j] = m; candId[j] = id;
+	}
+	g_ncross = ncand < MAP_MAX ? ncand : MAP_MAX;
+	for (int k = 0; k < g_ncross; k++) {
+		g_cross[k] = cand[k];
+		for (int c = 0; c < 6400; c++) if (g_mapMark[c] == candId[k]) g_crossOf[c] = (short)(k + 1);
+	}
+	for (int side = 1; side <= 2; side++) {
+		map_from_side(side);
+		for (int k = 0; k < g_ncross; k++) {
+			int best = -1;
+			for (int c = 0; c < 6400; c++)
+				if (g_crossOf[c] == k + 1 && g_mapD[c] >= 0 && (best < 0 || g_mapD[c] < best)) best = g_mapD[c];
+			g_cross[k].dist[side] = (short)best;
+		}
+	}
+	if (!g_blog) return;
+	blog("map: %d crossing%s (ground at most %d cells across between obstacles, going round at least %d steps longer)",
+		g_ncross, g_ncross == 1 ? "" : "s", MAP_NARROW, MAP_DETOUR);
+	for (int k = 0; k < g_ncross; k++) {
+		map_cross *m = &g_cross[k];
+		char round[32];
+		if (m->detour < 0) snprintf(round, sizeof round, "the only way");
+		else snprintf(round, sizeof round, "going round +%d steps", m->detour);
+		blog("  crossing %d at %d,%d: %d cells, %d across%s, %s; side 1%s %d steps from it, side 2%s %d", k + 1, m->x, m->y,
+			m->cells, m->width, m->water ? ", over water" : "", round, map_side_human(1) ? " (yours)" : "", m->dist[1],
+			map_side_human(2) ? " (yours)" : "", m->dist[2]);
+	}
+}
+
+// Every 200 steps: who holds each crossing (units within MAP_HOLD cells of it), logged when it changes.
+static void map_watch(void)
+{
+	if (g_btick % 200 || !g_ncross) return;
+	for (int k = 0; k < g_ncross; k++) {
+		int units[3] = { 0 }, men[3] = { 0 };
+		for (int i = 1; i < 0x51; i++) {
+			BYTE *f = FIG(i);
+			int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), s = f[0x2c];
+			if (s < 1 || s > 2 || f[0x31] == 2 || f[0x12] >= 7 || x < 0 || x > 79 || y < 0 || y > 79) continue;
+			BOOL close = FALSE;
+			for (int dy = -MAP_HOLD; dy <= MAP_HOLD && !close; dy++) for (int dx = -MAP_HOLD; dx <= MAP_HOLD && !close; dx++) {
+				int vx = x + dx, vy = y + dy;
+				close = vx >= 0 && vx < 80 && vy >= 0 && vy < 80 && g_crossOf[vy * 80 + vx] == k + 1;
+			}
+			if (close) { units[s]++; men[s] += FIG_S(i, 0x1a0); }
+		}
+		BYTE h = (BYTE)((units[1] ? 1 : 0) | (units[2] ? 2 : 0));
+		if (h == g_cross[k].holder && g_btick) continue;
+		g_cross[k].holder = h;
+		if (!g_blog) continue;
+		if (!h) blog("map: crossing %d at %d,%d is free", k + 1, g_cross[k].x, g_cross[k].y);
+		else if (h == 3) blog("map: crossing %d at %d,%d is fought over: side 1 %d units (%d men), side 2 %d units (%d men)", k + 1,
+			g_cross[k].x, g_cross[k].y, units[1], men[1], units[2], men[2]);
+		else blog("map: crossing %d at %d,%d is held by side %d%s with %d units (%d men)", k + 1, g_cross[k].x, g_cross[k].y, h,
+			map_side_human(h) ? " (yours)" : "", units[h], men[h]);
+	}
+}
+
 static void battle_reset(void)
 {
 	g_btick = 0;
@@ -11933,6 +12157,7 @@ static void __cdecl h_fig_loop(void)
 	g_lastStep = step;
 	if (fresh) battle_reset();
 	if (g_battleLog && fresh) battle_start();
+	if (fresh) map_read();
 	if (g_testMopUp && g_remote) {
 		int side = g_testMopUp;
 		g_testMopUp = 0;
@@ -11954,6 +12179,7 @@ static void __cdecl h_fig_loop(void)
 	if (fix_on(g_fixGroupMove)) gr_step();
 	fire_step();
 	o_fig_loop();
+	map_watch();
 	QueryPerformanceCounter(&c1);
 	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
 	g_btick++;
