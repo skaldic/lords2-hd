@@ -294,6 +294,23 @@ TEST(engage_only_with_the_odds)
 	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
 }
 
+TEST(engage_holds_the_line_next_to_an_obstacle)
+{
+	t_unit(8, 1, 20, 20, 2);                                        // pikemen in a gap, stakes beside them
+	t_flags(19, 21, 19, 21, FL_BLOCKED);
+	t_unit(9, 2, 23, 20, 3);                                        // a lone knight 3 cells off
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // they stay in the gap
+	t_unit_at(9, 21, 20);                                           // right beside them: fought
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	BCELL(19, 21)[1] = 0;                                           // in the open: they go for one 3 cells off
+	t_unit(8, 1, 20, 20, 2); t_unit_at(9, 23, 20);
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+}
+
 TEST(engage_counts_the_column_behind_the_first_enemy)
 {
 	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // two of our pikemen at a gap, 60 men

@@ -10683,6 +10683,7 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 // - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
 // - only with the odds: its soldiers near that enemy have at least as many men as the enemy has there and
 //   coming up behind (engage_odds_ok);
+// - one standing next to an obstacle (stakes, stones, water) holds that line: only an enemy beside it;
 // - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
 #define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
 #define ENG_RANGE_KNIGHT 4
@@ -10717,6 +10718,19 @@ static BOOL engage_odds_ok(int me, int e)
 	return ours >= theirs;
 }
 
+// The user's rule: a unit standing next to an obstacle (a cell it can't step onto: stakes, stones, a hedge or
+// forest, water, a cliff; not the map's edge) is holding a line there, so it fights only an enemy right
+// beside it and never steps out to meet one.
+static BOOL engage_by_obstacle(int x, int y)
+{
+	for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+		int vx = x + dx, vy = y + dy;
+		if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+		if (!dm_step_ok(y * 80 + x, vy * 80 + vx)) return TRUE;
+	}
+	return FALSE;
+}
+
 // Called from h_idle for an idle unit.
 static void engage_idle(int me)
 {
@@ -10735,6 +10749,7 @@ static void engage_idle(int me)
 	g_eLastIdle[me] = g_btick;
 	engage_forget(me);
 	if ((unsigned)(me + g_btick) % 8) return;
+	BOOL held = engage_by_obstacle(x, y);   // holding a line by stakes, stones or water: only one beside it
 	int range = f[0x12] == 6 ? ENG_RANGE_KNIGHT : ENG_RANGE;
 	int best = 0, bestD = 99;
 	for (int e = 1; e < 0x51; e++) {
@@ -10749,7 +10764,7 @@ static void engage_idle(int me)
 		             // anyway: no bait in that)
 		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
 		if (n >= 2 && cheb(x, y, ex, ey) > 1 && t[0x31] != 4) continue;
-		if (cheb(x, y, ex, ey) > 1 && !engage_odds_ok(me, e)) continue;   // outnumbered there: holds its ground
+		if (cheb(x, y, ex, ey) > 1 && (held || !engage_odds_ok(me, e))) continue;   // holds its ground
 		g_dmMaxDepth = r + 1;
 		int d = dm_dist(e, me);
 		g_dmMaxDepth = 0x7fff;
