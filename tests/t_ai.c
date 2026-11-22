@@ -339,6 +339,27 @@ TEST(ai_hard_melee_in_place_waits_for_the_volleys_then_charges_together)
 	CHECK_EQ(G_THINK(2), 0);                                        // (not the archers)
 }
 
+TEST(ai_hard_melee_turned_to_attack_late_still_advances_first)
+{
+	t_ai_battle(1); AI_RATIO = 0;                                   // defending for a long while
+	t_unit(4, 2, 20, 40, 4); t_group(4, 2, 3, 1, 20, 40);
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+	g_btick = 6000;
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);
+	G_PHASE(4) = 30;                                                // (its 30th think)
+	AI_RATIO = 30; g_btick = 6200;                                  // now it attacks
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 4);                   // it advances, no charge yet
+	g_btick = 6200 + AI_CHARGE_STEPS - 1;
+	GRP_S(4, 0x1e) = 30; t_unit_at(4, 30, 40);
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0);
+	g_btick = 6200 + AI_CHARGE_STEPS;                               // about 60 s of attacking: it charges anyway
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
+}
+
 TEST(ai_hard_melee_charges_at_once_when_hit_in_attack)
 {
 	t_ai_battle(1); AI_RATIO = 30;

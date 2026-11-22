@@ -9664,13 +9664,14 @@ static void ai_archers_think(int g)
 //     and never more than that ahead of the side's rearmost melee group, and stops AI_CHARGE_DIST cells
 //     from the enemy. The side charges when every melee group is in place (within AI_CHARGE_DIST +
 //     AI_LINE_SLACK) and its archers have had AI_VOLLEY_STEPS to shoot (at once without archers), or when
-//     any of its groups is hit, any of its units fights, or after AI_CHARGE_TURNS thinks;
+//     any of its groups is hit, any of its units fights, or AI_CHARGE_STEPS (about 60 s) after it began
+//     attacking (counted from then, so a defender that turns to attack still advances first);
 //   - defence: it holds. The side charges when AI_DEF_UNITS enemy melee units are within AI_DEF_TRIGGER
 //     of its units, as many of its units fight, or it has lost AI_DEF_LOSS percent of its men.
 #define AI_CHARGE_DIST 6
 #define AI_LINE_SLACK 2
 #define AI_ADVANCE_STEP 6
-#define AI_CHARGE_TURNS 25
+#define AI_CHARGE_STEPS 5000
 #define AI_VOLLEY_STEPS 400
 #define AI_DEF_TRIGGER 6
 #define AI_DEF_UNITS 3
@@ -9681,6 +9682,7 @@ static ai_fn_t o_ai_melee2, o_ai_melee34;
 static BOOL g_aiCharge[3];           // the side's melee charges (per battle)
 static int g_aiMenStart[3];          // the side's computer men at its first AI step
 static unsigned g_aiReadySince[3];   // the step its melee was first in place (0 = not yet)
+static unsigned g_aiAttackSince[3];  // the step its melee began attacking (0 = defending)
 
 static int ai_side_men(int side)
 {
@@ -9738,12 +9740,15 @@ static void ai_melee_think(int g)
 		if (!f[0x16a]) { sx += FIG_S(i, 0x20); sy += FIG_S(i, 0x22); units++; }
 	}
 	if (*(int *)0x004eea98 > *(int *)0x0057c8b4) {   // attack
-		if (!g_aiReadySince[side] && groups && farthest <= AI_CHARGE_DIST + AI_LINE_SLACK) g_aiReadySince[side] = g_btick ? g_btick : 1;
+		// (the steps are kept as step + 1, so 0 means not yet)
+		if (!g_aiAttackSince[side]) g_aiAttackSince[side] = g_btick + 1;
+		if (!g_aiReadySince[side] && groups && farthest <= AI_CHARGE_DIST + AI_LINE_SLACK) g_aiReadySince[side] = g_btick + 1;
+		unsigned attacking = g_btick + 1 - g_aiAttackSince[side];
 		char why[64] = "";
 		if (hit) snprintf(why, sizeof why, "hit");
 		else if (fighting) snprintf(why, sizeof why, "%d units fighting", fighting);
-		else if (GRP_S(g, 0x1a) >= AI_CHARGE_TURNS) snprintf(why, sizeof why, "think %d", GRP_S(g, 0x1a));
-		else if (g_aiReadySince[side] && (!archers || g_btick - g_aiReadySince[side] >= AI_VOLLEY_STEPS))
+		else if (attacking >= AI_CHARGE_STEPS) snprintf(why, sizeof why, "attacking for %u steps", attacking);
+		else if (g_aiReadySince[side] && (!archers || g_btick + 1 - g_aiReadySince[side] >= AI_VOLLEY_STEPS))
 			snprintf(why, sizeof why, "in place, %d cells away", farthest);
 		if (why[0]) { ai_side_charges(side, why); ai_game_charge(g); return; }
 		int tx, ty, x, y;
@@ -9756,6 +9761,7 @@ static void ai_melee_think(int g)
 			ai_kind_name(GRP_B(g, 0x08)), x, y, want, farthest);
 		return;
 	}
+	g_aiAttackSince[side] = 0;
 	for (int i = 1; i < 0x51; i++) {   // defence: enemy melee units close to any of the side's units
 		BYTE *f = FIG(i);
 		if (!f[0x2c] || f[0x2c] == side || f[0x31] == 2 || f[0x12] >= 7 || f[0x16a]) continue;
@@ -10818,6 +10824,7 @@ static void battle_reset(void)
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
 	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
 	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
+	memset(g_aiAttackSince, 0, sizeof g_aiAttackSince);
 	// F10, Battles: the fixes switched between battles only, never in the middle of one
 	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
 	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];
