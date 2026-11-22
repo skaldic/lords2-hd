@@ -9518,7 +9518,7 @@ static ai_fn_t o_strength;
 #define AI_SALLY 256
 #define AI_ALL 0x1ff
 // Legendary's sally (AI_SALLY): after the same wait, a defender attacks unless it's more than AI_SALLY_BAND
-// below the threshold (Hard: AI_DEF_EVEN), so a player who only holds his ground is attacked too.
+// below the threshold (Hard: AI_DEF_EVEN), so a player who only holds their ground is attacked too.
 #define AI_SALLY_BAND 30
 static int g_aiParts = AI_ALL;
 
