@@ -8308,6 +8308,8 @@ static void __cdecl h_mini_rows(int row0, int n)
 		g_wzMiniOldN = 0; g_wzMiniR[0] = -1; g_wzMiniCw = cw; g_wzMiniCh = ch;
 	}
 	if (memcmp(r, g_wzMiniR, sizeof r)) {   // the part moved: its last frame waits for its ground
+		// and every row is drawn now, not a few a frame: a quick zoom showed the frame half old, half new
+		row0 = 0; n = ch;
 		if (g_wzMiniR[0] >= 0)
 			for (int row = max(0, g_wzMiniR[1]); row <= min(ch - 1, g_wzMiniR[3]); row++)
 				for (int c = max(0, g_wzMiniR[0]); c <= min(cw - 1, g_wzMiniR[2]); c++)
