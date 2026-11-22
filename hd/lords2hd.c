@@ -9527,12 +9527,17 @@ static BOOL ai_part(int p) { return (g_aiParts & p) && ai_on(); }
 static BOOL ai_legend(int p) { return g_aiLevel >= 2 && ai_part(p); }   // one of Legendary's own rules
 
 // One weighing: raw = without the random term, rolled = with it; returns the percentage to keep.
+// A Legendary attack that began below the threshold (the sally) goes back to defence only AI_MODE_SLACK
+// below where it began, not at once when the strength dips a point.
+static int g_aiBackAt;             // attack turns to defence below this
 static int ai_mode_step(int raw, int rolled, int thr)
 {
-	if (!g_aiDecided) { g_aiDecided = TRUE; g_aiAttack = rolled > thr; g_aiWeighs = 0; }
-	else if (g_aiAttack && raw < thr - AI_MODE_SLACK) { g_aiAttack = FALSE; g_aiWeighs = 0; }
+	if (!g_aiDecided) { g_aiDecided = TRUE; g_aiAttack = rolled > thr; g_aiWeighs = 0; g_aiBackAt = thr - AI_MODE_SLACK; }
+	else if (g_aiAttack && raw < g_aiBackAt) { g_aiAttack = FALSE; g_aiWeighs = 0; }
 	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiWeighs >= AI_DEF_WAIT && raw >= thr - (ai_legend(AI_SALLY) ? AI_SALLY_BAND : AI_DEF_EVEN)))) {
 		g_aiAttack = TRUE; g_aiWeighs = 0;
+		g_aiBackAt = thr - AI_MODE_SLACK;
+		if (ai_legend(AI_SALLY) && raw - AI_MODE_SLACK < g_aiBackAt) g_aiBackAt = raw - AI_MODE_SLACK;
 	}
 	g_aiWeighs++;
 	return g_aiAttack ? max(raw, thr + 1) : min(raw, thr);
@@ -9737,19 +9742,23 @@ static int ai_nearest_enemy_at(int side, int x, int y, int *ux, int *uy, BOOL me
 	return best;
 }
 
+static BOOL g_aiChargeAtt[3];        // it charged from attack (Legendary's target picks; per battle)
 static void ai_side_charges(int side, const char *why)
 {
 	g_aiCharge[side] = TRUE;
+	g_aiChargeAtt[side] = g_aiAttackSince[side] != 0;
 	for (int h = 1; h < 0x51; h++)
 		if (ai_melee_group(h, side) && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;   // they all think at their next step
 	if (g_blog) blog("ai %s: side %d charges (%s)", kAiLevel[g_aiLevel], side, why);
 }
 
 // Legendary's charge. Once its side charges, each melee group does the first of:
-//   - regroup (AI_REGROUP): down to AI_REGROUP_PCT percent of the men it had at its first think, it falls
+//   - regroup (AI_REGROUP): down to AI_REGROUP_PCT percent of the men it had at its first think, while the
+//     enemy (all its units, the player's too) has at least as many men as its side, it falls
 //     back AI_REGROUP_BACK cells behind its side's archers (or straight away from the enemy) and stays there
 //     until the enemy has fewer than AI_REJOIN_PCT percent of the side's men left; then it charges again;
-//   - target (AI_TARGETS): it walks to the enemy group it picked (ai_pick_target) and charges once within
+//   - target (AI_TARGETS, only when the side charged from attack: a defending side fights what came at it):
+//     it walks to the enemy group it picked (ai_pick_target) and charges once within
 //     AI_TARGET_REACH cells of it, or at once when an enemy unit is within 2 cells of one of its units or it
 //     is hit; the game's charge then sends each unit at the nearest enemy, which is the target's;
 //   - the game's charge, as Hard.
@@ -9782,15 +9791,23 @@ static int ai_group_type(int h)   // the unit type of the group's first live uni
 // The enemy group melee group g goes for: the lowest score of the distance between centres, less 8 for
 // archers (12 for knights going for them), less 6 for a group its type counters and plus 8 for one that
 // counters it (ai_counter), less 4 for one with under half its men, plus 4 for each other group of its side
-// already going for it.
+// already going for it. Only groups at most AI_TARGET_SLACK cells farther than the nearest one count, so a
+// group never walks across the field past the enemies at hand.
+#define AI_TARGET_SLACK 10
 static int ai_pick_target(int g)
 {
-	int side = GRP_B(g, 0x00), my = ai_group_type(g), myMen = ai_group_men(g), best = 0, bs = 1 << 30;
+	int side = GRP_B(g, 0x00), my = ai_group_type(g), myMen = ai_group_men(g), best = 0, bs = 1 << 30, nearest = 1 << 30;
+	for (int h = 1; h < 0x51; h++)
+		if (GRP_B(h, 0x00) && GRP_B(h, 0x00) != side && GRP_B(h, 0x02) && ai_group_type(h) >= 0) {
+			int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+			if (d < nearest) nearest = d;
+		}
 	for (int h = 1; h < 0x51; h++) {
 		if (!GRP_B(h, 0x00) || GRP_B(h, 0x00) == side || !GRP_B(h, 0x02)) continue;
 		int t = ai_group_type(h);
 		if (t < 0) continue;
 		int s = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+		if (s > nearest + AI_TARGET_SLACK) continue;
 		if (GRP_B(h, 0x08) == 1) s -= my == 6 ? 12 : 8;
 		if (my >= 0 && ai_counter(my, t) > 100) s -= 6;
 		if (my >= 0 && ai_counter(t, my) > 100) s += 8;
@@ -9816,14 +9833,16 @@ static void ai_charge(int g)
 	int side = GRP_B(g, 0x00);
 	if (ai_legend(AI_REGROUP) && g_aiGrpMen[g]) {
 		int men = ai_group_men(g);
-		if (!g_aiBack[g] && men * 100 < g_aiGrpMen[g] * AI_REGROUP_PCT) {
+		if (!men) return;   // (nothing left of it)
+		int enemy = 0, own = ai_side_men(side);
+		for (int i = 1; i < 0x51; i++)   // (all the enemy's units: the player's too)
+			if (FIG(i)[0x2c] && FIG(i)[0x2c] != side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) enemy += FIG_S(i, 0x1a0);
+		// (only while the side is losing: with more men than the enemy, it fights on)
+		if (!g_aiBack[g] && men * 100 < g_aiGrpMen[g] * AI_REGROUP_PCT && enemy >= own) {
 			g_aiBack[g] = 1;
 			if (g_blog) blog("ai %s g%d %s: falls back to regroup (%d of %d men)", kAiLevel[g_aiLevel], g, ai_kind_name(GRP_B(g, 0x08)), men, g_aiGrpMen[g]);
 		}
 		if (g_aiBack[g] == 1) {
-			int enemy = 0, own = ai_side_men(side);
-			for (int i = 1; i < 0x51; i++)   // (all the enemy's units: the player's too)
-				if (FIG(i)[0x2c] && FIG(i)[0x2c] != side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) enemy += FIG_S(i, 0x1a0);
 			if (enemy * 100 < own * AI_REJOIN_PCT) {
 				g_aiBack[g] = 2;   // (once)
 				if (g_blog) blog("ai %s g%d: rejoins (the enemy has %d men to the side's %d)", kAiLevel[g_aiLevel], g, enemy, own);
@@ -9841,7 +9860,7 @@ static void ai_charge(int g)
 			}
 		}
 	}
-	if (!g_aiCharged[g] && ai_legend(AI_TARGETS)) {
+	if (!g_aiCharged[g] && g_aiChargeAtt[side] && ai_legend(AI_TARGETS)) {
 		int h = g_aiTarget[g];
 		if (!h || !GRP_B(h, 0x02) || ai_group_type(h) < 0) {
 			h = g_aiTarget[g] = (BYTE)ai_pick_target(g);
@@ -11008,7 +11027,7 @@ static void battle_reset(void)
 	g_btick = 0;
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
 	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
-	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
+	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiChargeAtt, 0, sizeof g_aiChargeAtt); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
 	memset(g_aiAttackSince, 0, sizeof g_aiAttackSince);
 	memset(g_aiGrpMen, 0, sizeof g_aiGrpMen); memset(g_aiTarget, 0, sizeof g_aiTarget);
 	memset(g_aiCharged, 0, sizeof g_aiCharged); memset(g_aiBack, 0, sizeof g_aiBack);

@@ -199,6 +199,8 @@ TEST(ai_hard_defender_attacks_after_a_long_wait_only_when_about_even)
 	CHECK(t_weigh_at(-5, -10) <= 5);                        // defence
 	for (int i = 1; i < AI_DEF_WAIT; i++) CHECK(t_weigh_at(-5, 21) <= 5);
 	CHECK_EQ(t_weigh_at(-5, 0), 6);                         // about 70 s of waiting: it attacks
+	CHECK_EQ(t_weigh_at(-15, 0), 6);                        // (20 below the threshold: still attacking)
+	CHECK(t_weigh_at(-16, 0) <= 5);                         // 21 below: back to defence, as before
 	t_ai_battle(1);
 	CHECK(t_weigh_at(-11, 0) <= 5);                         // clearly weaker: it keeps waiting
 	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-11, 21) <= 5);
@@ -210,6 +212,9 @@ TEST(ai_legendary_weaker_defender_sallies_after_the_wait)
 	CHECK(t_weigh_at(-15, -10) <= 5);                       // 20 below the threshold: defence
 	for (int i = 1; i < AI_DEF_WAIT; i++) CHECK(t_weigh_at(-15, 21) <= 5);
 	CHECK_EQ(t_weigh_at(-15, 0), 6);                        // about 70 s: it attacks (Hard keeps waiting)
+	CHECK_EQ(t_weigh_at(-16, 0), 6);                        // a dip does not call it back
+	CHECK_EQ(t_weigh_at(-35, 0), 6);                        // (20 below where it began: still attacking)
+	CHECK(t_weigh_at(-36, 0) <= 5);                         // beaten: back to defence
 	t_ai_battle(2);
 	CHECK(t_weigh_at(-26, 0) <= 5);                         // 31 below: hopeless, it keeps waiting
 	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-26, 21) <= 5);
@@ -399,6 +404,7 @@ TEST(ai_hard_defence_holds_until_the_enemy_is_close_or_it_bleeds)
 	t_human(t_unit(8, 1, 46, 42, 6));
 	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 1);                                        // three: the side charges
+	CHECK(!g_aiChargeAtt[2]);                                       // (from defence)
 	t_ai_battle(1); AI_RATIO = 0;
 	t_unit_at(6, 70, 40); t_unit_at(7, 70, 41); t_unit_at(8, 70, 42);   // far away now
 	t_ai_think_melee(4);
@@ -485,6 +491,9 @@ TEST(ai_legendary_knights_go_for_the_archers_and_pikemen_for_the_knights)
 	CHECK_EQ(ai_pick_target(5), 8);                                 // the pikemen for the knights (not the swords, 10 away)
 	g_aiCharge[2] = TRUE; AI_RATIO = 30;
 	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);                   // a defending side's charge: no target walk
+	g_aiCharged[4] = 0; g_aiChargeAtt[2] = TRUE;                    // charged from attack
+	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 4); CHECK_EQ(t_ordX, 58); CHECK_EQ(t_ordY, 44);   // walks to its target
 	CHECK_EQ(g_aiTarget[4], 7);
 	GRP_S(4, 0x1e) = 55; GRP_S(4, 0x20) = 43; t_unit_at(4, 55, 43);  // within reach
@@ -494,14 +503,38 @@ TEST(ai_legendary_knights_go_for_the_archers_and_pikemen_for_the_knights)
 	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);                   // and stays with it
 }
 
+TEST(ai_legendary_targets_only_within_reach_of_the_nearest_enemies)
+{
+	t_ai_battle(2);
+	t_typed(t_unit(4, 2, 40, 40, 4), 6, 30); t_group(4, 2, 4, 1, 40, 40);              // computer knights
+	t_typed(t_human(t_unit(6, 1, 45, 40, 6)), 3, 30); t_group(6, 1, 3, 1, 45, 40);     // your swords, 5 cells away
+	t_typed(t_human(t_archer(7, 1, 56, 40, 7)), 5, 30); t_group(7, 1, 1, 1, 56, 40);   // your archers, 16 away
+	CHECK_EQ(ai_pick_target(4), 6);                                 // past the swords + 10: not across the field
+	t_unit_at(7, 55, 40); GRP_S(7, 0x1e) = 55;                      // 15 away: within reach
+	CHECK_EQ(ai_pick_target(4), 7);
+}
+
+TEST(ai_legendary_group_with_no_men_left_does_nothing)
+{
+	t_ai_battle(2); AI_RATIO = 30;
+	t_typed(t_unit(4, 2, 40, 40, 4), 3, 40); t_group(4, 2, 3, 1, 40, 40);
+	t_typed(t_human(t_unit(6, 1, 43, 40, 6)), 3, 100); t_group(6, 1, 3, 1, 43, 40);
+	g_aiCharge[2] = TRUE;
+	t_ai_think_melee(4);                                            // (its men counted: 40)
+	CHECK_EQ(t_nCharged, 1);
+	t_men(4, 0);
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 0); CHECK_EQ(g_aiBack[4], 0);   // no fall back, no order
+}
+
 TEST(ai_legendary_target_walk_charges_at_once_when_engaged_and_hard_has_none)
 {
 	t_ai_battle(2);
 	t_typed(t_unit(4, 2, 40, 40, 4), 6, 30); t_group(4, 2, 4, 1, 40, 40);
-	t_typed(t_human(t_archer(7, 1, 60, 40, 7)), 5, 30); t_group(7, 1, 1, 1, 60, 40);
+	t_typed(t_human(t_archer(7, 1, 52, 40, 7)), 5, 30); t_group(7, 1, 1, 1, 52, 40);
 	t_typed(t_human(t_unit(6, 1, 42, 40, 6)), 4, 30); t_group(6, 1, 2, 1, 42, 40);     // pikemen 2 cells away
 	CHECK_EQ(ai_pick_target(4), 7);                                 // (pikes counter knights: it goes for the archers)
-	g_aiCharge[2] = TRUE; AI_RATIO = 30;
+	g_aiCharge[2] = g_aiChargeAtt[2] = TRUE; AI_RATIO = 30;
 	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_ordG, 0);                   // engaged on the way: charges where it is
 	t_ai_battle(1);                                                 // Hard: the game's charge straight away
@@ -526,7 +559,7 @@ TEST(ai_legendary_line_keeps_closing_in_under_fire_from_afar)
 	CHECK_EQ(t_nCharged, 0);
 	t_men(4, 25);                                                   // 11%: it charges
 	t_ai_think_melee(4);
-	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]);
+	CHECK_EQ(t_nCharged, 1); CHECK(g_aiCharge[2]); CHECK(g_aiChargeAtt[2]);   // (from attack)
 	t_ai_battle(2); AI_RATIO = 30; t_men(4, 30); g_aiParts = AI_ALL & ~AI_TARGETS;
 	t_unit_at(4, 39, 40); GRP_S(4, 0x1e) = 39;                      // 11 cells away: hit, it charges
 	GRP_B(2, 0x0c) = 50; GRP_S(2, 0x0a) = 6;
@@ -544,7 +577,10 @@ TEST(ai_legendary_beaten_group_falls_back_and_rejoins_when_the_enemy_is_spent)
 	g_aiCharge[2] = TRUE;
 	t_ai_think_melee(4);                                            // (its men counted: 40)
 	CHECK_EQ(t_nCharged, 1);
-	t_men(4, 13);                                                   // down to 32%
+	t_men(4, 13);                                                   // down to 32%, but the side has 103 men to your 100
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1); CHECK_EQ(g_aiBack[4], 0);              // winning: it fights on
+	t_men(6, 103);                                                  // as many as the side: it falls back
 	t_ai_think_melee(4);
 	CHECK_EQ(t_nCharged, 0); CHECK_EQ(t_ordG, 4);
 	CHECK_EQ(t_ordX, 26); CHECK_EQ(t_ordY, 40);                     // 4 cells behind its archers

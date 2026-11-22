@@ -103,7 +103,14 @@ Bugs of the original game are fixed in single player, each with its own switch u
 Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal is the game's own battle AI.
 On Hard, in field battles, the computer picks attack or defence once instead of switching every few
 seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), and moves its
-soldiers up together and charges together. Legendary is Hard for now.
+soldiers up together and charges together. Legendary plays like Hard, and also:
+- when it attacks, its knights ride for your archers and its pikemen for your knights;
+- shot at from afar, it keeps closing in instead of charging at once;
+- a beaten group falls back behind its archers while the battle goes badly, and comes back to finish you off;
+- its archers shoot your archers first;
+- a weaker army still attacks after a long wait, instead of waiting for you forever;
+- units counter each other, for both sides: pikemen hit knights twice as hard and knights hit pikemen softer,
+  swordsmen are strong against pikemen and maces against knights.
 
 In multiplayer they stay off, so everyone plays the same rules, unless every player sets
 `MultiplayerFixes=1`.

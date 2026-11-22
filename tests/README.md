@@ -1,6 +1,6 @@
 # Tests
 
-Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 119 tests in about 8 seconds. They need only the compiler
+Unit tests for the HD patch (`hd\lords2hd.c`) and its tools: 122 tests in about 8 seconds. They need only the compiler
 that builds the patch (llvm-mingw, 32-bit). The five hook tests also need a copy of the game's exe.
 
 ```powershell
@@ -26,7 +26,8 @@ tests\run.ps1 -GameExe "D:\L2HD-test\Lords of the Realm II\Lords2.exe" -Integrat
   prints how often the computer switched between attack and defence, its charges, the first contact, the seconds its
   archers stood isolated or in melee, each side's shots, and the men left on each side. `-Ini Game.BattleAI=1`
   plays Hard and `Game.BattleAI=2` Legendary; `Debug.AiParts` (a sum of 1 steady mode, 2 archers, 4 melee, 8 unit
-  counters, 16 target picks, 32 advancing under fire, 64 regrouping, 128 the archers' target) runs only those rules.
+  counters, 16 target picks, 32 advancing under fire, 64 regrouping, 128 the archers' target, 256 the weaker
+  defender's late attack) runs only those rules.
   - `-Roles cpuatt,cpudef`: the computer attacks (you defend, the screen's default) or defends; `-Players
     stand,charge`: you stand, or Mop-Up at the start; maps include the sieges `palisade`, `acre` and `keep`.
   - Battles end at a wall-clock cut, so under load they reach different battle seconds: `-Logs <saved logs>
