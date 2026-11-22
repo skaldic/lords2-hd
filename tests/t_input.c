@@ -104,7 +104,7 @@ static void t_zoomed_battle(void)
 {
 	t_wzKeep.hwnd = g_hwnd; t_wzKeep.extra = g_extra; t_wzKeep.showW = g_showW; t_wzKeep.scale = g_scale; t_wzKeep.integer = g_integerScale;
 	g_hwnd = NULL; g_extra = 0; g_showW = GAME_W; g_scale = SCALE_SMOOTH; g_integerScale = FALSE;
-	g_off = 960; g_battleZoom = TRUE; g_wheelZoom = TRUE; g_mapSticky = TRUE; g_menuOpen = 0; g_fieldDrag = FALSE;
+	g_off = 960; g_battleZoom = TRUE; g_wheelZoom = 2; g_mapSticky = TRUE;   // (up to 4x) g_menuOpen = 0; g_fieldDrag = FALSE;
 	*(int *)0x0052af94 = 3;          // the map mode
 	*(BYTE *)0x004eac50 = 41;        // the battlefield
 	*(int *)0x0057c8fc = 2;          // in a battle
@@ -175,12 +175,35 @@ TEST(wheel_zoom_only_on_the_bare_battlefield)
 	g_menuOpen = 1;                      // the F10 panel
 	CHECK(!wz_shown());
 	g_menuOpen = 0;
-	g_wheelZoom = FALSE;                 // switched off
+	g_wheelZoom = 0;                     // switched off
 	CHECK(!wz_shown());
 	CHECK(!wz_wheel(MAKEWPARAM(0, WHEEL_DELTA), MAKELPARAM(100, 200)));
-	g_wheelZoom = TRUE;
+	g_wheelZoom = 2;
 	g_battleZoom = FALSE;                // battles at normal size: nothing to zoom
 	CHECK(!wz_shown());
+	t_zoomed_battle_end();
+}
+
+/* WheelZoom=1 (the default) stops at x2, the game's normal size; 2 goes on to x4. The F10 switch goes 2x -> 4x -> off
+ * -> 2x, and from 4x down to 2x a part zoomed in further is shown at x2. */
+TEST(wheel_zoom_stops_at_the_setting)
+{
+	t_zoomed_battle();
+	g_wheelZoom = 1;
+	wz_wheel(MAKEWPARAM(0, 20 * WHEEL_DELTA), MAKELPARAM(100, 200));
+	CHECK_EQ(kWzStep[g_wzLevel], 2.0f);
+	g_wheelZoom = 2;
+	wz_wheel(MAKEWPARAM(0, 20 * WHEEL_DELTA), MAKELPARAM(100, 200));
+	CHECK_EQ(kWzStep[g_wzLevel], 4.0f);
+	menu_change(M_WHEEL);                // 4x -> off
+	CHECK_EQ(g_wheelZoom, 0);
+	CHECK(!wz_shown());
+	menu_change(M_WHEEL);                // off -> 2x
+	CHECK_EQ(g_wheelZoom, 1);
+	CHECK_EQ(kWzStep[g_wzLevel], 2.0f);
+	CHECK(wz_shown());
+	menu_change(M_WHEEL);                // 2x -> 4x
+	CHECK_EQ(g_wheelZoom, 2);
 	t_zoomed_battle_end();
 }
 

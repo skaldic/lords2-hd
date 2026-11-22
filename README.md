@@ -223,7 +223,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Battles | Improved engagement | On, Off | On | `EngageFix` |
 | Battles | Mop-Up fix | On, Off | On | `MopUpFix` |
 | Battles | Battle zoom-out * | On, Off | On | `BattleZoom` |
-| Battles | Wheel zoom | On, Off | On | `WheelZoom` |
+| Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets

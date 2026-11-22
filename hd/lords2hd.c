@@ -160,7 +160,8 @@ static BOOL gpu_drawing(void);  // the GPU draws the window (or is about to try)
 static double gpu_ms(void);     // the card's time for a recent frame
 static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
 static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
-static BOOL g_wheelZoom = TRUE; // [Display] WheelZoom: the wheel zooms a zoomed-out battle's field in and out (wz_wheel)
+static int g_wheelZoom = 1;     // [Display] WheelZoom: the wheel zooms a zoomed-out battle's field in and out (wz_wheel): 0 off,
+                                // 1 up to 2x (the game's normal size), 2 up to 4x
 static BOOL g_perfLogOn;        // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
@@ -223,7 +224,7 @@ static void read_settings(void)
 	if (g_statsOn < 0 || g_statsOn > 2) g_statsOn = 0;
 	if (GetPrivateProfileIntA("Debug", "Stats", 0, g_iniPath)) g_statsOn = 2;
 	g_miniPop = GetPrivateProfileIntA("Display", "MinimapPop", 0, g_iniPath) != 0;
-	g_wheelZoom = GetPrivateProfileIntA("Display", "WheelZoom", 1, g_iniPath) != 0;
+	g_wheelZoom = max(0, min(2, (int)GetPrivateProfileIntA("Display", "WheelZoom", 1, g_iniPath)));
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -3835,7 +3836,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		break;
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
 	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
-	case M_WHEEL: snprintf(v, n, "%s", g_wheelZoom ? "On" : "Off"); break;
+	case M_WHEEL: snprintf(v, n, "%s", g_wheelZoom == 2 ? "Up to 4x" : g_wheelZoom ? "Up to 2x (normal size)" : "Off"); break;
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: { // from the next battle
 		int f = i - M_BF_PATH;
 		snprintf(v, n, "%s", g_bfSet[f] ? "On" : "Off");
@@ -3849,6 +3850,8 @@ static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
 	"Wheel zoom", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
+static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
+static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3911,7 +3914,10 @@ static void resound_sample(void)
 		break;
 	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
 	case M_MINIPOP: g_miniPop = !g_miniPop; ini_set("Display", "MinimapPop", g_miniPop); break;
-	case M_WHEEL: g_wheelZoom = !g_wheelZoom; ini_set("Display", "WheelZoom", g_wheelZoom); break;   // (off: the whole field again)
+	case M_WHEEL:   // 2x -> 4x -> off (the whole field again) -> 2x; down to 2x from further in: shown at 2x
+		g_wheelZoom = (g_wheelZoom + 1) % 3; ini_set("Display", "WheelZoom", g_wheelZoom);
+		if (g_wzLevel > wz_top()) InterlockedExchange(&g_wzLevel, wz_top());
+		break;
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
 		int f = i - M_BF_PATH;
 		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);
@@ -4764,7 +4770,7 @@ static BOOL battle_half_drawn(const BYTE *frame, int pitch, int fh, const PALETT
 
 // ---------------------------------------------------------------------------------------------
 // Wheel zoom in battles ([Display] WheelZoom): the mouse wheel zooms the zoomed-out battle's field in, up
-// to four times, and back out, around the point under the cursor. Presentation only: the game draws the
+// to twice (the game's normal size) or four times, and back out, around the point under the cursor. Presentation only: the game draws the
 // same frame and sees the same mouse it would without it (each click mapped back through the zoom,
 // client_to_game), so nothing changes for the game or in multiplayer. The top bar and the side panel stay
 // as they are; only the field is enlarged. Shown on the bare battlefield (screen 41) only: a drop-down,
@@ -4774,6 +4780,8 @@ static BOOL battle_half_drawn(const BYTE *frame, int pitch, int fh, const PALETT
 static const float kWzStep[] = { 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f };
 #define WZ_STEPS ((int)(sizeof kWzStep / sizeof kWzStep[0]))
 static volatile LONG g_wzLevel;   // index into kWzStep; 0 = the whole field
+// The furthest step in: x2 shows the battlefield at the game's normal size (WheelZoom=1), x4 twice that (2).
+static int wz_top(void) { return g_wheelZoom >= 2 ? WZ_STEPS - 1 : 3; }
 static volatile float g_wzX, g_wzY;   // the shown part's top-left, in field px of the zoomed-out picture (lw x lh)
 static int g_wzAcc;               // wheel turn not yet a whole notch (smooth-scrolling wheels send less)
 #define WZ_CELL 32                // a battle cell, in field px: the game's edge scroll moves its view a cell a frame
@@ -4913,7 +4921,7 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 	if (px < 0 || px >= fw || py < 0 || py >= fh) { px = fw / 2; py = fh / 2; }   // off the field: about its middle
 	g_wzAcc += (short)HIWORD(wp);
 	int from = g_wzLevel, to = from;
-	while (g_wzAcc >= WHEEL_DELTA) { g_wzAcc -= WHEEL_DELTA; if (to < WZ_STEPS - 1) to++; }
+	while (g_wzAcc >= WHEEL_DELTA) { g_wzAcc -= WHEEL_DELTA; if (to < wz_top()) to++; }
 	while (g_wzAcc <= -WHEEL_DELTA) { g_wzAcc += WHEEL_DELTA; if (to > 0) to--; }
 	if (to != from) {
 		float x = from ? g_wzX : 0, y = from ? g_wzY : 0;

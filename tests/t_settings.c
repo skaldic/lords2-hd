@@ -117,7 +117,7 @@ TEST(settings_without_an_ini_are_the_documented_defaults)
 	CHECK_EQ(g_frameLimit, 120);
 	CHECK_EQ(g_statsOn, 0);
 	CHECK(!g_miniPop);
-	CHECK(g_wheelZoom);                         // the wheel zooms a battle's field
+	CHECK_EQ(g_wheelZoom, 1);                   // the wheel zooms a battle's field, up to 2x
 	CHECK(g_hdScreens && g_hdTiles && g_hdVideos && g_hdText && g_shoreWaves);
 	CHECK(g_tutorialOnce && g_wasdOn && g_cycleOn && g_armyPanel && g_letters && g_resounded);
 	CHECK_EQ(g_scale, SCALE_SMOOTH);
@@ -216,7 +216,7 @@ TEST(f10_changes_are_saved_and_read_back)
 {
 	t_shipped_settings();
 	for (int i = 0; i < M_COUNT; i++) {
-		int states = i == M_UPSCALE || i == M_FPS || i == M_AI ? 3 : i == M_TUTORIAL ? 2 : 2;
+		int states = i == M_UPSCALE || i == M_FPS || i == M_AI || i == M_WHEEL ? 3 : i == M_TUTORIAL ? 2 : 2;
 		int first = t_panel(i);
 		for (int s = 0; s < states; s++) {
 			if (i == M_TUTORIAL && s == 1) break;   // (Every time -> Off is fine; Off -> Once calls the game)
