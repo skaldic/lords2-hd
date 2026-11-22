@@ -360,9 +360,13 @@ TEST(ai_hard_advance_keeps_walking_and_waits_for_a_real_step)
 	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
 	t_ai_think_melee(5);
 	CHECK_EQ(t_ordG, 5); CHECK_EQ(t_ordX, 16);                      // the knights: 6 cells
-	t_unit_at(5, 12, 40); GRP_S(5, 0x1e) = 12;                      // 4 cells still to go
+	t_unit_at(5, 12, 40); GRP_S(5, 0x1e) = 12; FIG(5)[0x31] = ST_MARCH;   // 4 cells still to go, walking
 	t_ai_think_melee(5);
 	CHECK_EQ(t_ordG, 0);                                            // they keep walking (not re-formed)
+	FIG(5)[0x31] = ST_IDLE;                                         // stopped there (its places taken): arrived
+	t_ai_think_melee(5);
+	CHECK_EQ(t_ordG, 5); CHECK_EQ(t_ordX, 18);                      // the next step from where it stands
+	GRP_S(5, 0x22) = 16;                                            // (back to the first point)
 	t_unit_at(5, 15, 40); GRP_S(5, 0x1e) = 15;                      // nearly there: the next step
 	t_ai_think_melee(5);
 	CHECK_EQ(t_ordG, 5); CHECK_EQ(t_ordX, 21);
@@ -855,4 +859,21 @@ TEST(ai_hard_archers_out_of_reach_walk_up_to_their_soldiers_fight)
 	t_unit_at(1, 30, 52); t_unit_at(2, 31, 52); t_unit_at(3, 32, 52); GRP_S(2, 0x1e) = 31; GRP_S(2, 0x20) = 52;
 	t_ai_think_archers();
 	CHECK_EQ(t_fireAt, 5);                                          // in range now: they shoot
+}
+TEST(ai_hard_timed_charge_waits_until_the_line_is_close)
+{
+	t_ai_battle(2); AI_RATIO = 30;                                  // Legendary, attacking
+	t_unit(4, 2, 20, 40, 4); t_group(4, 2, 3, 1, 20, 40);           // its swords 30 cells from you
+	t_typed(t_unit(5, 2, 24, 44, 5), 0, 32); t_group(5, 2, 2, 1, 24, 44);   // its peasants a little ahead
+	t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+	g_btick = 100;
+	t_ai_think_melee(4);                                            // (attacking from here)
+	g_btick = 100 + AI_CHARGE_STEPS;                                // 60 s on, the line still 30 cells off
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 0); CHECK(!g_aiCharge[2]);                 // no charge from there: it advances
+	CHECK_EQ(GRP_S(4, 0x22), 26);                                   // (6 cells on, as ordered at the first think)
+	t_unit_at(4, 31, 40); GRP_S(4, 0x1e) = 31; GRP_S(4, 0x22) = 31; // the line 19 cells off: the timed charge
+	t_unit_at(5, 32, 41); GRP_S(5, 0x1e) = 32; GRP_S(5, 0x20) = 41;
+	t_ai_think_melee(4);
+	CHECK(g_aiCharge[2]);
 }

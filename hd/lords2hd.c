@@ -9756,7 +9756,9 @@ static void ai_archers_think(int g)
 //     from the enemy. The side charges when every melee group is in place (within AI_CHARGE_DIST +
 //     AI_LINE_SLACK) and its archers have had AI_VOLLEY_STEPS to shoot (at once without archers), or when
 //     any of its groups is hit, any of its units fights, or AI_CHARGE_STEPS (about 60 s) after it began
-//     attacking (counted from then, so a defender that turns to attack still advances first);
+//     attacking (counted from then, so a defender that turns to attack still advances first) once its
+//     rearmost group is within AI_CHARGE_FAR of the enemy (from further, groups of different speeds arrived
+//     one after another);
 //   - defence: it holds. The side charges when AI_DEF_UNITS enemy melee units are within AI_DEF_TRIGGER
 //     of its units, as many of its units fight, or it has lost AI_DEF_LOSS percent of its men.
 #define AI_CHARGE_DIST 6
@@ -9766,6 +9768,7 @@ static void ai_archers_think(int g)
 #define AI_LEG_SAME 4      // ... and keeps its order when the new point is within this of it
 #define AI_LEG_MIN 4       // an arrived group moves on only for a step of at least this
 #define AI_CHARGE_STEPS 5000
+#define AI_CHARGE_FAR 20   // ... but not with its rearmost group further than this from the enemy: it keeps advancing
 #define AI_VOLLEY_STEPS 400
 #define AI_DEF_TRIGGER 6
 #define AI_DEF_UNITS 3
@@ -9784,6 +9787,12 @@ static int ai_side_men(int side)
 	for (int i = 1; i < 0x51; i++)
 		if (FIG(i)[0x2c] == side && !FIG(i)[0x13] && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) men += FIG_S(i, 0x1a0);
 	return men;
+}
+static BOOL ai_group_walking(int h)   // a live member walking or waiting to step (states 3, 1, 9)
+{
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] && FIG_S(i, 0x178) == h && (FIG(i)[0x31] == 3 || FIG(i)[0x31] == 1 || FIG(i)[0x31] == 9)) return TRUE;
+	return FALSE;
 }
 static BOOL ai_melee_group(int h, int side)
 {
@@ -10058,7 +10067,7 @@ static void ai_melee_think(int g)
 		if (why[0]) {}
 		else if (hit) snprintf(why, sizeof why, "hit");
 		else if (fighting) snprintf(why, sizeof why, "%d units fighting", fighting);
-		else if (attacking >= AI_CHARGE_STEPS) snprintf(why, sizeof why, "attacking for %u steps", attacking);
+		else if (attacking >= AI_CHARGE_STEPS && farthest <= AI_CHARGE_FAR) snprintf(why, sizeof why, "attacking for %u steps", attacking);
 		else if (g_aiReadySince[side] && (!archers || g_btick + 1 - g_aiReadySince[side] >= AI_VOLLEY_STEPS))
 			snprintf(why, sizeof why, "in place, %d cells away", farthest);
 		if (why[0]) { ai_side_charges(side, why); g_aiChargeAtt[side] = planned; ai_charge(g); return; }
@@ -10070,9 +10079,14 @@ static void ai_melee_think(int g)
 		ai_toward(GRP_S(g, 0x1e), GRP_S(g, 0x20), tx, ty, d - want, &x, &y);
 		// (smooth: a group still walking to a point near this one keeps going, so it isn't re-formed every
 		// think; one that has arrived waits for a step of at least AI_LEG_MIN, not a hop of a cell or two)
+		// Walking means a member still walking or waiting to step: a group whose units all stood idle 4 cells from
+		// its point (some couldn't take their places) was taken for walking for ever, so the side's rearmost
+		// group never moved on, the whole line stood 50 cells off, and the timed charge sent it in group by
+		// group, its peasants first (the user's Legendary battle).
 		int left = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(g, 0x22), GRP_S(g, 0x24));
-		if (left > AI_LEG_LEFT && cheb(x, y, GRP_S(g, 0x22), GRP_S(g, 0x24)) <= AI_LEG_SAME) return;
-		if (left <= AI_LEG_LEFT && d - want < AI_LEG_MIN && want > AI_CHARGE_DIST) return;
+		BOOL walking = left > AI_LEG_LEFT && ai_group_walking(g);
+		if (walking && cheb(x, y, GRP_S(g, 0x22), GRP_S(g, 0x24)) <= AI_LEG_SAME) return;
+		if (!walking && d - want < AI_LEG_MIN && want > AI_CHARGE_DIST) return;
 		if (ai_order(g, x, y) && g_blog) blog("ai %s g%d %s: advance to %d,%d (%d cells from the enemy, the rearmost %d)", kAiLevel[g_aiLevel], g,
 			ai_kind_name(GRP_B(g, 0x08)), x, y, want, farthest);
 		return;
