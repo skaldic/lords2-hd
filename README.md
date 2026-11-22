@@ -61,10 +61,15 @@ The screenshots are hosted on the release: this repository holds no game art.
 **Battles**
 - Units wait for a friend in the way instead of turning back, and stop beside a taken place instead of
   dancing round it
-- Groups ordered round a forest, river or other obstacle keep their shape and their route
+- Groups ordered round a forest, river or other obstacle keep their shape and their route, and your
+  groups stay where you left them (the game no longer re-forms them every few seconds unordered)
 - Idle soldiers fight an enemy within a few cells (knights a little further), but never wander more
-  than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away
-- Archers step back from soldiers charging them and keep shooting, and step out of melee once one of
+  than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away; and
+  only when they aren't outnumbered by the enemy there and coming up behind it, so a few pikemen
+  holding a gap stay in it; a formation standing next to stakes, stones or water holds that line and
+  fights only an enemy right beside it
+- Archers shoot the enemies fighting their soldiers first, never chase after a fight, step back from soldiers charging them and
+  keep shooting (behind stakes, a hedge or water they stay put), and step out of melee once one of
   their soldiers reaches their enemy
 - Mop-Up hunts down every enemy it can walk to, and your orders still take over
 - Each of these on its own switch, on F10's Battles tab
@@ -99,6 +104,20 @@ Bugs of the original game are fixed in single player, each with its own switch u
   county at once (the Bishop's royal castles everywhere)
 - **Wheat** (`WheatFix`): a wheat field lost after planting costs its grain once, not twice
 - **Besieged castles** (`SiegeGarrisonFix`): no army can enter or strengthen a castle under siege
+
+Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal is the game's own battle AI.
+On Hard, in field battles, the computer picks attack or defence once instead of switching every few
+seconds, keeps its archers behind its soldiers (shooting, and stepping back from yours), sends its
+nearest soldiers to help archers you reach, and moves its soldiers up together and charges together.
+Legendary plays like Hard, and also:
+- when it attacks, its knights ride for your archers and its pikemen for your knights, no more than two
+  groups on one of yours;
+- shot at from afar, it keeps closing in instead of charging at once;
+- a beaten group falls back behind its archers while the battle goes badly, and comes back to finish you off;
+- its archers shoot your archers first, unless your soldiers are close;
+- a weaker army still attacks after a long wait, instead of waiting for you forever;
+- units counter each other, for both sides: pikemen hit knights twice as hard and knights hit pikemen softer,
+  swordsmen are strong against pikemen and maces against knights.
 
 In multiplayer they stay off, so everyone plays the same rules, unless every player sets
 `MultiplayerFixes=1`.
@@ -195,6 +214,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
+| Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
 | Battles | Improved engagement | On, Off | On | `EngageFix` |

@@ -33,9 +33,12 @@ Multiplayer games, the multiplayer layer, and bugs and ideas for this patch.
 GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Battles tab)
 - Mop-Up fix (MopUpFix): your troops keep fighting after their first kill instead of standing idle
 - Improved pathfinding (JitterFix): no stepping back and forth, no swapping places over and over
-- Group cohesion (GroupMoveFix): groups keep together round obstacles
-- Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away);
-  archers step back from a charge and out of melee
+- Group cohesion (GroupMoveFix): groups keep together round obstacles, and yours stay where you left
+  them instead of re-forming every few seconds
+- Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away, and
+  only when they aren't outnumbered there; next to stakes or water they hold the line); archers back
+  up their soldiers' fights, don't chase after a fight, step back from a charge (not behind stakes)
+  and out of melee
 - The computer no longer starts a castle in every county at once (the Bishop's royal castles)
 - A wheat field lost after planting costs its grain once, not twice
 - No army can enter or strengthen a castle under siege (the game's own rule)
