@@ -36,7 +36,7 @@ GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Bat
 - Group cohesion (GroupMoveFix): groups keep together round obstacles, and yours stay where you left
   them instead of re-forming every few seconds
 - Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away, and
-  only when they aren't outnumbered there; next to stakes or water they hold the line); archers back
+  only when they aren't outnumbered there; next to stakes, water, a castle wall, the gate or the moat they hold the line); archers back
   up their soldiers' fights, don't chase after a fight, step back from a charge (not behind stakes)
   and out of melee
 - The computer no longer starts a castle in every county at once (the Bishop's royal castles)

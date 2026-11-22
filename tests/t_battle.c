@@ -912,3 +912,35 @@ TEST(fix_switches_know_when_a_restart_is_needed)
 	CHECK(!g_bfSet[BF_PATH]); CHECK(!g_bfOk[BF_PATH]);
 	CHECK(g_bfOk[BF_GROUP]);
 }
+
+TEST(engage_a_line_in_front_of_the_gate_holds_by_the_moat)
+{
+	t_unit(8, 1, 40, 52, 2);                                        // pikemen between the gate and the drawbridge
+	t_flags(38, 53, 39, 54, FL_MOAT);                               // the moat beside the bridge
+	t_unit(9, 2, 42, 54, 3);                                        // an enemy 2 cells off, coming over the bridge
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // they hold the line
+	t_unit_at(9, 41, 53);                                           // right beside them: fought
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	for (int y = 53; y <= 54; y++) for (int x = 38; x <= 39; x++) BCELL(x, y)[1] = 0;   // the moat filled
+	t_unit(8, 1, 40, 52, 2); t_unit_at(9, 42, 54);
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);                               // in the open again
+}
+
+TEST(soldiers_holding_a_line_dont_chase_after_a_fight)
+{
+	g_fixEngage = TRUE;
+	t_unit(8, 1, 20, 20, 2); t_flags(19, 21, 19, 21, FL_BLOCKED);   // pikemen by the stakes
+	t_unit(9, 2, 24, 20, 3);                                        // the next enemy 4 cells off
+	*(int *)0x0052eff4 = 9;
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0);     // they stand at the line
+	t_unit_at(9, 21, 21);                                           // one right beside them: fought
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0x1201);
+	t_unit_at(9, 24, 20); BCELL(19, 21)[1] = 0;                     // in the open: the game's chase
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0x1201);
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1200), 0x1200);   // nothing picked: untouched
+	g_fixEngage = FALSE;
+}
