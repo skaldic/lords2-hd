@@ -4,19 +4,35 @@ An unofficial fan patch for the GOG and Steam versions of **Lords of the Realm I
 modern widescreen monitor, shows the game's art and videos at double detail, and fixes how battles
 play. You need your own copy of the game; the patch changes none of its files.
 
-Current version: **1.5.1** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
+Current version: **1.6.0** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
 [Watch what's new (47 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.5.0.mp4) ·
 [Community Discord](https://discord.gg/uBzaMGjUR)
 
 ![The armoury, widened](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg)
 
-## Fixed in 1.5.1
+## New in 1.6.0
 
-- **Zoomed-out battles no longer freeze.** A zoomed-out battle could stay on its first picture while
-  the game ran on behind it: the battle seemed never to start and the hourglass did nothing.
-- **The Town Center window stays still** when you move peasants and its info scrolls open.
+- **Enemy tactics: Hard and Legendary** (F10 → Battles). The computer stops switching between attack
+  and defence every few seconds, keeps its archers behind its soldiers, charges together and storms a
+  bridge you hold instead of pouring onto it. Legendary adds picked targets, regrouping and unit
+  counters (pikemen against knights, swordsmen against pikemen). Normal, the game's own, stays the
+  default; see [Game fixes](#game-fixes).
+- **The Town Center follows the season**: spring green, autumn gold and winter snow, with new idle
+  peasants, community art by AllYourBases and CaptainRoberts. F10 → Display → Seasonal Town
+  Center; Off shows the original.
+- **The mouse wheel zooms**: on the county map it shows the map twice as wide and tall, and in a
+  zoomed-out battle it zooms in round the cursor, up to the normal size (or 4x).
+- **Battles:** a formation next to stakes, a wall, the gate or the moat holds its line; archers don't
+  chase after a fight, and behind stakes they stay put; only knights and macemen go a long way round in
+  Mop-Up; a box selection brings its units together again.
+- Cleaner shorelines and grass edges on the battlefield.
+- The arrow keys scroll the map and the battlefield, and A scrolls left in battles; the Town Center
+  window no longer leaves a strip of map beside it.
 
-## New in 1.5.0
+## New in 1.5.0 (and 1.5.1)
+
+- **1.5.1:** zoomed-out battles no longer freeze on their first picture, and the Town Center window
+  stays still when you move peasants.
 
 - **Battles: improved pathfinding, cohesion and engagement.** Units no longer step back and forth when a friend is in the way, an army
   sent round a forest keeps together instead of trailing in single file, idle soldiers fight the
@@ -51,8 +67,9 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Runs fullscreen at your monitor's resolution, without switching its display mode
 - Fills widescreen monitors: the county map, the kingdom overview and battles show more of the world,
   and the full-screen paintings are widened
-- Battles can zoom out to show four times the field, and the mouse wheel zooms the county map out
-  to show four times as much of it
+- Battles can zoom out to show four times the field, and the mouse wheel zooms back in round the
+  cursor; on the county map the wheel shows four times as much of it
+- The Town Center changes with the seasons (community art)
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels, lettering and
   videos
 - Drawn by the graphics card (Direct3D 11) and upscaled with AMD FidelityFX Super Resolution 1, with
@@ -74,6 +91,7 @@ The screenshots are hosted on the release: this repository holds no game art.
   their soldiers reaches their enemy
 - Mop-Up hunts down every enemy it can walk to, and your orders still take over; only knights and macemen go
   a long way round for one, slower troops take the enemy at hand
+- A tougher computer if you want one: Hard and Legendary enemy tactics (see Game fixes)
 - Each of these on its own switch, on F10's Battles tab
 - Troops outlined on the battle minimap, if you like (F10 → Battles)
 
@@ -151,7 +169,7 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 
 ## Install
 
-Download `Lords2-HD-1.5.1-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.6.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and run it with the game closed. It finds the GOG or Steam game by itself (or asks for the folder
 holding `Lords2.exe`), adds the patch, and leaves the game's own files alone. Uninstall it from
 Windows' Apps list. Windows may warn that the publisher is unknown: the installer is not code-signed.
@@ -165,7 +183,7 @@ these replace them.
 back to the 1.5.0 defaults once (widescreen, the battle fixes and the sharper videos on); the old
 ones are kept as `lords2hd-before-1.5.0.ini` beside it. Later updates keep your settings.
 
-Rather unzip by hand? `Lords2-HD-1.5.1.zip` holds the same files: unzip it into the game's folder,
+Rather unzip by hand? `Lords2-HD-1.6.0.zip` holds the same files: unzip it into the game's folder,
 replacing the old files (`lords2hd.ini` too, for the new defaults).
 
 ## Videos and music
@@ -269,6 +287,11 @@ The new left and right parts of the widened paintings:
   such as the merchant's right side and the title screen
 - The original 4:3 picture is unchanged in the middle
 
+The seasonal Town Center (spring, summer, autumn and winter) and its new idle peasants are community
+art by AllYourBases and CaptainRoberts (CaptainRoberts made the Town Center and the idle serfs): the
+Town Center pictures were made with an AI image model, the idle serfs drawn by hand. Both were fitted to the game's pictures by the patch's tools; with the switch off the Town Center
+is the upscaled original.
+
 The town screen has the original's grain put back over the upscaled picture. The voices are the
 game's own recordings, restored with [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded)
 with its author's permission. See [NOTICE.md](NOTICE.md).
@@ -283,7 +306,10 @@ Better versions are welcome on the Discord.
   and unit voices were made with its pipeline (LavaSR and DPDFNet), used with its author's
   permission, and its hand-picked loop points make the hi-fi music loop seamlessly. Go give it a star.
 - **Wolfe** and **Socius**, for the LotR2 Fix multiplayer layer included as `dplayx.dll` (built from
-  `multiplayer/`, see its `CREDITS.md`).
+  `multiplayer/`, see its `CREDITS.md`); Wolfe also for the ideas behind the battle wheel zoom and the
+  county map zoom-out (his ZoomUI).
+- **AllYourBases** and **CaptainRoberts**, for the seasonal Town Center art; CaptainRoberts also for
+  the new idle serfs.
 - The Discord community, for the bug reports and ideas behind this release (the minimap outlines
   among them).
 - The member of the GOG community who shared the disc-quality videos in the SMK_HIGH thread.
