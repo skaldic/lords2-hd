@@ -29,6 +29,10 @@ Current version: **1.6.0** · [Download](https://github.com/skaldic/lords2-hd/re
 - The arrow keys scroll the map and the battlefield, and A scrolls left in battles; the Town Center
   window no longer leaves a strip of map beside it.
 
+![The Town Center in spring, summer, autumn and winter](https://github.com/skaldic/lords2-hd/releases/latest/download/seasons.jpg)
+
+![The county map, and zoomed out with the mouse wheel](https://github.com/skaldic/lords2-hd/releases/latest/download/countyzoom.jpg)
+
 ## New in 1.5.0 (and 1.5.1)
 
 - **1.5.1:** zoomed-out battles no longer freeze on their first picture, and the Town Center window
@@ -55,7 +59,7 @@ Current version: **1.6.0** · [Download](https://github.com/skaldic/lords2-hd/re
 | | |
 |---|---|
 | ![Castle builder](https://github.com/skaldic/lords2-hd/releases/latest/download/castle.jpg) | ![The town](https://github.com/skaldic/lords2-hd/releases/latest/download/town.jpg) |
-| ![A zoomed-out battle with minimap outlines](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![The F10 settings](https://github.com/skaldic/lords2-hd/releases/latest/download/f10.jpg) |
+| ![A zoomed-out battle with minimap outlines](https://github.com/skaldic/lords2-hd/releases/latest/download/battle.jpg) | ![F10 → Battles, with Enemy tactics](https://github.com/skaldic/lords2-hd/releases/latest/download/tactics.jpg) |
 | ![Custom game](https://github.com/skaldic/lords2-hd/releases/latest/download/custom.jpg) | ![Battle setup](https://github.com/skaldic/lords2-hd/releases/latest/download/skirmish.jpg) |
 | ![County map](https://github.com/skaldic/lords2-hd/releases/latest/download/map.jpg) | ![Kingdom overview](https://github.com/skaldic/lords2-hd/releases/latest/download/overview.jpg) |
 
