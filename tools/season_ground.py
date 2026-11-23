@@ -10,7 +10,8 @@
 # Needs Python with numpy, scipy and Pillow.
 # With -game <game folder> also the small animations on the picture itself (the tent, villani2 15-24 at
 # 1x 302,293; the forge fire, 33-39 at 50,195): where their 1x pixel is the picture's own (the game's
-# lords2hd\sprites\vill.bin and villani2.bin), the HD pixel is taken from the season's picture.
+# lords2hd\sprites\vill.bin and villani2.bin), the HD pixel is taken from the season's picture; the
+# quarry workers' pit floor likewise comes from the fitted quarry overlay.
 # usage: season_ground.py summer_hd season_hd out_hd [mask_preview.png] [-game <game folder>]
 import sys, os, shutil, struct
 import numpy as np
@@ -118,6 +119,16 @@ if game:
             art = png(dst, 'villani2', f)
             art[..., :3][same] = base[2 * y:2 * y + 2 * h, 2 * x:2 * x + 2 * w][same]
             save(art, 'villani2', f)
+    # the quarry workers (00-06, 1x 99,27) stand on the pit floor of the quarry overlay (40, 1x 12,12),
+    # which is neither grass nor path: there the HD pixel comes from the fitted overlay
+    q1, (qx, qy, q2) = ani1[40], fixed[40]
+    for f in range(0, 7):
+        p1 = ani1[f]; h, w = p1.shape; x, y = 99 - 12, 27 - 12
+        same = np.kron(p1 == q1[y:y + h, x:x + w], np.ones((2, 2))).astype(bool)
+        art = png(dst, 'villani2', f)
+        art[..., :3][same] = q2[2 * y:2 * y + 2 * h, 2 * x:2 * x + 2 * w][same]
+        save(art, 'villani2', f)
+        if f == 1: print('quarry worker %02d: %d of %d 1x pixels are the pit\'s' % (f, (p1 == q1[y:y + h, x:x + w]).sum(), p1.size))
 
 if prev_p:
     rows = []
