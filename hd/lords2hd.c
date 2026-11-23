@@ -1237,6 +1237,8 @@ typedef struct { const BYTE *buf; int index, x, y; } late_stamp;
 static late_stamp g_late[MAX_LATE];
 static int g_lateN;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
+static DWORD *g_gndLayer; // the Town Center's ground, see g_sprLayer
+static BYTE *g_gndShadow, *g_gndValid;
 static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
 #define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
 
@@ -1627,6 +1629,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
 	if (g_sprValid) { memset(g_sprValid, 0, MAX_W * GAME_H); rows_dirty(g_sprDirty, 0, GAME_H); } // a new screen: nothing stamped on it yet
+	if (g_gndValid) memset(g_gndValid, 0, MAX_W * GAME_H);
 	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H || !have) return;
@@ -1727,6 +1730,14 @@ static volatile BOOL g_waveActive;
 // known, so the screen shows HD ground again instead of a soft patch.
 static DWORD *g_sprLayer;
 static BYTE *g_sprShadow;
+// The Town Center's ground (its picture and the quarry, woods and mine-field overlays: tc_ground) is
+// kept in a layer of its own as well. The game rubs a peasant out by copying its 1x ground back, not
+// by drawing the picture again, so the sprite layer still held the peasant there and the screen
+// showed the original 1x ground (summer green in every season) where a serf had sat before it was
+// selected. Where the sprite layer no longer matches the frame, the ground layer may. Made when the
+// Town Center first opens; cleared with every full redraw of the map (forget_tiles) and new screen.
+// Only the ground changes it, so the presenter reads it as it is (no copy as of the frame on screen).
+// (g_gndLayer, g_gndShadow, g_gndValid: declared with g_sprValid)
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
 // The game's palette as it will be once any fade is done (8-bit, 0x004ea1b0, from FUN_004b0ab5).
 #define GAME_PAL ((const BYTE *)0x004ea1b0)
@@ -2216,6 +2227,33 @@ static void bt_queue(const BYTE *idx, const DWORD *hd, int x, int y, int w, int 
 	g_btQ[g_btQN++] = (bt_job){ idx, hd, x, y, w, h };
 }
 
+// A frame of the Town Center's ground (g_gndLayer): the picture (vill, frame 0) and the overlays drawn
+// over it that peasants stand on (villani2 40 quarry, 41 woods, 43 mine field). `key` is the set's
+// name: the file the game loaded ("vill.pl8") or its season file ("villani2_winter").
+static BOOL tc_ground(const char *key, int index)
+{
+	char b[16];
+	int n = 0;
+	while (key[n] && key[n] != '.' && key[n] != '_' && key[n] != '#' && n < (int)sizeof b - 1) { b[n] = (char)tolower((BYTE)key[n]); n++; }
+	b[n] = 0;
+	if (!strcmp(b, "vill")) return index == 0;
+	if (!strcmp(b, "villani2")) return index == 40 || index == 41 || index == 43;
+	return FALSE;
+}
+
+static BOOL gnd_alloc(void)
+{
+	if (g_gndLayer) return TRUE;
+	// the presenter reads the tables as soon as the layer pointer is set: it is set last
+	DWORD *l = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+	BYTE *s = calloc(MAX_W, GAME_H), *v = calloc(MAX_W, GAME_H);
+	if (!l || !s || !v) { free(l); free(s); free(v); return FALSE; }
+	g_gndShadow = s; g_gndValid = v;
+	MemoryBarrier();
+	g_gndLayer = l;
+	return TRUE;
+}
+
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
 	if (stamp_record(buf, index, x, y, 1)) return;
@@ -2234,8 +2272,9 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	}
 	if (battle_zoom_on() && !g_btLayer) return;
 	const BYTE *data = NULL, *setPal = NULL;
+	const char *setName = "";
 	for (int i = 0; i < MAX_SPRITE_SETS; i++)
-		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
+		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; setName = g_spriteSets[i].name; break; }
 	if (!data || index < 0 || index >= *(const int *)data || !g_back) return;
 	// Off the map a sprite may be drawn under another screen's palette than its art was made with
 	// (map portraits in the Armoury's scroll): then it stays as the game drew it. A new screen is
@@ -2316,6 +2355,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		logf_("sprite frame %d %dx%d at %d,%d: %d of %d pixels match", index, w, h, x, y, hit, total);
 		logged++;
 	}
+	BOOL gnd = !g_ownScroll && tc_ground(setName, index) && gnd_alloc();
 	for (int r = 0; r < h; r++) {
 		int fy = y + r;
 		if (fy < 0 || fy >= GAME_H) continue;
@@ -2331,6 +2371,13 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			g_sprShadow[fy * MAX_W + fx] = v;
 			g_sprValid[fy * MAX_W + fx] = 1;
 			g_sprDirty[fy] = 1;
+			if (gnd) {
+				DWORD *q0 = g_gndLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *q1 = q0 + 2 * MAX_W;
+				q0[0] = h0[0]; q0[1] = h0[1];
+				q1[0] = h1[0]; q1[1] = h1[1];
+				g_gndShadow[fy * MAX_W + fx] = v;
+				g_gndValid[fy * MAX_W + fx] = 1;
+			}
 		}
 	}
 }
@@ -2462,6 +2509,7 @@ static void forget_tiles(void)
 {
 	g_layerGen++;
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
+	if (g_gndValid) memset(g_gndValid, 0, MAX_W * GAME_H); // (the Town Center has closed, or draws its picture again)
 	tile_dirty(0, GAME_H);
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
@@ -2544,8 +2592,16 @@ static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
 		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
+		const BYTE *gs = g_gndLayer ? g_gndShadow + y * MAX_W + sx : NULL, *gv = gs ? g_gndValid + y * MAX_W + sx : NULL;
+		const DWORD *g0 = gs ? g_gndLayer + (2 * y) * (2 * MAX_W) + 2 * sx : NULL, *g1 = g0 ? g0 + 2 * MAX_W : NULL;
 		for (int x = 0; x < sw; x++) {
-			if (!sv[x] || fr[x] != ss[x]) continue;
+			if (!sv[x] || fr[x] != ss[x]) {
+				if (gv && gv[x] && fr[x] == gs[x]) { // the Town Center's ground, where a peasant was rubbed out
+					o0[2 * x] = g0[2 * x]; o0[2 * x + 1] = g0[2 * x + 1];
+					o1[2 * x] = g1[2 * x]; o1[2 * x + 1] = g1[2 * x + 1];
+				}
+				continue;
+			}
 			o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
 			o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
 		}
@@ -3503,6 +3559,8 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 		const DWORD *h0 = TL_L + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
 		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
+		const BYTE *gs = g_gndLayer ? g_gndShadow + y * MAX_W + sx : NULL, *gv = gs ? g_gndValid + y * MAX_W + sx : NULL;
+		const DWORD *g0 = gs ? g_gndLayer + (2 * y) * (2 * MAX_W) + 2 * sx : NULL, *g1 = g0 ? g0 + 2 * MAX_W : NULL;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
 			if (!ok[fr[x]]) continue;
@@ -3512,6 +3570,10 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 			if (spr) {
 				o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
 				o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
+			}
+			else if (gv && gv[x] && fr[x] == gs[x]) { // the Town Center's ground, where a peasant was rubbed out
+				o0[2 * x] = g0[2 * x]; o0[2 * x + 1] = g0[2 * x + 1];
+				o1[2 * x] = g1[2 * x]; o1[2 * x + 1] = g1[2 * x + 1];
 			}
 			else if (va[x] && fr[x] == sh[x]) {
 				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
@@ -3754,6 +3816,11 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 			BOOL spr = g_sprLayer && SPR_V[y * MAX_W + sx + x] && fr[c] == SPR_S[y * MAX_W + sx + x];
 			if (spr) {
 				const DWORD *h0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * (sx + x), *h1 = h0 + 2 * MAX_W;
+				o0[2 * c] = h0[0]; o0[2 * c + 1] = h0[1]; o1[2 * c] = h1[0]; o1[2 * c + 1] = h1[1];
+				continue;
+			}
+			if (g_gndLayer && g_gndValid[y * MAX_W + sx + x] && fr[c] == g_gndShadow[y * MAX_W + sx + x]) {
+				const DWORD *h0 = g_gndLayer + (2 * y) * (2 * MAX_W) + 2 * (sx + x), *h1 = h0 + 2 * MAX_W;
 				o0[2 * c] = h0[0]; o0[2 * c + 1] = h0[1]; o1[2 * c] = h1[0]; o1[2 * c + 1] = h1[1];
 				continue;
 			}
@@ -9312,6 +9379,7 @@ static void __cdecl h_redraw_map(void)
 		for (int y = 24; y < bottom; y++) {
 			BYTE *row = g_back->bits + y * g_back->pitch + x0;
 			memcpy(row, row + shift, strip);
+			if (g_gndValid) memset(g_gndValid + y * MAX_W + x0, 0, strip);
 			if (!g_sprLayer) continue;
 			memcpy(g_sprShadow + y * MAX_W + x0, g_sprShadow + y * MAX_W + x0 + shift, strip);
 			memcpy(g_sprValid + y * MAX_W + x0, g_sprValid + y * MAX_W + x0 + shift, strip);

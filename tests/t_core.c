@@ -579,3 +579,22 @@ TEST(chebyshev_distance)
 	CHECK_EQ(cheb(5, 5, 1, 9), 4);
 	CHECK_EQ(cheb(79, 0, 0, 79), 79);
 }
+
+/* The Town Center's ground layer takes the picture and the overlays peasants stand on, by the set's name: the file the
+ * game loaded or its season file. */
+TEST(town_center_ground_pieces)
+{
+	CHECK(tc_ground("vill.pl8", 0));
+	CHECK(tc_ground("VILL.PL8", 0));
+	CHECK(tc_ground("vill_winter", 0));
+	CHECK(tc_ground("villani2_autumn", 40));
+	CHECK(tc_ground("villani2.pl8", 41));
+	CHECK(tc_ground("villani2_spring", 43));
+	CHECK(!tc_ground("villani2_spring", 42));
+	CHECK(!tc_ground("villani2_summer", 1));   // a quarry worker
+	CHECK(!tc_ground("villani1_winter", 0));   // the iron mine's animation
+	CHECK(!tc_ground("villtops_winter", 0));
+	CHECK(!tc_ground("iconvill_winter", 0));
+	CHECK(!tc_ground("misc_cty.pl8", 1));      // the idle serf
+	CHECK(!tc_ground("", 0));
+}
