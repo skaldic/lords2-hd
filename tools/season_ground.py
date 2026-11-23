@@ -130,6 +130,34 @@ if game:
         save(art, 'villani2', f)
         if f == 1: print('quarry worker %02d: %d of %d 1x pixels are the pit\'s' % (f, (p1 == q1[y:y + h, x:x + w]).sum(), p1.size))
 
+# The swinging quarry worker never had a head you could see (dark hair on dark rock, in the original and in
+# every repaint): a head of dark hair with a little skin is painted between his shoulders, at its 1x place
+# in each frame (centre x, y), and the art's stray pure-white specks go.
+HEADS = {0: (9.0, 10.0), 1: (9.0, 9.5), 2: (9.5, 9.0), 3: (9.5, 9.5), 4: (9.0, 9.0), 5: (9.0, 9.5), 6: (8.5, 10.0)}
+def paint_head(art, cx, cy):
+    h, w = art.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(float)
+    X, Y = 2 * cx + 1 - xx, 2 * cy + 1 - yy                  # (2x pixels)
+    d = np.sqrt((X / 3.3) ** 2 + (Y / 3.6) ** 2)
+    a = np.clip((1.25 - d) * 2.5, 0, 1)                       # soft edge
+    sh = np.clip((1.6 - np.sqrt(((X + 1.2) / 3.6) ** 2 + ((Y + 1.5) / 3.9) ** 2)) * 1.5, 0, 1) * 0.45   # shadow down-right
+    rgb = art[..., :3] * (1 - sh[..., None])
+    hair = np.array([62, 40, 26]) + np.clip(0.6 - np.hypot(X - 1.2, Y - 1.4) / 3, 0, 1)[..., None] * np.array([70, 48, 30])
+    skin = np.array([186, 132, 96])
+    k = np.clip((-Y - 1.6) / 1.6, 0, 1)[..., None] * 0.8     # the nape of the neck, at the bottom
+    head = hair * (1 - k) + skin * k
+    art[..., :3] = rgb * (1 - a[..., None]) + head * a[..., None]
+    return art
+
+for f, (cx, cy) in HEADS.items():
+    art = png(dst, 'villani2', f)
+    white = (art[..., :3] >= 250).all(2)
+    if white.any():
+        den = ndimage.uniform_filter((~white).astype(float), 5)
+        avg = np.dstack([ndimage.uniform_filter(np.where(white, 0, art[..., c]), 5) for c in range(3)]) / np.maximum(den, 1e-3)[..., None]
+        art[..., :3][white] = avg[white]
+    save(paint_head(art, cx, cy), 'villani2', f)
+
 if prev_p:
     rows = []
     for lab, art, obj, shade, out in previews:
