@@ -2110,6 +2110,12 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s_%s.bin", g_gameDir, base, season);
 		if (aexists(path)) snprintf(file, sizeof file, "%s_%s", base, season);
 	}
+	// <file>_seasonal.bin: art that goes with the seasonal Town Center whatever the season (its peasants,
+	// misc_cty, loaded once at the start before any season is known); <file>.bin with Seasons off
+	if (frame < 0 && g_seasons && !lstrcmpA(file, base)) {
+		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s_seasonal.bin", g_gameDir, base);
+		if (aexists(path)) snprintf(file, sizeof file, "%s_seasonal", base);
+	}
 	if (frame >= 0) snprintf(key, sizeof key, "%s#%d", name, frame);
 	else if (lstrcmpA(file, base)) lstrcpynA(key, file, sizeof key);
 	else lstrcpynA(key, name, sizeof key);
@@ -2164,6 +2170,27 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 }
 
 static void sprites_loaded(const char *name, const void *buffer) { sprite_set_bind(name, -1, buffer); }
+
+// The Seasons switch changed (F10): the files the game keeps loaded all game long that have a
+// _seasonal version (misc_cty: the Town Center's peasants and the side panel's slider) take the
+// other version at once; the Town Center's own files follow at its next visit (season_name).
+static void seasons_rebind(void)
+{
+	static const char *const kept[] = { "misc_cty" };
+	for (int k = 0; k < (int)(sizeof kept / sizeof *kept); k++) {
+		const void *buf = NULL;
+		for (int i = 0; i < MAX_SPRITE_SETS && !buf; i++) {
+			const char *n = g_spriteSets[i].name;
+			int len = lstrlenA(kept[k]);
+			if (g_spriteSets[i].buf && g_spriteSets[i].data && !_strnicmp(n, kept[k], len) && (n[len] == '.' || n[len] == '_'))
+				buf = g_spriteSets[i].buf;
+		}
+		if (!buf) continue;
+		char name[40];
+		snprintf(name, sizeof name, "%s.pl8", kept[k]);
+		sprite_set_bind(name, -1, buf);
+	}
+}
 
 // The zoomed-out battle's HD stamping, batched: while the game redraws the battlefield (h_battle_draw)
 // every stamp and every cell's clearing is queued, then all of them are done at the end on all the
@@ -4065,7 +4092,7 @@ static void resound_sample(void)
 		g_countyZoom = !g_countyZoom; ini_set("Display", "CountyZoom", g_countyZoom);
 		if (!g_countyZoom) InterlockedExchange(&g_czOut, 0);
 		break;
-	case M_SEASONS: g_seasons = !g_seasons; ini_set("Display", "Seasons", g_seasons); break; // from the next visit (season_name)
+	case M_SEASONS: g_seasons = !g_seasons; ini_set("Display", "Seasons", g_seasons); seasons_rebind(); break; // the Town Center from its next visit (season_name), its peasants at once
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
 		int f = i - M_BF_PATH;
 		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);

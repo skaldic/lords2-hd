@@ -94,7 +94,7 @@ BattleZoom=0    battles at normal size
 WheelZoom=0     the mouse wheel no longer zooms the battlefield in and out (2: up to 4x instead of 2x)
 CountyZoom=0    the mouse wheel no longer zooms the county map out (twice as wide and tall) and back
 MinimapPop=1    outlined troops on the battle minimap (easier to see, black especially)
-Seasons=0       the original Town Center all year (on: it follows the season, from the next visit)
+Seasons=0       the original Town Center and peasants all year (on: it follows the season, with new peasants, from the next visit)
 JitterFix=0, GroupMoveFix=0, EngageFix=0, MopUpFix=0    each battle fix off (F10, Battles)
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
 HDVideos=0      the videos at their original detail
