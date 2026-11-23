@@ -231,6 +231,7 @@ static void t_county_map(void)
 	*(BYTE *)0x004eac50 = 0;         // the county map's screen
 	*(int *)0x0057c8fc = 0;          // not in a battle
 	*(int *)0x0057cb18 = 0;          // the map at its normal scale
+	*(int *)0x0053e910 = 0;          // no message from the game's queue over it
 	InterlockedExchange(&g_czOut, 0);
 }
 static void t_county_map_end(void)
@@ -296,6 +297,30 @@ TEST(county_zoom_only_on_the_bare_county_map)
 	CHECK(g_countyZoom);
 	CHECK(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
 	CHECK_EQ(g_czOut, 1);
+	t_county_map_end();
+}
+
+/* A message from the game's queue (an envoy's letter, an event) shows on the map's own screen 0: the wheel stays the
+ * game's while it is up, and a map already zoomed out draws no zoomed-out picture over it; the picture from before
+ * it is not shown again after it closes. */
+TEST(county_zoom_not_over_a_message)
+{
+	t_county_map();
+	*(int *)0x0053e910 = 170;            // the Baron's letter, on screen 0
+	CHECK(map_message_up());
+	CHECK(!cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	CHECK_EQ(g_czOut, 0);
+	*(int *)0x0053e910 = 0;              // closed
+	CHECK(!map_message_up());
+	REQUIRE(cz_wheel(MAKEWPARAM(0, -WHEEL_DELTA), 0));
+	REQUIRE(g_czOut == 1);
+	*(int *)0x0053e910 = 170;            // a letter comes in with the map zoomed out
+	CHECK(!cz_wheel(MAKEWPARAM(0, WHEEL_DELTA), 0));   // the wheel is the game's, the zoom stays for after it
+	CHECK_EQ(g_czOut, 1);
+	LONG gen = g_czGen;
+	cz_draw();                           // the game's redraw under the letter: no picture, the old one dropped
+	CHECK(g_czGen != gen);
+	*(int *)0x0053e910 = 0;
 	t_county_map_end();
 }
 

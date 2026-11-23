@@ -5112,6 +5112,11 @@ static BOOL wz_wheel(WPARAM wp, LPARAM lp)
 }
 // The county map itself as the screen: 0, or 16 with an army selected (its scroll, the march path).
 static BOOL map_screen(int screen) { return screen == 0 || screen == 16; }
+// A message from the game's queue is shown over the map: an envoy's letter, an event, a report
+// (FUN_00472e46 takes it from the queue and FUN_0047309e draws it; FUN_00476768 closes it). Its number
+// (DAT_0053e910) is 0 when none is up. It can show on the map's own screen 0, so the screen alone doesn't
+// tell (the zoomed-out map was drawn over an envoy's letter and hid it).
+static BOOL map_message_up(void) { return *(int *)0x0053e910 != 0; }
 // The wheel on the county map (CountyZoom): back (down) shows it zoomed out, forward the normal view.
 // TRUE: it was ours.
 static BOOL cz_wheel(WPARAM wp, LPARAM lp)
@@ -5119,7 +5124,7 @@ static BOOL cz_wheel(WPARAM wp, LPARAM lp)
 	static int acc;
 	(void)lp;
 	if (!g_countyZoom || !g_battleZoom || !g_off || !g_wideScreen || g_scale != SCALE_SMOOTH || !county_map_on() || !map_screen(*(BYTE *)0x004eac50) || MAP_ZOOM_NOW() != 0 ||
-		menu_doubled() || g_menuOpen) { acc = 0; return FALSE; }
+		menu_doubled() || g_menuOpen || map_message_up()) { acc = 0; return FALSE; }
 	acc += (short)HIWORD(wp);
 	LONG to = g_czOut;
 	if (acc <= -WHEEL_DELTA) to = 1;
@@ -5885,7 +5890,8 @@ static BOOL present(void)
 	const cz_buf *cz = g_czShown;
 	// (Under a window over the map - the Town Center, the boxes a click on the map opens - too: the window
 	// stays as the game drew it, moved to the middle as ever, the zoomed-out map round it. czWin below.)
-	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (map_screen(screen) || (window_screen(screen) && g_snapW == sw)) &&
+	// (A message from the game's queue over the map: the normal view while it is up, so the scroll shows.)
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && !map_message_up() && (map_screen(screen) || (window_screen(screen) && g_snapW == sw)) &&
 		g_wideScreen && MAP_ZOOM_NOW() == 0 && cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
 	InterlockedExchange(&g_czShowing, czOn);
 	static BOOL czWas;
@@ -9244,6 +9250,9 @@ static void cz_hd(cz_buf *b, int pitch)
 // Draws the zoomed-out county map into g_czDraw (the game thread, after the normal redraw).
 static void cz_draw(void)
 {
+	// A message over the map: no zoomed-out picture while it is up, and the one from before it is not shown
+	// after it closes (the turn may have changed the map): the normal view until the next redraw makes a new one.
+	if (g_czOut && map_message_up()) { InterlockedIncrement(&g_czGen); return; }
 	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
 		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
 	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
