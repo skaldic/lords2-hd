@@ -5,7 +5,7 @@ modern widescreen monitor, shows the game's art and videos at double detail, and
 play. You need your own copy of the game; the patch changes none of its files.
 
 Current version: **1.6.0** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
-[Watch what's new (47 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.5.0.mp4) ·
+[Watch what's new (51 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.6.0.mp4) ·
 [Community Discord](https://discord.gg/uBzaMGjUR)
 
 ![The armoury, widened](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg)
