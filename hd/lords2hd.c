@@ -160,7 +160,12 @@ static BOOL gpu_drawing(void);  // the GPU draws the window (or is about to try)
 static double gpu_ms(void);     // the card's time for a recent frame
 static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
 static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
-static BOOL g_perfLogOn;        // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
+static BOOL g_seasons = TRUE; // [Display] Seasons: the Town Center's picture follows the season (season_name)
+static int g_wheelZoom = 1;     // [Display] WheelZoom: the wheel zooms a zoomed-out battle's field in and out (wz_wheel): 0 off,
+                                // 1 up to 2x (the game's normal size), 2 up to 4x
+static BOOL g_countyZoom = TRUE; // [Display] CountyZoom: the wheel shows the county map zoomed out (cz_draw)
+static BOOL g_czCheckAll;       // [Debug] CountyZoomCheck: after every zoomed-out draw, the game's memory checked unchanged
+static BOOL g_perfLogOn;       // [Debug] PerfLog: every picture's timings to lords2hd-perf.csv
 static volatile LONG g_menuOpen; // the settings panel (F10) is up
 static BOOL g_menuEatRUp;       // it was closed by a right-click: its release is not the game's
 static BOOL menu_key(int vk);
@@ -222,6 +227,10 @@ static void read_settings(void)
 	if (g_statsOn < 0 || g_statsOn > 2) g_statsOn = 0;
 	if (GetPrivateProfileIntA("Debug", "Stats", 0, g_iniPath)) g_statsOn = 2;
 	g_miniPop = GetPrivateProfileIntA("Display", "MinimapPop", 0, g_iniPath) != 0;
+	g_wheelZoom = max(0, min(2, (int)GetPrivateProfileIntA("Display", "WheelZoom", 1, g_iniPath)));
+	g_countyZoom = GetPrivateProfileIntA("Display", "CountyZoom", 1, g_iniPath) != 0;
+	g_czCheckAll = GetPrivateProfileIntA("Debug", "CountyZoomCheck", 0, g_iniPath) != 0;
+	g_seasons = GetPrivateProfileIntA("Display", "Seasons", 1, g_iniPath) != 0;
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -1228,6 +1237,8 @@ typedef struct { const BYTE *buf; int index, x, y; } late_stamp;
 static late_stamp g_late[MAX_LATE];
 static int g_lateN;
 static BYTE *g_sprValid; // the HD sprite layer's, see stamp_sprite
+static DWORD *g_gndLayer; // the Town Center's ground, see g_sprLayer
+static BYTE *g_gndShadow, *g_gndValid;
 static LONG g_layerGen;  // counts writes to the HD tile and sprite layers outside a map redraw (stamp_record)
 #define IN_BATTLE_NOW() (*(int *)0x0057c8fc == 2)
 
@@ -1618,6 +1629,7 @@ static void hd_picture_loaded(const char *name, const BYTE *pic, int rows)
 	g_hdPic.on = FALSE;
 	g_room.on = FALSE;
 	if (g_sprValid) { memset(g_sprValid, 0, MAX_W * GAME_H); rows_dirty(g_sprDirty, 0, GAME_H); } // a new screen: nothing stamped on it yet
+	if (g_gndValid) memset(g_gndValid, 0, MAX_W * GAME_H);
 	g_layerGen++;
 	LeaveCriticalSection(&g_lock);
 	if (rows != GAME_H || !have) return;
@@ -1718,6 +1730,14 @@ static volatile BOOL g_waveActive;
 // known, so the screen shows HD ground again instead of a soft patch.
 static DWORD *g_sprLayer;
 static BYTE *g_sprShadow;
+// The Town Center's ground (its picture and the quarry, woods and mine-field overlays: tc_ground) is
+// kept in a layer of its own as well. The game rubs a peasant out by copying its 1x ground back, not
+// by drawing the picture again, so the sprite layer still held the peasant there and the screen
+// showed the original 1x ground (summer green in every season) where a serf had sat before it was
+// selected. Where the sprite layer no longer matches the frame, the ground layer may. Made when the
+// Town Center first opens; cleared with every full redraw of the map (forget_tiles) and new screen.
+// Only the ground changes it, so the presenter reads it as it is (no copy as of the frame on screen).
+// (g_gndLayer, g_gndShadow, g_gndValid: declared with g_sprValid)
 static PALETTEENTRY g_sprPal[256]; // the palette when sprites were last stamped off the map
 // The game's palette as it will be once any fade is done (8-bit, 0x004ea1b0, from FUN_004b0ab5).
 #define GAME_PAL ((const BYTE *)0x004ea1b0)
@@ -1913,8 +1933,47 @@ static int g_stampN, g_stampPrevN = -1;
 static BOOL g_stampRec, g_stampOverflow;
 static LONG g_stampPrevGen = -1;
 static int g_stampSkipped, g_stampDone; // Timing=1
+static stamp_call g_czStamps[MAX_STAMPS];   // the zoomed-out county map's stamps (cz_hd)
+static int g_czStampN;
+static BOOL g_czPass;   // the zoomed-out county map's own draw is running (cz_draw): nothing of it is the frame's
+static int g_czClipR, g_czClipB;   // its field's right and bottom edges, for the game's clipping
+// A zoomed-out county map as drawn (cz_draw). Four of them go round: the one being drawn, the one drawn
+// whose frame is not on the screen surface yet, the one that is (cz_publish), and the presenter's.
+#define CZ_M 64        // columns and rows round the field: the ground tiles are never clipped
+#define CZ_BELOW 160   // and rows below it, where the last row of ground reaches
+typedef struct {
+	BYTE *pix;                // g_back's pitch; the field (w x h) from column CZ_M, row CZ_M + 24
+	DWORD *hd;                // w x h: the HD art at half size where the field shows it (top byte 1), else 0
+	int w, h, sw;             // the field's size (picture pixels = game pixels), the frame's width
+	int fc, fr, fx, fy, nc, nr; // the first map column and row drawn, where the first cell is, how many
+	int dx, dy;               // a game point x, y of the normal view is at x + dx, y + dy here
+	LONG gen;                 // g_czGen when drawn
+	BOOL changed;             // its picture differs from the last one copied to the screen
+} cz_buf;
+static cz_buf g_czB[4];
+static cz_buf *g_czDraw = &g_czB[0], *g_czPend = &g_czB[1], *g_czReady = &g_czB[2], *g_czShown = &g_czB[3];
+static BOOL g_czPendNew;            // (game thread) g_czPend is finished, its frame not copied yet
+static volatile LONG g_czReadyNew;  // (g_lock) g_czReady's frame was copied to the screen surface
+static volatile LONG g_czReadyChanged; // and a picture copied since the presenter's last differs
+static const cz_buf *g_czLastPub;   // (game thread) the last one copied: g_czReady or g_czShown, only read
+static volatile LONG g_czOut;       // the player zoomed the county map out (cz_wheel)
+static volatile LONG g_czGen = 1;   // counts the zooms out: an older picture is not shown
+#define MAP_ZOOM_NOW() (*(int *)0x0057cb18)   // (MAP_ZOOM, below)
+static volatile LONG g_czShowing;   // the screen shows it (present)
+static struct { BOOL on; int x, y, gx, gy; } g_czMouse;   // the mouse over it: its point there, and the game's x, y for it (client_to_game)
+// The copy of rows y0..y1 of g_back to the screen surface (g_lock held): its map's zoomed-out picture goes with it.
+static void cz_publish(int y0, int y1)
+{
+	if (!g_czPendNew || y1 <= 24 || y0 >= GAME_H) return;
+	cz_buf *t = g_czReady; g_czReady = g_czPend; g_czPend = t;
+	g_czLastPub = g_czReady;
+	if (g_czReady->changed) InterlockedExchange(&g_czReadyChanged, 1);
+	g_czPendNew = FALSE;
+	InterlockedExchange(&g_czReadyNew, 1);
+}
 static BOOL stamp_record(const BYTE *buf, int index, int x, int y, int sprite)
 {
+	if (g_czPass) { if (g_czStampN < MAX_STAMPS) g_czStamps[g_czStampN++] = (stamp_call){ buf, index, x, y, sprite }; return TRUE; }
 	if (!g_stampRec) { g_layerGen++; return FALSE; }
 	if (g_stampN < MAX_STAMPS) g_stampCur[g_stampN++] = (stamp_call){ buf, index, x, y, sprite };
 	else g_stampOverflow = TRUE;
@@ -2024,13 +2083,42 @@ static BYTE *sprite_set_read(AFILE *f, int frame, long *bytes)
 	return data;
 }
 
+// Seasonal art: lords2hd\sprites\<file>_<season>.bin, where there is one, stands in for <file>.bin in
+// that season (the Town Center's picture and overlays). The game keeps the season at 0x57c934 (1..4)
+// and loads the Town Center's files again each time it opens, so a new season shows from the next visit.
+// [Display] Seasons=0 (F10, Display: "Seasonal Town Center") keeps the original Town Center all year.
+static const char *season_name(void)
+{
+	static const char *names[] = { "spring", "summer", "autumn", "winter" };
+	if (!g_seasons) return NULL;
+	int s = *(const int *)0x0057c934;
+	return s >= 1 && s <= 4 ? names[s - 1] : NULL;
+}
+
 // The game has put file `name` (or its frame `frame`, if >= 0) into `buffer`: that buffer's HD set.
 static void sprite_set_bind(const char *name, int frame, const void *buffer)
 {
 	if (!g_hdTiles) return;
-	char key[40];
-	if (frame < 0) lstrcpynA(key, name, sizeof key);
-	else snprintf(key, sizeof key, "%s#%d", name, frame);
+	char key[40], base[32], file[48], path[MAX_PATH];
+	lstrcpynA(base, name, sizeof base);
+	char *dot = strrchr(base, '.');
+	if (dot) *dot = 0;
+	CharLowerA(base);
+	lstrcpynA(file, base, sizeof file);
+	const char *season = frame < 0 ? season_name() : NULL;
+	if (season) {
+		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s_%s.bin", g_gameDir, base, season);
+		if (aexists(path)) snprintf(file, sizeof file, "%s_%s", base, season);
+	}
+	// <file>_seasonal.bin: art that goes with the seasonal Town Center whatever the season (its peasants,
+	// misc_cty, loaded once at the start before any season is known); <file>.bin with Seasons off
+	if (frame < 0 && g_seasons && !lstrcmpA(file, base)) {
+		snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s_seasonal.bin", g_gameDir, base);
+		if (aexists(path)) snprintf(file, sizeof file, "%s_seasonal", base);
+	}
+	if (frame >= 0) snprintf(key, sizeof key, "%s#%d", name, frame);
+	else if (lstrcmpA(file, base)) lstrcpynA(key, file, sizeof key);
+	else lstrcpynA(key, name, sizeof key);
 	int slot = -1;
 	for (int i = 0; i < MAX_SPRITE_SETS; i++) {
 		if (g_spriteSets[i].buf == buffer && g_spriteSets[i].data && !lstrcmpiA(g_spriteSets[i].name, key)) return; // already
@@ -2044,12 +2132,7 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 		g_layerGen++;
 		return;
 	}
-	char base[32], path[MAX_PATH];
-	lstrcpynA(base, name, sizeof base);
-	char *dot = strrchr(base, '.');
-	if (dot) *dot = 0;
-	CharLowerA(base);
-	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, base);
+	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.bin", g_gameDir, file);
 	AFILE *f = afopen(path);
 	if (!f) return;
 	// Room: sets no buffer holds go, oldest first, while they take more than SPRITE_SPARE or no slot is free.
@@ -2083,10 +2166,31 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
 	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
 	read_palette(path, g_spriteSets[slot].pal);
-	logf_("HD sprites %s", key);
+	logf_("HD sprites %s (season %d)", key, *(const int *)0x0057c934);
 }
 
 static void sprites_loaded(const char *name, const void *buffer) { sprite_set_bind(name, -1, buffer); }
+
+// The Seasons switch changed (F10): the files the game keeps loaded all game long that have a
+// _seasonal version (misc_cty: the Town Center's peasants and the side panel's slider) take the
+// other version at once; the Town Center's own files follow at its next visit (season_name).
+static void seasons_rebind(void)
+{
+	static const char *const kept[] = { "misc_cty" };
+	for (int k = 0; k < (int)(sizeof kept / sizeof *kept); k++) {
+		const void *buf = NULL;
+		for (int i = 0; i < MAX_SPRITE_SETS && !buf; i++) {
+			const char *n = g_spriteSets[i].name;
+			int len = lstrlenA(kept[k]);
+			if (g_spriteSets[i].buf && g_spriteSets[i].data && !_strnicmp(n, kept[k], len) && (n[len] == '.' || n[len] == '_'))
+				buf = g_spriteSets[i].buf;
+		}
+		if (!buf) continue;
+		char name[40];
+		snprintf(name, sizeof name, "%s.pl8", kept[k]);
+		sprite_set_bind(name, -1, buf);
+	}
+}
 
 // The zoomed-out battle's HD stamping, batched: while the game redraws the battlefield (h_battle_draw)
 // every stamp and every cell's clearing is queued, then all of them are done at the end on all the
@@ -2150,6 +2254,33 @@ static void bt_queue(const BYTE *idx, const DWORD *hd, int x, int y, int w, int 
 	g_btQ[g_btQN++] = (bt_job){ idx, hd, x, y, w, h };
 }
 
+// A frame of the Town Center's ground (g_gndLayer): the picture (vill, frame 0) and the overlays drawn
+// over it that peasants stand on (villani2 40 quarry, 41 woods, 43 mine field). `key` is the set's
+// name: the file the game loaded ("vill.pl8") or its season file ("villani2_winter").
+static BOOL tc_ground(const char *key, int index)
+{
+	char b[16];
+	int n = 0;
+	while (key[n] && key[n] != '.' && key[n] != '_' && key[n] != '#' && n < (int)sizeof b - 1) { b[n] = (char)tolower((BYTE)key[n]); n++; }
+	b[n] = 0;
+	if (!strcmp(b, "vill")) return index == 0;
+	if (!strcmp(b, "villani2")) return index == 40 || index == 41 || index == 43;
+	return FALSE;
+}
+
+static BOOL gnd_alloc(void)
+{
+	if (g_gndLayer) return TRUE;
+	// the presenter reads the tables as soon as the layer pointer is set: it is set last
+	DWORD *l = malloc((size_t)MAX_W * 2 * GAME_H * 2 * 4);
+	BYTE *s = calloc(MAX_W, GAME_H), *v = calloc(MAX_W, GAME_H);
+	if (!l || !s || !v) { free(l); free(s); free(v); return FALSE; }
+	g_gndShadow = s; g_gndValid = v;
+	MemoryBarrier();
+	g_gndLayer = l;
+	return TRUE;
+}
+
 static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 {
 	if (stamp_record(buf, index, x, y, 1)) return;
@@ -2168,8 +2299,9 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	}
 	if (battle_zoom_on() && !g_btLayer) return;
 	const BYTE *data = NULL, *setPal = NULL;
+	const char *setName = "";
 	for (int i = 0; i < MAX_SPRITE_SETS; i++)
-		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; break; }
+		if (g_spriteSets[i].buf == buf) { data = g_spriteSets[i].data; setPal = g_spriteSets[i].pal; setName = g_spriteSets[i].name; break; }
 	if (!data || index < 0 || index >= *(const int *)data || !g_back) return;
 	// Off the map a sprite may be drawn under another screen's palette than its art was made with
 	// (map portraits in the Armoury's scroll): then it stays as the game drew it. A new screen is
@@ -2250,6 +2382,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 		logf_("sprite frame %d %dx%d at %d,%d: %d of %d pixels match", index, w, h, x, y, hit, total);
 		logged++;
 	}
+	BOOL gnd = !g_ownScroll && tc_ground(setName, index) && gnd_alloc();
 	for (int r = 0; r < h; r++) {
 		int fy = y + r;
 		if (fy < 0 || fy >= GAME_H) continue;
@@ -2265,6 +2398,13 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			g_sprShadow[fy * MAX_W + fx] = v;
 			g_sprValid[fy * MAX_W + fx] = 1;
 			g_sprDirty[fy] = 1;
+			if (gnd) {
+				DWORD *q0 = g_gndLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *q1 = q0 + 2 * MAX_W;
+				q0[0] = h0[0]; q0[1] = h0[1];
+				q1[0] = h1[0]; q1[1] = h1[1];
+				g_gndShadow[fy * MAX_W + fx] = v;
+				g_gndValid[fy * MAX_W + fx] = 1;
+			}
 		}
 	}
 }
@@ -2396,6 +2536,7 @@ static void forget_tiles(void)
 {
 	g_layerGen++;
 	if (g_layerValid) memset(g_layerValid, 0, MAX_W * GAME_H);
+	if (g_gndValid) memset(g_gndValid, 0, MAX_W * GAME_H); // (the Town Center has closed, or draws its picture again)
 	tile_dirty(0, GAME_H);
 	// The side panel (minimap, county box) is not redrawn with the map: its sprites stay.
 	if (g_sprValid) {
@@ -2478,8 +2619,16 @@ static void screen_sprites(const PALETTEENTRY *pal, int sx, int sw)
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
 		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
+		const BYTE *gs = g_gndLayer ? g_gndShadow + y * MAX_W + sx : NULL, *gv = gs ? g_gndValid + y * MAX_W + sx : NULL;
+		const DWORD *g0 = gs ? g_gndLayer + (2 * y) * (2 * MAX_W) + 2 * sx : NULL, *g1 = g0 ? g0 + 2 * MAX_W : NULL;
 		for (int x = 0; x < sw; x++) {
-			if (!sv[x] || fr[x] != ss[x]) continue;
+			if (!sv[x] || fr[x] != ss[x]) {
+				if (gv && gv[x] && fr[x] == gs[x]) { // the Town Center's ground, where a peasant was rubbed out
+					o0[2 * x] = g0[2 * x]; o0[2 * x + 1] = g0[2 * x + 1];
+					o1[2 * x] = g1[2 * x]; o1[2 * x + 1] = g1[2 * x + 1];
+				}
+				continue;
+			}
 			o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
 			o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
 		}
@@ -3437,6 +3586,8 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 		const DWORD *h0 = TL_L + (2 * y) * (2 * MAX_W) + 2 * sx, *h1 = h0 + 2 * MAX_W;
 		const BYTE *ss = SPR_S + y * MAX_W + sx, *sv = SPR_V + y * MAX_W + sx;
 		const DWORD *s0 = SPR_L + (2 * y) * (2 * MAX_W) + 2 * sx, *s1 = s0 + 2 * MAX_W;
+		const BYTE *gs = g_gndLayer ? g_gndShadow + y * MAX_W + sx : NULL, *gv = gs ? g_gndValid + y * MAX_W + sx : NULL;
+		const DWORD *g0 = gs ? g_gndLayer + (2 * y) * (2 * MAX_W) + 2 * sx : NULL, *g1 = g0 ? g0 + 2 * MAX_W : NULL;
 		DWORD *o0 = g_frame2x + (2 * y) * (2 * sw), *o1 = o0 + 2 * sw;
 		for (int x = 0; x < sw; x++) {
 			if (!ok[fr[x]]) continue;
@@ -3446,6 +3597,10 @@ static void tile_overlay(const PALETTEENTRY *pal, int sx, int sw)
 			if (spr) {
 				o0[2 * x] = s0[2 * x]; o0[2 * x + 1] = s0[2 * x + 1];
 				o1[2 * x] = s1[2 * x]; o1[2 * x + 1] = s1[2 * x + 1];
+			}
+			else if (gv && gv[x] && fr[x] == gs[x]) { // the Town Center's ground, where a peasant was rubbed out
+				o0[2 * x] = g0[2 * x]; o0[2 * x + 1] = g0[2 * x + 1];
+				o1[2 * x] = g1[2 * x]; o1[2 * x + 1] = g1[2 * x + 1];
 			}
 			else if (va[x] && fr[x] == sh[x]) {
 				o0[2 * x] = h0[2 * x]; o0[2 * x + 1] = h0[2 * x + 1];
@@ -3691,6 +3846,11 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 				o0[2 * c] = h0[0]; o0[2 * c + 1] = h0[1]; o1[2 * c] = h1[0]; o1[2 * c + 1] = h1[1];
 				continue;
 			}
+			if (g_gndLayer && g_gndValid[y * MAX_W + sx + x] && fr[c] == g_gndShadow[y * MAX_W + sx + x]) {
+				const DWORD *h0 = g_gndLayer + (2 * y) * (2 * MAX_W) + 2 * (sx + x), *h1 = h0 + 2 * MAX_W;
+				o0[2 * c] = h0[0]; o0[2 * c + 1] = h0[1]; o1[2 * c] = h1[0]; o1[2 * c + 1] = h1[1];
+				continue;
+			}
 			int f = y * W + sx + x;
 			if (tx && g_hdText && tv[f] && fr[c] == tsh[f]) {
 				const BYTE *q = tx + f * 4;
@@ -3701,10 +3861,16 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 		}
 	}
 }
-static void scroll_overlays(int sx, int sw)
+// In two steps: caught (scroll_overlays_catch) before the zoomed-out county map takes the map's field
+// (cz_field), which would hide the army scroll there, and laid on (scroll_overlays_lay) over it.
+static BOOL g_ovlShow[2];
+static int g_ovlCol[2];
+static void scroll_overlays_catch(int sx, int sw)
 {
-	BOOL show[2] = { FALSE, FALSE };
-	int col[2] = { 0, 0 };
+	BOOL *show = g_ovlShow;
+	int *col = g_ovlCol;
+	show[0] = show[1] = FALSE;
+	col[0] = col[1] = 0;
 	for (int i = 0; i < 2; i++) { // first catch each from the frame as the game made it...
 		SCROLL_OVL *s = &g_ovl[i];
 		if (!s->on || !s->snap) continue;
@@ -3728,6 +3894,11 @@ static void scroll_overlays(int sx, int sw)
 		}
 		show[i] = TRUE; col[i] = c0;
 	}
+}
+static void scroll_overlays_lay(int sw)
+{
+	const BOOL *show = g_ovlShow;
+	const int *col = g_ovlCol;
 	for (int i = 0; i < 2; i++) { // ... then lay them on, the settings scroll last: only the scroll's own
 		SCROLL_OVL *s = &g_ovl[i];   // pixels (where it differs from what it covers), so the live map
 		if (!show[i]) continue;      // shows through its ragged edges instead of a frozen strip of it
@@ -3790,18 +3961,24 @@ static BOOL g_wantWideSet, g_battleZoomSet;
 enum { BF_PATH, BF_GROUP, BF_ENGAGE, BF_MOPUP, BF_COUNT };
 static const char *const kBfKey[BF_COUNT] = { "JitterFix", "GroupMoveFix", "EngageFix", "MopUpFix" };
 static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
-enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS,
-	M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_COUNT }; // (M_BF_*: in the order of BF_*, and last)
+// Enemy tactics ([Game] BattleAI): 0 Normal (the game's own AI), 1 Hard, 2 Legendary. g_aiLevelSet is the
+// panel's choice, taken at the next battle's start; g_aiOk: its hooks went in at startup.
+#define AI_LEVELS 3
+static int g_aiLevelSet;
+static BOOL g_aiOk;
+static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
+enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
+	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
-	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, -1 },
+	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
-	{ M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_MINIPOP, -1 },
+	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_ARROWS; } // marked "new"
+static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY || i == M_SEASONS; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
@@ -3827,18 +4004,24 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		break;
 	case M_FPS: snprintf(v, n, "%s", g_statsOn == 2 ? "Detailed" : g_statsOn ? "Simple" : "Off"); break;
 	case M_MINIPOP: snprintf(v, n, "%s", g_miniPop ? "On" : "Off"); break;
+	case M_WHEEL: snprintf(v, n, "%s", g_wheelZoom == 2 ? "Up to 4x" : g_wheelZoom ? "Up to 2x (normal size)" : "Off"); break;
+	case M_COUNTY: snprintf(v, n, "%s", g_countyZoom ? "On" : "Off"); break;
+	case M_SEASONS: snprintf(v, n, "%s", g_seasons ? "On" : "Off (original)"); break;
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: { // from the next battle
 		int f = i - M_BF_PATH;
 		snprintf(v, n, "%s", g_bfSet[f] ? "On" : "Off");
 		*restart = g_bfSet[f] && !g_bfOk[f];
 		break;
 	}
+	case M_AI: snprintf(v, n, "%s", kAiLevel[g_aiLevelSet]); *restart = g_aiLevelSet && !g_aiOk; break; // from the next battle
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
-	"Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix" };
+	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
+static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
+static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
 {
 	char s[16]; snprintf(s, sizeof s, "%d", v);
@@ -3901,11 +4084,21 @@ static void resound_sample(void)
 		break;
 	case M_FPS: InterlockedExchange(&g_statsOn, (g_statsOn + 1) % 3); ini_set("Display", "FpsCounter", g_statsOn); break;
 	case M_MINIPOP: g_miniPop = !g_miniPop; ini_set("Display", "MinimapPop", g_miniPop); break;
+	case M_WHEEL:   // 2x -> 4x -> off (the whole field again) -> 2x; down to 2x from further in: shown at 2x
+		g_wheelZoom = (g_wheelZoom + 1) % 3; ini_set("Display", "WheelZoom", g_wheelZoom);
+		if (g_wzLevel > wz_top()) InterlockedExchange(&g_wzLevel, wz_top());
+		break;
+	case M_COUNTY:   // off: the county map at its normal size again at once
+		g_countyZoom = !g_countyZoom; ini_set("Display", "CountyZoom", g_countyZoom);
+		if (!g_countyZoom) InterlockedExchange(&g_czOut, 0);
+		break;
+	case M_SEASONS: g_seasons = !g_seasons; ini_set("Display", "Seasons", g_seasons); seasons_rebind(); break; // the Town Center from its next visit (season_name), its peasants at once
 	case M_BF_PATH: case M_BF_GROUP: case M_BF_ENGAGE: case M_BF_MOPUP: {
 		int f = i - M_BF_PATH;
 		g_bfSet[f] = !g_bfSet[f]; ini_set("Game", kBfKey[f], g_bfSet[f]);
 		break;
 	}
+	case M_AI: g_aiLevelSet = (g_aiLevelSet + 1) % AI_LEVELS; ini_set("Game", "BattleAI", g_aiLevelSet); break;
 	}
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
@@ -4051,7 +4244,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	if (g_menuTab == 0 || g_menuTab == 3) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
 		DrawTextA(dc, g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
-			: "* takes effect after a restart; everything else at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
 	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -4750,6 +4943,253 @@ static BOOL battle_half_drawn(const BYTE *frame, int pitch, int fh, const PALETT
 	return now - since < 500;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Wheel zoom in battles ([Display] WheelZoom): the mouse wheel zooms the zoomed-out battle's field in, up
+// to twice (the game's normal size) or four times, and back out, around the point under the cursor. Presentation only: the game draws the
+// same frame and sees the same mouse it would without it (each click mapped back through the zoom,
+// client_to_game), so nothing changes for the game or in multiplayer. The top bar and the side panel stay
+// as they are; only the field is enlarged. Shown on the bare battlefield (screen 41) only: a drop-down,
+// the F10 panel or any screen over it shows the whole field, and the zoom is back after. Each battle
+// starts with the whole field. The idea (x1.25 a notch, the point under the cursor kept still) is the
+// wheel zoom of the LotR2 Fix by Wolfe, written again here for this presenter.
+static const float kWzStep[] = { 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f };
+#define WZ_STEPS ((int)(sizeof kWzStep / sizeof kWzStep[0]))
+static volatile LONG g_wzLevel;   // index into kWzStep; 0 = the whole field
+// The furthest step in: x2 shows the battlefield at the game's normal size (WheelZoom=1), x4 twice that (2).
+static int wz_top(void) { return g_wheelZoom >= 2 ? WZ_STEPS - 1 : 3; }
+static volatile float g_wzX, g_wzY;   // the shown part's top-left, in field px of the zoomed-out picture (lw x lh)
+static int g_wzAcc;               // wheel turn not yet a whole notch (smooth-scrolling wheels send less)
+#define WZ_CELL 32                // a battle cell, in field px: the game's edge scroll moves its view a cell a frame
+#define BATTLE_VIEW_NOW() (*(int *)0x0055ce70 + *(int *)0x005678a0 * 256)   // as g_primaryView packs it
+// Panning (wz_pan_frame) moved the part with the game's view: until a frame of the new view (g_wzPendView)
+// reaches the screen, the part is shown g_wzPendX, Y field px further, where it was on the frames before.
+static volatile LONG g_wzPendView = -1;
+static volatile float g_wzPendX, g_wzPendY;
+
+// The part of a fw x fh field shown at zoom z: its top-left (x, y), kept inside the field.
+static void wz_clamp(float z, int fw, int fh, float *x, float *y)
+{
+	float w = fw / z, h = fh / z;
+	if (*x > fw - w) *x = fw - w;
+	if (*y > fh - h) *y = fh - h;
+	if (*x < 0) *x = 0;
+	if (*y < 0) *y = 0;
+}
+// From zoom z0 to z1, the field point under (px, py) (a point of the shown field, 0..fw x 0..fh) staying there.
+static void wz_zoom_about(float z0, float z1, int px, int py, int fw, int fh, float *x, float *y)
+{
+	float wx = *x + (px + 0.5f) / z0, wy = *y + (py + 0.5f) / z0;
+	*x = wx - (px + 0.5f) / z1;
+	*y = wy - (py + 0.5f) / z1;
+	wz_clamp(z1, fw, fh, x, y);
+}
+// A point of the shown field to the field point it shows.
+static void wz_map(float z, float x0, float y0, int fw, int fh, int *px, int *py)
+{
+	int x = (int)floorf(x0 + (*px + 0.5f) / z), y = (int)floorf(y0 + (*py + 0.5f) / z);
+	*px = max(0, min(fw - 1, x));
+	*py = max(0, min(fh - 1, y));
+}
+// The bare battlefield: screen 41, or 42 while a mouse button is held on it (a selection box, an order).
+// With 41 alone, every click showed the whole field until the button came up, and a drag's clicks were
+// mapped as at 1x.
+static BOOL wz_field_screen(void) { BYTE s = *(BYTE *)0x004eac50; return s == 41 || s == 42; }
+// Is the zoom on the screen now? (else the whole field, as without it)
+static BOOL wz_shown(void)
+{
+	return g_wheelZoom && g_wzLevel > 0 && g_wzLevel < WZ_STEPS && battle_zoom_on() && wz_field_screen() && !menu_doubled() && !g_menuOpen;
+}
+// A field point of the zoomed-out picture (field px: x from the field's left, y from its top) as the game's
+// point under it while zoomed. Called by client_to_game.
+static void wz_field_point(int *fx, int *fy, int fw, int fh)
+{
+	if (!wz_shown()) return;
+	wz_map(kWzStep[g_wzLevel], g_wzX, g_wzY, fw, fh, fx, fy);
+}
+// Each battle starts with the whole field: the battle's step count (0x57c998) going back is a new battle.
+static void wz_battle_check(void)
+{
+	static int lastStep = -1;
+	int step = *(int *)0x0057c998;
+	if (step < lastStep && g_wzLevel) { InterlockedExchange(&g_wzLevel, 0); g_wzAcc = 0; InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0; }
+	lastStep = step;
+}
+
+// The zoomed picture: the field part of src resampled (bilinear), the rest copied. In picture px.
+typedef struct { const DWORD *src; DWORD *out; int w, h, top, fw, fh; int *xi, *yi; BYTE *xw, *yw; } wz_job;
+static wz_job g_wz;
+static inline DWORD wz_lerp(DWORD a, DWORD b, int t)   // t of 256 towards b
+{
+	DWORD rb = ((a & 0xff00ff) * (256 - t) + (b & 0xff00ff) * t) >> 8 & 0xff00ff;
+	DWORD g = ((a & 0x00ff00) * (256 - t) + (b & 0x00ff00) * t) >> 8 & 0x00ff00;
+	return rb | g;
+}
+static void wz_rows_job(int band, int me)
+{
+	(void)me;
+	int y0 = band * BT_BAND, y1 = min(g_wz.h, y0 + BT_BAND), w = g_wz.w, fw = g_wz.fw;
+	for (int y = max(y0, g_wz.top); y < y1; y++) {
+		int r = y - g_wz.top, ya = g_wz.yi[r], ty = g_wz.yw[r];
+		const DWORD *ra = g_wz.src + (size_t)(g_wz.top + ya) * w, *rb = g_wz.src + (size_t)(g_wz.top + min(g_wz.fh - 1, ya + 1)) * w;
+		DWORD *o = g_wz.out + (size_t)y * w;
+		for (int x = 0; x < fw; x++) {
+			int xa = g_wz.xi[x], xb = min(fw - 1, xa + 1), tx = g_wz.xw[x];
+			o[x] = wz_lerp(wz_lerp(ra[xa], ra[xb], tx), wz_lerp(rb[xa], rb[xb], tx), ty);
+		}
+		memcpy(o + fw, g_wz.src + (size_t)y * w + fw, (size_t)(w - fw) * 4);   // the side panel
+	}
+}
+// src: the battle picture (sw x sh, scale s picture px a field px of lw x lh); the zoomed one, or src.
+static const DWORD *wz_apply(const DWORD *src, int sw, int sh, int s, int mapW)
+{
+	static DWORD *out;
+	static int outCap, *xi, *yi, axCap;
+	static BYTE *xw, *yw;
+	int top = 48 * s, fw = min(sw, mapW * s), fh = sh - top;
+	if (fw <= 0 || fh <= 0) return src;
+	if (sw * sh > outCap) { free(out); out = malloc((size_t)sw * sh * 4); outCap = out ? sw * sh : 0; }
+	if (max(fw, fh) > axCap) {
+		free(xi); free(yi); free(xw); free(yw);
+		int n = max(fw, fh);
+		xi = malloc(n * sizeof *xi); yi = malloc(n * sizeof *yi); xw = malloc(n); yw = malloc(n);
+		axCap = xi && yi && xw && yw ? n : 0;
+	}
+	if (!out || !axCap) return src;
+	float z = kWzStep[g_wzLevel], x0 = g_wzX, y0 = g_wzY;
+	LONG pend = g_wzPendView;
+	if (pend >= 0) {
+		if (g_primaryView == pend) { InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0; }   // caught up
+		else { x0 += g_wzPendX; y0 += g_wzPendY; }   // a frame from before the view moved
+	}
+	wz_clamp(z, fw / s, fh / s, &x0, &y0);
+	x0 *= s; y0 *= s;
+	for (int x = 0; x < fw; x++) {   // the source column (and the weight of the next) of each shown column
+		float f = x0 + (x + 0.5f) / z - 0.5f;
+		if (f < 0) f = 0;
+		int i = (int)f;
+		if (i > fw - 1) i = fw - 1;
+		xi[x] = i; xw[x] = (BYTE)min(255, (int)((f - i) * 256));
+	}
+	for (int y = 0; y < fh; y++) {
+		float f = y0 + (y + 0.5f) / z - 0.5f;
+		if (f < 0) f = 0;
+		int i = (int)f;
+		if (i > fh - 1) i = fh - 1;
+		yi[y] = i; yw[y] = (BYTE)min(255, (int)((f - i) * 256));
+	}
+	memcpy(out, src, (size_t)sw * top * 4);   // the bar above
+	g_wz = (wz_job){ src, out, sw, sh, top, fw, fh, xi, yi, xw, yw };
+	pool_run((sh + BT_BAND - 1) / BT_BAND, wz_rows_job);
+	return out;
+}
+// The wheel over the window. TRUE: it was ours (a battle's field with the zoom on).
+static BOOL wz_wheel(WPARAM wp, LPARAM lp)
+{
+	if (!g_wheelZoom || !battle_zoom_on() || !wz_field_screen() || menu_doubled() || g_menuOpen) { g_wzAcc = 0; return FALSE; }
+	POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };   // (screen coordinates)
+	ScreenToClient(g_hwnd, &p);
+	RECT v;
+	view_rect(&v);
+	int lw = 2 * (GAME_W + g_extra), lh = 2 * GAME_H, fw = battle_map_w(), fh = lh - 48;
+	int vw = max(1, v.right - v.left), vh = max(1, v.bottom - v.top);
+	int px = MulDiv(p.x - v.left, lw, vw), py = MulDiv(p.y - v.top, lh, vh) - 48;
+	if (px < 0 || px >= fw || py < 0 || py >= fh) { px = fw / 2; py = fh / 2; }   // off the field: about its middle
+	g_wzAcc += (short)HIWORD(wp);
+	int from = g_wzLevel, to = from;
+	while (g_wzAcc >= WHEEL_DELTA) { g_wzAcc -= WHEEL_DELTA; if (to < wz_top()) to++; }
+	while (g_wzAcc <= -WHEEL_DELTA) { g_wzAcc += WHEEL_DELTA; if (to > 0) to--; }
+	if (to != from) {
+		float x = from ? g_wzX : 0, y = from ? g_wzY : 0;
+		wz_zoom_about(kWzStep[from], kWzStep[to], px, py, fw, fh, &x, &y);
+		g_wzX = x; g_wzY = y;
+		InterlockedExchange(&g_wzPendView, -1); g_wzPendX = g_wzPendY = 0;
+		InterlockedExchange(&g_wzLevel, to);
+		if (g_clickLog) logf_("wheel zoom: x%.2f at field %d,%d (shown from %.0f,%.0f)", kWzStep[to], px, py, x, y);
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+	}
+	return TRUE;
+}
+// The county map itself as the screen: 0, or 16 with an army selected (its scroll, the march path).
+static BOOL map_screen(int screen) { return screen == 0 || screen == 16; }
+// The wheel on the county map (CountyZoom): back (down) shows it zoomed out, forward the normal view.
+// TRUE: it was ours.
+static BOOL cz_wheel(WPARAM wp, LPARAM lp)
+{
+	static int acc;
+	(void)lp;
+	if (!g_countyZoom || !g_battleZoom || !g_off || !g_wideScreen || g_scale != SCALE_SMOOTH || !county_map_on() || !map_screen(*(BYTE *)0x004eac50) || MAP_ZOOM_NOW() != 0 ||
+		menu_doubled() || g_menuOpen) { acc = 0; return FALSE; }
+	acc += (short)HIWORD(wp);
+	LONG to = g_czOut;
+	if (acc <= -WHEEL_DELTA) to = 1;
+	if (acc >= WHEEL_DELTA) to = 0;
+	if (acc <= -WHEEL_DELTA || acc >= WHEEL_DELTA) acc = 0;
+	if (to != g_czOut) {
+		if (to) InterlockedIncrement(&g_czGen);   // (a picture from an earlier zoom out is not shown)
+		InterlockedExchange(&g_czOut, to);
+		if (g_clickLog) logf_("county zoom: %s", to ? "out" : "in");
+		InterlockedExchange(&g_forcePresent, 1);
+		mark_dirty();
+	}
+	return TRUE;
+}
+
+// Panning while zoomed in: the cursor at a screen edge (or WASD, the arrow keys) first slides the shown part
+// across the field; only once it is at the field's edge on that side does the game scroll the battlefield.
+// Without this, the part of the field beside the shown one couldn't be reached where the game's view was
+// already at the end of the battlefield. The picture moves as fast on the screen at every zoom as the game's
+// own scroll does zoomed out: a cell (32 picture px) a step of its scroll clock (wz_scroll_due). So the part
+// slides a cell over the zoom each step, and when the game scrolls a whole cell under it the part goes back by
+// a cell less that step's slide (wz_pan_frame): the game then scrolls once every zoom-th step and the field
+// goes on at the same pace instead of rushing past at the zoom times the speed.
+// wz_pan (from GetCursorPos): dirs 1 left, 2 right, 4 up, 8 down; sets g_wzHeld, the directions the part can
+// still slide, and returns the others, left to the game's own edge scroll.
+static int g_wzHeld;
+static int wz_pan(int dirs)
+{
+	g_wzHeld = 0;
+	if (!dirs || !wz_shown()) return dirs;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], x = g_wzX, y = g_wzY;
+	wz_clamp(z, fw, fh, &x, &y);
+	float maxX = fw - fw / z, maxY = fh - fh / z;
+	if ((dirs & 1) && x > 0) g_wzHeld |= 1;
+	else if ((dirs & 2) && !(dirs & 1) && x < maxX) g_wzHeld |= 2;
+	if ((dirs & 4) && y > 0) g_wzHeld |= 4;
+	else if ((dirs & 8) && !(dirs & 4) && y < maxY) g_wzHeld |= 8;
+	return dirs & ~g_wzHeld;
+}
+// The game's scroll clock (FUN_004bbbe3): TRUE once a scroll step is due (every 12 * (100 - its scroll speed
+// option) / 10 + 2 ms), and it starts the next wait. The edge scroll is called many times a step and moves the
+// view only when this says so; the part's slide goes by the same clock.
+static int (__cdecl *wz_scroll_due)(void) = (int (__cdecl *)(void))0x004bbbe3;
+// After the game's edge scroll (h_edge_scroll): dc, dr the cells its view just moved (on a step of the clock).
+// Frames copied before that move are shown with the part where it was (g_wzPend*), so the picture doesn't jump.
+static void wz_pan_frame(int dc, int dr)
+{
+	if (!wz_shown() || (!g_wzHeld && !dc && !dr)) return;
+	if (!dc && !dr && !wz_scroll_due()) return;   // (a step the view took has used the clock already)
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], s = WZ_CELL / z, x = g_wzX, y = g_wzY;
+	wz_clamp(z, fw, fh, &x, &y);
+	if (g_wzHeld & 1) x -= s;
+	if (g_wzHeld & 2) x += s;
+	if (g_wzHeld & 4) y -= s;
+	if (g_wzHeld & 8) y += s;
+	x -= dc * (WZ_CELL - s);   // the view a cell right: the field moved a cell left under the part
+	y -= dr * (WZ_CELL - s);
+	wz_clamp(z, fw, fh, &x, &y);
+	g_wzX = x; g_wzY = y;
+	if (dc || dr) {
+		g_wzPendX += dc * WZ_CELL; g_wzPendY += dr * WZ_CELL;
+		InterlockedExchange(&g_wzPendView, BATTLE_VIEW_NOW());
+		if (g_clickLog) logf_("wheel zoom pan: the view moved %d,%d, the part back to %.1f,%.1f", dc, dr, x, y);
+	}
+	InterlockedExchange(&g_forcePresent, 1);
+	mark_dirty();
+}
+
 static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 {
 	static DWORD *pic, *pic2, *picB, *pic2B, *picC, *pic2C, *ssOut;
@@ -4780,6 +5220,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		lastBattlePic = now;
 	}
 	BOOL entering = GetTickCount() - enterT < 2000;
+	wz_battle_check();
 	EnterCriticalSection(&g_lock);
 	memcpy(copy, g_primary->bits, pitch * fh);
 	g_paceReadSeq = g_pacePrimarySeq;
@@ -4848,7 +5289,9 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 		g_bt.mx0 = g_bt.lx - (PANEL_X - mapW); g_bt.mx1 = min(mapW, g_bt.mx0 + 2 * MENU_W); g_bt.my1 = min(lh, 48 + 2 * (fy1 - g_bt.fy0));
 	}
 	// Too small for the 2x art (1080p): each HD block averaged into its one pixel.
-	g_bt.big = (v.bottom - v.top) >= lh * 2;
+	// Zoomed in with the wheel: the 2x picture whatever the screen, so the HD art is what gets enlarged.
+	BOOL wz = wz_shown();
+	g_bt.big = (v.bottom - v.top) >= lh * 2 || wz;
 	pool_run((lh + BT_BAND - 1) / BT_BAND, bt_rows_job); // the picture's rows, on all threads
 	GetClientRect(g_hwnd, &c);
 	HDC dc = GetDC(g_hwnd);
@@ -4969,6 +5412,7 @@ static BOOL present_battle(const PALETTEENTRY *pal, BOOL palSame)
 			mark_dirty();
 		}
 	}
+	if (wz) src = wz_apply(src, sw, sh, big ? 2 : 1, mapW);
 	bi.biWidth = sw;
 	bi.biHeight = -sh;
 	shot_save(src, sw, sh);
@@ -5233,7 +5677,59 @@ static BOOL window_screen(int screen)
 // there, and that frame showed it at its old place for a moment (a flash on a right-click close). For
 // half a second after, what still differs from the map is moved as before.
 static DWORD g_winLeftT;
-static void window_shift(int screen, int sx, int sw)
+// The box round what differs from the kept map (frame columns bx0..bx1, rows by0..by1; -1: none), in the
+// map's part of the frame (frame columns x0g .. x1g, game x 0 .. PANEL_X).
+static void win_box(int sw, int x0g, int x1g, int *bx0, int *bx1, int *by0, int *by1)
+{
+	static int colN[MAX_W], rowN[GAME_H];
+	memset(colN, 0, sizeof colN); memset(rowN, 0, sizeof rowN);
+	for (int y = 24; y < GAME_H; y++) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		for (int x = x0g; x < x1g; x++) if (a[x] != b[x]) { colN[x]++; rowN[y]++; }
+	}
+	*bx0 = *bx1 = *by0 = *by1 = -1;
+	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (*bx0 < 0) *bx0 = x; *bx1 = x + 1; }
+	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (*by0 < 0) *by0 = y; *by1 = y + 1; }
+}
+// The box is a window over the map kept: large enough, and the map round it (nearly) the same.
+static BOOL win_box_ok(int sw, int x0g, int x1g, int bx0, int bx1, int by0, int by1)
+{
+	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return FALSE;
+	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
+	// the kept picture is of somewhere else - then the window stays where the game put it.
+	if (bx1 - bx0 > (x1g - x0g) * 9 / 10 && by1 - by0 > (GAME_H - 24) * 9 / 10) return FALSE;
+	int out = 0, n = 0; // pixels outside the window that differ
+	for (int y = 24; y < GAME_H; y += 3) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		for (int x = x0g; x < x1g; x += 3) {
+			if (y >= by0 && y < by1 && x >= bx0 && x < bx1) continue;
+			n++; out += a[x] != b[x];
+		}
+	}
+	return !(n && out * 10 > n); // not more than 10% of the map around it changed
+}
+// The county map zoomed out under a window (CountyZoom): each row's span of the window, frame columns
+// g_czWinA[y] .. g_czWinB[y] where the game drew it (none: A >= B). cz_field leaves it; window_shift moves it.
+static int g_czWinA[GAME_H], g_czWinB[GAME_H];
+static BOOL cz_win_spans(int sx, int sw)
+{
+	for (int y = 0; y < GAME_H; y++) g_czWinA[y] = g_czWinB[y] = 0;
+	int x0g = g_off - sx, x1g = x0g + PANEL_X, bx0, bx1, by0, by1;
+	if (!g_snapW || g_snapW != sw || x0g < 0 || x1g > sw) return FALSE;
+	win_box(sw, x0g, x1g, &bx0, &bx1, &by0, &by1);
+	if (!win_box_ok(sw, x0g, x1g, bx0, bx1, by0, by1)) return FALSE;
+	for (int y = by0; y < by1; y++) {
+		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
+		int rx0 = bx0, rx1 = bx1;
+		while (rx0 < rx1 && a[rx0] == b[rx0]) rx0++;
+		while (rx1 > rx0 && a[rx1 - 1] == b[rx1 - 1]) rx1--;
+		g_czWinA[y] = rx0; g_czWinB[y] = rx1;
+	}
+	return TRUE;
+}
+static void cz_span(const cz_buf *cz, int sw, int Y, int x0, int x1);
+// cz: the county map zoomed out shows where the window was (else the kept map at the normal size).
+static void window_shift(int screen, int sx, int sw, const cz_buf *cz)
 {
 	InterlockedExchange(&g_winShift, 0);
 	BOOL linger = screen == 0 && g_winLeftT && GetTickCount() - g_winLeftT < 500;
@@ -5241,15 +5737,8 @@ static void window_shift(int screen, int sx, int sw)
 	if (!g_snapW || g_snapW != sw || (!window_screen(screen) && !linger)) return;
 	int x0g = g_off - sx, x1g = x0g + PANEL_X; // frame columns of game x 0 and PANEL_X
 	if (x0g < 0 || x1g > sw) return;
-	static int colN[MAX_W], rowN[GAME_H];
-	memset(colN, 0, sizeof colN); memset(rowN, 0, sizeof rowN);
-	for (int y = 24; y < GAME_H; y++) {
-		const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
-		for (int x = x0g; x < x1g; x++) if (a[x] != b[x]) { colN[x]++; rowN[y]++; }
-	}
-	int bx0 = -1, bx1 = -1, by0 = -1, by1 = -1;
-	for (int x = x0g; x < x1g; x++) if (colN[x] >= 8) { if (bx0 < 0) bx0 = x; bx1 = x + 1; }
-	for (int y = 24; y < GAME_H; y++) if (rowN[y] >= 8) { if (by0 < 0) by0 = y; by1 = y + 1; }
+	int bx0, bx1, by0, by1;
+	win_box(sw, x0g, x1g, &bx0, &bx1, &by0, &by1);
 	static int lb0, lb1, lt0, lt1;   // the box last moved (frame columns, rows)
 	if (linger) {
 		// After closing, only while what differs is still the window (the same box as last moved): once the
@@ -5258,21 +5747,7 @@ static void window_shift(int screen, int sx, int sw)
 		BOOL same = bx0 >= 0 && by0 >= 0 && abs(bx0 - lb0) <= 4 && abs(bx1 - lb1) <= 4 && abs(by0 - lt0) <= 4 && abs(by1 - lt1) <= 4;
 		if (!same) { g_winLeftT = 0; g_snapW = 0; g_winLockS = 0; return; }
 	}
-	if (bx0 < 0 || by0 < 0 || bx1 - bx0 < 64 || by1 - by0 < 48) return;
-	// The map behind must match the kept one: if (nearly) everything differs, the map moved and
-	// the kept picture is of somewhere else - then the window stays where the game put it.
-	if (bx1 - bx0 > (x1g - x0g) * 9 / 10 && by1 - by0 > (GAME_H - 24) * 9 / 10) return;
-	{
-		int out = 0, n = 0; // pixels outside the window that differ
-		for (int y = 24; y < GAME_H; y += 3) {
-			const BYTE *a = g_frame8 + y * sw, *b = g_snap8 + y * sw;
-			for (int x = x0g; x < x1g; x += 3) {
-				if (y >= by0 && y < by1 && x >= bx0 && x < bx1) continue;
-				n++; out += a[x] != b[x];
-			}
-		}
-		if (n && out * 10 > n) return; // more than 10% of the map around it changed
-	}
+	if (!win_box_ok(sw, x0g, x1g, bx0, bx1, by0, by1)) return;
 	// the window's middle onto the middle of the map on screen (frame columns 0 .. x1g)
 	int s = g_winLockS ? g_winLockS : (bx0 + bx1) / 2 - x1g / 2;
 	s = min(s, bx0); // never past the left edge
@@ -5294,7 +5769,8 @@ static void window_shift(int screen, int sx, int sw)
 			DWORD *o = g_frame2x + (2 * y + r) * W2;
 			const DWORD *m = g_snap2x + (2 * y + r) * W2;
 			memcpy(row, o + 2 * rx0, w * 2 * sizeof(DWORD));             // the window
-			memcpy(o + 2 * rx0, m + 2 * rx0, w * 2 * sizeof(DWORD));     // the map where it was
+			if (cz) cz_span(cz, sw, 2 * y + r, 2 * rx0, 2 * rx1);        // the map where it was: zoomed out
+			else memcpy(o + 2 * rx0, m + 2 * rx0, w * 2 * sizeof(DWORD)); // or as kept
 			memcpy(o + 2 * (rx0 - s), row, w * 2 * sizeof(DWORD));       // the window in the middle
 		}
 	}
@@ -5310,6 +5786,29 @@ static void win_click(int *x, int *y)
 	if (!s || *y < g_winY0 || *y >= g_winY1) return;
 	if (*x >= g_winX0 - s && *x < g_winX1 - s) *x += s;
 	else if (*x >= g_winX1 - s && *x < g_winX1) *x = g_winX1 + 1 < PANEL_X ? g_winX1 + 1 : g_winX0 - s - 1;
+}
+
+// The zoomed-out county map over the map's field of the doubled picture, at its own size: one game
+// pixel to one picture pixel, half the size of the normal view. Row Y of the picture (48 on), x0 .. x1.
+static void cz_span(const cz_buf *cz, int sw, int Y, int x0, int x1)
+{
+	int y = Y - 48, pitch = g_back->pitch;
+	if (y < 0 || y >= cz->h || Y >= 2 * GAME_H) return;
+	x0 = max(0, x0); x1 = min(x1, cz->w);
+	const BYTE *s = cz->pix + (CZ_M + 24 + y) * pitch + CZ_M;
+	DWORD *d = g_frame2x + Y * 2 * sw;
+	const DWORD *h = g_showTiles && cz->hd ? cz->hd + y * cz->w : NULL;
+	if (h) for (int x = x0; x < x1; x++) d[x] = h[x] ? h[x] & 0xffffff : g_lut[s[x]];
+	else for (int x = x0; x < x1; x++) d[x] = g_lut[s[x]];
+}
+// win: a window is over the map (cz_win_spans): its pixels are left as the game drew them.
+static void cz_field(const cz_buf *cz, int sw, BOOL win)
+{
+	for (int Y = 48; Y < 48 + cz->h && Y < 2 * GAME_H; Y++) {
+		int a = win ? 2 * g_czWinA[Y / 2] : 0, b = win ? 2 * g_czWinB[Y / 2] : 0;
+		if (a < b) { cz_span(cz, sw, Y, 0, a); cz_span(cz, sw, Y, b, cz->w); }
+		else cz_span(cz, sw, Y, 0, cz->w);
+	}
 }
 
 // Returns FALSE when nothing changed since the last present: the game copies its whole frame to
@@ -5378,7 +5877,19 @@ static BOOL present(void)
 	if (g_primary->pal) memcpy(pal, g_primary->pal->e, sizeof pal);
 	else memset(pal, 0, sizeof pal);
 	g_paceReadSeq = g_pacePrimarySeq;
+	BOOL czTake = InterlockedExchange(&g_czReadyNew, 0) != 0;
+	BOOL czNew = czTake && InterlockedExchange(&g_czReadyChanged, 0) != 0;   // (a picture like the last forces nothing)
+	if (czTake) { cz_buf *t = g_czShown; g_czShown = g_czReady; g_czReady = t; }
 	LeaveCriticalSection(&g_lock);
+	// The county map zoomed out: its own picture takes the map's field (cz_field).
+	const cz_buf *cz = g_czShown;
+	// (Under a window over the map - the Town Center, the boxes a click on the map opens - too: the window
+	// stays as the game drew it, moved to the middle as ever, the zoomed-out map round it. czWin below.)
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (map_screen(screen) || (window_screen(screen) && g_snapW == sw)) &&
+		g_wideScreen && MAP_ZOOM_NOW() == 0 && cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
+	InterlockedExchange(&g_czShowing, czOn);
+	static BOOL czWas;
+	if (czOn != czWas) { czWas = czOn; czNew = TRUE; }
 
 	BOOL palSame = memcmp(pal, lastPal, sizeof pal) == 0;
 	if (!palSame) {
@@ -5396,7 +5907,7 @@ static BOOL present(void)
 
 	RECT v, c;
 	view_rect(&v);
-	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView) || g_waveActive;
+	BOOL forced = InterlockedExchange(&g_forcePresent, 0) || !EqualRect(&v, &lastView) || g_waveActive || czNew;
 	if (!forced && palSame && memcmp(g_frame8, g_shown8, sw * GAME_H) == 0) return FALSE;
 	memcpy(g_shown8, g_frame8, sw * GAME_H);
 	lastView = v;
@@ -5451,12 +5962,20 @@ static BOOL present(void)
 		if (g_showTiles) screen_sprites(pal, sx, sw); ct_add(1, &ct);
 		if (g_showTiles) tile_overlay(pal, sx, sw); ct_add(2, &ct);
 		text_overlay(sx, sw); ct_add(3, &ct);
-		scroll_overlays(sx, sw);
+		// A window over the zoomed-out map: where it is (no window found there - the map behind it moved: the
+		// normal view, as without the zoom).
+		BOOL czWin = czOn && !map_screen(screen);
+		if (czWin && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
+		scroll_overlays_catch(sx, sw);
+		if (czOn) cz_field(cz, sw, czWin);
+		scroll_overlays_lay(sw);
 		cycle_buttons_draw(sx, sw); ct_add(4, &ct);
 		EnterCriticalSection(&g_lock);
 		video_overlay(pal, sx, sw);
 		hv_overlay(pal, sx, sw);
-		if (g_wideScreen) window_shift(screen, sx, sw); else InterlockedExchange(&g_winShift, 0);
+		// (Zoomed out with the window closed, the map covers what the frame still holds of it: nothing to move.)
+		if (g_wideScreen && !(czOn && map_screen(screen))) window_shift(screen, sx, sw, czOn ? cz : NULL);
+		else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
 		LeaveCriticalSection(&g_lock);
@@ -5894,6 +6413,7 @@ static void copy_rect(Surface *dst, int dx, int dy, Surface *src, int sx, int sy
 		bt_publish(dy, dy + h);
 		spr_publish(dy, dy + h);
 		tile_publish(dy, dy + h);
+		cz_publish(dy, dy + h);
 	}
 }
 
@@ -6236,7 +6756,14 @@ HRESULT WINAPI hd_DirectDrawCreate(GUID *guid, void **out, IUnknown *outer)
 // Input: the game sees a 640x480 window at the top-left of the screen.
 
 static BOOL g_fieldDrag, g_lastOnField;   // zoomed-out battle: a left-button drag that began on the battlefield
+static void client_to_game_(int *x, int *y, const int *x0, const int *y0);
 static void client_to_game(int *x, int *y)
+{
+	g_czMouse.on = FALSE;
+	int cx = *x, cy = *y, *x0 = &cx, *y0 = &cy;   // (the window's point, for the zoomed-out county map)
+	client_to_game_(x, y, x0, y0);
+}
+static void client_to_game_(int *x, int *y, const int *x0, const int *y0)
 {
 	RECT v;
 	view_rect(&v);
@@ -6251,8 +6778,9 @@ static void client_to_game(int *x, int *y)
 		if (g_fieldDrag && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) g_fieldDrag = FALSE;
 		g_lastOnField = !menu_doubled() && sy >= 48 && sx < mapW;
 		if (g_fieldDrag) {
-			sx = min(sx, mapW - 1); sy = max(sy, 48);
-			*x = PANEL_X - mapW + sx; *y = 24 + sy - 48;
+			sx = min(sx, mapW - 1); sy = max(sy, 48) - 48;
+			wz_field_point(&sx, &sy, mapW, lh - 48);   // zoomed in with the wheel: the point it shows
+			*x = PANEL_X - mapW + sx; *y = 24 + sy;
 			return;
 		}
 		if (menu_doubled() && sy >= 48 && sx >= mx0 && sx < mx0 + 2 * MENU_W && sy < 48 + 2 * (g_menuY + MENU_H - fy0)) {
@@ -6260,7 +6788,11 @@ static void client_to_game(int *x, int *y)
 		}
 		else if (sy < 48) { *x = sx / 2 - g_extra; *y = sy / 2; }
 		else if (sx >= mapW) { *x = PANEL_X + (sx - mapW) / 2; *y = 24 + (sy - 48) / 2; }
-		else { *x = PANEL_X - mapW + sx; *y = 24 + sy - 48; }
+		else {
+			sy -= 48;
+			wz_field_point(&sx, &sy, mapW, lh - 48);
+			*x = PANEL_X - mapW + sx; *y = 24 + sy;
+		}
 		return;
 	}
 	int gx = MulDiv(*x - v.left, g_showW, vw), gy = MulDiv(*y - v.top, GAME_H, vh);
@@ -6274,8 +6806,15 @@ static void client_to_game(int *x, int *y)
 		return;
 	}
 	*x = g_showX + max(0, min(g_showW - 1, gx)) - g_off; // negative over the spare columns
+	// The county map zoomed out: the point of its own picture under the mouse, at full precision (h_pick_cell).
+	if (g_czShowing && g_wideScreen) {
+		int px = MulDiv(*x0 - v.left, 2 * g_showW, vw), py = MulDiv(*y0 - v.top, 2 * GAME_H, vh);
+		if (py >= 48 && py < 2 * GAME_H && px >= 0 && px < 2 * (g_extra + PANEL_X))
+			g_czMouse.on = TRUE, g_czMouse.x = px, g_czMouse.y = py - 24, g_czMouse.gx = *x, g_czMouse.gy = max(0, min(GAME_H - 1, gy));
+	}
 	*y = max(0, min(GAME_H - 1, gy));
 	win_click(x, y);
+	if (g_czMouse.on) g_czMouse.gx = *x;   // (the game's x as a moved window leaves it: cz_pick matches on it)
 }
 
 // Remote mode: the driver's messages become the game's mouse and keys, in game coordinates.
@@ -6384,6 +6923,15 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	if (n == 26) { // testing: order every human group to march to cell (x = low word, y = high word of w)
 		g_testOrder = (int)wp | 0x40000000;
+		return 0;
+	}
+	if (n == 27) { // testing: the wheel turned w notches (+ in, - out) over client point x, y of l
+		POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
+		ClientToScreen(g_hwnd, &p);   // (the game's window, as wz_wheel converts back with it)
+		WPARAM w = MAKEWPARAM(0, (short)((int)wp * WHEEL_DELTA)); LPARAM l = MAKELPARAM((WORD)(short)p.x, (WORD)(short)p.y);
+		BOOL county = cz_wheel(w, l), ours = county || wz_wheel(w, l);
+		logf_("remote wheel %d at %ld,%ld: %s, zoom level %ld, county map %s", (int)wp, (long)p.x, (long)p.y, ours ? "zoom" : "the game's",
+			(long)g_wzLevel, g_czOut ? "zoomed out" : "normal");
 		return 0;
 	}
 	if (n == 13) { // testing: save the next frame 1x as lords2hd-shot1x.bmp
@@ -6538,6 +7086,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			return 0;
 		}
 	}
+	if (msg == WM_MOUSEWHEEL && (cz_wheel(wp, lp) || wz_wheel(wp, lp))) return 0;   // the county map or a battle's field: the wheel zoom
 	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
 		if (msg == WM_LBUTTONUP) { client_to_game(&x, &y); g_fieldDrag = FALSE; }   // the release still counts on the field
@@ -6606,7 +7155,7 @@ static int wasd_bit(WPARAM vk)
 }
 static void wasd_edges(POINT *p, int right, int bottom)
 {
-	int k = g_wasd;
+	int k = g_wasd & ~g_wzHeld;   // (not those panning the wheel zoom's part: wz_pan)
 	if (!k || !wasd_screen()) return;
 	// Left: in a battle the field starts left of the game's x = 0 and its edge scroll is told about the
 	// left edge separately (h_edge_scroll); x = 0 alone is the middle of the field there, and A (or the
@@ -6785,12 +7334,13 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 	if (g_remote) { // the driver's mouse, kept off the scrolling edges unless it asks for one (step "edge")
 		int right = max(2, SCROLL_EDGE_W - 1), bottom = max(2, *(int *)0x004ea838 - 1);
 		p->x = max(leftX, min(right - 1, g_fake.x));
-		g_battleLeftEdge = (g_fakeEdge & 1) != 0;
+		int edges = wz_pan(g_fakeEdge | (wasd_screen() ? g_wasd : 0)) & g_fakeEdge;   // (zoomed in: the part slides first)
+		g_battleLeftEdge = (edges & 1) != 0;
 		p->y = max(1, min(bottom - 1, g_fake.y));
-		if (g_fakeEdge & 1) p->x = leftX < 1 ? leftX : 0;   // as the real mouse at the left edge
-		if (g_fakeEdge & 2) p->x = right;
-		if (g_fakeEdge & 4) p->y = 0;
-		if (g_fakeEdge & 8) p->y = bottom;
+		if (edges & 1) p->x = leftX < 1 ? leftX : 0;   // as the real mouse at the left edge
+		if (edges & 2) p->x = right;
+		if (edges & 4) p->y = 0;
+		if (edges & 8) p->y = bottom;
 		wasd_edges(p, right, bottom);
 		ap_mouse(&p->x, &p->y);
 		return TRUE;
@@ -6808,15 +7358,20 @@ static BOOL WINAPI h_GetCursorPos(POINT *p)
 			// in a battle only the screen's outermost pixels scroll left, so a drag can start in the
 			// black strip beside the picture; elsewhere the whole strip is the edge, as before
 			BOOL edge = leftX < 1 ? cx <= 1 : cx <= v.left;
+			int cy = p->y;
+			// zoomed in with the wheel: an edge (or a scroll key) slides the shown part first (wz_pan)
+			int edges = (edge ? 1 : 0) | (cx >= v.right - 1 ? 2 : 0) | (cy <= v.top ? 4 : 0) | (cy >= v.bottom - 1 ? 8 : 0);
+			edges &= wz_pan(edges | (wasd_screen() ? g_wasd : 0));
+			if (!(edges & 1)) edge = FALSE;
 			g_battleLeftEdge = edge;
 			if (edge) x = leftX < 1 ? leftX : 0;
-			else if (cx <= v.left) x = leftX;
-			else if (cx >= v.right - 1) x = right;
+			else if (cx <= v.left && !(g_wzHeld & 1)) x = leftX;
+			else if (edges & 2) x = right;
 			else x = max(leftX, min(right - 1, x));
 			// The same for the bottom edge, measured against the frame's height (DAT_004ea838).
-			int bottom = max(2, *(int *)0x004ea838 - 1), cy = p->y;
-			if (cy <= v.top) y = 0;
-			else if (cy >= v.bottom - 1) y = bottom;
+			int bottom = max(2, *(int *)0x004ea838 - 1);
+			if (edges & 4) y = 0;
+			else if (edges & 8) y = bottom;
 			else y = max(1, min(bottom - 1, y));
 		}
 		p->x = x;
@@ -7230,6 +7785,7 @@ static clip_x_t o_clip_x;
 static BOOL g_drawingLeft; // a widened bar is being drawn: the screen's left edge is in the spare columns
 static void __cdecl h_clip_x(int left, int right)
 {
+	if (g_czPass) { o_clip_x(0, g_czClipR); return; }   // the zoomed-out map's own draw: its whole field
 	if (g_drawingLeft && left == 0) left = battle_zoom_on() ? PANEL_X - battle_map_w() : -g_extra;
 	o_clip_x(max(left, -g_off), right);
 }
@@ -7239,6 +7795,7 @@ static clip_x_t o_clip_y;
 static BOOL g_drawingLow;
 static void __cdecl h_clip_y(int top, int bottom)
 {
+	if (g_czPass) { o_clip_y(24, g_czClipB); return; }
 	if (g_drawingLow && bottom == GAME_H && battle_zoom_on()) bottom = g_frameH;
 	o_clip_y(top, bottom);
 }
@@ -7831,6 +8388,36 @@ static void army_panel_keep(void)
 #define MS_H (17 * 16)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
+// The HD sprite layer under it, kept with g_msUnder: the scroll's own stamps replace it, and a picture
+// the game draws once (the Town Center's) fell back to its 1x pixels when the panel closed.
+static DWORD *g_msLayer; static BYTE *g_msShadow, *g_msValid; static BOOL g_msLayerKept;
+static void ms_layer(BOOL restore)
+{
+	if (!restore) {
+		g_msLayerKept = FALSE;
+		if (!g_sprLayer || !g_sprShadow || !g_sprValid) return;
+		if (!g_msLayer) {
+			g_msLayer = malloc((size_t)MS_W * MS_H * 4 * 4);
+			g_msShadow = malloc(MS_W * MS_H); g_msValid = malloc(MS_W * MS_H);
+			if (!g_msLayer || !g_msShadow || !g_msValid) { free(g_msLayer); free(g_msShadow); free(g_msValid); g_msLayer = NULL; return; }
+		}
+	}
+	else if (!g_msLayerKept || !g_sprLayer) return;
+	int fx = g_msX + g_back->org;
+	if (fx < 0 || fx + MS_W > MAX_W || g_msY < 0 || g_msY + MS_H > GAME_H) return;
+	for (int r = 0; r < MS_H; r++) {
+		int fy = g_msY + r;
+		for (int k = 0; k < 2; k++) {
+			DWORD *l = g_sprLayer + (size_t)(2 * fy + k) * (2 * MAX_W) + 2 * fx, *m = g_msLayer + (size_t)(2 * r + k) * (2 * MS_W);
+			if (restore) memcpy(l, m, MS_W * 8); else memcpy(m, l, MS_W * 8);
+		}
+		BYTE *s = g_sprShadow + (size_t)fy * MAX_W + fx, *v = g_sprValid + (size_t)fy * MAX_W + fx;
+		if (restore) { memcpy(s, g_msShadow + r * MS_W, MS_W); memcpy(v, g_msValid + r * MS_W, MS_W); }
+		else { memcpy(g_msShadow + r * MS_W, s, MS_W); memcpy(g_msValid + r * MS_W, v, MS_W); }
+	}
+	if (restore) { rows_dirty(g_sprDirty, g_msY, g_msY + MS_H); g_layerGen++; g_msLayerKept = FALSE; }
+	else g_msLayerKept = TRUE;
+}
 static BOOL ms_region(BYTE *buf, int op) // 0 compare, 1 save, 2 put back
 {
 	for (int r = 0; r < MS_H; r++) {
@@ -7890,10 +8477,13 @@ static void menu_scroll_draw(void)
 		if (menu_new(item)) text("new", x0 + MS_W - 48, y, small, red);
 		SetRect(&g_menuRow[i], x0 + 16, y - 2, x0 + MS_W - 16, y + 13);
 	}
-	if (g_menuTab == 0) ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink); // under the last of 8 rows
-	if (g_menuTab == 3) {
-		ctext("* after a restart; the fixes from the next battle", x0, y0 + 188, MS_W, small, ink);
-		ctext("The fixes stay off in multiplayer games", x0, y0 + 202, MS_W, small, ink);
+	if (g_menuTab == 0) { // under its 7 rows (the last ends at y0 + 177)
+		ctext("Seasons show from the next Town Center visit", x0, y0 + 188, MS_W, small, ink);
+		ctext("* after a restart, everything else at once", x0, y0 + 202, MS_W, small, ink);
+	}
+	if (g_menuTab == 3) { // under its 8 rows (the last ends at y0 + 192), above the keys (y0 + 234)
+		ctext("* after a restart; the fixes from the next battle", x0, y0 + 200, MS_W, small, ink);
+		ctext("The fixes stay off in multiplayer games", x0, y0 + 214, MS_W, small, ink);
 	}
 	const char *keys = "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
@@ -7911,6 +8501,7 @@ static void menu_scroll_keep(void)
 			g_msDrawn = 0;
 			InterlockedExchange(&g_ovl[1].on, 0);
 			ms_region(g_msUnder, 2);
+			ms_layer(TRUE);
 			dirty(g_msX, g_msY, g_msX + MS_W - 1, g_msY + MS_H - 1);
 			g_apSig = 2; // the army scroll again
 		}
@@ -7927,7 +8518,7 @@ static void menu_scroll_keep(void)
 		}
 	}
 	if (g_msDrawn && g_msGen == g_menuGen && ms_region(g_msSnap, 0)) return;
-	if (!g_msDrawn) ms_region(g_msUnder, 1); // what the game had there when it opened (later it may be the scroll itself)
+	if (!g_msDrawn) { ms_region(g_msUnder, 1); ms_layer(FALSE); } // what the game had there when it opened (later it may be the scroll itself)
 	g_msGen = g_menuGen;
 	g_drawingLeft = g_msX < 0; // left of the game's x = 0 (h_clip_x, h_frame)
 	g_drawingLow = g_msY + MS_H > GAME_H; // and below row 480 (h_clip_y)
@@ -7991,18 +8582,146 @@ static battle_clamp_t o_battle_clamp;
 #define BATTLE_COL (*(int *)0x0055ce70)
 typedef int (__cdecl *edge_scroll_t)(void);
 static edge_scroll_t o_edge_scroll;
-static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x
+static int __cdecl h_edge_scroll(void)   // FUN_00432221: see battle_left_x; once a frame on the battlefield
 {
-	if (battle_left_x() >= 1) return o_edge_scroll();
-	int saved = *(int *)0x004e6594;
-	*(int *)0x004e6594 = g_battleLeftEdge ? 0 : max(1, saved);
-	int r = o_edge_scroll();
-	*(int *)0x004e6594 = saved;
+	int col = BATTLE_COL, row = BATTLE_ROW, r;
+	if (battle_left_x() >= 1) r = o_edge_scroll();
+	else {
+		int saved = *(int *)0x004e6594;
+		*(int *)0x004e6594 = g_battleLeftEdge ? 0 : max(1, saved);
+		r = o_edge_scroll();
+		*(int *)0x004e6594 = saved;
+	}
+	wz_pan_frame(BATTLE_COL - col, BATTLE_ROW - row);   // zoomed in with the wheel: the part pans with it
 	return r;
+}
+
+// The battle minimap's frame while zoomed in with the wheel: around the shown part instead of the whole field.
+// The game marks the cells on the edge of the battlefield it drew (bit 2 of byte 2 of a cell's record,
+// FUN_004bcbdc, every frame), and its minimap, a few rows a frame in turn (FUN_004bc51a, from FUN_004bc1d1),
+// draws those cells as the frame and takes the mark off. Zoomed in, the rows about to be drawn get the marks on
+// the edge of the shown part instead; the cells that lose one (the game's frame, the part's last frame) get
+// their ground drawn again through bit 0 (the battlefield's "draw again"), set for the minimap's call only.
+typedef void (__cdecl *mini_rows_t)(int, int);
+static mini_rows_t o_mini_rows;
+#define WZ_MINI_MAX (96 * 96)
+static BYTE g_wzMiniOld[WZ_MINI_MAX];   // cells of a frame drawn for the zoom before, waiting for their ground
+static int g_wzMiniR[4] = { -1 }, g_wzMiniCw, g_wzMiniCh, g_wzMiniOldN;
+// The shown part's frame in the battle's cells (c0, r0, c1, r1, inclusive); r[0] -1: no zoom shown.
+static void wz_mini_rect(int *r)
+{
+	r[0] = r[1] = r[2] = r[3] = -1;
+	if (!wz_shown()) return;
+	int cols = *(int *)0x004e5d5c, rows = *(int *)0x004e5d4c, vc = *(int *)0x004e657c, vr = *(int *)0x004e6580;
+	int left = *(int *)0x004e6558, top = *(int *)0x004e6554;   // the view's first cell, in the game's x, y
+	if (cols <= 0 || rows <= 0) return;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], x = g_wzX, y = g_wzY;
+	wz_clamp(z, fw, fh, &x, &y);
+	float gx0 = PANEL_X - fw + x - left, gy0 = 24 + y - top;   // the part, from the view's first cell
+	int i0 = (int)floorf(gx0 / WZ_CELL), i1 = (int)floorf((gx0 + fw / z - 1) / WZ_CELL);
+	int j0 = (int)floorf(gy0 / WZ_CELL), j1 = (int)floorf((gy0 + fh / z - 1) / WZ_CELL);
+	i0 = max(0, min(cols - 1, i0)); i1 = max(i0, min(cols - 1, i1));
+	j0 = max(0, min(rows - 1, j0)); j1 = max(j0, min(rows - 1, j1));
+	r[0] = vc + i0; r[1] = vr + j0; r[2] = vc + i1; r[3] = vr + j1;
+}
+static BOOL wz_mini_edge(const int *r, int c, int row)
+{
+	return r[0] >= 0 && c >= r[0] && c <= r[2] && row >= r[1] && row <= r[3] && (c == r[0] || c == r[2] || row == r[1] || row == r[3]);
+}
+static void __cdecl h_mini_rows(int row0, int n)
+{
+	BYTE *cells = *(BYTE **)0x004e6574;
+	int stride = *(int *)0x004e5d50, cw = *(int *)0x004e6578, ch = *(int *)0x004e6570;
+	int r[4];
+	wz_mini_rect(r);
+	if (!cells || stride < 3 || cw <= 0 || ch <= 0 || cw * ch > WZ_MINI_MAX || (r[0] < 0 && g_wzMiniR[0] < 0 && !g_wzMiniOldN)) {
+		if (o_mini_rows) o_mini_rows(row0, n);
+		return;
+	}
+	if (cw != g_wzMiniCw || ch != g_wzMiniCh) {   // another battle
+		memset(g_wzMiniOld, 0, sizeof g_wzMiniOld);
+		g_wzMiniOldN = 0; g_wzMiniR[0] = -1; g_wzMiniCw = cw; g_wzMiniCh = ch;
+	}
+	if (memcmp(r, g_wzMiniR, sizeof r)) {   // the part moved: its last frame waits for its ground
+		// and every row is drawn now, not a few a frame: a quick zoom showed the frame half old, half new
+		row0 = 0; n = ch;
+		if (g_wzMiniR[0] >= 0)
+			for (int row = max(0, g_wzMiniR[1]); row <= min(ch - 1, g_wzMiniR[3]); row++)
+				for (int c = max(0, g_wzMiniR[0]); c <= min(cw - 1, g_wzMiniR[2]); c++)
+					if (wz_mini_edge(g_wzMiniR, c, row) && !wz_mini_edge(r, c, row) && !g_wzMiniOld[row * cw + c]) { g_wzMiniOld[row * cw + c] = 1; g_wzMiniOldN++; }
+		memcpy(g_wzMiniR, r, sizeof r);
+	}
+	static int ground[WZ_MINI_MAX];
+	int ng = 0;
+	for (int row = max(0, row0); row < min(ch, row0 + n); row++)
+		for (int c = 0; c < cw; c++) {
+			int idx = row * cw + c;
+			BYTE *f = cells + (size_t)idx * stride + 2;
+			BOOL edge = wz_mini_edge(r, c, row), bare = FALSE;
+			if (r[0] >= 0) {
+				if ((*f & 2) && !edge) { *f &= ~2; bare = TRUE; }   // the game's frame round the whole field
+				if (edge) *f |= 2;
+			}
+			if (g_wzMiniOld[idx]) { g_wzMiniOld[idx] = 0; g_wzMiniOldN--; if (!edge) bare = TRUE; }
+			if (bare && !(*f & 1)) { *f |= 1; ground[ng++] = idx; }
+		}
+	if (o_mini_rows) o_mini_rows(row0, n);
+	for (int k = 0; k < ng; k++) cells[(size_t)ground[k] * stride + 2] &= ~1;
+}
+
+// Jumping to a spot while zoomed in: a minimap click (FUN_00432443) or a group's number key (FUN_0043c910)
+// puts the spot in the middle of the game's view (kCentreSites), but the shown part kept its place in the
+// field, so the spot could be off the screen. Both end with the scroll limit (FUN_0047ed34): their spot is
+// where the view was put just before it (h_battle_clamp records that), and the shown part goes round the
+// spot. A minimap click that sends the selected units there instead moves neither.
+static int g_wzJump = -1, g_wzJumpCol, g_wzJumpRow;   // -1 no jump going on, 0 one is, 1 its view was put
+static void wz_centre_on(int col, int row)   // a battle cell
+{
+	if (!wz_shown()) return;
+	int fw = battle_map_w(), fh = 2 * GAME_H - 48;
+	float z = kWzStep[g_wzLevel], ox = g_wzX, oy = g_wzY;
+	wz_clamp(z, fw, fh, &ox, &oy);
+	// the cell's middle in field px: the view's first column is BATTLE_COL, at the game's x *0x004e6558
+	float cx = (col - BATTLE_COL) * WZ_CELL + WZ_CELL / 2 + *(int *)0x004e6558 - (PANEL_X - fw);
+	float cy = (row - BATTLE_ROW) * WZ_CELL + WZ_CELL / 2 + *(int *)0x004e6554 - 24;
+	float x = cx - fw / z / 2, y = cy - fh / z / 2;
+	wz_clamp(z, fw, fh, &x, &y);
+	g_wzX = x; g_wzY = y;
+	// until a frame of the new view is shown, the old one keeps the part where it was
+	g_wzPendX = ox - x; g_wzPendY = oy - y;
+	InterlockedExchange(&g_wzPendView, BATTLE_VIEW_NOW());
+	if (g_clickLog) logf_("wheel zoom: jump to cell %d,%d, view %d,%d, the part at %.0f,%.0f", col, row, BATTLE_COL, BATTLE_ROW, x, y);
+	InterlockedExchange(&g_forcePresent, 1);
+	mark_dirty();
+}
+typedef int (__cdecl *mini_click_t)(void);
+static mini_click_t o_mini_click;
+static int __cdecl h_mini_click(void)
+{
+	g_wzJump = 0;
+	int r = o_mini_click();
+	if (g_wzJump == 1) wz_centre_on(g_wzJumpCol, g_wzJumpRow);
+	g_wzJump = -1;
+	return r;
+}
+typedef void (__cdecl *group_key_t)(int);
+static group_key_t o_group_key;
+static void __cdecl h_group_key(int key)
+{
+	g_wzJump = 0;
+	o_group_key(key);
+	if (g_wzJump == 1) wz_centre_on(g_wzJumpCol, g_wzJumpRow);
+	g_wzJump = -1;
 }
 
 static void __cdecl h_battle_clamp(void)
 {
+	if (g_wzJump == 0) {   // the spot jumped to: the view's middle column and row (kCentreSites)
+		g_wzJump = 1;
+		g_wzJumpCol = BATTLE_COL + 7 + (g_battleZoom ? BATTLE_MORE_COLS / 2 : (g_extra + 31) / 32 / 2);
+		g_wzJumpRow = BATTLE_ROW + 7 + (g_battleZoom ? BATTLE_MORE_ROWS / 2 : 0);
+	}
 	o_battle_clamp();
 	if (BATTLE_COL > 0x41 - g_battleK) BATTLE_COL = 0x41 - g_battleK;
 	if (BATTLE_ROW > 0x42 - g_battleR) BATTLE_ROW = 0x42 - g_battleR;
@@ -8094,11 +8813,42 @@ static void end_wide_view(void)
 #define PICKED_COL (*(int *)0x00553f04)
 typedef int (__cdecl *pick_cell_t)(int);
 static pick_cell_t o_pick_cell;
+// The county map zoomed out (cz_draw): the cell under the mouse is the one its picture shows there. The game's
+// pick runs with that picture's view and the mouse's point in it, and what it leaves is turned back into the
+// game's own view (the column and half-row relative to its scroll position; the cell's record as it is).
+static BOOL cz_pick(int arg, int *res)
+{
+	if (!o_pick_cell || !g_czShowing || !g_czOut || IN_BATTLE || MAP_ZOOM != 0 || !county_map_on()) return FALSE;
+	EnterCriticalSection(&g_lock);
+	cz_buf v = *g_czShown;
+	LeaveCriticalSection(&g_lock);
+	if (!v.pix || v.gen != g_czGen || v.nc <= 0) return FALSE;
+	int mx = *(int *)0x004e65fc, my = *(int *)0x004e65f4;
+	if (mx < -g_extra || mx >= PANEL_X || my < 24 || my >= GAME_H) return FALSE;   // (the bar and the panel as ever)
+	int X, Y;
+	if (g_czMouse.on && g_czMouse.gx == mx && g_czMouse.gy == my) X = g_czMouse.x, Y = g_czMouse.y;
+	else X = 2 * (mx + g_extra) + 1, Y = 2 * my - 24 + 1;
+	int sv[8] = { MAP_COLUMNS, MAP_FIRST_X, MAP_FIRST_COL, *(int *)0x005651b8, *(int *)0x00553244, *(int *)0x0056d67c, mx, my };
+	MAP_COLUMNS = v.nc; MAP_FIRST_X = v.fx; MAP_FIRST_COL = v.fc; *(int *)0x005651b8 = v.fr; *(int *)0x00553244 = v.fy;
+	*(int *)0x0056d67c = v.nr; *(int *)0x004e65fc = X; *(int *)0x004e65f4 = Y;
+	*res = o_pick_cell(arg);
+	MAP_COLUMNS = sv[0]; MAP_FIRST_X = sv[1]; MAP_FIRST_COL = sv[2]; *(int *)0x005651b8 = sv[3]; *(int *)0x00553244 = sv[4];
+	*(int *)0x0056d67c = sv[5]; *(int *)0x004e65fc = sv[6]; *(int *)0x004e65f4 = sv[7];
+	PICKED_COL += v.fc - sv[2];
+	*(int *)0x005681f4 += v.fr - sv[3];
+	*(int *)0x00553ff8 -= v.dx; *(int *)0x00553fe8 -= v.dy;   // (the cell's place, in the game's view)
+	if (g_clickLog && arg) logf_("county zoom: click at %d,%d of the zoomed-out map: cell %d,%d (record %d)%s", X, Y,
+		sv[2] + PICKED_COL, sv[3] + *(int *)0x005681f4, *(int *)0x00568974, *res ? "" : ", none");
+	return TRUE;
+}
 static int __cdecl h_pick_cell(int arg)
 {
 	int r;
+	if (cz_pick(arg, &r)) return r;
 	if (begin_wide_view()) { r = o_pick_cell(arg); end_wide_view(); PICKED_COL -= g_view.k; }
 	else r = o_pick_cell(arg);
+	if (g_clickLog && arg) logf_("map click at %d,%d: cell %d,%d (record %d)%s", *(int *)0x004e65fc, *(int *)0x004e65f4,
+		MAP_FIRST_COL + PICKED_COL, *(int *)0x005651b8 + *(int *)0x005681f4, *(int *)0x00568974, r ? "" : ", none");
 	return r;
 }
 
@@ -8158,7 +8908,7 @@ static blit_t o_blit[8]; // 6 and 7: the panels' solid 16x16 and 24x24 tiles
 #define SPRITE_STAMP(i) \
 	static int __cdecl h_blit##i(const BYTE *buf) { \
 		int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac, frame = TILE_FRAME; \
-		text_clear(BLOCK_X, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70); \
+		if (!g_czPass) text_clear(BLOCK_X, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70); \
 		int r = o_blit[i](buf); \
 		stamp_sprite(buf, frame, x, y); \
 		return r; \
@@ -8354,7 +9104,7 @@ static int glyph_common(int i, const BYTE *buf)
 	const short *rec = (const short *)(buf + 8 + index * 16);
 	int w = rec[0], h = rec[1];
 	enum { MAXG = 128 };
-	if (!g_hdText || !g_back || w <= 0 || h <= 0 || w > MAXG || h > MAXG) return o_glyph[i](buf);
+	if (!g_hdText || !g_back || g_czPass || w <= 0 || h <= 0 || w > MAXG || h > MAXG) return o_glyph[i](buf);
 	int x = BLOCK_X - *(int *)0x0058fd50, y = BLOCK_Y - *(int *)0x0058feac;
 	int colour = *(int *)0x005cd40c == 1 ? -1 : (BYTE)*(int *)0x0057d3bc;
 	static BYTE before[MAXG * MAXG];
@@ -8369,6 +9119,234 @@ static int glyph_common(int i, const BYTE *buf)
 static int __cdecl h_glyph0(const BYTE *b) { return glyph_common(0, b); }
 static int __cdecl h_glyph1(const BYTE *b) { return glyph_common(1, b); }
 static int __cdecl h_glyph2(const BYTE *b) { return glyph_common(2, b); }
+
+// ---- The county map zoomed out (CountyZoom) ----
+// An idea from Wolfe's ZoomUI (LotR2 Fix), written anew for this patch. The mouse wheel shows the county
+// map at half size: the map's field holds twice as many columns and rows, round the normal view. The
+// game's view never changes. After a redraw of the map (h_redraw_map) the game draws it once more, into a
+// buffer of our own, with a view as large as the doubled field and the normal view in its middle. Every
+// byte of the game's data that draw changes is put back (a copy of the .data section is taken before it),
+// so the game goes on exactly as if it had never run, and multiplayer games stay in step. The draw changes
+// working values, the cells' "redraw me" bits and the animation frames of cells and armies; those of the
+// ones outside the normal view go on in the zoomed-out picture from a list of our own (g_czKept), never
+// in the game's data. The presenter shows the buffer over the map's field (cz_field).
+// (The copy and the put-back are on the game thread. The one other writer of the game's data, its sound
+// streams' timer callback, is held off with its own lock meanwhile: see cz_draw.)
+enum { CZ_LO = 0x004d2000, CZ_HI = 0x005cf000, CZ_KEPT = 65536 };   // the exe's .data section, whole pages
+// The draw's working values: changed by every draw, never kept for the next.
+static const struct { DWORD addr, n; } kCzWork[] = {
+	{ 0x004ea1a8, 4 },                                          // the frame the blitters write to
+	{ 0x0050a4bc, 0x10 }, { 0x0050d09c, 4 },                    // the part to copy to the screen (FUN_00452306)
+	{ 0x0052afdc, 4 }, { 0x0053e8ac, 4 }, { 0x0053e9ac, 4 },    // first x, columns, the full-redraw count
+	{ 0x0052f020, 0x84 }, { 0x0057c93c, 4 },                    // cells per county, the current county
+	{ 0x00553244, 4 }, { 0x00553254, 4 }, { 0x0055cd60, 4 }, { 0x005651b4, 8 }, { 0x0056d67c, 4 }, // the view
+	{ 0x00567954, 4 }, { 0x0056957c, 4 }, { 0x0056d594, 8 }, { 0x0057d374, 0x38 },   // positions, animation clocks
+	{ 0x0058fd50, 4 }, { 0x0058fe04, 4 }, { 0x0058fe18, 4 }, { 0x0058fe98, 4 }, { 0x0058feac, 4 },
+	{ 0x00591500, 0x30 }, { 0x00591568, 4 }, { 0x005aeb50, 4 }, { 0x005aeb6c, 8 },
+	{ 0x005bb478, 4 }, { 0x005c9258, 4 }, { 0x005c9288, 4 }, { 0x005cd400, 4 }, { 0x005cdd20, 4 },
+	{ 0x005ceff8, 8 },
+};
+static BOOL cz_work(DWORD a)
+{
+	for (int i = 0; i < (int)(sizeof kCzWork / sizeof kCzWork[0]); i++) if (a - kCzWork[i].addr < kCzWork[i].n) return TRUE;
+	return FALSE;
+}
+// A byte the last zoomed-out draw left changed: its value there, and the game's then. Put in again for the
+// next draw while the game's is still the same (an animation going on outside the normal view); the game
+// changed it since, the game's is drawn (a field sown, a building put up).
+typedef struct { DWORD addr; BYTE ours, game; } cz_kept;
+static cz_kept g_czKept[CZ_KEPT];
+static int g_czKeptN;
+static DWORD cz_sum(const BYTE *p, size_t n)   // (Timing=1 checks)
+{
+	DWORD h = 2166136261u;
+	for (size_t i = 0; i + 4 <= n; i += 4) h = (h ^ *(const DWORD *)(p + i)) * 16777619u;
+	return h;
+}
+// The HD art of the zoomed-out map: each stamp its draw recorded, at half size (the 2x art's four pixels
+// averaged), wherever the finished picture still shows that stamp's pixel - the last stamp a pixel matches
+// wins, as in the normal view's layer. On all the CPU's threads, a band of rows each (cz_hd_job).
+typedef struct { const BYTE *idx; const DWORD *hd; int x, y, w, h, tile; } cz_job;
+static cz_job g_czJobs[MAX_STAMPS];
+static int g_czJobN, g_czHdPitch;
+static const cz_buf *g_czHdBuf;
+static int g_czTileRow[TILE_H + 1];   // where each row of a ground tile starts in its pixels
+#define CZ_BAND 24
+static DWORD cz_avg(const DWORD *h0, const DWORD *h1)
+{
+	DWORD rb = (h0[0] & 0xff00ff) + (h0[1] & 0xff00ff) + (h1[0] & 0xff00ff) + (h1[1] & 0xff00ff) + 0x20002;
+	DWORD g = (h0[0] & 0xff00) + (h0[1] & 0xff00) + (h1[0] & 0xff00) + (h1[1] & 0xff00) + 0x200;
+	return ((rb >> 2) & 0xff00ff) | ((g >> 2) & 0xff00) | 0x1000000;
+}
+static void cz_hd_job(int band, int me)
+{
+	(void)me;
+	const cz_buf *b = g_czHdBuf;
+	int pitch = g_czHdPitch, W = b->w;
+	int r0 = 24 + band * CZ_BAND, r1 = min(24 + b->h, r0 + CZ_BAND);   // (picture rows)
+	if (r1 <= r0) return;
+	memset(b->hd + (r0 - 24) * W, 0, (size_t)(r1 - r0) * W * 4);
+	for (int i = 0; i < g_czJobN; i++) {
+		const cz_job *j = &g_czJobs[i];
+		int y0 = max(j->y, r0), y1 = min(j->y + j->h, r1);
+		if (y0 >= y1 || j->x >= W || j->x + j->w <= 0) continue;
+		for (int fy = y0; fy < y1; fy++) {
+			int r = fy - j->y, c0, c1;
+			const BYTE *row = b->pix + (CZ_M + fy) * pitch + CZ_M + j->x, *src;
+			DWORD *o = b->hd + (fy - 24) * W + j->x;
+			const DWORD *h0 = j->hd + (2 * r) * (2 * j->w), *h1 = h0 + 2 * j->w;
+			if (j->tile) {   // a diamond: 2 + 4k pixels a row, k from the nearer of top and bottom
+				int k = r < TILE_H / 2 ? r : TILE_H - 1 - r;
+				c0 = (TILE_W - (2 + 4 * k)) / 2; c1 = c0 + 2 + 4 * k;
+				src = j->idx + g_czTileRow[r] - c0;
+			}
+			else { c0 = 0; c1 = j->w; src = j->idx + r * j->w; }
+			c0 = max(c0, -j->x); c1 = min(c1, W - j->x);
+			for (int c = c0; c < c1; c++) {
+				BYTE v = src[c];
+				if ((v || j->tile) && row[c] == v) o[c] = cz_avg(h0 + 2 * c, h1 + 2 * c);
+			}
+		}
+	}
+}
+static void cz_hd(cz_buf *b, int pitch)
+{
+	if (!b->hd) return;
+	if (!g_czTileRow[TILE_H])
+		for (int r = 0, o = 0; r <= TILE_H; r++) { g_czTileRow[r] = o; o += 2 + 4 * (r < TILE_H / 2 ? r : TILE_H - 1 - r); }
+	int n = 0;
+	for (int i = 0; i < g_czStampN; i++) {
+		const stamp_call *s = &g_czStamps[i];
+		if (s->index < 0 || !s->buf) continue;
+		if (!s->sprite) {   // ground (as stamp_tile)
+			const DWORD *px = NULL; int frames = 0;
+			for (int k = 0; k < MAX_TILE_SETS; k++) if (g_tileSets[k].buf == s->buf) { px = g_tileSets[k].px; frames = g_tileSets[k].frames; break; }
+			if (!px || s->index >= frames) continue;
+			const short *rec = (const short *)(s->buf + 8 + s->index * 16);
+			if (rec[0] != TILE_W || rec[1] != TILE_H) continue;
+			g_czJobs[n++] = (cz_job){ s->buf + *(const int *)(rec + 2), px + s->index * (TILE_W * 2 * TILE_H * 2), s->x, s->y, TILE_W, TILE_H, 1 };
+		}
+		else {   // sprites, the overhang of trees and buildings (as stamp_sprite)
+			const BYTE *data = NULL;
+			for (int k = 0; k < MAX_SPRITE_SETS; k++) if (g_spriteSets[k].buf == s->buf) { data = g_spriteSets[k].data; break; }
+			if (!data || s->index >= *(const int *)data) continue;
+			int off = ((const int *)data)[1 + s->index];
+			if (!off) continue;
+			const BYTE *p = data + off;
+			int w = *(const WORD *)p, h = *(const WORD *)(p + 2);
+			g_czJobs[n++] = (cz_job){ p + 4, (const DWORD *)(p + 4 + w * h), s->x, s->y, w, h, 0 };
+		}
+	}
+	g_czJobN = n;
+	g_czHdBuf = b; g_czHdPitch = pitch;
+	pool_run((b->h + CZ_BAND - 1) / CZ_BAND, cz_hd_job);
+}
+// Draws the zoomed-out county map into g_czDraw (the game thread, after the normal redraw).
+static void cz_draw(void)
+{
+	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
+		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
+	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
+	int rowsAll = CZ_M + 24 + H + CZ_BELOW;
+	if (pitch - W < 2 * CZ_M + 64) return;   // (the frame is as wide as the zoomed-out battlefield: not without BattleZoom)
+	static int bufPitch;
+	static BYTE *snap;
+	if (!g_czB[0].pix) {
+		if (!(snap = malloc(CZ_HI - CZ_LO))) return;
+		for (int i = 0; i < 4; i++) {   // (kept: the presenter may read one)
+			if (!(g_czB[i].pix = calloc((size_t)pitch, rowsAll))) return;
+			g_czB[i].hd = calloc((size_t)W * H, 4);
+		}
+		bufPitch = pitch;
+	}
+	if (pitch != bufPitch || !snap) return;
+	int cam = MAP_FIRST_COL, camRow = *(int *)0x005651b8, firstX = MAP_FIRST_X, firstY = *(int *)0x00553244;
+	// At most one draw a 15 ms (the game's animations step every 16), except when the view moved.
+	static int lastCam = -1, lastRow = -1; static LONG lastGen; static double lastT;
+	double now = perf_now();
+	if (cam == lastCam && camRow == lastRow && g_czGen == lastGen && now - lastT < 15) return;
+	lastCam = cam; lastRow = camRow; lastGen = g_czGen; lastT = now;
+	cz_buf *b = g_czDraw;
+	// The normal view's middle on the field's middle: game x, y is at x + D, y + E here.
+	int D = W / 2 - (PANEL_X - g_extra) / 2, E = 24 + H / 2 - (24 + (GAME_H - 24) / 2);
+	int cs = (firstX + D + 59) / 60, rs = 2 * ((firstY + E - 9 + 29) / 30);   // columns and rows (even) further out
+	int fx = firstX + D - cs * 60, fy = firstY + E - rs * 15;
+	int nc = (W - fx + 59) / 60, nr = ((24 + H - fy + 14) / 15 + 2) & ~1;
+	int fc = max(0, min(64 - nc, cam - cs)), fr = max(0, min(128 - nr, camRow - rs)) & ~1;
+	// At the map's edge the view stops: the normal view is then off the middle.
+	D += (cam - cs - fc) * 60; E += (camRow - rs - fr) * 15;
+	fx = firstX + D - (cam - fc) * 60; fy = firstY + E - (camRow - fr) * 15;
+	static unsigned draws;
+	BOOL check = g_czCheckAll || (g_timing && (++draws & 63) == 0);
+	DWORD frameSum = check ? cz_sum(g_back->bits, (size_t)pitch * g_back->h) : 0;
+	// The game's sound streams are refilled by a timer callback on another thread (FUN_00426dd5), which writes
+	// its records (0x522bb0 on) under a lock of its own, 0x4d4764: it skips a tick while the lock is taken. Held
+	// here from the copy to the put-back, so no write of it is undone. (It is running: drawn at the next redraw.)
+	if (InterlockedCompareExchange((volatile LONG *)0x004d4764, 1, 0) != 0) { lastCam = -1; return; }
+	// the game's data as it is; then what the last zoomed-out draw left (still the game's own underneath)
+	BYTE *data = (BYTE *)CZ_LO;
+	memcpy(snap, data, CZ_HI - CZ_LO);
+	for (int i = 0; i < g_czKeptN; i++) {
+		BYTE *q = data + (g_czKept[i].addr - CZ_LO);
+		if (*q == g_czKept[i].game) *q = g_czKept[i].ours;
+	}
+	// An army selected (screen 16) with a cell under the mouse: the march path to it. Each frame the game marks
+	// the path's cells (flag 0x40 of the cell's record, FUN_004a91ba, from FUN_004a8e0b) and the redraw draws a
+	// numbered dot on each marked cell in view and clears its mark (FUN_004081a6): the normal redraw just did, so
+	// they are marked again here, as the game does (put back after, with the rest).
+	if (SCREEN_ID == 16 && *(DWORD *)0x00568974 < 0xfff0000) ((void (__cdecl *)(void))0x004a91ba)();
+	// the view as large as the field, drawn into the buffer
+	MAP_COLUMNS = nc; MAP_FIRST_X = fx; MAP_FIRST_COL = fc; *(int *)0x005651b8 = fr; *(int *)0x00553244 = fy;
+	*(int *)0x0056d67c = nr; *(int *)0x0055cd60 = 60 * nc + fx; *(int *)0x00553254 = (nr + 1) * 15 + fy;
+	*(int *)0x0053e9ac = 1;   // everything drawn
+	*(BYTE **)0x004ea1a8 = b->pix + CZ_M * pitch + CZ_M;
+	g_czClipR = W; g_czClipB = 24 + H;
+	double t0 = g_timing ? perf_now() : 0;
+	g_czStampN = 0;
+	g_czPass = TRUE;
+	o_redraw_map();
+	g_czPass = FALSE;
+	double t1 = g_timing ? perf_now() : 0;
+	// all put back; what it changed besides its working values is kept for the next draw
+	int kept = 0;
+	for (int i = 0; i < CZ_HI - CZ_LO; i += 64) {
+		if (!memcmp(data + i, snap + i, 64)) continue;
+		for (int j = i; j < i + 64; j++) {
+			if (data[j] == snap[j]) continue;
+			DWORD a = CZ_LO + j;
+			if (kept < CZ_KEPT && !cz_work(a)) g_czKept[kept++] = (cz_kept){ a, data[j], snap[j] };
+			data[j] = snap[j];
+		}
+	}
+	g_czKeptN = kept;
+	if (check && memcmp(data, snap, CZ_HI - CZ_LO)) {
+		int j = 0; while (j < CZ_HI - CZ_LO && data[j] == snap[j]) j++;
+		logf_("county zoom: the game's data not put back (0x%08lx: %02x, was %02x)", (unsigned long)(CZ_LO + j), j < CZ_HI - CZ_LO ? data[j] : 0, j < CZ_HI - CZ_LO ? snap[j] : 0);
+	}
+	InterlockedExchange((volatile LONG *)0x004d4764, 0);
+	double t2 = g_timing ? perf_now() : 0;
+	b->w = W; b->h = H;
+	if (b->hd && g_hdTiles) cz_hd(b, pitch);
+	double t3 = g_timing ? perf_now() : 0;
+	if (check && frameSum != cz_sum(g_back->bits, (size_t)pitch * g_back->h)) logf_("county zoom: the draw changed the game's frame");
+	b->w = W; b->h = H; b->sw = GAME_W + g_extra;
+	b->fc = fc; b->fr = fr; b->fx = fx; b->fy = fy; b->nc = nc; b->nr = nr; b->dx = D; b->dy = E;
+	b->gen = g_czGen;
+	// (the presenter's picture is built again only when this one differs)
+	const cz_buf *lp = g_czLastPub;
+	b->changed = !lp || lp->gen != b->gen || lp->w != W;
+	for (int y = 0; y < H && !b->changed; y++) b->changed = memcmp(b->pix + (CZ_M + 24 + y) * pitch + CZ_M, lp->pix + (CZ_M + 24 + y) * pitch + CZ_M, W) != 0;
+	g_czDraw = g_czPend; g_czPend = b;
+	g_czPendNew = TRUE;
+	if (g_timing) {
+		static double sum, sumR, sumH; static int n, nk, ns; static DWORD last;
+		sum += t1 - t0; sumR += t2 - t1; sumH += t3 - t2; n++; nk = max(nk, kept); ns = max(ns, g_czStampN);
+		if (GetTickCount() - last > 5000) {
+			logf_("county zoom: %d draws, %.2f ms each + %.2f ms putting back + %.2f ms HD art (up to %d stamps), up to %d bytes kept; view %d,%d from %d,%d", n, sum / n, sumR / n, sumH / n, ns, nk, cam, camRow, fc, fr);
+			sum = sumR = sumH = 0; n = nk = ns = 0; last = GetTickCount();
+		}
+	}
+}
 
 static void __cdecl h_redraw_map(void)
 {
@@ -8428,6 +9406,7 @@ static void __cdecl h_redraw_map(void)
 		for (int y = 24; y < bottom; y++) {
 			BYTE *row = g_back->bits + y * g_back->pitch + x0;
 			memcpy(row, row + shift, strip);
+			if (g_gndValid) memset(g_gndValid + y * MAX_W + x0, 0, strip);
 			if (!g_sprLayer) continue;
 			memcpy(g_sprShadow + y * MAX_W + x0, g_sprShadow + y * MAX_W + x0 + shift, strip);
 			memcpy(g_sprValid + y * MAX_W + x0, g_sprValid + y * MAX_W + x0 + shift, strip);
@@ -8447,6 +9426,7 @@ static void __cdecl h_redraw_map(void)
 		g_snapPendW = g_showW;
 		if (window_screen(SCREEN_ID)) InterlockedExchange(&g_snapPending, 1);
 	}
+	cz_draw();
 }
 
 // "y * 640" compiled as LEA r,[r+r*4] ; SHL r,7 (tools\find_mul640.ps1), in the rectangle
@@ -8543,6 +9523,11 @@ static void install_wide(void)
 	hook_code((BYTE *)0x0047ed34, kBlockPrologue, sizeof kBlockPrologue, h_battle_clamp, &o_battle_clamp);
 	static const BYTE kEdgePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 }; // push ebp; mov ebp,esp; sub esp,10h
 	hook_code((BYTE *)0x00432221, kEdgePrologue, sizeof kEdgePrologue, h_edge_scroll, &o_edge_scroll);
+	static const BYTE kMiniPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20 }; // push ebp; mov ebp,esp; sub esp,20h
+	hook_code((BYTE *)0x004bc51a, kMiniPrologue, sizeof kMiniPrologue, h_mini_rows, &o_mini_rows);
+	static const BYTE kJumpPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
+	hook_code((BYTE *)0x00432443, kJumpPrologue, sizeof kJumpPrologue, h_mini_click, &o_mini_click);
+	hook_code((BYTE *)0x0043c910, kJumpPrologue, sizeof kJumpPrologue, h_group_key, &o_group_key);
 	hook_code((BYTE *)0x004bc142, kBlockPrologue, sizeof kBlockPrologue, h_battle_draw, &o_battle_draw);
 	hook_code((BYTE *)0x00409e09, kRedrawPrologue, sizeof kRedrawPrologue, h_bar_tiles, &o_bar_tiles);
 	hook_code((BYTE *)0x00409397, kBlockPrologue, sizeof kBlockPrologue, h_framed_panel, &o_framed_panel);
@@ -9056,10 +10041,12 @@ static void chase_progress(int me);
 static BOOL engage_chase(int me);
 static BOOL g_fixEngage, g_chaseHookFailed;
 
+static void jam_check(int me);
 static void __cdecl h_chase(void)
 {
 	int me = FIG_CUR;
 	if (fix_on(g_fixEngage) && me > 0 && me < 0x51 && engage_chase(me)) return;   // walked back to its place
+	BYTE hadRoute = me > 0 && me < 0x51 ? FIG_B(me, 0x005545e4) : 1;   // (+0x164: it has a route)
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) chase_progress(me);
 	if (fix_on(g_fixMopUp) && me > 0 && me < 0x51) {
 		int group = *(short *)(0x005545f8 + me * 0x1b0);
@@ -9073,6 +10060,7 @@ static void __cdecl h_chase(void)
 		}
 	}
 	o_chase();
+	if (!hadRoute) jam_check(me);   // a route it was just given
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -9100,6 +10088,9 @@ static unsigned g_twitch[81], g_twitchSec[81], g_traceUntil[81], g_idleSince[81]
 static short g_prevX[81], g_prevY[81];
 static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g_bheld, g_bswapsBlocked, g_bresync;
 static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
+static int g_bsupport;   // archers' shots turned to back up a fight (h_pick)
+static int g_bfire;      // computer units sent out of burning oil (fire_step)
+static int g_bshotsBy[3];   // shots in the last second by side
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -9250,6 +10241,52 @@ static int nearest_enemy(int i, const fig_snap *n)
 	return best;
 }
 
+// Cover for the computer's archers (the players' complaint: its melee charges and leaves them alone).
+// For each live computer bow or crossbow unit: the nearest live melee unit of its own side and the
+// nearest enemy melee unit (cells, the larger of dx and dy). "Isolated": enemy melee within
+// AI_COVER_THREAT and none of its own within AI_COVER_NEAR. Returns FALSE when the side has no computer
+// units. Also the men left in melee and ranged units on each side.
+#define AI_COVER_NEAR 5
+#define AI_COVER_THREAT 8
+typedef struct { int archers, ownSum, ownMax, isolated, inMelee, menMelee, menRanged, enemyMenMelee, enemyMenRanged; } ai_cover;
+static BOOL g_aiStatsDone;
+
+static BOOL ai_is_melee(const fig_snap *f, int i) { return f->live && f->state != 2 && f->type < 7 && !FIG(i)[0x16a]; }
+
+static BOOL ai_archer_cover(const fig_snap *n, int side, ai_cover *c)
+{
+	memset(c, 0, sizeof *c);
+	BOOL computer = FALSE;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || n[i].state == 2 || n[i].type >= 7) continue;
+		BOOL ranged = FIG(i)[0x16a] != 0;
+		if (n[i].side == side) {
+			if (!FIG(i)[0x13]) computer = TRUE;
+			if (ranged) c->menRanged += n[i].men; else c->menMelee += n[i].men;
+		}
+		else if (ranged) c->enemyMenRanged += n[i].men; else c->enemyMenMelee += n[i].men;
+	}
+	if (!computer) return FALSE;
+	for (int i = 1; i < 0x51; i++) {
+		if (!n[i].live || n[i].state == 2 || n[i].type >= 7 || n[i].side != side || FIG(i)[0x13] || !FIG(i)[0x16a]) continue;
+		int own = 999, enemy = 999;
+		for (int j = 1; j < 0x51; j++) {
+			if (j == i || !ai_is_melee(&n[j], j)) continue;
+			int d = abs(n[j].x - n[i].x), dy = abs(n[j].y - n[i].y);
+			if (dy > d) d = dy;
+			if (n[j].side == side) { if (d < own) own = d; }
+			else if (d < enemy) enemy = d;
+		}
+		c->archers++;
+		if (own > 80) own = 80;
+		c->ownSum += own;
+		if (own > c->ownMax) c->ownMax = own;
+		if (enemy <= AI_COVER_THREAT && own > AI_COVER_NEAR) c->isolated++;
+		if (n[i].state == 4) c->inMelee++;
+	}
+	return TRUE;
+}
+
 static void battle_second(const fig_snap *n)
 {
 	int alive[3] = { 0 }, moving = 0, waiting = 0, idle = 0, chasing = 0, melee = 0;
@@ -9301,16 +10338,885 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d [%s] | groups%s",
+	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d support %d fire %d [%s] | groups%s",
 		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
-		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, tw, cols);
-	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = 0;
+		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, g_bsupport, g_bfire, tw, cols);
+	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = g_bsupport = g_bfire = 0;
 	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
 	blog("cpu units %.1f ms, searches %.1f ms (in the last second); selected group %d", g_bcpuLoop * 1000.0 / fq.QuadPart,
 		g_bcpuBfs * 1000.0 / fq.QuadPart, *(int *)0x0053e984);
 	g_bcpuLoop = g_bcpuBfs = 0;
 	memset(g_twitchSec, 0, sizeof g_twitchSec);
 	g_bswaps = g_bsearch = g_bsearchFail = g_bdrops = g_btwitch = g_bstate1 = g_bheld = g_bswapsBlocked = 0;
+	if (!g_aiStatsDone) {
+		// each unit type's fighting values once a battle (set by the type's handler every step). In melee
+		// (FUN_00494908) the two take turns: the striker's turn lasts by its turn class (+0x18a: 0, 40, 80,
+		// 80, 120 steps), and the other is hit for the striker's melee hit (+0x19c, from the type and how many
+		// men are left) once every toughness (+0x18b) steps of it; a first strike (+0x198) lands once per
+		// fight. Then armour against missiles (+0x172), missile power (+0x19e) and range.
+		g_aiStatsDone = TRUE;
+		for (int t = 0; t < 7; t++)
+			for (int i = 1; i < 0x51; i++)
+				if (n[i].live && n[i].type == t) {
+					BYTE *f = FIG(i);
+					blog("type %d (%s): men %d, melee hit %d, first strike %d, toughness %d, turn class %d, armour %d, missile power %d, range %d",
+						t, f[0x16a] ? "ranged" : "melee", n[i].men, FIG_S(i, 0x19c), FIG_S(i, 0x198), f[0x18b], f[0x18a], f[0x172],
+						FIG_S(i, 0x19e), FIG_S(i, 0x170) / 8);
+					break;
+				}
+	}
+	for (int side = 1; side < 3; side++) {
+		ai_cover c;
+		if (!ai_archer_cover(n, side, &c)) continue;
+		blog("cover side %d (computer): archers %d, own melee within %d cells of each: nearest avg %d max %d | isolated %d (enemy melee within %d, no own melee within %d) | archers in melee %d | men melee %d ranged %d, enemy melee %d ranged %d | shots %d, enemy shots %d",
+			side, c.archers, AI_COVER_NEAR, c.archers ? c.ownSum / c.archers : -1, c.ownMax, c.isolated, AI_COVER_THREAT,
+			AI_COVER_NEAR, c.inMelee, c.menMelee, c.menRanged, c.enemyMenMelee, c.enemyMenRanged, g_bshotsBy[side], g_bshotsBy[3 - side]);
+	}
+	memset(g_bshotsBy, 0, sizeof g_bshotsBy);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Computer battle AI log (part of [Debug] BattleLog, no gameplay change). The group tick
+// FUN_00489401 runs every computer group's AI handler (table 0x004d91b8 by the group's kind,
+// +0x08: 1 bows and crossbows, 2 peasants and pikes, 3 maces and swords, 4 knights); each one thinks
+// once its timer (+0x1c) passes 199 and no member is in melee. The tick is wrapped: every group's AI
+// fields and the side-wide values are taken before and after, and each think is written with what it
+// did (charge, a new destination, a 2-cell step), plus every change of the strength percentage and the
+// shared aggression. The strength percentage (computer x 100 / human - 100, re-rolled by -10..+21 in
+// single player every 100 steps) above the threshold (5) runs the attack rules, else the defence rules.
+#define GRP_B(g, o) (*(BYTE *)(0x00566520 + (g) * 0x34 + (o)))
+#define GRP_S(g, o) (*(short *)(0x00566520 + (g) * 0x34 + (o)))
+typedef struct { BYTE side, human, count, kind, attacked, melee, stepped, hunting, presses; short attacker, phase, think, cx, cy, dx, dy; } ai_snap;
+typedef struct { int ratio, threshold, aggression, hits, limit, archerStrength, strength, holdBack; } ai_glob;
+typedef void (__cdecl *grp_tick_t)(void);
+static grp_tick_t o_group_tick;
+static BOOL g_aiListed;
+
+static void ai_take(int g, ai_snap *s)
+{
+	s->side = GRP_B(g, 0x00); s->human = GRP_B(g, 0x01); s->count = GRP_B(g, 0x02); s->kind = GRP_B(g, 0x08);
+	s->attacked = GRP_B(g, 0x0c); s->melee = GRP_B(g, 0x0d); s->stepped = GRP_B(g, 0x10); s->hunting = GRP_B(g, 0x2a);
+	s->presses = GRP_B(g, 0x2b); s->attacker = GRP_S(g, 0x0a); s->phase = GRP_S(g, 0x1a); s->think = GRP_S(g, 0x1c);
+	s->cx = GRP_S(g, 0x1e); s->cy = GRP_S(g, 0x20); s->dx = GRP_S(g, 0x22); s->dy = GRP_S(g, 0x24);
+}
+
+static void ai_glob_take(ai_glob *a)
+{
+	a->ratio = *(int *)0x004eea98; a->threshold = *(int *)0x0057c8b4; a->aggression = *(int *)0x00553070;
+	a->hits = *(int *)0x00553f28;
+	int county = *(int *)0x005653f8;
+	a->limit = county >= 0 && county < 0x30 ? *(BYTE *)(0x00553080 + county) : -1;
+	a->archerStrength = *(int *)0x0056d6ac; a->strength = *(int *)0x00553f74; a->holdBack = *(int *)0x0056d89c;
+}
+
+static const char *ai_kind_name(int k)
+{
+	switch (k) { case 1: return "archers"; case 2: return "peasants/pikes"; case 3: return "maces/swords"; case 4: return "knights"; }
+	return "siege";
+}
+
+// What one group's think did, from its fields before and after: the text goes into out (empty when
+// the group didn't think this tick).
+static void ai_think_text(int g, const ai_snap *b, const ai_snap *a, const ai_glob *gb, const ai_glob *ga, char *out, size_t n)
+{
+	out[0] = 0;
+	if (!a->side || a->human || a->think != 0 || b->think == 0) return;   // thinking resets the timer to 0
+	char did[160] = "", *p = did;
+	if (!b->hunting && a->hunting) p += snprintf(p, did + sizeof did - p, " charge");
+	if (b->hunting && !a->hunting) p += snprintf(p, did + sizeof did - p, " charge ends");
+	if (a->dx != b->dx || a->dy != b->dy) {
+		int d = abs(a->dx - a->cx), dy = abs(a->dy - a->cy);
+		p += snprintf(p, did + sizeof did - p, " go %d,%d -> %d,%d (%d cells from its centre)", b->dx, b->dy, a->dx, a->dy, d > dy ? d : dy);
+	}
+	if (a->presses != b->presses) p += snprintf(p, did + sizeof did - p, " step 2 away from group %d", a->attacker);
+	if (!did[0]) snprintf(did, sizeof did, " nothing");
+	snprintf(out, n, "ai g%d side %d %s (%d) turn %d %s | strength %+d aggression %d hits %d/%d | %s by g%d | did:%s",
+		g, a->side, ai_kind_name(a->kind), a->count, b->phase, gb->ratio > gb->threshold ? "ATTACK" : "DEFEND", gb->ratio,
+		ga->aggression, ga->hits, ga->limit, a->attacked ? "under attack" : "not attacked", a->attacker, did);
+}
+
+static void __cdecl h_group_tick(void)
+{
+	if (!g_blog) { o_group_tick(); return; }
+	static ai_snap b[81], a[81];
+	ai_glob gb, ga;
+	for (int g = 1; g < 0x51; g++) ai_take(g, &b[g]);
+	ai_glob_take(&gb);
+	o_group_tick();
+	for (int g = 1; g < 0x51; g++) ai_take(g, &a[g]);
+	ai_glob_take(&ga);
+	if (!g_aiListed) {
+		g_aiListed = TRUE;
+		blog("ai groups at the start (strength %+d, threshold %d: %s; county limit %d, archer strength %d of %d):", ga.ratio,
+			ga.threshold, ga.ratio > ga.threshold ? "attack" : "defend", ga.limit, ga.archerStrength, ga.strength);
+		for (int g = 1; g < 0x51; g++)
+			if (a[g].side) blog("  g%d side %d %s %s, %d units at %d,%d", g, a[g].side, a[g].human ? "human" : "computer",
+				ai_kind_name(a[g].kind), a[g].count, a[g].cx, a[g].cy);
+	}
+	if (ga.ratio != gb.ratio && (ga.ratio > ga.threshold) != (gb.ratio > gb.threshold))
+		blog("ai strength %+d -> %+d: now %s", gb.ratio, ga.ratio, ga.ratio > ga.threshold ? "ATTACK" : "DEFEND");
+	if (ga.aggression != gb.aggression || ga.hits != gb.hits || ga.holdBack != gb.holdBack)
+		blog("ai aggression %d -> %d, hits %d -> %d (limit %d), archer strength %d of %d%s", gb.aggression, ga.aggression, gb.hits,
+			ga.hits, ga.limit, ga.archerStrength, ga.strength, ga.holdBack != gb.holdBack ? (ga.holdBack ? ", holding back" : ", hold-back over") : "");
+	for (int g = 1; g < 0x51; g++) {
+		char line[400];
+		ai_think_text(g, &b[g], &a[g], &gb, &ga, line, sizeof line);
+		if (line[0]) blog("%s", line);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Enemy tactics, Hard and Legendary ([Game] BattleAI=1/2; field battles only, Normal = the game's own AI,
+// untouched). Changes how the computer plays, so in multiplayer only with MultiplayerFixes (every player
+// must then use the same level).
+// Steady mode: the game weighs both armies about every 100 steps (FUN_0047fc01: computer x 100 / human
+// - 100, the strength percentage) and in single player adds a random -10..+21 each time; above the
+// threshold (5) its groups run the attack rules, else the defence rules. Close to even, that switches
+// back and forth every few seconds (up to 28 times in 2 minutes, phase 1), sending every group somewhere
+// else. Here the first weighing of a battle decides, random term included, and the mode changes only
+// when the armies really change: from attack to defence when the computer falls AI_MODE_SLACK below the
+// threshold (the random term left out), from defence to attack when it rises AI_MODE_SLACK above it, or,
+// when it's about even (no more than AI_DEF_EVEN below), after AI_DEF_WAIT weighings (about 70 s) of
+// waiting. The percentage the handlers read is held on the chosen side of the threshold.
+#define AI_MODE_SLACK 20
+#define AI_DEF_EVEN 10
+#define AI_DEF_WAIT 60
+static int g_aiLevel;              // the level of this battle (battle_reset)
+static BOOL g_aiDecided, g_aiAttack;
+static int g_aiWeighs;             // weighings since the mode was chosen
+typedef void (__cdecl *ai_fn_t)(void);
+static ai_fn_t o_strength;
+// [Debug] AiParts: which rules run, for measuring them one at a time (default all). Hard: 1 the steady mode,
+// 2 the archers, 4 the melee. Legendary adds 8 the unit counters, 16 the target picks, 32 the advance under
+// fire, 64 falling back to regroup, 128 the archers' target.
+#define AI_STEADY 1
+#define AI_ARCHERS 2
+#define AI_MELEE 4
+#define AI_COUNTERS 8
+#define AI_TARGETS 16
+#define AI_UNDER_FIRE 32
+#define AI_REGROUP 64
+#define AI_FOCUS 128
+#define AI_SALLY 256
+#define AI_ALL 0x1ff
+// Legendary's sally (AI_SALLY): after the same wait, a defender attacks unless it's more than AI_SALLY_BAND
+// below the threshold (Hard: AI_DEF_EVEN), so a player who only holds their ground is attacked too.
+#define AI_SALLY_BAND 30
+static int g_aiParts = AI_ALL;
+
+static BOOL ai_on(void) { return g_aiLevel >= 1 && fix_on(TRUE) && *(int *)0x0053e8fc == 0; }
+static BOOL ai_part(int p) { return (g_aiParts & p) && ai_on(); }
+static BOOL ai_legend(int p) { return g_aiLevel >= 2 && ai_part(p); }   // one of Legendary's own rules
+
+// One weighing: raw = without the random term, rolled = with it; returns the percentage to keep.
+// A Legendary attack that began below the threshold (the sally) goes back to defence only AI_MODE_SLACK
+// below where it began, not at once when the strength dips a point.
+static int g_aiBackAt;             // attack turns to defence below this
+static int ai_mode_step(int raw, int rolled, int thr)
+{
+	if (!g_aiDecided) { g_aiDecided = TRUE; g_aiAttack = rolled > thr; g_aiWeighs = 0; g_aiBackAt = thr - AI_MODE_SLACK; }
+	else if (g_aiAttack && raw < g_aiBackAt) { g_aiAttack = FALSE; g_aiWeighs = 0; }
+	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiWeighs >= AI_DEF_WAIT && raw >= thr - (ai_legend(AI_SALLY) ? AI_SALLY_BAND : AI_DEF_EVEN)))) {
+		g_aiAttack = TRUE; g_aiWeighs = 0;
+		g_aiBackAt = thr - AI_MODE_SLACK;
+		if (ai_legend(AI_SALLY) && raw - AI_MODE_SLACK < g_aiBackAt) g_aiBackAt = raw - AI_MODE_SLACK;
+	}
+	g_aiWeighs++;
+	return g_aiAttack ? max(raw, thr + 1) : min(raw, thr);
+}
+
+static void __cdecl h_strength(void)
+{
+	o_strength();
+	if (!ai_part(AI_STEADY)) return;
+	int rolled = *(int *)0x004eea98, thr = *(int *)0x0057c8b4;
+	int raw = *(int *)0x00553030 ? rolled : rolled - ((*(int *)0x0058fd7c & 0x1f) - 10);   // (the random term, single player only)
+	BOOL decided = g_aiDecided, attack = g_aiAttack;
+	*(int *)0x004eea98 = ai_mode_step(raw, rolled, thr);
+	if (g_blog && (!decided || attack != g_aiAttack))
+		blog("ai %s: %s %s (strength %+d, with the random term %+d, threshold %d)", kAiLevel[g_aiLevel], decided ? "now" : "decided",
+			g_aiAttack ? "ATTACK" : "DEFEND", raw, rolled, thr);
+}
+
+// Archers that keep their distance (Hard). The game's archer handler (FUN_0048a9d2) waits, then walks its
+// archers half-way at the nearest enemy group whatever stands there, and in defence holds them; once the
+// melee charges they're left alone (phase 1: isolated for 23-71 s of 120 on two of three maps). Here each
+// think (every 200 steps with no member in melee, as the game's) does the first of:
+//   1. enemy melee within AI_ARCH_THREAT of the group's centre and none of its own melee within
+//      AI_ARCH_COVER: step AI_ARCH_STEP cells straight away from it;
+//   2. an enemy group within range (the members' shortest, centre to centre) and at least half its archers
+//      with a unit of it AI_FIRE_INSIDE inside their own range (ai_fire_ready; members holding an order on a
+//      unit out of that reach go idle first, ai_fire_release): the game's own fire order (FUN_0048c974, as its handler gives
+//      it). That order reaches only archers already close to the target group (its pick uses range 0x28), so
+//      with the group's centre in range but most archers not, they stood shooting nothing while their
+//      soldiers fought at a bridge (the user's Legendary battle: 1-5 shots a second against the player's 14);
+//   2b. its side's soldiers fighting (an enemy in melee with one of them) further than 2 inside its range:
+//      walk up until that fight is 2 inside range, so they back the fight up;
+//   3. its own melee not charging: stand AI_ARCH_BEHIND cells behind the centre of its side's melee, on the
+//      side away from the enemy's centre;
+//   4. otherwise (no melee left, or the melee charging): walk up until the nearest enemy is 2 inside range.
+// Orders go through the game's order function, writing the group's destination as its own helpers do.
+#define AI_ARCH_THREAT 5
+#define AI_ARCH_COVER 4
+#define AI_ARCH_STEP 4
+#define AI_ARCH_BEHIND 3
+static int cheb(int x0, int y0, int x1, int y1);
+static BOOL can_reach_soon(int e, int me);
+typedef void (__cdecl *ai_order_t)(int, int, int, int, int, int);
+typedef int (__cdecl *ai_grp_t)(int);
+static BOOL as_parked(int side);
+static BOOL as_soften_place(int g, int side, int r, int cx, int cy, int *x, int *y);
+static ai_order_t ai_game_order = (ai_order_t)0x00479e90;   // FUN_00479e90(group, x, y, 0, 0, 0)
+static ai_grp_t ai_game_fire = (ai_grp_t)0x0048c974;        // FUN_0048c974(target group): the current group shoots at it
+static ai_fn_t o_ai_ranged;
+
+// What one computer group sees at its think. Units: live, not dying, not siege engines.
+typedef struct {
+	int side, cx, cy, range;     // the group's side, centre, and its members' shortest range (cells)
+	int ownMelee, omx, omy;      // its side's computer melee units and their centre
+	int enemies, ex, ey;         // the enemy's units and their centre
+	int nearMelee, nmx, nmy;     // the nearest enemy melee unit to the group's centre: cells, and where
+	int nearAny, nax, nay;       // the nearest enemy unit of any kind
+	BOOL cover;                  // a melee unit of its own within AI_ARCH_COVER of the centre
+	BOOL charging;               // a computer melee group of its side is charging
+	int members, inRange;        // its live archers, and those with an enemy unit within their own range
+	int nearFight, fx, fy;       // the nearest enemy fighting one of its side (in melee with it): cells, where
+} ai_view;
+
+static void ai_view_take(int g, ai_view *v)
+{
+	memset(v, 0, sizeof *v);
+	v->side = GRP_B(g, 0x00); v->cx = GRP_S(g, 0x1e); v->cy = GRP_S(g, 0x20);
+	v->range = 99; v->nearMelee = v->nearAny = 999;
+	int osx = 0, osy = 0, esx = 0, esy = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), d = cheb(v->cx, v->cy, x, y);
+		BOOL melee = !f[0x16a];
+		if (f[0x2c] == v->side) {
+			if (FIG_S(i, 0x178) == g && f[0x16a] && FIG_S(i, 0x170) / 8 < v->range) v->range = FIG_S(i, 0x170) / 8;
+			if (melee && !f[0x13]) { v->ownMelee++; osx += x; osy += y; if (d <= AI_ARCH_COVER) v->cover = TRUE; }
+			continue;
+		}
+		v->enemies++; esx += x; esy += y;
+		if (d < v->nearAny) { v->nearAny = d; v->nax = x; v->nay = y; }
+		if (melee && d < v->nearMelee) { v->nearMelee = d; v->nmx = x; v->nmy = y; }
+	}
+	if (v->range == 99) v->range = 8;
+	v->nearFight = 999;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22);
+		if (f[0x2c] == v->side) {
+			if (FIG_S(i, 0x178) != g || !f[0x16a]) continue;
+			v->members++;
+			int r = FIG_S(i, 0x170) / 8;
+			for (int e = 1; e < 0x51; e++) {
+				BYTE *t = FIG(e);
+				if (t[0x2c] && t[0x2c] != v->side && t[0x31] != 2 && cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22)) <= r) { v->inRange++; break; }
+			}
+			continue;
+		}
+		int o = f[0x17e];
+		if (f[0x31] != 4 || o < 1 || o > 0x50 || FIG(o)[0x2c] != v->side) continue;
+		int d = cheb(v->cx, v->cy, x, y);
+		if (d < v->nearFight) { v->nearFight = d; v->fx = x; v->fy = y; }
+	}
+	if (v->ownMelee) { v->omx = osx / v->ownMelee; v->omy = osy / v->ownMelee; }
+	if (v->enemies) { v->ex = esx / v->enemies; v->ey = esy / v->enemies; }
+	for (int h = 1; h < 0x51; h++)
+		if (GRP_B(h, 0x00) == v->side && !GRP_B(h, 0x01) && GRP_B(h, 0x08) >= 2 && GRP_B(h, 0x08) <= 4 && GRP_B(h, 0x02) && GRP_B(h, 0x2a))
+			v->charging = TRUE;
+}
+
+// The nearest enemy group with units, centre to centre, within maxd cells (0 = none); FUN_0048ef45's rule.
+static int ai_nearest_group(int g, int maxd)
+{
+	int best = 0, bd = maxd + 1;
+	for (int h = 1; h < 0x51; h++) {
+		if (!GRP_B(h, 0x00) || GRP_B(h, 0x00) == GRP_B(g, 0x00) || !GRP_B(h, 0x02)) continue;
+		int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+		if (d < bd) { bd = d; best = h; }
+	}
+	return best;
+}
+
+// The group the archers of group g shoot at: the nearest enemy group in range; on Legendary (AI_FOCUS) the
+// nearest enemy archers in range come first, as they're the ones shooting at its melee as it advances,
+// unless enemy melee is within AI_FOCUS_NEAR cells: then that, as on Hard.
+#define AI_FOCUS_NEAR 8
+static int ai_shoot_target(int g, int range)
+{
+	int best = ai_nearest_group(g, range);
+	if (!best || GRP_B(best, 0x08) == 1 || !ai_legend(AI_FOCUS)) return best;
+	if (cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(best, 0x1e), GRP_S(best, 0x20)) <= AI_FOCUS_NEAR) return best;
+	int bd = range + 1, bows = 0;
+	for (int h = 1; h < 0x51; h++) {
+		if (!GRP_B(h, 0x00) || GRP_B(h, 0x00) == GRP_B(g, 0x00) || !GRP_B(h, 0x02) || GRP_B(h, 0x08) != 1) continue;
+		int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+		if (d < bd) { bd = d; bows = h; }
+	}
+	return bows ? bows : best;
+}
+
+// The cell k cells from a towards b (k < 0: away from b), along the straight line.
+static void ai_toward(int ax, int ay, int bx, int by, int k, int *x, int *y)
+{
+	int d = cheb(ax, ay, bx, by);
+	*x = d ? ax + (bx - ax) * k / d : ax; *y = d ? ay + (by - ay) * k / d : ay;
+}
+
+// Sends group g to x,y (kept inside the field), unless it's already going there; TRUE when sent.
+static BOOL ai_order(int g, int x, int y)
+{
+	x = x < 1 ? 1 : x > 78 ? 78 : x; y = y < 1 ? 1 : y > 78 ? 78 : y;
+	if (cheb(x, y, GRP_S(g, 0x22), GRP_S(g, 0x24)) <= 1) return FALSE;
+	GRP_B(g, 0x10) = 0; GRP_S(g, 0x22) = (short)x; GRP_S(g, 0x24) = (short)y;
+	ai_game_order(g, x, y, 0, 0, 0);
+	return TRUE;
+}
+
+// TRUE when an enemy melee unit within AI_ARCH_THREAT of archer group g's centre can walk up to the member
+// nearest it soon (can_reach_soon): one behind stakes, a hedge or water is no reason to step back.
+static BOOL ai_archers_reachable(int g, const ai_view *v)
+{
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == v->side || t[0x31] == 2 || t[0x12] >= 7 || t[0x16a]) continue;
+		int ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22);
+		if (cheb(v->cx, v->cy, ex, ey) > AI_ARCH_THREAT) continue;
+		int m = 0, md = 999;
+		for (int i = 1; i < 0x51; i++)
+			if (FIG_S(i, 0x178) == g && FIG(i)[0x2c] == v->side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) {
+				int d = cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), ex, ey);
+				if (d < md) { md = d; m = i; }
+			}
+		if (m && can_reach_soon(e, m)) return TRUE;
+	}
+	return FALSE;
+}
+
+// The game's fire order (FUN_0048c974) gives each archer the nearest unit of the target group (within 40
+// cells) and state 17, whose handler (FUN_00484bf9) shoots only while that unit is at least 2 cells inside
+// the archer's range (the larger of dx and dy); further away it walks at it, or with 0x1a4 = 1 stands where
+// it is. Standing still the archers then shot nothing (the user's bridge battle: from step 5602 to 7246
+// seven archers held a target 14 cells off with range 15, and shot 2-3 times a second against 14). Idle
+// (state 5) they shoot the nearest enemy within their full range (FUN_00483337) on their own.
+// AI_FIRE_INSIDE: how far inside its range the order's target has to be.
+#define AI_FIRE_INSIDE 2
+// The members of archer group g whose nearest unit of enemy group tg is within their range less AI_FIRE_INSIDE.
+static int ai_fire_ready(int g, int tg)
+{
+	int n = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || FIG_S(i, 0x178) != g || !f[0x16a] || f[0x31] == 2) continue;
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), r = FIG_S(i, 0x170) / 8 - AI_FIRE_INSIDE, best = 999;
+		for (int e = 1; e < 0x51; e++)
+			if (FIG(e)[0x2c] && FIG(e)[0x2c] != f[0x2c] && FIG(e)[0x31] != 2 && FIG_S(e, 0x178) == tg) {
+				int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
+				if (d < best) best = d;
+			}
+		if (best <= r) n++;
+	}
+	return n;
+}
+// Members of group g holding a fire order on a unit that is gone or out of reach (see above) stand down
+// to idle, where the game shoots whatever is in range; returns how many.
+static int ai_fire_release(int g)
+{
+	int n = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || FIG_S(i, 0x178) != g || !f[0x16a] || f[0x31] != 17) continue;
+		int t = f[0x174];
+		if (t >= 1 && t <= 0x50 && FIG(t)[0x2c] && FIG(t)[0x31] != 2 &&
+			cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(t, 0x20), FIG_S(t, 0x22)) <= FIG_S(i, 0x170) / 8 - AI_FIRE_INSIDE) continue;
+		f[0x31] = 5; f[0x174] = 0; f[0x164] = 0;
+		n++;
+	}
+	return n;
+}
+
+static void ai_archers_think(int g)
+{
+	ai_view v;
+	ai_view_take(g, &v);
+	int x, y, tg, ready = 0;
+	char what[80] = "";
+	int freed = ai_fire_release(g);
+	if (v.nearMelee <= AI_ARCH_THREAT && !v.cover && ai_archers_reachable(g, &v)) {
+		ai_toward(v.cx, v.cy, v.nmx, v.nmy, -AI_ARCH_STEP, &x, &y);
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "step back from enemy melee %d cells away", v.nearMelee);
+	}
+	else if ((tg = ai_shoot_target(g, v.range)) != 0 && (ready = ai_fire_ready(g, tg)) * 2 >= v.members && ready) {
+		ai_game_fire(tg);
+		snprintf(what, sizeof what, "shoot at g%d (%d of %d in reach)", tg, ready, v.members);
+	}
+	else if (as_soften_place(g, v.side, v.range, v.cx, v.cy, &x, &y)) {   // its side parked before a crossing
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "beside the crossing at %d,%d, in range of its far end", x, y);
+	}
+	else if (v.nearFight < 999 && v.nearFight > v.range - 2) {
+		ai_toward(v.cx, v.cy, v.fx, v.fy, v.nearFight - (v.range - 2), &x, &y);
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "up to the fight at %d,%d (%d cells, %d of %d in range)", v.fx, v.fy, v.nearFight, v.inRange, v.members);
+	}
+	else if (v.ownMelee && !v.charging && v.enemies) {
+		ai_toward(v.omx, v.omy, v.ex, v.ey, -AI_ARCH_BEHIND, &x, &y);
+		if (cheb(x, y, v.cx, v.cy) > 2 && ai_order(g, x, y)) snprintf(what, sizeof what, "behind the melee at %d,%d", v.omx, v.omy);
+	}
+	else if (v.enemies && v.nearAny > v.range) {
+		ai_toward(v.cx, v.cy, v.nax, v.nay, v.nearAny - (v.range - 2), &x, &y);
+		if (ai_order(g, x, y)) snprintf(what, sizeof what, "into range (%d), the nearest enemy %d cells away", v.range, v.nearAny);
+	}
+	if (!what[0] && freed) snprintf(what, sizeof what, "%d stand down from a target out of reach and shoot what is in range", freed);
+	if (g_blog && what[0]) blog("ai %s g%d archers: %s", kAiLevel[g_aiLevel], g, what);
+}
+
+// A melee that moves and charges together (Hard). The game's melee handlers (FUN_0048acd2 for peasants and
+// pikemen, FUN_0048b02b for maces, swords and knights) walk each group to a set point and charge on a
+// timer (its 10th or 13th think), one group at a time, and in defence the whole side charges at the first
+// hits through the shared aggression. Here, at each group's think (as the game's: every 200 steps, no
+// member in melee):
+//   - once its side charges, it charges too (the game's own charge, FUN_0048c8af); every melee group of
+//     the side then thinks at its next step, so they go together;
+//   - attack: it advances towards the enemy unit nearest its side's melee, AI_ADVANCE_STEP cells a think
+//     and never more than that ahead of the side's rearmost melee group, and stops AI_CHARGE_DIST cells
+//     from the enemy. The side charges when every melee group is in place (within AI_CHARGE_DIST +
+//     AI_LINE_SLACK) and its archers have had AI_VOLLEY_STEPS to shoot (at once without archers), or when
+//     any of its groups is hit, any of its units fights, or AI_CHARGE_STEPS (about 60 s) after it began
+//     attacking (counted from then, so a defender that turns to attack still advances first) once its
+//     rearmost group is within AI_CHARGE_FAR of the enemy (from further, groups of different speeds arrived
+//     one after another);
+//   - defence: it holds. The side charges when AI_DEF_UNITS enemy melee units are within AI_DEF_TRIGGER
+//     of its units, as many of its units fight, or it has lost AI_DEF_LOSS percent of its men.
+#define AI_CHARGE_DIST 6
+#define AI_LINE_SLACK 2
+#define AI_ADVANCE_STEP 6
+#define AI_LEG_LEFT 3      // a group with more than this left of its walk is still walking
+#define AI_LEG_SAME 4      // ... and keeps its order when the new point is within this of it
+#define AI_LEG_MIN 4       // an arrived group moves on only for a step of at least this
+#define AI_CHARGE_STEPS 5000
+#define AI_CHARGE_FAR 20   // ... but not with its rearmost group further than this from the enemy: it keeps advancing
+#define AI_VOLLEY_STEPS 400
+#define AI_DEF_TRIGGER 6
+#define AI_DEF_UNITS 3
+#define AI_DEF_LOSS 15
+typedef void (__cdecl *ai_grpv_t)(int);
+static ai_grpv_t ai_game_charge = (ai_grpv_t)0x0048c8af;   // FUN_0048c8af(group): its units chase the nearest enemy
+static ai_fn_t o_ai_melee2, o_ai_melee34;
+static BOOL g_aiCharge[3];           // the side's melee charges (per battle)
+static int g_aiMenStart[3];          // the side's computer men at its first AI step
+static unsigned g_aiReadySince[3];   // the step its melee was first in place (0 = not yet)
+static unsigned g_aiAttackSince[3];  // the step its melee began attacking (0 = defending)
+
+static int ai_side_men(int side)
+{
+	int men = 0;
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] == side && !FIG(i)[0x13] && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) men += FIG_S(i, 0x1a0);
+	return men;
+}
+static BOOL ai_group_walking(int h)   // a live member walking or waiting to step (states 3, 1, 9)
+{
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] && FIG_S(i, 0x178) == h && (FIG(i)[0x31] == 3 || FIG(i)[0x31] == 1 || FIG(i)[0x31] == 9)) return TRUE;
+	return FALSE;
+}
+static BOOL ai_melee_group(int h, int side)
+{
+	return GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) >= 2 && GRP_B(h, 0x08) <= 4;
+}
+// The distance from (x,y) to the nearest live enemy unit of side, and that unit's cell.
+static int ai_nearest_enemy_at(int side, int x, int y, int *ux, int *uy, BOOL meleeOnly)
+{
+	int best = 999;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x2c] == side || f[0x31] == 2 || f[0x12] >= 7 || (meleeOnly && f[0x16a])) continue;
+		int d = cheb(x, y, FIG_S(i, 0x20), FIG_S(i, 0x22));
+		if (d < best) { best = d; if (ux) { *ux = FIG_S(i, 0x20); *uy = FIG_S(i, 0x22); } }
+	}
+	return best;
+}
+
+static BOOL g_aiChargeAtt[3];        // it charged from attack at a moment it picked, before contact (Legendary's
+                                     // target picks; per battle)
+static void ai_side_charges(int side, const char *why)
+{
+	g_aiCharge[side] = TRUE;
+	g_aiChargeAtt[side] = FALSE;         // (the attack branch sets it for a planned charge)
+	for (int h = 1; h < 0x51; h++)
+		if (ai_melee_group(h, side) && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;   // they all think at their next step
+	if (g_blog) blog("ai %s: side %d charges (%s)", kAiLevel[g_aiLevel], side, why);
+}
+
+// Legendary's charge. Once its side charges, each melee group does the first of:
+//   - regroup (AI_REGROUP): down to AI_REGROUP_PCT percent of the men it had at its first think, while the
+//     enemy (all its units, the player's too) has at least as many men as its side, it falls
+//     back AI_REGROUP_BACK cells behind its side's archers (or straight away from the enemy) and stays there
+//     until the enemy has fewer than AI_REJOIN_PCT percent of the side's men left; then it charges again;
+//   - target (AI_TARGETS, only when the side charged from attack at a moment it picked, before any contact;
+//     a side made to charge by contact, or a defending side, fights what came at it with the game's chase):
+//     it walks to the enemy group it picked (ai_pick_target) and charges once within
+//     AI_TARGET_REACH cells of it, or at once when an enemy unit is within 2 cells of one of its units or it
+//     is hit; the game's charge then sends each unit at the nearest enemy, which is the target's;
+//   - the game's charge, as Hard.
+// A group the game's charge has sent stays with it (its units chase their enemies).
+#define AI_FIRE_NEAR 12
+#define AI_FIRE_LOSS 10
+#define AI_REGROUP_PCT 35
+#define AI_REGROUP_BACK 4
+#define AI_REJOIN_PCT 40
+#define AI_TARGET_REACH 4
+static int ai_counter(int by, int on);
+static short g_aiGrpMen[0x51];       // each computer melee group's men at its first think (per battle)
+static BYTE g_aiTarget[0x51];        // the enemy group it goes for
+static BYTE g_aiCharged[0x51];       // the game's charge sent it
+static BYTE g_aiBack[0x51];          // it fell back to regroup
+
+static int ai_group_men(int h)
+{
+	int men = 0;
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7 && FIG_S(i, 0x178) == h) men += FIG_S(i, 0x1a0);
+	return men;
+}
+static int ai_group_type(int h)   // the unit type of the group's first live unit (-1: none)
+{
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7 && FIG_S(i, 0x178) == h) return FIG(i)[0x12];
+	return -1;
+}
+// The enemy group melee group g goes for: the lowest score of the distance between centres, less 8 for
+// archers (12 for knights going for them), less 6 for a group its type counters and plus 8 for one that
+// counters it (ai_counter), less 4 for one with under half its men, plus AI_TARGET_SPREAD for each other
+// group of its side already going for it; one that AI_TARGET_MAX groups already go for only when every
+// other is taken too, so its melee spreads over your groups instead of all piling on one. Only groups at
+// most AI_TARGET_SLACK cells farther than the nearest one count, so a group never walks across the field
+// past the enemies at hand.
+#define AI_TARGET_SLACK 10
+#define AI_TARGET_SPREAD 10
+#define AI_TARGET_MAX 2
+static int ai_pick_target(int g)
+{
+	int side = GRP_B(g, 0x00), my = ai_group_type(g), myMen = ai_group_men(g), best = 0, bs = 1 << 30, nearest = 1 << 30;
+	for (int h = 1; h < 0x51; h++)
+		if (GRP_B(h, 0x00) && GRP_B(h, 0x00) != side && GRP_B(h, 0x02) && ai_group_type(h) >= 0) {
+			int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+			if (d < nearest) nearest = d;
+		}
+	for (int h = 1; h < 0x51; h++) {
+		if (!GRP_B(h, 0x00) || GRP_B(h, 0x00) == side || !GRP_B(h, 0x02)) continue;
+		int t = ai_group_type(h);
+		if (t < 0) continue;
+		int s = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20));
+		if (s > nearest + AI_TARGET_SLACK) continue;
+		if (GRP_B(h, 0x08) == 1) s -= my == 6 ? 12 : 8;
+		if (my >= 0 && ai_counter(my, t) > 100) s -= 6;
+		if (my >= 0 && ai_counter(t, my) > 100) s += 8;
+		if (ai_group_men(h) * 2 < myMen) s -= 4;
+		int others = 0;
+		for (int o = 1; o < 0x51; o++) if (o != g && g_aiTarget[o] == h && ai_melee_group(o, side)) others++;
+		s += others * AI_TARGET_SPREAD + (others >= AI_TARGET_MAX ? 1000 : 0);
+		if (s < bs) { bs = s; best = h; }
+	}
+	return best;
+}
+// TRUE when an enemy unit stands within 2 cells of one of group g's units, or the group is hit.
+static BOOL ai_group_engaged(int g)
+{
+	int side = GRP_B(g, 0x00), att = GRP_S(g, 0x0a);
+	if (GRP_B(g, 0x0c) && att > 0 && att < 0x51 && GRP_B(att, 0x00) && GRP_B(att, 0x00) != side) return TRUE;
+	for (int i = 1; i < 0x51; i++) {
+		if (FIG_S(i, 0x178) != g || FIG(i)[0x2c] != side || FIG(i)[0x31] == 2) continue;
+		if (ai_nearest_enemy_at(side, FIG_S(i, 0x20), FIG_S(i, 0x22), NULL, NULL, FALSE) <= 2) return TRUE;
+	}
+	return FALSE;
+}
+static void ai_charge(int g)
+{
+	int side = GRP_B(g, 0x00);
+	if (ai_legend(AI_REGROUP) && g_aiGrpMen[g]) {
+		int men = ai_group_men(g);
+		if (!men) return;   // (nothing left of it)
+		int enemy = 0, own = ai_side_men(side);
+		for (int i = 1; i < 0x51; i++)   // (all the enemy's units: the player's too)
+			if (FIG(i)[0x2c] && FIG(i)[0x2c] != side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) enemy += FIG_S(i, 0x1a0);
+		// (only while the side is losing: with more men than the enemy, it fights on)
+		if (!g_aiBack[g] && men * 100 < g_aiGrpMen[g] * AI_REGROUP_PCT && enemy >= own) {
+			g_aiBack[g] = 1;
+			if (g_blog) blog("ai %s g%d %s: falls back to regroup (%d of %d men)", kAiLevel[g_aiLevel], g, ai_kind_name(GRP_B(g, 0x08)), men, g_aiGrpMen[g]);
+		}
+		if (g_aiBack[g] == 1) {
+			if (enemy * 100 < own * AI_REJOIN_PCT) {
+				g_aiBack[g] = 2;   // (once)
+				if (g_blog) blog("ai %s g%d: rejoins (the enemy has %d men to the side's %d)", kAiLevel[g_aiLevel], g, enemy, own);
+			}
+			else {
+				int bx = 0, by = 0, n = 0, ex, ey, x, y;
+				for (int h = 1; h < 0x51; h++)
+					if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) == 1) { bx += GRP_S(h, 0x1e); by += GRP_S(h, 0x20); n++; }
+				if (ai_nearest_enemy_at(side, GRP_S(g, 0x1e), GRP_S(g, 0x20), &ex, &ey, FALSE) >= 999) return;
+				if (n) ai_toward(bx / n, by / n, ex, ey, -AI_REGROUP_BACK, &x, &y);
+				else ai_toward(GRP_S(g, 0x1e), GRP_S(g, 0x20), ex, ey, -2 * AI_REGROUP_BACK, &x, &y);
+				g_aiCharged[g] = 0;
+				ai_order(g, x, y);
+				return;
+			}
+		}
+	}
+	if (!g_aiCharged[g] && g_aiChargeAtt[side] && ai_legend(AI_TARGETS)) {
+		int h = g_aiTarget[g];
+		if (!h || !GRP_B(h, 0x02) || ai_group_type(h) < 0) {
+			h = g_aiTarget[g] = (BYTE)ai_pick_target(g);
+			if (h && g_blog) blog("ai %s g%d %s: goes for g%d (%s, %d cells)", kAiLevel[g_aiLevel], g, ai_kind_name(GRP_B(g, 0x08)), h,
+				ai_kind_name(GRP_B(h, 0x08)), cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20)));
+		}
+		if (h && cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(h, 0x1e), GRP_S(h, 0x20)) > AI_TARGET_REACH && !ai_group_engaged(g)) {
+			ai_order(g, GRP_S(h, 0x1e), GRP_S(h, 0x20));
+			return;
+		}
+	}
+	// A group the game's charge already sent, still on it (its hunting flag), isn't sent again: the charge sets
+	// every member to chase afresh and drops its route, so each think (every 2.4 s) restarted every chaser and
+	// pulled fighting members out of their melee (the user's river battle). MopUpFix wakes its idle members
+	// (h_idle); without it the charge is repeated, as before, for that.
+	if (g_aiCharged[g] && GRP_B(g, 0x2a) && fix_on(g_fixMopUp)) return;
+	g_aiCharged[g] = 1;
+	ai_game_charge(g);
+}
+
+// Rescue (Hard): enemy melee at the side's archers. An archer group with an enemy melee unit within
+// AI_RESCUE_NEAR cells of one of its members is threatened; the nearest of the side's melee groups with no
+// member in melee and within AI_RESCUE_REACH cells of that enemy goes to help (two when more than
+// AI_RESCUE_MANY enemy units are there): it walks to the enemy, and within AI_RESCUE_NEAR + 1 cells uses
+// the game's charge, whose units chase the nearest enemies, the attackers. A helper stays one until the
+// archers are clear; no more are sent while the one or two needed are on it, so the side isn't pulled in
+// group by group. This comes before the group's other rules, also once its side has charged. The archers'
+// handler wakes a new helper at once (ai_rescue_wake).
+#define AI_RESCUE_NEAR 3
+#define AI_RESCUE_REACH 20
+#define AI_RESCUE_MANY 3
+static BYTE g_aiRescue[0x51];        // the archer group it helps (0: none; per battle)
+// How many enemy melee units stand within AI_RESCUE_NEAR of archer group a's members and can walk up to
+// them (can_reach_soon), and the nearest one's cell. When none, a's helpers are let go.
+static int ai_archers_attackers(int a, int *ex, int *ey)
+{
+	int side = GRP_B(a, 0x00), n = 0, best = 999;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == side || t[0x31] == 2 || t[0x12] >= 7 || t[0x16a]) continue;
+		int nd = 999, m = 0;
+		for (int i = 1; i < 0x51; i++)
+			if (FIG_S(i, 0x178) == a && FIG(i)[0x2c] == side && FIG(i)[0x31] != 2 && FIG(i)[0x12] < 7) {
+				int d = cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(e, 0x20), FIG_S(e, 0x22));
+				if (d < nd) { nd = d; m = i; }
+			}
+		if (nd > AI_RESCUE_NEAR || !can_reach_soon(e, m)) continue;   // not one behind stakes or a hedge
+		n++;
+		if (nd < best) { best = nd; *ex = FIG_S(e, 0x20); *ey = FIG_S(e, 0x22); }
+	}
+	if (!n) for (int h = 1; h < 0x51; h++) if (g_aiRescue[h] == a) g_aiRescue[h] = 0;
+	return n;
+}
+// The group that should go to help archer group a against n attackers at x,y: 0 when the helpers needed are
+// already on it, else the nearest free melee group (no member in melee, not helping) within AI_RESCUE_REACH.
+static int ai_rescuer(int a, int n, int x, int y)
+{
+	int side = GRP_B(a, 0x00), have = 0, best = 0, bd = AI_RESCUE_REACH + 1;
+	for (int h = 1; h < 0x51; h++) {
+		if (!ai_melee_group(h, side)) continue;
+		if (g_aiRescue[h] == a) { have++; continue; }
+		if (g_aiRescue[h] || GRP_B(h, 0x0d)) continue;
+		int d = cheb(GRP_S(h, 0x1e), GRP_S(h, 0x20), x, y);
+		if (d < bd) { bd = d; best = h; }
+	}
+	return have >= (n > AI_RESCUE_MANY ? 2 : 1) ? 0 : best;
+}
+static BOOL ai_rescue(int g)
+{
+	int side = GRP_B(g, 0x00);
+	for (int a = 1; a < 0x51; a++) {
+		if (GRP_B(a, 0x00) != side || GRP_B(a, 0x01) || !GRP_B(a, 0x02) || GRP_B(a, 0x08) != 1) continue;
+		int ex, ey, n = ai_archers_attackers(a, &ex, &ey);
+		if (!n || (g_aiRescue[g] != a && (g_aiRescue[g] || ai_rescuer(a, n, ex, ey) != g))) continue;
+		int d = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), ex, ey);
+		if (g_blog && g_aiRescue[g] != a) blog("ai %s g%d %s: to the archers g%d (%d enemy units at them, %d cells away)", kAiLevel[g_aiLevel], g,
+			ai_kind_name(GRP_B(g, 0x08)), a, n, d);
+		g_aiRescue[g] = (BYTE)a;
+		if (d <= AI_RESCUE_NEAR + 1) { g_aiCharged[g] = 1; ai_game_charge(g); }
+		else { g_aiCharged[g] = 0; ai_order(g, ex, ey); }
+		return TRUE;
+	}
+	return FALSE;
+}
+// From the archers' handler, every 25 steps: a threatened archer group makes a new helper think at once.
+static void ai_rescue_wake(int a)
+{
+	int ex, ey, n = ai_archers_attackers(a, &ex, &ey), h;
+	if (n && (h = ai_rescuer(a, n, ex, ey)) != 0 && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;
+}
+
+static void ai_melee_think(int g)
+{
+	int side = GRP_B(g, 0x00);
+	if (side < 1 || side > 2) return;
+	if (ai_rescue(g)) return;
+	if (as_parked(side)) return;   // parked before a crossing the enemy holds: the assault moves it (ai_assault_step)
+	if (g_aiCharge[side]) { ai_charge(g); return; }
+	int farthest = 0, groups = 0, fighting = 0, archers = 0, close = 0, sx = 0, sy = 0, units = 0;
+	BOOL hit = FALSE;
+	for (int h = 1; h < 0x51; h++) {
+		if (GRP_B(h, 0x00) != side || GRP_B(h, 0x01) || !GRP_B(h, 0x02)) continue;
+		int att = GRP_S(h, 0x0a);
+		if (GRP_B(h, 0x0c) && att > 0 && att < 0x51 && GRP_B(att, 0x00) && GRP_B(att, 0x00) != side) hit = TRUE;
+		if (GRP_B(h, 0x08) == 1) archers++;
+		if (!ai_melee_group(h, side)) continue;
+		int d = ai_nearest_enemy_at(side, GRP_S(h, 0x1e), GRP_S(h, 0x20), NULL, NULL, FALSE);
+		if (d < 999 && d > farthest) farthest = d;
+		groups++;
+	}
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (f[0x2c] != side || f[0x13] || f[0x31] == 2 || f[0x12] >= 7) continue;
+		if (f[0x31] == 4) fighting++;
+		if (!f[0x16a]) { sx += FIG_S(i, 0x20); sy += FIG_S(i, 0x22); units++; }
+	}
+	if (*(int *)0x004eea98 > *(int *)0x0057c8b4) {   // attack
+		// (the steps are kept as step + 1, so 0 means not yet)
+		if (!g_aiAttackSince[side]) g_aiAttackSince[side] = g_btick + 1;
+		if (!g_aiReadySince[side] && groups && farthest <= AI_CHARGE_DIST + AI_LINE_SLACK) g_aiReadySince[side] = g_btick + 1;
+		unsigned attacking = g_btick + 1 - g_aiAttackSince[side];
+		char why[64] = "";
+		BOOL planned = !hit && !fighting;   // (no contact yet: the side picks its moment)
+		if (hit && ai_legend(AI_UNDER_FIRE) && units) {
+			// Legendary: shot at from afar, the line keeps closing in; it charges when hit once the enemy is
+			// within AI_FIRE_NEAR of its melee's centre or the side has lost AI_FIRE_LOSS percent of its men
+			int gap = ai_nearest_enemy_at(side, sx / units, sy / units, NULL, NULL, FALSE);
+			int men = ai_side_men(side), lost = g_aiMenStart[side] ? 100 - men * 100 / g_aiMenStart[side] : 0;
+			if (gap <= AI_FIRE_NEAR) snprintf(why, sizeof why, "hit, %d cells away", gap);
+			else if (lost >= AI_FIRE_LOSS) snprintf(why, sizeof why, "hit, lost %d%% of its men", lost);
+			hit = FALSE;
+		}
+		if (why[0]) {}
+		else if (hit) snprintf(why, sizeof why, "hit");
+		else if (fighting) snprintf(why, sizeof why, "%d units fighting", fighting);
+		else if (attacking >= AI_CHARGE_STEPS && farthest <= AI_CHARGE_FAR) snprintf(why, sizeof why, "attacking for %u steps", attacking);
+		else if (g_aiReadySince[side] && (!archers || g_btick + 1 - g_aiReadySince[side] >= AI_VOLLEY_STEPS))
+			snprintf(why, sizeof why, "in place, %d cells away", farthest);
+		if (why[0]) { ai_side_charges(side, why); g_aiChargeAtt[side] = planned; ai_charge(g); return; }
+		int tx, ty, x, y;
+		if (!units || ai_nearest_enemy_at(side, sx / units, sy / units, &tx, &ty, FALSE) >= 999) return;
+		int d = ai_nearest_enemy_at(side, GRP_S(g, 0x1e), GRP_S(g, 0x20), NULL, NULL, FALSE);
+		int line = max(AI_CHARGE_DIST, farthest - AI_ADVANCE_STEP), want = max(line, d - AI_ADVANCE_STEP);
+		if (want >= d) return;
+		ai_toward(GRP_S(g, 0x1e), GRP_S(g, 0x20), tx, ty, d - want, &x, &y);
+		// (smooth: a group still walking to a point near this one keeps going, so it isn't re-formed every
+		// think; one that has arrived waits for a step of at least AI_LEG_MIN, not a hop of a cell or two)
+		// Walking means a member still walking or waiting to step: a group whose units all stood idle 4 cells from
+		// its point (some couldn't take their places) was taken for walking for ever, so the side's rearmost
+		// group never moved on, the whole line stood 50 cells off, and the timed charge sent it in group by
+		// group, its peasants first (the user's Legendary battle).
+		int left = cheb(GRP_S(g, 0x1e), GRP_S(g, 0x20), GRP_S(g, 0x22), GRP_S(g, 0x24));
+		BOOL walking = left > AI_LEG_LEFT && ai_group_walking(g);
+		if (walking && cheb(x, y, GRP_S(g, 0x22), GRP_S(g, 0x24)) <= AI_LEG_SAME) return;
+		if (!walking && d - want < AI_LEG_MIN && want > AI_CHARGE_DIST) return;
+		if (ai_order(g, x, y) && g_blog) blog("ai %s g%d %s: advance to %d,%d (%d cells from the enemy, the rearmost %d)", kAiLevel[g_aiLevel], g,
+			ai_kind_name(GRP_B(g, 0x08)), x, y, want, farthest);
+		return;
+	}
+	g_aiAttackSince[side] = 0;
+	for (int i = 1; i < 0x51; i++) {   // defence: enemy melee units close to any of the side's units
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || f[0x2c] == side || f[0x31] == 2 || f[0x12] >= 7 || f[0x16a]) continue;
+		for (int j = 1; j < 0x51; j++) {
+			BYTE *o = FIG(j);
+			if (o[0x2c] == side && !o[0x13] && o[0x31] != 2 && o[0x12] < 7 &&
+				cheb(FIG_S(i, 0x20), FIG_S(i, 0x22), FIG_S(j, 0x20), FIG_S(j, 0x22)) <= AI_DEF_TRIGGER) { close++; break; }
+		}
+	}
+	int men = ai_side_men(side), lost = g_aiMenStart[side] ? 100 - men * 100 / g_aiMenStart[side] : 0;
+	char why[64] = "";
+	if (close >= AI_DEF_UNITS) snprintf(why, sizeof why, "%d enemy units close", close);
+	else if (fighting >= AI_DEF_UNITS) snprintf(why, sizeof why, "%d units fighting", fighting);
+	else if (lost >= AI_DEF_LOSS) snprintf(why, sizeof why, "lost %d%% of its men", lost);
+	if (why[0]) { ai_side_charges(side, why); ai_charge(g); }
+}
+
+static void ai_melee_tick(int g)
+{
+	int side = GRP_B(g, 0x00) < 3 ? GRP_B(g, 0x00) : 0;
+	if (!g_aiMenStart[side]) g_aiMenStart[side] = ai_side_men(side);
+	if (!g_aiGrpMen[g]) g_aiGrpMen[g] = (short)ai_group_men(g);
+	if (++GRP_S(g, 0x1c) > 199 && !GRP_B(g, 0x0d)) {
+		GRP_S(g, 0x1c) = 0;
+		ai_melee_think(g);
+		GRP_S(g, 0x1a)++;
+	}
+}
+static void __cdecl h_ai_melee2(void)   // FUN_0048acd2: peasants and pikemen
+{
+	int g = *(int *)0x00568458;
+	if (!ai_part(AI_MELEE) || g < 1 || g > 80) { o_ai_melee2(); return; }
+	ai_melee_tick(g);
+}
+static void __cdecl h_ai_melee34(void)   // FUN_0048b02b: maces and swords, knights
+{
+	int g = *(int *)0x00568458;
+	if (!ai_part(AI_MELEE) || g < 1 || g > 80) { o_ai_melee34(); return; }
+	ai_melee_tick(g);
+}
+
+static void __cdecl h_ai_ranged(void)   // FUN_0048a9d2, the computer archers' handler (current group 0x568458)
+{
+	int g = *(int *)0x00568458;
+	if (!ai_part(AI_ARCHERS) || g < 1 || g > 80) { o_ai_ranged(); return; }
+	if (ai_part(AI_MELEE) && (g_btick + g) % 25 == 0) ai_rescue_wake(g);
+	if (++GRP_S(g, 0x1c) > 199 && !GRP_B(g, 0x0d)) {   // a think: every 200 steps, never with a member in melee
+		GRP_S(g, 0x1c) = 0;
+		ai_archers_think(g);
+		GRP_S(g, 0x1a)++;
+	}
+}
+
+// Unit counters (Legendary, both sides, field battles). In a melee the current unit (FIG_CUR) takes its
+// opponent's (0x52eff4) hits in FUN_00494908: the opponent's damage (+0x19c, by unit type and men left) each
+// time its guard counter runs out, and once its own first strike (+0x198) lands on the opponent. Without
+// counters, by that rule, knights beat pikemen about 1.6 to 1 man for man, and pikemen beat swordsmen 2 to 1.
+// The counters scale the damage of a pair for the call, then put it back:
+//   pikemen on knights x2, knights on pikemen x0.75 (pikemen beat knights about 1.7 to 1),
+//   swordsmen on pikemen x1.5 (pikemen still ahead, 1.3 to 1), maces on knights x1.5 (good against armour),
+//   knights on the lightly armoured x1.5: peasants, archers and maces (the user's rule: maces hit hard and
+//   die fast; knights against maces about the original 2.7 to 1 again, in shorter fights). Crossbowmen
+//   are armoured: no counter. Swordsmen on the same soft targets x1.5 too (the user's rule: knights
+//   without the horse).
+// Unit types: 0 peasants, 1 crossbowmen, 2 maces, 3 swords, 4 pikemen, 5 archers, 6 knights.
+static ai_fn_t o_melee_hit;
+static int ai_counter(int by, int on)   // percent of the damage unit type `by` deals to type `on`
+{
+	if (by == 4 && on == 6) return 200;
+	if (by == 6 && on == 4) return 75;
+	if (by == 3 && on == 4) return 150;
+	if (by == 2 && on == 6) return 150;
+	if ((by == 6 || by == 3) && (on == 0 || on == 5 || on == 2)) return 150;
+	return 100;
+}
+static void __cdecl h_melee_hit(void)
+{
+	int me = FIG_CUR, opp = *(int *)0x0052eff4;
+	if (!ai_legend(AI_COUNTERS) || me < 1 || me > 80 || opp < 1 || opp > 80 || FIG(me)[0x12] >= 7 || FIG(opp)[0x12] >= 7) {
+		o_melee_hit();
+		return;
+	}
+	int toMe = ai_counter(FIG(opp)[0x12], FIG(me)[0x12]), toOpp = ai_counter(FIG(me)[0x12], FIG(opp)[0x12]);
+	short dmg = FIG_S(opp, 0x19c), first = FIG_S(me, 0x198);
+	FIG_S(opp, 0x19c) = (short)(dmg * toMe / 100);
+	FIG_S(me, 0x198) = (short)(first * toOpp / 100);
+	o_melee_hit();
+	FIG_S(opp, 0x19c) = dmg;
+	FIG_S(me, 0x198) = first;
 }
 
 typedef int (__cdecl *step_check_t)(int);
@@ -9698,9 +11604,36 @@ static int dm_dist(int e, int me)
 	return dm_from(me, y * 80 + x);
 }
 
-static int dm_pick(int me)
+// TRUE when enemy unit e can walk up to unit me in at most REACH_SLACK steps more than the straight line.
+// Stakes, a hedge, water or a wall between them make it a long way round, so it is no threat yet (the
+// user's rule: archers behind stakes stay put and keep shooting). A short search: depth d + REACH_SLACK.
+#define REACH_SLACK 2
+static BOOL can_reach_soon(int e, int me)
 {
-	int best = 0, bestCost = 0x7fffffff;
+	int d = cheb(FIG_S(e, 0x20), FIG_S(e, 0x22), FIG_S(me, 0x20), FIG_S(me, 0x22));
+	g_dmMaxDepth = d + REACH_SLACK;
+	int w = dm_dist(e, me);
+	g_dmMaxDepth = 0x7fff;
+	return w != DM_FAR && w <= d + REACH_SLACK;
+}
+
+// Far targets (the user's rule, both sides): only fast units, knights and maces (move delay +0x189 of 0 or
+// 1), go a long way round for a target, up to CHASE_FAR_FAST steps of walking. Slower ones (peasants,
+// archers, crossbowmen 2, swords 3, pikes 4) take a target only within twice the straight line plus
+// CHASE_DETOUR: at a charge the computer's whole army went for the player's archers behind a river, walks
+// of 105 to 124 cells for 10 to 15 in a straight line, past the enemies at hand (the user's battle).
+#define CHASE_FAR_FAST 60
+#define CHASE_DETOUR 10
+static int chase_limit(int me, int straight)
+{
+	int lim = 2 * straight + CHASE_DETOUR;
+	return FIG(me)[0x189] <= 1 && lim < CHASE_FAR_FAST ? CHASE_FAR_FAST : lim;
+}
+
+// The nearest enemy by walking within the unit's limit (chase_limit); when none is, the nearest at all.
+static int dm_pick_ex(int me, BOOL *within)
+{
+	int best = 0, bestCost = 0x7fffffff, longest = 0, longCost = 0x7fffffff;
 	dm_from(me, -1);
 	for (int e = 1; e < 0x51; e++) {
 		BYTE *f = FIG(e);
@@ -9717,12 +11650,16 @@ static int dm_pick(int me)
 			if (v != DM_FAR && v + 1 < d && dm_height_ok(n, ec)) d = v + 1;
 		}
 		if (d == DM_FAR) continue;
+		BOOL ok = d <= chase_limit(me, cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), ex, ey));
 		if (f[0x16a]) d /= 2;   // as the game: archers count at half distance
 		int cost = d + (signed char)f[0x175];
-		if (cost < bestCost) { bestCost = cost; best = e; }
+		if (ok && cost < bestCost) { bestCost = cost; best = e; }
+		if (!ok && cost < longCost) { longCost = cost; longest = e; }
 	}
-	return best;
+	if (within) *within = best != 0;
+	return best ? best : longest;
 }
+static int dm_pick(int me) { return dm_pick_ex(me, NULL); }
 
 static int __cdecl h_target(void)
 {
@@ -9749,6 +11686,22 @@ static void chase_progress(int me)
 	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) { g_cTarget[me] = 0; return; }
 	if (t == g_cTarget[me] && (unsigned)(me + g_btick) % 16) return;   // measured every 16 steps
 	int d = dm_dist(t, me);
+	// a target further round than the unit's limit (the game's own quick pick at a charge goes by the straight
+	// line): it changes to the nearest one within it, when there is one
+	if (d != DM_FAR && d > chase_limit(me, cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), FIG_S(t, 0x20), FIG_S(t, 0x22))) &&
+		g_dmFullThisStep < DM_FULL_PER_STEP) {
+		BOOL within;
+		g_dmFullThisStep++;
+		int b = dm_pick_ex(me, &within);
+		if (b && b != t && within) {
+			if (g_blog && g_battleLog >= 1) blog("far fig %d: target %d is %d steps round, takes %d instead", me, t, d, b);
+			f[0x174] = (BYTE)b; f[0x164] = 0;
+			FIG(b)[0x175] += 2;
+			g_cTarget[me] = b; g_cBest[me] = dm_dist(b, me); g_cSince[me] = g_btick;
+			g_bretarget++;
+			return;
+		}
+	}
 	if (t != g_cTarget[me] || d < g_cBest[me]) { g_cTarget[me] = t; g_cBest[me] = d; g_cSince[me] = g_btick; return; }
 	// only a target that can't be reached, or one close by that it isn't getting to (a far one that
 	// keeps its distance is still worth chasing)
@@ -9798,16 +11751,27 @@ static void __cdecl h_order(int g, int x, int y, int target, int fire, int forma
 
 // FUN_00478987(player): a selection that isn't one whole group becomes a new group, whose record is
 // zeroed. Units that came from a group on Mop-Up keep it in their new group.
+// The selection also sets the selected group's re-form timer (+0x14) to 20 steps: that's how a box
+// selection brings its units together. GroupMoveFix (reform_filter) lets that one re-form through
+// (g_grSelected); without it a selection no longer gathered its units (the user's report).
+static BYTE g_grSelected[0x51];
+static BOOL g_fixGroupMove;
 static void __cdecl h_select(unsigned player)
 {
-	static short before[81];
+	static short before[81], timer[0x51];
 	static BYTE hunt[81];
-	BOOL on = fix_on(g_fixMopUp);
+	BOOL on = fix_on(g_fixMopUp), gr = fix_on(g_fixGroupMove);
 	if (on) for (int i = 1; i < 0x51; i++) {
 		before[i] = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
 		hunt[i] = before[i] >= 0 ? (BYTE)group_hunting(before[i]) : 0;
 	}
+	if (gr) for (int g = 1; g < 0x51; g++) timer[g] = GRP_S(g, 0x14);
 	o_select(player);
+	if (gr) for (int g = 1; g < 0x51; g++)
+		if (GRP_S(g, 0x14) == 20 && timer[g] != 20 && GRP_B(g, 0x01)) {
+			g_grSelected[g] = 1;
+			if (g_blog && g_battleLog >= 1) blog("selection: group %d forms up", g);
+		}
 	if (!on) return;
 	for (int i = 1; i < 0x51; i++) {
 		short g = FIG(i)[0x2c] ? FIG_S(i, 0x178) : -1;
@@ -9850,6 +11814,10 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 // - an enemy that keeps getting away for a second is let go;
 // - after letting go, it ignores that enemy for 3 seconds;
 // - at most 2 of a side's units engage the same enemy, so a group can't be pulled away;
+// - only with the odds: its soldiers near that enemy have at least as many men as the enemy has there and
+//   coming up behind (engage_odds_ok);
+// - one whose formation stands next to an obstacle (stakes, stones, water, a castle wall, the gate, the moat)
+//   holds that line: only an enemy beside it (engage_line_held), after a fight too (pick_filter);
 // - archers, siege engines and units on walls (cells above ground level) don't; both sides follow it.
 #define ENG_RANGE 3          // agreed 2; raised to 3 after the user's test (macemen stood under fire)
 #define ENG_RANGE_KNIGHT 4
@@ -9863,6 +11831,64 @@ static unsigned g_eIgnoreUntil[81], g_eSince[81], g_eLastIdle[81];
 static int cheb(int x0, int y0, int x1, int y1) { int a = abs(x1 - x0), b = abs(y1 - y0); return a > b ? a : b; }
 
 static void engage_forget(int me) { g_eTarget[me] = 0; }
+
+// The odds (the user's rule: only engage when it's to its advantage): the men of the unit's soldiers
+// within ENG_ODDS_R cells of the enemy (those who can join in), itself included, against the enemy's men
+// within ENG_ODDS_FAR of it (those about to arrive too), its archers and crossbowmen counted half. An
+// idle unit goes for that enemy only when its side has at least as many, so a few pikemen holding a gap
+// stay in it when the head of a column comes (a lone straggler is still fought).
+#define ENG_ODDS_R 3
+#define ENG_ODDS_FAR 5
+static BOOL engage_odds_ok(int me, int e)
+{
+	int side = FIG(me)[0x2c], ex = FIG_S(e, 0x20), ey = FIG_S(e, 0x22), ours = 0, theirs = 0;
+	for (int k = 1; k < 0x51; k++) {
+		BYTE *u = FIG(k);
+		if (!u[0x2c] || u[0x31] == 2 || u[0x12] >= 7) continue;
+		int d = cheb(ex, ey, FIG_S(k, 0x20), FIG_S(k, 0x22)), men = FIG_S(k, 0x1a0);
+		if (u[0x2c] == side) { if (!u[0x16a] && (k == me || d <= ENG_ODDS_R)) ours += 2 * men; }
+		else if (d <= ENG_ODDS_FAR) theirs += u[0x16a] ? men : 2 * men;
+	}
+	return ours >= theirs;
+}
+
+// The user's rule: a unit standing next to an obstacle (a cell it can't step onto: stakes, stones, a hedge or
+// forest, water, a cliff, a castle wall (3 levels up) or gate; not the map's edge) is holding a line there, so
+// it fights only an enemy right beside it and never steps out to meet one. An unfilled moat counts too (flag
+// 0x20: the game's step check lets soldiers onto it only to fill it): the user's pikemen formed a line in
+// front of the gate, behind the drawbridge, with the moat beside them, and one went out onto the bridge.
+static BOOL engage_by_obstacle(int x, int y)
+{
+	for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+		int vx = x + dx, vy = y + dy;
+		if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+		if (BCELL(vx, vy)[1] & 0x20) return TRUE;
+		if (!dm_step_ok(y * 80 + x, vy * 80 + vx)) return TRUE;
+	}
+	return FALSE;
+}
+
+// The line is the unit's formation: it holds when it, or any unit of its group joined to it through
+// groupmates no more than 2 cells apart, stands next to an obstacle. So the pikeman beside the one at the
+// stakes holds too, and the formation doesn't break (the user's report).
+static BOOL engage_line_held(int me)
+{
+	int g = FIG_S(me, 0x178), side = FIG(me)[0x2c];
+	BYTE seen[0x51] = { 0 };
+	int q[0x51], head = 0, tail = 0;
+	q[tail++] = me; seen[me] = 1;
+	while (head < tail) {
+		int u = q[head++], ux = FIG_S(u, 0x20), uy = FIG_S(u, 0x22);
+		if (ux >= 0 && ux < 80 && uy >= 0 && uy < 80 && engage_by_obstacle(ux, uy)) return TRUE;
+		for (int k = 1; k < 0x51; k++) {
+			BYTE *t = FIG(k);
+			if (seen[k] || !t[0x2c] || t[0x2c] != side || t[0x31] == 2 || FIG_S(k, 0x178) != g) continue;
+			if (cheb(ux, uy, FIG_S(k, 0x20), FIG_S(k, 0x22)) > 2) continue;
+			seen[k] = 1; q[tail++] = k;
+		}
+	}
+	return FALSE;
+}
 
 // Called from h_idle for an idle unit.
 static void engage_idle(int me)
@@ -9882,6 +11908,7 @@ static void engage_idle(int me)
 	g_eLastIdle[me] = g_btick;
 	engage_forget(me);
 	if ((unsigned)(me + g_btick) % 8) return;
+	BOOL held = engage_line_held(me);   // its formation holds a line by stakes, stones or water: only one beside it
 	int range = f[0x12] == 6 ? ENG_RANGE_KNIGHT : ENG_RANGE;
 	int best = 0, bestD = 99;
 	for (int e = 1; e < 0x51; e++) {
@@ -9896,6 +11923,7 @@ static void engage_idle(int me)
 		             // anyway: no bait in that)
 		for (int k = 1; k < 0x51; k++) if (k != me && g_eTarget[k] == e && FIG(k)[0x2c] == f[0x2c]) n++;
 		if (n >= 2 && cheb(x, y, ex, ey) > 1 && t[0x31] != 4) continue;
+		if (cheb(x, y, ex, ey) > 1 && (held || !engage_odds_ok(me, e))) continue;   // holds its ground
 		g_dmMaxDepth = r + 1;
 		int d = dm_dist(e, me);
 		g_dmMaxDepth = 0x7fff;
@@ -9907,12 +11935,13 @@ static void engage_idle(int me)
 	f[0x174] = (BYTE)best;
 	f[0x31] = 8;
 	g_bengage++;
-	if (g_blog && g_battleLog >= 1) blog("engage fig %d (side %d) -> enemy %d, %d steps away, anchor %d,%d", me, f[0x2c], best, bestD,
-		g_eAnchorX[me], g_eAnchorY[me]);
+	if (g_blog && g_battleLog >= 1) blog("engage fig %d (side %d) -> enemy %d, %d steps away, anchor %d,%d%s", me, f[0x2c], best, bestD,
+		g_eAnchorX[me], g_eAnchorY[me], held ? ", holding a line" : "");
 }
 
 // Archers save themselves: an idle archer or crossbowman with an enemy foot soldier or knight marching
-// or charging at it within 2 cells steps back about 3 cells, away from it, then shoots again. It stays
+// or charging at it within 2 cells, and able to walk up to it (not behind stakes, a hedge or water: then
+// it stays put and shoots), steps back about 3 cells, away from it, then shoots again. It stays
 // within 5 cells of where it stood, steps back at most once every 3 seconds, and stands and fights when
 // there's no free cell behind it. Both sides.
 static unsigned g_aNext[81];
@@ -9934,7 +11963,7 @@ static void archer_idle(int me)
 		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] == 2 || t[0x16a] || t[0x12] >= 7) continue;
 		if (t[0x31] != 3 && t[0x31] != 8) continue;   // only one coming at it
 		int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
-		if (d <= 2 && d < td) { td = d; threat = e; }
+		if (d <= 2 && d < td && can_reach_soon(e, me)) { td = d; threat = e; }   // not one behind stakes
 	}
 	if (!threat || td < 1) return;
 	if (!archer_step_away(me, threat, "")) g_aNext[me] = g_btick + 82;   // cornered: fight, look again in a second
@@ -9975,6 +12004,67 @@ static BOOL archer_step_away(int me, int threat, const char *why)
 			return TRUE;
 		}
 	return FALSE;
+}
+
+// Archers back up their soldiers (the user's request). The game's shot (FUN_00483337, the call returning to
+// 0x483491) asks FUN_004956cc(range, unit, 0) for a target: the group's ordered one, else the nearest enemy
+// in range, so they shot at whoever was closest while the fight went on beside them. With no ordered
+// target, an archer or crossbowman now shoots the nearest enemy in range that is fighting one of its side's
+// units (in melee, its opponent one of ours); with none, the game's pick. FUN_004956cc returns in al with
+// the rest of eax left over, so its own result is passed back untouched. Both sides.
+typedef int (__cdecl *pick_t)(int, int, int);
+static pick_t o_pick;
+static int support_target(int me, int range)
+{
+	BYTE *f = FIG(me);
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), best = 0, bd = range + 1;
+	for (int e = 1; e < 0x51; e++) {
+		BYTE *t = FIG(e);
+		if (!t[0x2c] || t[0x2c] == f[0x2c] || t[0x31] != 4 || t[0x12] >= 7) continue;
+		int o = t[0x17e];
+		if (o < 1 || o > 0x50 || FIG(o)[0x2c] != f[0x2c] || FIG(o)[0x31] == 2) continue;   // fighting one of ours
+		int d = cheb(x, y, FIG_S(e, 0x20), FIG_S(e, 0x22));
+		if (d < bd) { bd = d; best = e; }
+	}
+	return best;
+}
+// After a fight (state 7, FUN_00483ce1, the call returning to 0x483e16) the game sends a unit with an enemy
+// within 5 cells chasing it (state 8), archers and crossbowmen too: they ran into melee across the field
+// (the user's report). For them the answer is now "none", so they stand (state 5) and shoot; an enemy right
+// beside them is still fought, as that's decided before this call. A soldier whose formation holds a line
+// (engage_line_held) stands too unless the enemy picked is right beside it, so a fight at the line doesn't
+// pull it out after the next enemy.
+#define PICK_AFTER_FIGHT ((void *)0x00483e16)
+#define PICK_SHOT ((void *)0x00483491)
+// What h_pick hands back to the caller at `from`, given the game's own result r.
+static int pick_filter(void *from, int range, int me, int only, int r)
+{
+	if (from == PICK_AFTER_FIGHT && fix_on(g_fixEngage) && me >= 1 && me <= 0x50 && FIG(me)[0x16a]) {
+		if ((BYTE)r && g_blog && g_battleLog >= 1) blog("stand fig %d (archer, side %d): shoots instead of chasing enemy %d", me, FIG(me)[0x2c], *(int *)0x0052eff4);
+		return 0;
+	}
+	if (from == PICK_AFTER_FIGHT && (BYTE)r && fix_on(g_fixEngage) && me >= 1 && me <= 0x50 && FIG(me)[0x12] < 7) {
+		int e = *(int *)0x0052eff4;
+		if (e >= 1 && e <= 0x50 && cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), FIG_S(e, 0x20), FIG_S(e, 0x22)) > 1 && engage_line_held(me)) {
+			if (g_blog && g_battleLog >= 1) blog("stand fig %d (side %d): holds its line instead of chasing enemy %d", me, FIG(me)[0x2c], e);
+			return 0;
+		}
+	}
+	if (from != PICK_SHOT || only || !fix_on(g_fixEngage) || me < 1 || me > 0x50) return r;
+	BYTE *f = FIG(me);
+	int g = FIG_S(me, 0x178);
+	if (!f[0x16a] || (g >= 0 && g < 80 && *(BYTE *)(0x0056654c + g * 0x34))) return r;   // an ordered target stays
+	int e = support_target(me, range);
+	if (!e) return r;
+	if (g_blog && g_battleLog >= 1 && f[0x174] != e)
+		blog("support fig %d (side %d) shoots enemy %d, fighting fig %d", me, f[0x2c], e, FIG(e)[0x17e]);
+	*(DWORD *)0x0052eff4 = (DWORD)e;
+	g_bsupport++;
+	return 1;
+}
+static int __cdecl h_pick(int range, int me, int only)
+{
+	return pick_filter(__builtin_return_address(0), range, me, only, o_pick(range, me, only));
 }
 
 // State 4 (melee) for an archer or crossbowman: once a friendly soldier stands beside its enemy and can
@@ -10272,6 +12362,25 @@ static void __cdecl h_slot(int x, int y, int fig, int group)
 	if (g_grQLen < 80) g_grQueue[g_grQLen++] = fig;
 }
 
+// Every 500 steps the game asks FUN_00489654(group) whether to form the group again round its destination
+// (FUN_0048970e: every member gets a place anew). Yes for any group of 4 or more, so the player's groups
+// were re-formed with no order: archers deployed on both sides of a line of stakes walked round through
+// the gap to their new places, and units standing where the player had left them were shuffled (the
+// user's report). An order sets the group's flag (+0x13) and brings the re-form forward to 20 steps, which
+// is how the order's formation is laid out: that one stays. For the player's groups (+0x01) without the
+// flag the answer is now no, except for the re-form a selection asked for (h_select: it brings the
+// selected units together, as the game always did). The computer's groups are re-formed as before.
+typedef int (__cdecl *reform_t)(int);
+static reform_t o_reform;
+static int reform_filter(int g, int r)
+{
+	BOOL picked = g >= 1 && g < 0x51 && g_grSelected[g];
+	if (picked) g_grSelected[g] = 0;
+	if (fix_on(g_fixGroupMove) && g >= 1 && g < 0x51 && GRP_B(g, 0x01) && !GRP_B(g, 0x13) && !picked) return 0;
+	return r;
+}
+static int __cdecl h_reform(int g) { return reform_filter(g, o_reform(g)); }
+
 // each logic step: plan the next few queued routes
 static void gr_step(void)
 {
@@ -10318,16 +12427,662 @@ static BOOL engage_chase(int me)
 	return FALSE;
 }
 
+// ---------------------------------------------------------------------------------------------
+// The computer's soldiers step out of burning oil (BattleAI Hard and Legendary; the user's siege report: they
+// stood in it like sheep and burned alive). Oil poured from a wall (FUN_0047a814) sets the cell it hits and the
+// four beside it burning for about 7 s (FUN_00485675: cell type 10, the old type put back after; spreading fire
+// 0x10, 0x11), and each step every unit standing on a burning cell loses men (FUN_004822ed calls FUN_0049459a).
+// Nothing in the game moved them: they kept waiting or chasing the men on the wall, or marching to their place
+// at its foot (state 9, a siege's march: FUN_00489b8d gives it instead of 3; it also fills the moat cell a unit
+// works on). Now, each step:
+// - a computer unit standing in fire (waiting, marching, fighting, idle, after a fight or chasing; not one
+//   walking through it, in the fire for less than FIRE_PASSING steps on its way to a cell out of it) walks to
+//   the nearest free cell out of it within FIRE_LOOK steps, one not beside the fire when that's not much
+//   further; its moat work stops (it would go on filling that cell from afar);
+// - while that fire burns, it doesn't walk back in: a walk into the fire is turned back to where it went, and
+//   one whose next step (towards its target or destination) is into the fire stops there.
+// Your units are left to you; siege engines stay. In sieges too (the rest of BattleAI stays out of them).
+#define FIRE_LOOK 5        // cells searched for a way out
+#define FIRE_PASSING 40    // a marching unit in the fire for fewer steps than this is passing through
+static BYTE g_fHold[81];
+static short g_fX[81], g_fY[81];
+static unsigned g_fEnter[81], g_fLogNext[81];   // g_fEnter: the step it stepped into the fire, + 1 (0: not in it)
+
+static BOOL fire_on(void) { return g_aiLevel >= 1 && fix_on(TRUE); }
+static BOOL fire_marching(int st) { return st == 3 || st == 9; }
+static BOOL fire_at(int x, int y)
+{
+	if (x < 0 || x > 79 || y < 0 || y > 79) return FALSE;
+	BYTE t = BCELL(x, y)[7];
+	return t == 10 || t == 0x10 || t == 0x11;
+}
+static BOOL fire_near(int x, int y, int r)
+{
+	for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) if (fire_at(x + dx, y + dy)) return TRUE;
+	return FALSE;
+}
+
+// The nearest free cell out of the fire that unit me can walk to within FIRE_LOOK steps, not one another unit
+// is heading for; a cell beside the fire counts 1.5 steps further. FALSE when it's boxed in.
+static BOOL fire_way_out(int me, int *ox, int *oy)
+{
+	int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), best = 0x7fffffff;
+	g_dmMaxDepth = FIRE_LOOK;
+	dm_from(me, -1);
+	g_dmMaxDepth = 0x7fff;
+	for (int vy = y - FIRE_LOOK; vy <= y + FIRE_LOOK; vy++) for (int vx = x - FIRE_LOOK; vx <= x + FIRE_LOOK; vx++) {
+		if (vx < 1 || vx > 78 || vy < 1 || vy > 78 || fire_at(vx, vy)) continue;
+		int d = g_dscratch[vy * 80 + vx];
+		if (d == 0xffff) continue;
+		BYTE *c = BCELL(vx, vy);
+		if (c[5] || (c[1] & (0x90 | 0x40 | 0x08 | 0x20))) continue;
+		BOOL taken = FALSE;
+		for (int k = 1; k < 0x51 && !taken; k++)
+			if (k != me && FIG(k)[0x2c] && FIG(k)[0x31] != 2 && FIG_S(k, 0x24) == vx && FIG_S(k, 0x26) == vy) taken = TRUE;
+		if (taken) continue;
+		int s = d * 4 + (fire_near(vx, vy, 1) ? 6 : 0);
+		if (s < best) { best = s; *ox = vx; *oy = vy; }
+	}
+	return best != 0x7fffffff;
+}
+
+static void fire_send(int me, int x, int y)
+{
+	BYTE *f = FIG(me);
+	FIG_S(me, 0x24) = (short)x; FIG_S(me, 0x26) = (short)y;
+	f[0x164] = 0; f[0x174] = 0;
+	f[0x18e] = f[0x18f] = 0; *(int *)(f + 0x190) = 0;   // its moat work stops (as state 9 ends it)
+	f[0x31] = 3;
+}
+
+static BOOL fire_log_ok(int me)
+{
+	if (!g_blog || g_battleLog < 1 || g_btick < g_fLogNext[me]) return FALSE;
+	g_fLogNext[me] = g_btick + 82;
+	return TRUE;
+}
+
+static void fire_step(void)
+{
+	if (!fire_on()) return;
+	for (int me = 1; me < 0x51; me++) {
+		BYTE *f = FIG(me);
+		if (!f[0x2c] || f[0x13] || f[0x31] == 2 || f[0x12] >= 7) { g_fHold[me] = 0; g_fEnter[me] = 0; continue; }
+		int x = FIG_S(me, 0x20), y = FIG_S(me, 0x22), st = f[0x31];
+		if (x < 0 || x > 79 || y < 0 || y > 79) continue;
+		int dx = FIG_S(me, 0x24), dy = FIG_S(me, 0x26);
+		if (fire_at(x, y)) {
+			if (!g_fEnter[me]) g_fEnter[me] = g_btick + 1;
+			if (st == 3 && g_fHold[me] && dx == g_fX[me] && dy == g_fY[me]) continue;                  // on its way out
+			if (fire_marching(st) && !fire_at(dx, dy) && g_btick + 1 - g_fEnter[me] < FIRE_PASSING) continue;   // walking through
+			if (st != 1 && !fire_marching(st) && st != 4 && st != 5 && st != 7 && st != 8) {
+				if (fire_log_ok(me)) blog("burn fig %d (side %d) stays in the fire at %d,%d: state %d", me, f[0x2c], x, y, st);
+				continue;
+			}
+			int nx, ny;
+			if (!fire_way_out(me, &nx, &ny)) {
+				if (fire_log_ok(me)) blog("burn fig %d (side %d, state %d) boxed in at %d,%d", me, f[0x2c], st, x, y);
+				continue;
+			}
+			fire_send(me, nx, ny);
+			g_fHold[me] = 1; g_fX[me] = (short)nx; g_fY[me] = (short)ny;
+			g_bfire++;
+			if (g_blog && g_battleLog >= 1) blog("burn fig %d (side %d, state %d) steps out of the fire: %d,%d -> %d,%d", me, f[0x2c], st, x, y, nx, ny);
+			continue;
+		}
+		g_fEnter[me] = 0;
+		if (!g_fHold[me]) continue;
+		if (!fire_near(g_fX[me], g_fY[me], 2) && !fire_near(x, y, 2)) { g_fHold[me] = 0; continue; }   // burnt out: free again
+		if (fire_marching(st) && fire_at(dx, dy)) {
+			fire_send(me, g_fX[me], g_fY[me]);
+			if (fire_log_ok(me)) blog("burn fig %d (side %d) kept out of the fire: %d,%d -> back to %d,%d", me, f[0x2c], dx, dy, g_fX[me], g_fY[me]);
+			continue;
+		}
+		if (st != 1 && !fire_marching(st) && st != 8) continue;
+		int tx = dx, ty = dy, t = f[0x174];
+		if (st == 8 && t >= 1 && t <= 0x50 && FIG(t)[0x2c]) { tx = FIG_S(t, 0x20); ty = FIG_S(t, 0x22); }
+		if (tx == x && ty == y) continue;
+		if (fire_at(x + (tx > x) - (tx < x), y + (ty > y) - (ty < y))) {
+			fire_send(me, x, y);
+			if (fire_log_ok(me)) blog("burn fig %d (side %d, state %d) stops beside the fire at %d,%d", me, f[0x2c], st, x, y);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reading the battlefield (the user's request: the computer should know the choke points before the battle
+// starts). For now it is only read and logged: nothing here changes what anyone does.
+// At the start (map_read), a crossing is narrow ground: a cell with at most MAP_NARROW cells of walkable
+// ground across it between obstacles on both sides (water, stakes, stones, forest, a cliff, a wall; not the
+// map's edge) along one of the four directions, and more than that the other way; touching narrow cells
+// make one crossing. It counts only when going round it is much longer: with its cells closed, the walk
+// between the ground at its two ends grows by MAP_DETOUR steps or more, or there is no other way (the user's
+// river battle: a bridge 2 cells wide, and a walk of 110 round the east side). During the battle
+// (map_watch, every 200 steps) it logs who holds each crossing (units within MAP_HOLD cells) when that
+// changes. Each crossing also gets a bank map (g_crossBank): with its cells closed, every other cell belongs to
+// the end it is the shorter walk from (1: end a, 2: end b), so which side of it a unit stands on is a lookup.
+// The computer's crossing assault (ai_assault_step, BattleAI) uses these.
+#define MAP_NARROW 3
+#define MAP_DETOUR 15
+#define MAP_HOLD 2
+#define MAP_MAX 12
+typedef struct {
+	short x, y, cells, width, detour;   // detour: extra steps to go round, -1 = the only way
+	short dist[3];                      // walking steps from each side's nearest unit at the start
+	BYTE water, holder;                 // holder: 0 none, 1 or 2 a side, 3 both
+	short ax, ay, bx, by;               // the open ground at its two ends (bank 1 and bank 2)
+} map_cross;
+static map_cross g_cross[MAP_MAX];
+static int g_ncross;
+static short g_crossOf[6400];           // the crossing a cell belongs to (+1; 0 = none)
+static BYTE g_crossBank[MAP_MAX][6400]; // per crossing: 1 or 2 the bank a cell is on, 0 the crossing or cut off
+static short g_mapMark[6400], g_mapQ[6400], g_mapD[6400];
+
+static BOOL map_open(int c) { return (((BYTE *)0x005440e1)[c * 8] & (0x90 | 0x40 | 0x08)) == 0; }
+
+// Walkable cells through x,y along dx,dy (both ways); *walled = both ends are obstacles, not the map's edge.
+static int map_run(int x, int y, int dx, int dy, BOOL *walled)
+{
+	int n = 1;
+	*walled = TRUE;
+	for (int s = -1; s <= 1; s += 2) {
+		int px = x, py = y;
+		while (n <= 40) {
+			int nx = px + s * dx, ny = py + s * dy;
+			if (nx < 0 || nx > 79 || ny < 0 || ny > 79) { *walled = FALSE; break; }
+			if (!dm_step_ok(py * 80 + px, ny * 80 + nx)) break;
+			n++; px = nx; py = ny;
+		}
+	}
+	return n;
+}
+// The narrowest walled run through x,y with open ground the other way (0 = not narrow).
+static int map_narrow(int x, int y)
+{
+	static const int dir[4][2] = { { 1, 0 }, { 0, 1 }, { 1, 1 }, { 1, -1 } }, perp[4] = { 1, 0, 3, 2 };
+	int best = 0;
+	for (int k = 0; k < 4; k++) {
+		BOOL walled, w2;
+		int n = map_run(x, y, dir[k][0], dir[k][1], &walled);
+		if (!walled || n > MAP_NARROW) continue;
+		if (map_run(x, y, dir[perp[k]][0], dir[perp[k]][1], &w2) <= MAP_NARROW) continue;
+		if (!best || n < best) best = n;
+	}
+	return best;
+}
+// Steps from cell a to cell b, not entering cells marked `skip` in g_mapMark (0: none); DM_FAR if none
+// (b = -1: fill g_mapD from a everywhere, -1 where it can't go).
+static int map_walk(int a, int b, int skip)
+{
+	for (int c = 0; c < 6400; c++) g_mapD[c] = -1;
+	int head = 0, tail = 0;
+	g_mapD[a] = 0; g_mapQ[tail++] = (short)a;
+	while (head < tail) {
+		int u = g_mapQ[head++], ux = u % 80, uy = u / 80;
+		if (u == b) return g_mapD[u];
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int vx = ux + dx, vy = uy + dy;
+			if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (g_mapD[v] >= 0 || (skip && g_mapMark[v] == skip) || !dm_step_ok(u, v)) continue;
+			g_mapD[v] = (short)(g_mapD[u] + 1); g_mapQ[tail++] = (short)v;
+		}
+	}
+	return DM_FAR;
+}
+// Walking steps from side `side`'s nearest live unit to every cell, into g_mapD (-1: can't reach).
+static void map_from_side(int side)
+{
+	for (int c = 0; c < 6400; c++) g_mapD[c] = -1;
+	int head = 0, tail = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22);
+		if (f[0x2c] != side || f[0x31] == 2 || f[0x12] >= 7 || x < 0 || x > 79 || y < 0 || y > 79 || g_mapD[y * 80 + x] >= 0) continue;
+		g_mapD[y * 80 + x] = 0; g_mapQ[tail++] = (short)(y * 80 + x);
+	}
+	while (head < tail) {
+		int u = g_mapQ[head++], ux = u % 80, uy = u / 80;
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int vx = ux + dx, vy = uy + dy;
+			if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+			int v = vy * 80 + vx;
+			if (g_mapD[v] >= 0 || !dm_step_ok(u, v)) continue;
+			g_mapD[v] = (short)(g_mapD[u] + 1); g_mapQ[tail++] = (short)v;
+		}
+	}
+}
+static BOOL map_side_human(int side)
+{
+	for (int i = 1; i < 0x51; i++) if (FIG(i)[0x2c] == side && FIG(i)[0x13]) return TRUE;
+	return FALSE;
+}
+
+static void map_read(void)
+{
+	static BYTE narrow[6400];
+	static short cells[6400], ends[512];
+	static map_cross cand[64];
+	static short candId[64];
+	int ncand = 0, nid = 0;
+	g_ncross = 0;
+	memset(g_mapMark, 0, sizeof g_mapMark); memset(g_crossOf, 0, sizeof g_crossOf);
+	for (int c = 0; c < 6400; c++) narrow[c] = map_open(c) ? (BYTE)map_narrow(c % 80, c / 80) : 0;
+	for (int c0 = 0; c0 < 6400; c0++) {
+		if (!narrow[c0] || g_mapMark[c0]) continue;
+		// one crossing: the narrow cells touching this one
+		int id = ++nid, n = 0, sx = 0, sy = 0, width = MAP_NARROW, water = 0, ne = 0;
+		g_mapMark[c0] = (short)id; cells[n++] = (short)c0;
+		for (int k = 0; k < n; k++) {
+			int u = cells[k], ux = u % 80, uy = u / 80;
+			sx += ux; sy += uy;
+			if (narrow[u] < width) width = narrow[u];
+			for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+				int vx = ux + dx, vy = uy + dy;
+				if ((!dx && !dy) || vx < 0 || vx > 79 || vy < 0 || vy > 79) continue;
+				int v = vy * 80 + vx;
+				if (BCELL(vx, vy)[1] & 0x40) water = 1;
+				if (!dm_step_ok(u, v) || g_mapMark[v] == id) continue;
+				if (narrow[v] && !g_mapMark[v]) { g_mapMark[v] = (short)id; cells[n++] = (short)v; }
+				else if (!narrow[v] && ne < 512) {   // the open ground at its ends
+					int seen = 0;
+					for (int e = 0; e < ne && !seen; e++) seen = ends[e] == v;
+					if (!seen) ends[ne++] = (short)v;
+				}
+			}
+		}
+		if (ne < 2) continue;   // a dead end
+		// the two ends on opposite sides: the furthest round with the crossing shut (ends on the same
+		// bank are a few steps apart along it; straight-line distance can't tell the sides apart)
+		int a = ends[0], b = a;
+		for (int pass = 0; pass < 2; pass++) {
+			int from = pass ? b : a, pick = from, bd = -1;
+			map_walk(from, -1, id);
+			for (int e = 0; e < ne; e++) {
+				int s = g_mapD[ends[e]], d = s < 0 ? 0x7fff : s - cheb(from % 80, from / 80, ends[e] % 80, ends[e] / 80);
+				if (d > bd) { bd = d; pick = ends[e]; }
+			}
+			if (pass) a = pick; else b = pick;
+		}
+		int open = map_walk(a, b, 0), shut = map_walk(a, b, id);
+		if (open == DM_FAR) continue;
+		int detour = shut == DM_FAR ? -1 : shut - open;
+		if (detour >= 0 && detour < MAP_DETOUR) continue;
+		map_cross m = { 0 };
+		m.x = (short)(sx / n); m.y = (short)(sy / n); m.cells = (short)n; m.width = (short)width; m.detour = (short)detour; m.water = (BYTE)water;
+		m.ax = (short)(a % 80); m.ay = (short)(a / 80); m.bx = (short)(b % 80); m.by = (short)(b / 80);
+		if (ncand < 64) { cand[ncand] = m; candId[ncand] = (short)id; ncand++; }
+	}
+	// the only ways first, then the longest way round (insertion sort: stable, so ties keep map order)
+	for (int i = 1; i < ncand; i++) {
+		map_cross m = cand[i];
+		short id = candId[i];
+		int key = m.detour < 0 ? 0x7fff : m.detour, j = i;
+		while (j > 0 && (cand[j - 1].detour < 0 ? 0x7fff : cand[j - 1].detour) < key) { cand[j] = cand[j - 1]; candId[j] = candId[j - 1]; j--; }
+		cand[j] = m; candId[j] = id;
+	}
+	g_ncross = ncand < MAP_MAX ? ncand : MAP_MAX;
+	for (int k = 0; k < g_ncross; k++) {
+		g_cross[k] = cand[k];
+		for (int c = 0; c < 6400; c++) if (g_mapMark[c] == candId[k]) g_crossOf[c] = (short)(k + 1);
+	}
+	// the banks: with the crossing closed, the walk from each end (the shorter one wins; ties go to end a)
+	static short da[6400];
+	for (int k = 0; k < g_ncross; k++) {
+		map_cross *m = &g_cross[k];
+		BYTE *bank = g_crossBank[k];
+		map_walk(m->ay * 80 + m->ax, -1, candId[k]);
+		memcpy(da, g_mapD, sizeof da);
+		map_walk(m->by * 80 + m->bx, -1, candId[k]);
+		for (int c = 0; c < 6400; c++)
+			bank[c] = g_crossOf[c] ? 0 : da[c] < 0 && g_mapD[c] < 0 ? 0 : g_mapD[c] < 0 || (da[c] >= 0 && da[c] <= g_mapD[c]) ? 1 : 2;
+	}
+	for (int side = 1; side <= 2; side++) {
+		map_from_side(side);
+		for (int k = 0; k < g_ncross; k++) {
+			int best = -1;
+			for (int c = 0; c < 6400; c++)
+				if (g_crossOf[c] == k + 1 && g_mapD[c] >= 0 && (best < 0 || g_mapD[c] < best)) best = g_mapD[c];
+			g_cross[k].dist[side] = (short)best;
+		}
+	}
+	if (!g_blog) return;
+	blog("map: %d crossing%s (ground at most %d cells across between obstacles, going round at least %d steps longer)",
+		g_ncross, g_ncross == 1 ? "" : "s", MAP_NARROW, MAP_DETOUR);
+	for (int k = 0; k < g_ncross; k++) {
+		map_cross *m = &g_cross[k];
+		char round[32];
+		if (m->detour < 0) snprintf(round, sizeof round, "the only way");
+		else snprintf(round, sizeof round, "going round +%d steps", m->detour);
+		blog("  crossing %d at %d,%d: %d cells, %d across%s, %s; side 1%s %d steps from it, side 2%s %d", k + 1, m->x, m->y,
+			m->cells, m->width, m->water ? ", over water" : "", round, map_side_human(1) ? " (yours)" : "", m->dist[1],
+			map_side_human(2) ? " (yours)" : "", m->dist[2]);
+	}
+}
+
+// Every 200 steps: who holds each crossing (units within MAP_HOLD cells of it), logged when it changes.
+static void map_watch(void)
+{
+	if (g_btick % 200 || !g_ncross) return;
+	for (int k = 0; k < g_ncross; k++) {
+		int units[3] = { 0 }, men[3] = { 0 };
+		for (int i = 1; i < 0x51; i++) {
+			BYTE *f = FIG(i);
+			int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), s = f[0x2c];
+			if (s < 1 || s > 2 || f[0x31] == 2 || f[0x12] >= 7 || x < 0 || x > 79 || y < 0 || y > 79) continue;
+			BOOL close = FALSE;
+			for (int dy = -MAP_HOLD; dy <= MAP_HOLD && !close; dy++) for (int dx = -MAP_HOLD; dx <= MAP_HOLD && !close; dx++) {
+				int vx = x + dx, vy = y + dy;
+				close = vx >= 0 && vx < 80 && vy >= 0 && vy < 80 && g_crossOf[vy * 80 + vx] == k + 1;
+			}
+			if (close) { units[s]++; men[s] += FIG_S(i, 0x1a0); }
+		}
+		BYTE h = (BYTE)((units[1] ? 1 : 0) | (units[2] ? 2 : 0));
+		if (h == g_cross[k].holder && g_btick) continue;
+		g_cross[k].holder = h;
+		if (!g_blog) continue;
+		if (!h) blog("map: crossing %d at %d,%d is free", k + 1, g_cross[k].x, g_cross[k].y);
+		else if (h == 3) blog("map: crossing %d at %d,%d is fought over: side 1 %d units (%d men), side 2 %d units (%d men)", k + 1,
+			g_cross[k].x, g_cross[k].y, units[1], men[1], units[2], men[2]);
+		else blog("map: crossing %d at %d,%d is held by side %d%s with %d units (%d men)", k + 1, g_cross[k].x, g_cross[k].y, h,
+			map_side_human(h) ? " (yours)" : "", units[h], men[h]);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// The crossing assault (BattleAI Hard and Legendary, field battles, the computer only; the user's design).
+// At a bridge the player held, the computer's charge sent every unit at the bridge at once: it filled up with
+// its own men, the game's route planner (which steps round occupied cells) sent the units behind on a walk of
+// 90 to 116 cells round the other bridge, and the column trickled in one by one. Now, every AS_EVERY steps,
+// for each computer side that is attacking or charging (defending, it plays as before):
+//   - the crossing: one with enemy units on it or within AS_ZONE cells of it, either bank (the defenders), no
+//     enemy unit further out on the side's own bank (the bank most of its melee stands on), and its melee's
+//     centre within AS_NEAR. An enemy that comes over further than that is fought as usual: the assault ends;
+//   - park: its melee groups stop chasing (members in melee fight on) and stand AS_PARK cells back from the
+//     crossing's near end, side by side AS_SPREAD cells apart, never in the lane. Its archers walk up beside
+//     the lane (not in front of it) to where the far end is in range and shoot (ai_archers_think);
+//   - in place: once every melee group has stopped walking (at the latest AS_WAIT after parking) the clocks
+//     below start; there is no storm before that, so never one from across the field;
+//   - storm: when no defender is left, or the defenders have at most half the men of its melee and its archers
+//     have shot for AS_SOFTEN steps (at once without archers), or after AS_WAIT steps in place with more men
+//     than the enemy, its whole melee charges together (ai_side_charges). A storm runs to the end.
+// A computer chaser whose new route is longer than its limit (chase_limit) only because units stand in the
+// way (the walk on an empty field is within it) doesn't take it: it waits where it is (jam_check), before
+// it has moved a cell, and plans again a moment later.
+#define AS_EVERY 50
+#define AS_ZONE 4
+#define AS_PARK 6
+#define AS_SPREAD 4
+#define AS_LANE 3          // archers stand at least this far to the side of the lane
+#define AS_SOFTEN 800      // about 10 s of shooting
+#define AS_WAIT 5000       // about 60 s
+#define AS_NEAR 20         // its melee's centre at most this far from the crossing
+#define AS_OVER 10         // an enemy on its bank this close to one of its units calls the assault off
+#define AS_JAM_EVERY 8     // jam_scan's period
+static BYTE g_asCross[3], g_asPhase[3];   // per side: the crossing (k + 1); 1 parked, 2 storming
+static unsigned g_asSince[3], g_asIn[3];  // when it parked; when every group was in place (0: not yet)
+
+static BOOL as_near(int k, int x, int y, int r)   // a cell of crossing k within r cells of x,y
+{
+	for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
+		int vx = x + dx, vy = y + dy;
+		if (vx >= 0 && vx < 80 && vy >= 0 && vy < 80 && g_crossOf[vy * 80 + vx] == k + 1) return TRUE;
+	}
+	return FALSE;
+}
+static BOOL as_live(int i, int *x, int *y)   // a live soldier on the field
+{
+	BYTE *f = FIG(i);
+	*x = FIG_S(i, 0x20); *y = FIG_S(i, 0x22);
+	return f[0x2c] && f[0x31] != 2 && f[0x12] < 7 && *x >= 0 && *x < 80 && *y >= 0 && *y < 80;
+}
+// The bank of crossing k most of side's computer melee units stand on (0: none of them on either).
+static int as_side_bank(int k, int side)
+{
+	int n[3] = { 0 }, x, y;
+	for (int i = 1; i < 0x51; i++)
+		if (as_live(i, &x, &y) && FIG(i)[0x2c] == side && !FIG(i)[0x13] && !FIG(i)[0x16a]) n[g_crossBank[k][y * 80 + x]]++;
+	return n[1] || n[2] ? (n[2] > n[1] ? 2 : 1) : 0;
+}
+// Crossing k's defenders against side on bank `bank`: enemy units on it or within AS_ZONE of it (either bank).
+// Returns their units; *men their men; *own TRUE when an enemy unit stands on the side's bank further out
+// and within AS_OVER cells of one of the side's units (a flank far off along its bank doesn't call it off: the
+// user's battle, 8 of his units over the other bridge 50 cells east ended it, and the charge that followed
+// jammed the bridge and sent units round).
+static int as_defenders(int k, int side, int bank, int *men, BOOL *own)
+{
+	int units = 0, x, y, ux, uy;
+	*men = 0; *own = FALSE;
+	for (int i = 1; i < 0x51; i++) {
+		if (!as_live(i, &x, &y) || FIG(i)[0x2c] == side) continue;
+		if (as_near(k, x, y, AS_ZONE)) { units++; *men += FIG_S(i, 0x1a0); continue; }
+		if (*own || g_crossBank[k][y * 80 + x] != bank) continue;
+		for (int j = 1; j < 0x51 && !*own; j++)
+			if (as_live(j, &ux, &uy) && FIG(j)[0x2c] == side && cheb(x, y, ux, uy) <= AS_OVER) *own = TRUE;
+	}
+	return units;
+}
+// The near end of crossing k for bank `bank`, and the lane's direction from the crossing out to it.
+static void as_lane(int k, int bank, int *ex, int *ey, int *dx, int *dy)
+{
+	map_cross *m = &g_cross[k];
+	*ex = bank == 1 ? m->ax : m->bx; *ey = bank == 1 ? m->ay : m->by;
+	*dx = *ex - (bank == 1 ? m->bx : m->ax); *dy = *ey - (bank == 1 ? m->by : m->ay);
+	if (!*dx && !*dy) *dx = 1;
+}
+// The open cell on `bank` of crossing k nearest to x,y within 8 cells, at least `clear` cells from the crossing;
+// FALSE when there is none.
+static BOOL as_snap(int k, int bank, int clear, int *x, int *y)
+{
+	int bx = -1, by = -1, bd = 99;
+	for (int vy = *y - 8; vy <= *y + 8; vy++) for (int vx = *x - 8; vx <= *x + 8; vx++) {
+		if (vx < 1 || vx > 78 || vy < 1 || vy > 78) continue;
+		int c = vy * 80 + vx, d = cheb(*x, *y, vx, vy);
+		if (d >= bd || g_crossBank[k][c] != bank || !map_open(c) || as_near(k, vx, vy, clear)) continue;
+		bd = d; bx = vx; by = vy;
+	}
+	if (bx < 0) return FALSE;
+	*x = bx; *y = by;
+	return TRUE;
+}
+// The place for the side's rank-th melee group: AS_PARK cells out from the near end, groups to alternate sides.
+static BOOL as_park_place(int k, int bank, int rank, int *x, int *y)
+{
+	int ex, ey, dx, dy;
+	as_lane(k, bank, &ex, &ey, &dx, &dy);
+	int len = max(abs(dx), abs(dy)), off = (rank + 1) / 2 * AS_SPREAD * (rank & 1 ? 1 : -1);
+	*x = ex + dx * AS_PARK / len - dy * off / len; *y = ey + dy * AS_PARK / len + dx * off / len;
+	return as_snap(k, bank, 2, x, y);
+}
+// Stops group h's chasers (members in melee fight on) and sends it to x,y.
+static void as_park_group(int h, int x, int y)
+{
+	BOOL stopped = FALSE;
+	GRP_B(h, 0x2a) = 0; g_aiCharged[h] = 0;
+	for (int i = 1; i < 0x51; i++) {
+		BYTE *f = FIG(i);
+		if (!f[0x2c] || FIG_S(i, 0x178) != h || f[0x31] == 2) continue;
+		if (f[0x31] == 8 || (f[0x31] == 1 && f[0x2f] == 8)) {
+			f[0x31] = 5; f[0x2f] = 0; f[0x30] = 0; f[0x174] = 0; f[0x164] = 0;
+			stopped = TRUE;
+		}
+	}
+	int cur = *(int *)0x00568458;
+	*(int *)0x00568458 = h;   // (as when its own handler gives the order)
+	BOOL sent = ai_order(h, x, y);
+	*(int *)0x00568458 = cur;
+	if (!sent && stopped) GRP_S(h, 0x14) = 20;   // already sent there: form up again, so the stopped walk back
+}
+static void as_wake(int side)   // every group of the side thinks at its next step
+{
+	for (int h = 1; h < 0x51; h++)
+		if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_S(h, 0x1c) < 199) GRP_S(h, 0x1c) = 199;
+}
+
+static void as_storm(int side, const char *why)
+{
+	g_asPhase[side] = 2;
+	ai_side_charges(side, why);
+	g_aiChargeAtt[side] = FALSE;   // (the game's chase over the crossing, not target walks)
+}
+static void as_side(int side)
+{
+	int groups = 0, archers = 0, cx = 0, cy = 0, n = 0, x, y;
+	char why[96];
+	if (g_asPhase[side] == 2) return;   // a storm runs to the end
+	for (int h = 1; h < 0x51; h++) {
+		if (ai_melee_group(h, side)) groups++;
+		else if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) == 1) archers++;
+	}
+	if (!groups) return;
+	for (int i = 1; i < 0x51; i++)
+		if (as_live(i, &x, &y) && FIG(i)[0x2c] == side && !FIG(i)[0x13] && !FIG(i)[0x16a]) { cx += x; cy += y; n++; }
+	if (!n) return;
+	cx /= n; cy /= n;
+	BOOL attack = *(int *)0x004eea98 > *(int *)0x0057c8b4 || g_aiCharge[side];
+	// the crossing: defenders at it, no enemy further out on the side's own bank, its melee within AS_NEAR;
+	// the nearest one
+	int k = -1, bank = 0, men = 0, units = 0, bd = AS_NEAR + 1;
+	for (int c = 0; c < g_ncross && attack; c++) {
+		int b = as_side_bank(c, side), m;
+		BOOL own;
+		if (!b) continue;
+		int u = as_defenders(c, side, b, &m, &own);
+		if (own || !u) continue;
+		int d = cheb(cx, cy, g_cross[c].x, g_cross[c].y);
+		if (d < bd) { bd = d; k = c; bank = b; men = m; units = u; }
+	}
+	if (k < 0) {
+		if (!g_asPhase[side]) return;
+		int k0 = g_asCross[side] - 1, b0 = as_side_bank(k0, side), m0;
+		BOOL own0 = TRUE;
+		if (attack && b0 && !as_defenders(k0, side, b0, &m0, &own0) && !own0) {   // the defenders gone: over it
+			snprintf(why, sizeof why, "storms crossing %d: it is free", k0 + 1);
+			as_storm(side, why);
+			return;
+		}
+		if (g_blog) blog("ai %s: side %d ends its assault on crossing %d (%s)", kAiLevel[g_aiLevel], side, k0 + 1,
+			!attack ? "it defends" : own0 ? "an enemy came over to its side" : "its melee is no longer near");
+		g_asPhase[side] = 0; g_asCross[side] = 0;
+		as_wake(side);
+		return;
+	}
+	int own = 0;
+	for (int i = 1; i < 0x51; i++)
+		if (as_live(i, &x, &y) && FIG(i)[0x2c] == side && !FIG(i)[0x13] && !FIG(i)[0x16a]) own += FIG_S(i, 0x1a0);
+	if (g_asCross[side] != k + 1) {
+		g_asCross[side] = (BYTE)(k + 1); g_asPhase[side] = 1; g_asSince[side] = g_btick; g_asIn[side] = 0;
+		if (g_blog) blog("ai %s: side %d parks before crossing %d at %d,%d (%d enemy units, %d men there; its melee %d men)", kAiLevel[g_aiLevel],
+			side, k + 1, g_cross[k].x, g_cross[k].y, units, men, own);
+		as_wake(side);
+	}
+	// in place: every melee group has stopped walking (looked at from the next look on; at the latest AS_WAIT
+	// after parking). The storm's clocks run from then, so it never storms from across the field.
+	if (!g_asIn[side] && g_btick - g_asSince[side] >= AS_EVERY) {
+		BOOL walking = FALSE;
+		for (int h = 1; h < 0x51; h++) if (ai_melee_group(h, side) && ai_group_walking(h)) walking = TRUE;
+		if (!walking || g_btick - g_asSince[side] >= AS_WAIT) {
+			g_asIn[side] = g_btick ? g_btick : 1;
+			if (g_blog) blog("ai %s: side %d in place before crossing %d", kAiLevel[g_aiLevel], side, k + 1);
+		}
+	}
+	if (g_asIn[side]) {
+		unsigned parked = g_btick - g_asIn[side];
+		int enemy = 0;
+		for (int i = 1; i < 0x51; i++) if (as_live(i, &x, &y) && FIG(i)[0x2c] != side) enemy += FIG_S(i, 0x1a0);
+		why[0] = 0;
+		if (men * 2 <= own && (!archers || parked >= AS_SOFTEN)) snprintf(why, sizeof why, "storms crossing %d: %d enemy men there, its melee %d", k + 1, men, own);
+		else if (parked >= AS_WAIT && ai_side_men(side) > enemy) snprintf(why, sizeof why, "storms crossing %d after %u steps: %d men to the enemy's %d", k + 1, parked, ai_side_men(side), enemy);
+		if (why[0]) { as_storm(side, why); return; }
+	}
+	int rank = 0;
+	for (int h = 1; h < 0x51; h++) {
+		if (!ai_melee_group(h, side)) continue;
+		if (as_park_place(k, bank, rank++, &x, &y)) as_park_group(h, x, y);
+	}
+}
+static void ai_assault_step(void)
+{
+	if (!ai_part(AI_MELEE) || !g_ncross || g_btick % AS_EVERY) return;
+	for (int side = 1; side <= 2; side++) as_side(side);
+}
+static BOOL as_parked(int side) { return side >= 1 && side <= 2 && g_asPhase[side] == 1; }
+// Where archer group g (centre cx,cy, range r) of side shoots from while its side is parked: beside the lane
+// (at least AS_LANE cells off it; groups alternate sides), on its own bank, with the far end within
+// r - AS_REACH (a fire order needs its target 2 inside range, and the defenders stand round the far end),
+// as far back as that allows; FALSE when there's no such place.
+#define AS_REACH 3
+static BOOL as_soften_place(int g, int side, int r, int cx, int cy, int *x, int *y)
+{
+	int k = g_asCross[side] - 1;
+	if (!as_parked(side) || k < 0) return FALSE;
+	int bank = as_side_bank(k, side);
+	if (!bank) return FALSE;
+	map_cross *m = &g_cross[k];
+	int fx = bank == 1 ? m->bx : m->ax, fy = bank == 1 ? m->by : m->ay, ex, ey, dx, dy, q = 0;
+	as_lane(k, bank, &ex, &ey, &dx, &dy);
+	for (int h = 1; h < g; h++) if (GRP_B(h, 0x00) == side && !GRP_B(h, 0x01) && GRP_B(h, 0x02) && GRP_B(h, 0x08) == 1) q++;
+	int want = q & 1 ? 1 : -1, bx = -1, by = -1, best = -1, bclose = 999;
+	for (int vy = 1; vy <= 78; vy++) for (int vx = 1; vx <= 78; vx++) {
+		int c = vy * 80 + vx, d = cheb(vx, vy, fx, fy);
+		if (d > r - AS_REACH || g_crossBank[k][c] != bank || !map_open(c) || as_near(k, vx, vy, 1)) continue;
+		int cr = (vx - m->x) * dy - (vy - m->y) * dx;   // which side of the lane, and how far (squared)
+		if ((cr > 0 ? 1 : -1) != want || cr * cr < AS_LANE * AS_LANE * (dx * dx + dy * dy)) continue;
+		int to = cheb(vx, vy, cx, cy);
+		if (d > best || (d == best && to < bclose)) { best = d; bclose = to; bx = vx; by = vy; }
+	}
+	if (bx < 0) return FALSE;
+	*x = bx; *y = by;
+	return TRUE;
+}
+
+// A computer chaser just given a route longer than its limit only because units stand in the way waits
+// (see above); called after the game's chase step that planned it.
+static void jam_check(int me)
+{
+	BYTE *f = FIG(me);
+	if (!ai_part(AI_MELEE) || !f[0x2c] || f[0x13] || f[0x16a] || f[0x12] >= 7 || f[0x31] != 8 || !f[0x164]) return;
+	int t = f[0x174];
+	if (t < 1 || t > 0x50 || !FIG(t)[0x2c]) return;
+	int left = FIG_S(me, 0x36), lim = chase_limit(me, cheb(FIG_S(me, 0x20), FIG_S(me, 0x22), FIG_S(t, 0x20), FIG_S(t, 0x22)));
+	if (left <= lim) return;
+	g_dmMaxDepth = lim;
+	int d = dm_dist(t, me);
+	g_dmMaxDepth = 0x7fff;
+	if (d == DM_FAR || d > lim) return;   // far round on an empty field too: the far-target rule's case
+	f[0x164] = 0; f[0x2f] = 8; f[0x31] = 1; f[0x30] = 8;   // (counted down one step in four: ~32 steps)
+	if (g_blog && g_battleLog >= 1) blog("jam fig %d at %d,%d: route of %d steps to target %d, %d on an empty field: waits", me,
+		FIG_S(me, 0x20), FIG_S(me, 0x22), left, t, d);
+}
+// The chase step isn't the only place a route is planned: a chaser whose step is blocked plans again while
+// walking (the user's bridge battle: swordsman 4 on the bridge 6 cells from its target got a route round the
+// other bridge and walked off east, no jam line). So on a field with crossings every computer chaser is
+// looked at every AS_JAM_EVERY steps too.
+static void jam_scan(void)
+{
+	if (!g_ncross || g_btick % AS_JAM_EVERY || !ai_part(AI_MELEE)) return;
+	for (int i = 1; i < 0x51; i++) jam_check(i);
+}
+
 static void battle_reset(void)
 {
 	g_btick = 0;
+	g_ncross = 0; memset(g_asCross, 0, sizeof g_asCross); memset(g_asPhase, 0, sizeof g_asPhase); memset(g_asSince, 0, sizeof g_asSince); memset(g_asIn, 0, sizeof g_asIn);
+	memset(g_fHold, 0, sizeof g_fHold); memset(g_fLogNext, 0, sizeof g_fLogNext); g_bfire = 0;
+	memset(g_fEnter, 0, sizeof g_fEnter);
+	g_aiListed = FALSE; g_aiStatsDone = FALSE;
+	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
+	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiChargeAtt, 0, sizeof g_aiChargeAtt); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
+	memset(g_aiAttackSince, 0, sizeof g_aiAttackSince);
+	memset(g_aiGrpMen, 0, sizeof g_aiGrpMen); memset(g_aiTarget, 0, sizeof g_aiTarget);
+	memset(g_aiCharged, 0, sizeof g_aiCharged); memset(g_aiBack, 0, sizeof g_aiBack); memset(g_aiRescue, 0, sizeof g_aiRescue);
 	// F10, Battles: the fixes switched between battles only, never in the middle of one
 	g_fixJitter = g_bfSet[BF_PATH] && g_bfOk[BF_PATH]; g_fixGroupMove = g_bfSet[BF_GROUP] && g_bfOk[BF_GROUP];
 	g_fixEngage = g_bfSet[BF_ENGAGE] && g_bfOk[BF_ENGAGE]; g_fixMopUp = g_bfSet[BF_MOPUP] && g_bfOk[BF_MOPUP];
 	memset(g_eAnchorOk, 0, sizeof g_eAnchorOk); memset(g_eTarget, 0, sizeof g_eTarget); memset(g_eIgnore, 0, sizeof g_eIgnore);
 	memset(g_eLastIdle, 0, sizeof g_eLastIdle);
 	memset(g_eIgnoreUntil, 0, sizeof g_eIgnoreUntil); memset(g_aNext, 0, sizeof g_aNext);
-	g_grQLen = 0; g_grCongGroup = -1;
+	g_grQLen = 0; g_grCongGroup = -1; memset(g_grSelected, 0, sizeof g_grSelected);
 	memset(g_jWaits, 0, sizeof g_jWaits); memset(g_jSwapWith, 0, sizeof g_jSwapWith); memset(g_jSwapT, 0, sizeof g_jSwapT);
 	memset(g_jReplanT, 0, sizeof g_jReplanT);
 	memset(g_jLastMove, 0, sizeof g_jLastMove); memset(g_jPrevX, -1, sizeof g_jPrevX); memset(g_jPrevY, -1, sizeof g_jPrevY);
@@ -10343,6 +13098,7 @@ static void __cdecl h_fig_loop(void)
 	g_lastStep = step;
 	if (fresh) battle_reset();
 	if (g_battleLog && fresh) battle_start();
+	if (fresh) map_read();
 	if (g_testMopUp && g_remote) {
 		int side = g_testMopUp;
 		g_testMopUp = 0;
@@ -10362,7 +13118,11 @@ static void __cdecl h_fig_loop(void)
 	QueryPerformanceCounter(&c0);
 	g_dmFullThisStep = 0;
 	if (fix_on(g_fixGroupMove)) gr_step();
+	fire_step();
+	ai_assault_step();
 	o_fig_loop();
+	jam_scan();
+	map_watch();
 	QueryPerformanceCounter(&c1);
 	g_bcpuLoop += c1.QuadPart - c0.QuadPart;
 	g_btick++;
@@ -10370,7 +13130,7 @@ static void __cdecl h_fig_loop(void)
 	static fig_snap n[81];
 	for (int i = 1; i < 0x51; i++) {
 		fig_take(i, &n[i]);
-		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++;   // set to 120 by a shot (FUN_00483337), counted down each step
+		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++, g_bshotsBy[n[i].side < 3 ? n[i].side : 0]++;   // set to 120 by a shot (FUN_00483337), counted down each step
 	}
 	for (int i = 1; i < 0x51; i++) {
 		fig_snap *o = &g_snap[i], *c = &n[i];
@@ -10781,8 +13541,11 @@ static void install_game_fixes(void)
 	g_fixEngage = GetPrivateProfileIntA("Game", "EngageFix", 1, g_iniPath) != 0 && !g_chaseHookFailed;
 	logf_("engage fix %s", g_fixEngage ? "on" : "off");
 	g_fixGroupMove = GetPrivateProfileIntA("Game", "GroupMoveFix", 1, g_iniPath) != 0;
+	g_aiLevelSet = GetPrivateProfileIntA("Game", "BattleAI", 0, g_iniPath);
+	if (g_aiLevelSet < 0 || g_aiLevelSet >= AI_LEVELS) g_aiLevelSet = 0;
+	g_aiParts = GetPrivateProfileIntA("Debug", "AiParts", AI_ALL, g_iniPath);
 	BOOL figLoop = FALSE;
-	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage || g_fixGroupMove) {
+	if (g_battleLog || g_fixJitter || g_fixMopUp || g_fixEngage || g_fixGroupMove || g_aiLevelSet) {
 		static const BYTE kFigLoop[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };  // push ebp; mov ebp,esp; sub esp,4
 		figLoop = hook_code((BYTE *)0x004822ed, kFigLoop, sizeof kFigLoop, h_fig_loop, &o_fig_loop);
 	}
@@ -10791,6 +13554,8 @@ static void install_game_fixes(void)
 		if (figLoop) hook_code((BYTE *)0x004710f2, kSearch, sizeof kSearch, h_path_search, &o_path_search);
 		static const BYTE kStep[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };   // push ebp; mov ebp,esp; sub esp,8
 		if (figLoop && g_battleLog >= 2) hook_code((BYTE *)0x00490616, kStep, sizeof kStep, h_step_check, &o_step_check);
+		static const BYTE kGroupTick[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
+		if (figLoop) hook_code((BYTE *)0x00489401, kGroupTick, sizeof kGroupTick, h_group_tick, &o_group_tick);
 		logf_("battle log %s (level %d)", figLoop ? "on" : "failed", g_battleLog);
 	}
 	if (g_fixJitter) {
@@ -10805,6 +13570,14 @@ static void install_game_fixes(void)
 	if (g_fixGroupMove) {
 		static const BYTE kSlot[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };   // push ebp; mov ebp,esp; sub esp,4
 		if (!figLoop || !hook_code((BYTE *)0x00489b8d, kSlot, sizeof kSlot, h_slot, &o_slot)) g_fixGroupMove = FALSE;
+		else {
+			static const BYTE kSel[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };  // sub esp,10h
+			// (the selection hook tells the re-form which groups a selection asked to form up; also
+			// installed for Mop-Up below, once)
+			BOOL sel = o_select || hook_code((BYTE *)0x00478987, kSel, sizeof kSel, h_select, &o_select);
+			logf_("player's groups re-formed only after an order or a selection %s",
+				sel && hook_code((BYTE *)0x00489654, kSlot, sizeof kSlot, h_reform, &o_reform) ? "on" : "failed");
+		}
 		logf_("group move fix %s", g_fixGroupMove ? "on" : "off");
 	}
 	BOOL meleeOk = FALSE;
@@ -10816,12 +13589,14 @@ static void install_game_fixes(void)
 		g_dmapOn = hook_code((BYTE *)0x004954dd, kTarget, sizeof kTarget, h_target, &o_target) &&
 			hook_code((BYTE *)0x004832ea, kIdle, sizeof kIdle, h_idle, &o_idle) &&
 			hook_code((BYTE *)0x00479e90, kOrder, sizeof kOrder, h_order, &o_order) &&
-			hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select);
+			(o_select || hook_code((BYTE *)0x00478987, kSelect, sizeof kSelect, h_select, &o_select));
 		logf_("Mop-Up walking distances %s", g_dmapOn ? "on" : "failed");
 		if (g_fixEngage) {
 			static const BYTE kMelee[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 };   // push ebp; mov ebp,esp; push ebx/esi/edi
 			meleeOk = hook_code((BYTE *)0x004831d8, kMelee, sizeof kMelee, h_melee, &o_melee);
 			logf_("archers leaving melee %s", meleeOk ? "on" : "failed");
+			static const BYTE kPick[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };   // push ebp; mov ebp,esp; sub esp,10h
+			logf_("archers backing up a fight %s", hook_code((BYTE *)0x004956cc, kPick, sizeof kPick, h_pick, &o_pick) ? "on" : "failed");
 		}
 	}
 	// (F10, Battles) each fix's choice as read, and whether it can be switched on without a restart: only
@@ -10831,6 +13606,18 @@ static void install_game_fixes(void)
 	g_bfSet[BF_ENGAGE] = g_fixEngage; g_bfOk[BF_ENGAGE] = g_fixEngage && g_dmapOn && meleeOk;
 	g_bfSet[BF_MOPUP] = g_fixMopUp; g_bfOk[BF_MOPUP] = !g_chaseHookFailed && g_dmapOn;
 	for (int f = 0; f < BF_COUNT; f++) g_bfOk[f] = g_bfOk[f] && figLoop; // (the choice is taken in battle_reset, from the battle loop's hook)
+	// Enemy tactics: its hooks go in whenever the battle loop's did, so the F10 choice works from the next
+	// battle; at Normal they only run the game's own functions.
+	static const BYTE kStrength[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 };   // push ebp; mov ebp,esp; sub esp,10h
+	static const BYTE kRanged[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 };     // sub esp,8
+	static const BYTE kMelee2[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 };     // sub esp,4 (both melee handlers)
+	static const BYTE kMeleeHit[] = { 0x55, 0x8B, 0xEC, 0x53, 0x56 };         // push ebx; push esi (FUN_00494908)
+	g_aiOk = figLoop && hook_code((BYTE *)0x0047fc01, kStrength, sizeof kStrength, h_strength, &o_strength) &&
+		hook_code((BYTE *)0x0048a9d2, kRanged, sizeof kRanged, h_ai_ranged, &o_ai_ranged) &&
+		hook_code((BYTE *)0x0048acd2, kMelee2, sizeof kMelee2, h_ai_melee2, &o_ai_melee2) &&
+		hook_code((BYTE *)0x0048b02b, kMelee2, sizeof kMelee2, h_ai_melee34, &o_ai_melee34) &&
+		hook_code((BYTE *)0x00494908, kMeleeHit, sizeof kMeleeHit, h_melee_hit, &o_melee_hit);
+	logf_("enemy tactics %s%s", kAiLevel[g_aiLevelSet], g_aiOk ? "" : " (hooks failed: Normal)");
 	if (GetPrivateProfileIntA("Debug", "BattleSeed", 0, g_iniPath) && *(BYTE *)0x004778ca == 0xE8 &&
 		patch_dword(0x004778cb, (LONG)(0x0040489e - 0x004778cf), (LONG)((DWORD)h_setup_call - 0x004778cf)))
 		logf_("battle seed on");

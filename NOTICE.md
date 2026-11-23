@@ -18,6 +18,13 @@ it. It will be taken down on request from the rights holders.
   non-commercial license) from the game's own picture. The original 4:3 picture is unchanged in the
   middle.
 - The town screen has the original's grain put back over the upscaled picture.
+- The seasonal Town Center (`[Display] Seasons`: the `_spring`, `_summer`, `_autumn` and `_winter`
+  sprite files) and the new idle peasants (`misc_cty_seasonal`) are community art by AllYourBases
+  and CaptainRoberts (the Town Center and the idle serfs by CaptainRoberts), shared with the community
+  for this patch. The seasonal Town Center pictures were made with an AI image model from the game's
+  own Town Center; the idle serfs are drawn by hand. The patch's tools fitted the
+  overlays to the base pictures. Like the rest of the art, it is meant only for use with a copy of
+  the game you own.
 - The videos' upscaled frames (`lords2hd.pak`, `videohd/`) are the game's own frames enlarged with
   Real-ESRGAN, blended half and half with the original frame and gently de-dithered.
 
@@ -34,6 +41,12 @@ DPDFNet model removes hiss from the dialogue. The sound effects and the music ar
 Lords of the Realm II community: Wolfe (the replacement DirectPlay layer, the per-turn sync check and
 repair, the host checks and the game's multiplayer desync fixes) and Socius (GameRanger support). It
 is included with Wolfe's and Socius's permission; see `multiplayer/CREDITS.md`.
+
+The wheel zoom in battles (`[Display] WheelZoom`) follows the wheel zoom of Wolfe's LotR2 Fix (a
+notch zooms by a quarter, around the point under the cursor). It is written anew for this patch; none
+of the LotR2 Fix's display code is included. The county map zoom-out (`[Display] CountyZoom`) takes
+the idea of Wolfe's ZoomUI (the mouse wheel shows the county map at half size, twice as wide and
+tall); it too is written anew, and draws the extra map without changing the game's state.
 
 ## AMD FidelityFX Super Resolution 1
 

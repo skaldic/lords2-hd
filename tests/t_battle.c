@@ -176,6 +176,110 @@ TEST(mopup_keeps_chasing_a_far_target)
 	CHECK_EQ(FIG(16)[0x174], 2);
 }
 
+/* ================================ reading the battlefield (crossings) */
+
+/* a river across the map at rows 39-41, a bridge 2 cells wide at x 20-21 and a wide ford at the east edge */
+static void t_river(void)
+{
+	t_flags(0, 39, 79, 41, FL_WATER);
+	for (int y = 39; y <= 41; y++) { BCELL(20, y)[1] = 0; BCELL(21, y)[1] = 0; for (int x = 75; x <= 79; x++) BCELL(x, y)[1] = 0; }
+	t_unit(1, 1, 20, 30, 1);
+	t_unit(2, 2, 20, 60, 2);
+}
+TEST(map_finds_the_bridge_and_the_way_round)
+{
+	t_river();
+	map_read();
+	REQUIRE(g_ncross == 1);                     // the ford is 5 wide and at the map's edge: open ground
+	map_cross *m = &g_cross[0];
+	CHECK(m->x == 20 || m->x == 21); CHECK_EQ(m->y, 40);
+	CHECK_EQ(m->width, 2); CHECK_EQ(m->cells, 6); CHECK_EQ(m->water, 1);
+	CHECK(m->detour > 90);                      // round by the ford
+	CHECK_EQ(m->dist[1], 9); CHECK_EQ(m->dist[2], 19);
+	for (int y = 39; y <= 41; y++) for (int x = 75; x <= 79; x++) BCELL(x, y)[1] = FL_WATER;
+	map_read();                                 // no ford: the only way
+	REQUIRE(g_ncross == 1);
+	CHECK_EQ(g_cross[0].detour, -1);
+}
+TEST(map_open_field_and_short_detours_are_no_crossings)
+{
+	t_unit(1, 1, 10, 10, 1);
+	map_read();
+	CHECK_EQ(g_ncross, 0);
+	t_flags(30, 30, 34, 31, FL_BLOCKED);        // two small blocks with a gap: round them is a few steps
+	t_flags(37, 30, 41, 31, FL_BLOCKED);
+	map_read();
+	CHECK_EQ(g_ncross, 0);
+}
+TEST(map_a_gap_in_a_line_of_stakes)
+{
+	t_flags(0, 50, 79, 50, FL_BLOCKED);
+	BCELL(40, 50)[1] = 0;                       // one cell wide, the only way through
+	t_unit(1, 1, 40, 45, 1);
+	map_read();
+	REQUIRE(g_ncross == 1);
+	CHECK_EQ(g_cross[0].width, 1); CHECK_EQ(g_cross[0].water, 0); CHECK_EQ(g_cross[0].detour, -1);
+	CHECK_EQ(g_cross[0].dist[1], 5); CHECK_EQ(g_cross[0].dist[2], -1);   // no side 2 on the field
+}
+TEST(map_watch_tells_who_holds_the_bridge)
+{
+	t_river();
+	map_read();
+	REQUIRE(g_ncross == 1);
+	g_btick = 0; map_watch();
+	CHECK_EQ(g_cross[0].holder, 0);
+	t_unit(3, 1, 20, 37, 1);                    // yours, 2 cells from it
+	g_btick = 100; map_watch();
+	CHECK_EQ(g_cross[0].holder, 0);             // looked at every 200 steps
+	g_btick = 200; map_watch();
+	CHECK_EQ(g_cross[0].holder, 1);
+	t_unit(4, 2, 21, 43, 2);
+	g_btick = 400; map_watch();
+	CHECK_EQ(g_cross[0].holder, 3);             // fought over
+	FIG(3)[0x31] = ST_DYING;
+	g_btick = 600; map_watch();
+	CHECK_EQ(g_cross[0].holder, 2);
+}
+
+/* an archer 8 cells away behind a wall with a gap 20 cells down (a walk of about 40), and a foot soldier 30
+ * cells away on open ground: the archer counts half, so the original pick took it */
+static void t_far_field(int delay)
+{
+	t_unit(16, 1, 20, 40, 3); FIG(16)[0x189] = (BYTE)delay;
+	t_archer(2, 2, 28, 40, 4);
+	t_unit(3, 2, 20, 70, 5);
+	t_flags(25, 0, 25, 59, FL_BLOCKED);
+}
+TEST(far_targets_only_for_fast_units)
+{
+	t_far_field(4);                             // pikemen: a walk over twice the straight line + 10 is too far
+	CHECK_EQ(dm_pick(16), 3);
+	t_far_field(3); CHECK_EQ(dm_pick(16), 3);   // swordsmen
+	t_far_field(2); CHECK_EQ(dm_pick(16), 3);   // peasants
+	t_far_field(1); CHECK_EQ(dm_pick(16), 2);   // macemen go round (up to 60)
+	t_far_field(0); CHECK_EQ(dm_pick(16), 2);   // knights
+	t_far_field(4); FIG(3)[0x2c] = 0;           // nothing nearer: the far one still
+	CHECK_EQ(dm_pick(16), 2);
+}
+TEST(far_target_swapped_for_one_within_reach)
+{
+	t_far_field(4);
+	FIG(16)[0x31] = ST_CHASE; FIG(16)[0x174] = 2; FIG(16)[0x164] = 1;   // the game's straight-line pick
+	g_btick = 0; chase_progress(16);
+	CHECK_EQ(FIG(16)[0x174], 3);
+	CHECK_EQ(FIG(16)[0x164], 0);                // plans its way anew
+	CHECK_EQ(FIG(3)[0x175], 2);
+	t_far_field(0);                             // knights keep it
+	FIG(16)[0x31] = ST_CHASE; FIG(16)[0x174] = 2; g_cTarget[16] = 0;
+	g_btick = 16; chase_progress(16);
+	CHECK_EQ(FIG(16)[0x174], 2);
+	t_far_field(4);                             // over this step's search cap: tried again later
+	FIG(16)[0x31] = ST_CHASE; FIG(16)[0x174] = 2; g_cTarget[16] = 0; g_dmFullThisStep = DM_FULL_PER_STEP;
+	g_btick = 32; chase_progress(16);
+	CHECK_EQ(FIG(16)[0x174], 2);
+	g_dmFullThisStep = 0;
+}
+
 TEST(mopup_wakes_idle_hunters)
 {
 	g_fixEngage = FALSE;
@@ -266,6 +370,142 @@ TEST(engage_at_most_two_on_one_enemy)
 	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
 	t_unit(8, 1, 20, 20, 2); g_eTarget[10] = 9; g_eTarget[11] = 9;
 	FIG(9)[0x31] = ST_IDLE; t_unit_at(9, 21, 20);   // right beside it
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+}
+
+TEST(engage_only_with_the_odds)
+{
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // our pikemen, 30 men
+	t_unit(9, 2, 22, 20, 3); FIG_S(9, 0x1a0) = 30;                 // two enemy units, 60 men
+	t_unit(10, 2, 23, 21, 3); FIG_S(10, 0x1a0) = 30;
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // outnumbered: holds its ground
+	t_unit(11, 1, 20, 22, 2); FIG_S(11, 0x1a0) = 30;               // a friend 2 cells from the enemy: 60 to 60
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30; FIG_S(11, 0x1a0) = 0;
+	t_archer(10, 2, 23, 21, 3); FIG_S(10, 0x1a0) = 30;             // archers count half: 30 to 45
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
+	FIG_S(10, 0x1a0) = 0;                                           // 30 to 30: it goes
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30; FIG_S(10, 0x1a0) = 90;
+	t_unit_at(9, 21, 20);                                           // right beside it: fought whatever the odds
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+}
+
+TEST(engage_holds_the_line_next_to_an_obstacle)
+{
+	t_unit(8, 1, 20, 20, 2);                                        // pikemen in a gap, stakes beside them
+	t_flags(19, 21, 19, 21, FL_BLOCKED);
+	t_unit(9, 2, 23, 20, 3);                                        // a lone knight 3 cells off
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // they stay in the gap
+	t_unit_at(9, 21, 20);                                           // right beside them: fought
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	BCELL(19, 21)[1] = 0;                                           // in the open: they go for one 3 cells off
+	t_unit(8, 1, 20, 20, 2); t_unit_at(9, 23, 20);
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+}
+
+TEST(engage_the_whole_formation_holds_by_an_obstacle)
+{
+	t_unit(10, 1, 20, 20, 2);                                       // a pikeman beside the stakes...
+	t_flags(19, 21, 19, 21, FL_BLOCKED);
+	t_unit(8, 1, 21, 20, 2);                                        // ...and its neighbour in the open
+	t_unit(9, 2, 24, 20, 3);                                        // an enemy 3 cells from the neighbour
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // the formation holds
+	FIG_S(10, 0x178) = 4; FIG_S(8, 0x178) = 2;                      // the one at the stakes in another group
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);                               // nothing holds this one
+	BCELL(19, 21)[1] = 0;
+}
+
+TEST(archers_back_up_a_fight_of_their_side)
+{
+	t_archer(8, 1, 20, 20, 2);
+	t_unit(9, 2, 23, 20, 3);                                        // the nearest enemy, standing
+	t_unit(10, 2, 26, 20, 4); FIG(10)[0x31] = ST_MELEE;             // fighting our pikeman 11
+	t_unit(11, 1, 27, 20, 5); FIG(11)[0x31] = ST_MELEE;
+	FIG(10)[0x17e] = 11; FIG(11)[0x17e] = 10;
+	CHECK_EQ(support_target(8, 8), 10);                             // it shoots the one fighting ours
+	CHECK_EQ(support_target(8, 5), 0);                              // out of range: the game's pick
+	FIG(10)[0x17e] = 9;                                             // in a fight, but not with one of ours
+	CHECK_EQ(support_target(8, 8), 0);
+}
+
+TEST(player_groups_reform_only_after_an_order)
+{
+	g_fixGroupMove = TRUE;
+	GRP_B(11, 0x01) = 1; GRP_B(11, 0x13) = 0;                       // your archers, no order since
+	CHECK_EQ(reform_filter(11, 1), 0);                              // left where you put them
+	GRP_B(11, 0x13) = 1;                                            // just ordered: the order's formation
+	CHECK_EQ(reform_filter(11, 1), 1);
+	GRP_B(3, 0x01) = 0; GRP_B(3, 0x13) = 0;                         // the computer's group: as the game
+	CHECK_EQ(reform_filter(3, 1), 1);
+	g_fixGroupMove = FALSE; GRP_B(11, 0x13) = 0;                    // fix off: as the game
+	CHECK_EQ(reform_filter(11, 1), 1);
+	GRP_B(11, 0x01) = 0;
+}
+
+static void __cdecl t_select_forms_up(unsigned player)   // the game: a box selection makes your group 9, forming up in 20 steps
+{
+	(void)player; t_calls++;
+	GRP_B(9, 0x00) = 1; GRP_B(9, 0x01) = 1; GRP_S(9, 0x14) = 20;
+}
+TEST(a_box_selection_brings_your_units_together)
+{
+	g_fixGroupMove = TRUE; g_fixMopUp = FALSE;
+	GRP_B(11, 0x01) = 1; GRP_S(11, 0x14) = 20;                      // another group of yours whose timer is at 20 anyway
+	o_select = t_select_forms_up;
+	h_select(0);
+	CHECK_EQ(t_calls, 1);
+	CHECK_EQ(reform_filter(9, 1), 1);                               // the selection's form-up goes through
+	CHECK_EQ(reform_filter(9, 1), 0);                               // once: the next ones, 500 steps on, don't
+	CHECK_EQ(reform_filter(11, 1), 0);                              // a group the selection didn't touch stays put
+	GRP_S(9, 0x14) = 400; g_fixGroupMove = FALSE;                   // fix off: nothing marked, the game's answer
+	h_select(0);
+	CHECK_EQ(reform_filter(9, 0), 0);
+	CHECK_EQ(reform_filter(9, 1), 1);
+}
+
+TEST(archers_shoot_instead_of_chasing_after_a_fight)
+{
+	g_fixEngage = TRUE;
+	t_archer(8, 1, 20, 20, 2);
+	t_unit(9, 2, 24, 20, 3);                                        // an enemy 4 cells off after the fight
+	t_unit(12, 1, 30, 30, 6);                                       // a pikeman of ours
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0);     // the archer: no chase, it stands
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 12, 0, 0x1201), 0x1201);   // a soldier: the game's answer
+	CHECK_EQ(pick_filter((void *)0x0048c9e7, 40, 8, 0, 0x1201), 0x1201); // the AI's fire order: untouched
+	t_unit(10, 2, 26, 20, 4); FIG(10)[0x31] = ST_MELEE;             // the shot: an enemy fighting ours
+	t_unit(11, 1, 27, 20, 5); FIG(11)[0x31] = ST_MELEE; FIG(10)[0x17e] = 11;
+	CHECK_EQ(pick_filter(PICK_SHOT, 8, 8, 0, 0x1201), 1);
+	CHECK_EQ(*(int *)0x0052eff4, 10);
+	g_fixEngage = FALSE;
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0x1201);   // fix off: the game as it was
+}
+
+TEST(engage_counts_the_column_behind_the_first_enemy)
+{
+	t_unit(8, 1, 20, 20, 2); FIG_S(8, 0x1a0) = 30;                 // two of our pikemen at a gap, 60 men
+	t_unit(11, 1, 20, 21, 2); FIG_S(11, 0x1a0) = 30;
+	t_unit(9, 2, 23, 20, 3); FIG_S(9, 0x1a0) = 30;                 // the head of a column 3 cells off
+	t_unit(10, 2, 27, 20, 3); FIG_S(10, 0x1a0) = 30;               // the next 4 cells behind it
+	t_unit(12, 2, 28, 21, 3); FIG_S(12, 0x1a0) = 30;               // and 5 behind: 60 to 90
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // they hold the gap
+	t_unit_at(10, 40, 20); t_unit_at(12, 40, 22);                  // the head alone: 60 to 30
 	engage_idle(8);
 	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
 }
@@ -367,6 +607,21 @@ TEST(archer_cornered_stands_and_fights)
 	archer_idle(8);
 	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
 	CHECK_EQ(g_aNext[8], 82);                   // looks again in a second
+}
+
+TEST(archer_behind_stakes_stays_put)
+{
+	t_archer(8, 1, 20, 53, 2);
+	t_unit(9, 2, 20, 51, 3); FIG(9)[0x31] = ST_MARCH;           // 2 cells off, coming at it
+	t_flags(0, 52, 79, 52, FL_BLOCKED);                          // a row of stakes between them
+	g_btick = 0;
+	archer_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                             // it can't walk up: the archer stays and shoots
+	CHECK(can_reach_soon(9, 8) == FALSE);
+	BCELL(21, 52)[1] = 0;                                        // a gap right beside it: now it can
+	archer_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_MARCH);
+	for (int x = 0; x < 80; x++) BCELL(x, 52)[1] = 0;
 }
 
 TEST(archer_leaves_melee_once_covered)
@@ -745,7 +1000,10 @@ static const struct { DWORD at; BYTE code[6]; } kFixSites[] = {
 	{ 0x004972f9, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } }, { 0x00489b8d, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
 	{ 0x004954dd, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C } }, { 0x004832ea, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
 	{ 0x00479e90, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 } }, { 0x00478987, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } },
-	{ 0x004831d8, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } },
+	{ 0x004831d8, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } }, { 0x0047fc01, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } },
+	{ 0x0048a9d2, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 } }, { 0x0048acd2, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
+	{ 0x0048b02b, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } }, { 0x00494908, { 0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57 } },
+	{ 0x004956cc, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 } }, { 0x00489654, { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 } },
 };
 /* Runs the patch's start-up of the game fixes on fake code: every site but `missing` (0 = none) as expected. */
 static void t_install_fixes(DWORD missing, const char *ini)
@@ -778,4 +1036,36 @@ TEST(fix_switches_know_when_a_restart_is_needed)
 	CHECK(!g_bfSet[BF_ENGAGE]); CHECK(!g_bfOk[BF_ENGAGE]);
 	CHECK(!g_bfSet[BF_PATH]); CHECK(!g_bfOk[BF_PATH]);
 	CHECK(g_bfOk[BF_GROUP]);
+}
+
+TEST(engage_a_line_in_front_of_the_gate_holds_by_the_moat)
+{
+	t_unit(8, 1, 40, 52, 2);                                        // pikemen between the gate and the drawbridge
+	t_flags(38, 53, 39, 54, FL_MOAT);                               // the moat beside the bridge
+	t_unit(9, 2, 42, 54, 3);                                        // an enemy 2 cells off, coming over the bridge
+	g_btick = 0;
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_IDLE);                                // they hold the line
+	t_unit_at(9, 41, 53);                                           // right beside them: fought
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);
+	for (int y = 53; y <= 54; y++) for (int x = 38; x <= 39; x++) BCELL(x, y)[1] = 0;   // the moat filled
+	t_unit(8, 1, 40, 52, 2); t_unit_at(9, 42, 54);
+	engage_idle(8);
+	CHECK_EQ(FIG(8)[0x31], ST_CHASE);                               // in the open again
+}
+
+TEST(soldiers_holding_a_line_dont_chase_after_a_fight)
+{
+	g_fixEngage = TRUE;
+	t_unit(8, 1, 20, 20, 2); t_flags(19, 21, 19, 21, FL_BLOCKED);   // pikemen by the stakes
+	t_unit(9, 2, 24, 20, 3);                                        // the next enemy 4 cells off
+	*(int *)0x0052eff4 = 9;
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0);     // they stand at the line
+	t_unit_at(9, 21, 21);                                           // one right beside them: fought
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0x1201);
+	t_unit_at(9, 24, 20); BCELL(19, 21)[1] = 0;                     // in the open: the game's chase
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1201), 0x1201);
+	CHECK_EQ(pick_filter(PICK_AFTER_FIGHT, 5, 8, 0, 0x1200), 0x1200);   // nothing picked: untouched
+	g_fixEngage = FALSE;
 }

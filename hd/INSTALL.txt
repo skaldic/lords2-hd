@@ -1,8 +1,8 @@
-Lords of the Realm II HD 1.5.1: an unofficial fan patch for the GOG and Steam versions of the game.
+Lords of the Realm II HD 1.6.0: an unofficial fan patch for the GOG and Steam versions of the game.
 You need your own copy of the game.
 
 INSTALL
-Run Lords2-HD-1.5.1-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
+Run Lords2-HD-1.6.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
 folder holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
 ddraw.dll, dplayx.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
@@ -33,12 +33,31 @@ Multiplayer games, the multiplayer layer, and bugs and ideas for this patch.
 GAME FIXES (single player; lords2hd.ini [Game]; the battle ones are on F10's Battles tab)
 - Mop-Up fix (MopUpFix): your troops keep fighting after their first kill instead of standing idle
 - Improved pathfinding (JitterFix): no stepping back and forth, no swapping places over and over
-- Group cohesion (GroupMoveFix): groups keep together round obstacles
-- Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away);
-  archers step back from a charge and out of melee
+- Group cohesion (GroupMoveFix): groups keep together round obstacles, and yours stay where you left
+  them instead of re-forming every few seconds (a selection still brings them together)
+- Improved engagement (EngageFix): idle soldiers fight enemies close by (never baited far away, and
+  only when they aren't outnumbered there; next to stakes, water, a castle wall, the gate or the moat they hold the line); archers back
+  up their soldiers' fights, don't chase after a fight, step back from a charge (not behind stakes)
+  and out of melee
 - The computer no longer starts a castle in every county at once (the Bishop's royal castles)
 - A wheat field lost after planting costs its grain once, not twice
 - No army can enter or strengthen a castle under siege (the game's own rule)
+ENEMY TACTICS (BattleAI, F10 Battles; not a fix but a choice): Normal (the game's own, default), Hard
+(the computer keeps to attack or defence, keeps its archers behind its soldiers, charges together and
+storms a bridge you hold together), Legendary (Hard plus picked targets, regrouping and unit counters
+for both sides). See the README on GitHub for the full rules.
+
+NEW IN 1.6.0
+- Enemy tactics: Hard and Legendary (above)
+- The Town Center follows the season, with new idle peasants (community art, see NOTICE.md);
+  F10, Display, Seasonal Town Center (Seasons=0: the original)
+- The mouse wheel shows the county map twice as wide and tall, and zooms a zoomed-out battle in round
+  the cursor (WheelZoom: up to 2x, the normal size, or 4x)
+- Battles: formations by stakes, a wall, the gate or the moat hold the line; archers don't chase after
+  a fight and stay put behind stakes; only knights and macemen go a long way round in Mop-Up; a box
+  selection brings its units together
+- Cleaner shorelines and grass edges on the battlefield
+- The arrow keys scroll; A scrolls left in battles; no strip of map beside the Town Center window
 
 FIXED IN 1.5.1
 - Zoomed-out battles no longer freeze on their first picture (the battle seemed never to start)
@@ -88,7 +107,10 @@ Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
 Wide=0          4:3 instead of widescreen
 BattleZoom=0    battles at normal size
+WheelZoom=0     the mouse wheel no longer zooms the battlefield in and out (2: up to 4x instead of 2x)
+CountyZoom=0    the mouse wheel no longer zooms the county map out (twice as wide and tall) and back
 MinimapPop=1    outlined troops on the battle minimap (easier to see, black especially)
+Seasons=0       the original Town Center and peasants all year (on: it follows the season, with new peasants, from the next visit)
 JitterFix=0, GroupMoveFix=0, EngageFix=0, MopUpFix=0    each battle fix off (F10, Battles)
 HDScreens=0, HDTiles=0, SharpText=0, ShoreWaves=0    turn each kind of HD art off
 HDVideos=0      the videos at their original detail
@@ -100,6 +122,8 @@ CursorScale=50  cursor size in percent
 FrameLimit=120  game frames a second; 0 = as fast as the CPU allows, as the original
 TutorialOnce=0  show the tutorial scrolls every time, as the original (default: once each)
 WASD=0          W, A, S, D do not scroll the map
+ArrowKeys=0     the arrow keys do not scroll the map
+BattleAI=1      Hard enemy tactics in field battles; 2 = Legendary; 0 = Normal, the game's own (default)
 CycleKeys=0     , and . (and the < > buttons) do not jump through your counties and armies
 ArmyPanel=0     no army scroll beside the side panel while one of your armies is selected
 Letters=0       diplomatic letters start empty, as the original (default: a fresh letter each time)
@@ -108,7 +132,8 @@ Resounded=0     the game's own voices instead of the ones restored by Lords2Reso
 ABOUT THE ART
 The HD art and the videos' frames are the game's own, enlarged with an AI upscaler. Some sides of the
 widened paintings are built from the painting's own pixels, the others were painted by an AI image
-model; see NOTICE.md.
+model. The seasonal Town Center (AI-made) and its new hand-drawn peasants are community art by
+AllYourBases and CaptainRoberts; see NOTICE.md.
 
 REQUIREMENTS
 The GOG or Steam version of the game, Windows, and a screen of 720p (1280x720) or larger. GPU drawing

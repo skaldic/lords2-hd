@@ -4,19 +4,35 @@ An unofficial fan patch for the GOG and Steam versions of **Lords of the Realm I
 modern widescreen monitor, shows the game's art and videos at double detail, and fixes how battles
 play. You need your own copy of the game; the patch changes none of its files.
 
-Current version: **1.5.1** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
+Current version: **1.6.0** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
 [Watch what's new (47 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.5.0.mp4) ·
 [Community Discord](https://discord.gg/uBzaMGjUR)
 
 ![The armoury, widened](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg)
 
-## Fixed in 1.5.1
+## New in 1.6.0
 
-- **Zoomed-out battles no longer freeze.** A zoomed-out battle could stay on its first picture while
-  the game ran on behind it: the battle seemed never to start and the hourglass did nothing.
-- **The Town Center window stays still** when you move peasants and its info scrolls open.
+- **Enemy tactics: Hard and Legendary** (F10 → Battles). The computer stops switching between attack
+  and defence every few seconds, keeps its archers behind its soldiers, charges together and storms a
+  bridge you hold instead of pouring onto it. Legendary adds picked targets, regrouping and unit
+  counters (pikemen against knights, swordsmen against pikemen). Normal, the game's own, stays the
+  default; see [Game fixes](#game-fixes).
+- **The Town Center follows the season**: spring green, autumn gold and winter snow, with new idle
+  peasants, community art by AllYourBases and CaptainRoberts. F10 → Display → Seasonal Town
+  Center; Off shows the original.
+- **The mouse wheel zooms**: on the county map it shows the map twice as wide and tall, and in a
+  zoomed-out battle it zooms in round the cursor, up to the normal size (or 4x).
+- **Battles:** a formation next to stakes, a wall, the gate or the moat holds its line; archers don't
+  chase after a fight, and behind stakes they stay put; only knights and macemen go a long way round in
+  Mop-Up; a box selection brings its units together again.
+- Cleaner shorelines and grass edges on the battlefield.
+- The arrow keys scroll the map and the battlefield, and A scrolls left in battles; the Town Center
+  window no longer leaves a strip of map beside it.
 
-## New in 1.5.0
+## New in 1.5.0 (and 1.5.1)
+
+- **1.5.1:** zoomed-out battles no longer freeze on their first picture, and the Town Center window
+  stays still when you move peasants.
 
 - **Battles: improved pathfinding, cohesion and engagement.** Units no longer step back and forth when a friend is in the way, an army
   sent round a forest keeps together instead of trailing in single file, idle soldiers fight the
@@ -51,7 +67,9 @@ The screenshots are hosted on the release: this repository holds no game art.
 - Runs fullscreen at your monitor's resolution, without switching its display mode
 - Fills widescreen monitors: the county map, the kingdom overview and battles show more of the world,
   and the full-screen paintings are widened
-- Battles can zoom out to show four times the field
+- Battles can zoom out to show four times the field, and the mouse wheel zooms back in round the
+  cursor; on the county map the wheel shows four times as much of it
+- The Town Center changes with the seasons (community art)
 - Double-detail paintings, ground, buildings, troops, noble portraits, minimap, panels, lettering and
   videos
 - Drawn by the graphics card (Direct3D 11) and upscaled with AMD FidelityFX Super Resolution 1, with
@@ -61,12 +79,19 @@ The screenshots are hosted on the release: this repository holds no game art.
 **Battles**
 - Units wait for a friend in the way instead of turning back, and stop beside a taken place instead of
   dancing round it
-- Groups ordered round a forest, river or other obstacle keep their shape and their route
+- Groups ordered round a forest, river or other obstacle keep their shape and their route, and your
+  groups stay where you left them (the game no longer re-forms them every few seconds unordered)
 - Idle soldiers fight an enemy within a few cells (knights a little further), but never wander more
-  than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away
-- Archers step back from soldiers charging them and keep shooting, and step out of melee once one of
+  than 4 cells from where they stood and let a fleeing enemy go, so a group can't be baited away; and
+  only when they aren't outnumbered by the enemy there and coming up behind it, so a few pikemen
+  holding a gap stay in it; a formation standing next to stakes, stones, water, a castle wall, the gate
+  or the moat holds that line and fights only an enemy right beside it, even after a fight
+- Archers shoot the enemies fighting their soldiers first, never chase after a fight, step back from soldiers charging them and
+  keep shooting (behind stakes, a hedge or water they stay put), and step out of melee once one of
   their soldiers reaches their enemy
-- Mop-Up hunts down every enemy it can walk to, and your orders still take over
+- Mop-Up hunts down every enemy it can walk to, and your orders still take over; only knights and macemen go
+  a long way round for one, slower troops take the enemy at hand
+- A tougher computer if you want one: Hard and Legendary enemy tactics (see Game fixes)
 - Each of these on its own switch, on F10's Battles tab
 - Troops outlined on the battle minimap, if you like (F10 → Battles)
 
@@ -100,6 +125,29 @@ Bugs of the original game are fixed in single player, each with its own switch u
 - **Wheat** (`WheatFix`): a wheat field lost after planting costs its grain once, not twice
 - **Besieged castles** (`SiegeGarrisonFix`): no army can enter or strengthen a castle under siege
 
+Not a fix but a choice: **Enemy tactics** (`BattleAI`, F10 → Battles). Normal is the game's own battle AI.
+On Hard, in field battles, the computer picks attack or defence once instead of switching every few
+seconds, keeps its archers behind its soldiers (shooting, stepping back from yours, and walking up into
+range when its soldiers are fighting out of their reach), sends its
+nearest soldiers to help archers you reach, and moves its soldiers up together and charges together.
+When it attacks a bridge or other narrow crossing you hold, it no longer pours everyone onto it at once (the
+ones behind used to set off on the long way round): its soldiers wait in a line on their bank while its
+archers shoot at your men there from the side, and once they're all in place they storm it together when
+your men there are down to half of its soldiers (after about 10 s of shooting), when it's free, or after
+about a minute when it's the stronger army.
+In sieges too, its soldiers step out of your burning oil and don't walk back in while it burns (they used
+to stand in it until they died).
+Legendary plays like Hard, and also:
+- when it attacks, its knights ride for your archers and its pikemen for your knights, no more than two
+  groups on one of yours;
+- shot at from afar, it keeps closing in instead of charging at once;
+- a beaten group falls back behind its archers while the battle goes badly, and comes back to finish you off;
+- its archers shoot your archers first, unless your soldiers are close;
+- a weaker army still attacks after a long wait, instead of waiting for you forever;
+- units counter each other, for both sides: pikemen hit knights twice as hard and knights hit pikemen softer,
+  swordsmen are strong against pikemen and maces against knights, and knights and swordsmen cut down the
+  lightly armoured (peasants, archers and macemen, who hit hard but fall fast; crossbowmen are armoured).
+
 In multiplayer they stay off, so everyone plays the same rules, unless every player sets
 `MultiplayerFixes=1`.
 
@@ -121,7 +169,7 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 
 ## Install
 
-Download `Lords2-HD-1.5.1-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.6.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and run it with the game closed. It finds the GOG or Steam game by itself (or asks for the folder
 holding `Lords2.exe`), adds the patch, and leaves the game's own files alone. Uninstall it from
 Windows' Apps list. Windows may warn that the publisher is unknown: the installer is not code-signed.
@@ -135,7 +183,7 @@ these replace them.
 back to the 1.5.0 defaults once (widescreen, the battle fixes and the sharper videos on); the old
 ones are kept as `lords2hd-before-1.5.0.ini` beside it. Later updates keep your settings.
 
-Rather unzip by hand? `Lords2-HD-1.5.1.zip` holds the same files: unzip it into the game's folder,
+Rather unzip by hand? `Lords2-HD-1.6.0.zip` holds the same files: unzip it into the game's folder,
 replacing the old files (`lords2hd.ini` too, for the new defaults).
 
 ## Videos and music
@@ -184,6 +232,8 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Display | Sharp lettering | On, Off | On | `SharpText` |
 | Display | Shore waves | On, Off | On | `ShoreWaves` |
 | Display | Widescreen * | On, Off | On | `Wide` |
+| Display | County map zoom-out | On, Off | On | `CountyZoom` |
+| Display | Seasonal Town Center | On, Off (original) | On | `Seasons` |
 | Performance | Upscaling | AMD FSR 1 (sharpest), Catmull-Rom (sharp), Bilinear (soft) | AMD FSR 1 | `Upscale` |
 | Performance | Drawing * | Graphics card, Processor | Graphics card | `Renderer` |
 | Performance | Frame limit | 120 a second, Off (as the original) | 120 a second | `FrameLimit` |
@@ -195,11 +245,13 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
+| Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
 | Battles | Improved engagement | On, Off | On | `EngageFix` |
 | Battles | Mop-Up fix | On, Off | On | `MopUpFix` |
 | Battles | Battle zoom-out * | On, Off | On | `BattleZoom` |
+| Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
@@ -235,6 +287,11 @@ The new left and right parts of the widened paintings:
   such as the merchant's right side and the title screen
 - The original 4:3 picture is unchanged in the middle
 
+The seasonal Town Center (spring, summer, autumn and winter) and its new idle peasants are community
+art by AllYourBases and CaptainRoberts (CaptainRoberts made the Town Center and the idle serfs): the
+Town Center pictures were made with an AI image model, the idle serfs drawn by hand. Both were fitted to the game's pictures by the patch's tools; with the switch off the Town Center
+is the upscaled original.
+
 The town screen has the original's grain put back over the upscaled picture. The voices are the
 game's own recordings, restored with [Lords2Resounded](https://github.com/gqzomer/Lords2Resounded)
 with its author's permission. See [NOTICE.md](NOTICE.md).
@@ -249,7 +306,10 @@ Better versions are welcome on the Discord.
   and unit voices were made with its pipeline (LavaSR and DPDFNet), used with its author's
   permission, and its hand-picked loop points make the hi-fi music loop seamlessly. Go give it a star.
 - **Wolfe** and **Socius**, for the LotR2 Fix multiplayer layer included as `dplayx.dll` (built from
-  `multiplayer/`, see its `CREDITS.md`).
+  `multiplayer/`, see its `CREDITS.md`); Wolfe also for the ideas behind the battle wheel zoom and the
+  county map zoom-out (his ZoomUI).
+- **AllYourBases** and **CaptainRoberts**, for the seasonal Town Center art; CaptainRoberts also for
+  the new idle serfs.
 - The Discord community, for the bug reports and ideas behind this release (the minimap outlines
   among them).
 - The member of the GOG community who shared the disc-quality videos in the SMK_HIGH thread.
