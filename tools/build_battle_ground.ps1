@@ -1,15 +1,17 @@
 ﻿# Builds 2x battle ground: the t32_* sheets, in the sprite format, with part of the original kept
 # so grass does not turn to plastic. Transparent pixels stay transparent.
-param([string[]]$Sets = @('t32_bat1','t32_stn1','t32_stn2','t32_wod1','t32_wod2'), [double]$Plain = 0.25, [string]$Palette = "", [switch]$AiWater) # -AiWater: water upscaled like the rest (the county map)
+# -Game: the game folder the .pl8 sheets are read from; -Out: where the .bin files go (default <game>\lords2hd\sprites).
+param([string[]]$Sets = @('t32_bat1','t32_stn1','t32_stn2','t32_wod1','t32_wod2'), [double]$Plain = 0.25, [string]$Palette = "", [switch]$AiWater, # -AiWater: water upscaled like the rest (the county map)
+    [string]$Game = "", [string]$Out = "")
 $ErrorActionPreference = 'Stop'
 $Sets = $Sets | ForEach-Object { $_ -split ',' } # "a,b" as one argument, as powershell -File passes it
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+$game = if ($Game) { $Game } else { Split-Path $root -Parent }
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 Add-Type -AssemblyName System.Drawing
 $work = Join-Path $root "assets\battleground"; $in = Join-Path $work "in"; $up = Join-Path $work "x4"
-$out = Join-Path $game "lords2hd\sprites"
+$out = if ($Out) { $Out } else { Join-Path $game "lords2hd\sprites" }
 Remove-Item $in, $up -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $in, $up, $out | Out-Null
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs"), (Join-Path $PSScriptRoot "Bleed.cs") -ReferencedAssemblies System.Drawing

@@ -65,14 +65,19 @@ public static class Bleed {
 // Solid water tiles get Scale2x (EPX) of the original instead, which only looks at a pixel's
 // neighbours and so stays seamless.
 public static class PixelWater {
+    // A solid water tile: bluish on average AND nearly every pixel water. By the average alone, shore tiles
+    // with up to half grass counted as water (56-89% water pixels; real water tiles are 97-100%): their grass
+    // was pixel-doubled with the water, and their grass colours, taken as water colours, spread the
+    // pixel-doubling into the grass of the other shore tiles too (blocky, pale shorelines in battles).
     public static bool IsWater(Pl8Frame f, System.Drawing.Color[] pal) {
-        long r = 0, g = 0, b = 0;
+        long r = 0, g = 0, b = 0, wet = 0;
         for (int i = 0; i < f.Pixels.Length; i++) {
             if (Bleed.Key(f, i)) return false;
             var c = pal[f.Pixels[i]]; r += c.R; g += c.G; b += c.B;
+            if (c.B > c.R + 15 && c.G > c.R + 15) wet++;
         }
         int n = f.Pixels.Length;
-        return n > 0 && b / n > r / n + 15 && g / n > r / n + 15;
+        return n > 0 && b / n > r / n + 15 && g / n > r / n + 15 && wet * 100 >= n * 95;
     }
     static byte Epx(Pl8Frame f, int x, int y) {
         int W = f.Width, H = f.Height, cx = x / 2, cy = y / 2;

@@ -68,7 +68,7 @@ bytes each frame has. 21,340 of 21,344 frames decode; the 4 left are `*grid*` pi
 - **Starting a new game overwrites `lastturn.sav` and `lords2.inf`.** Back them up before any
   test run and restore after.
 
-## Wide frame (phase 3, step 1 — working, Wide=0 by default until screens are widened)
+## Wide frame (phase 3, step 1 — working; Wide=1 by default since 1.5.0)
 
 The frame width is `DAT_004eb274` (set once at 0x4b2371), but 640 is also baked into code:
 

@@ -42,13 +42,16 @@ Source: "..\dist\stage\ddraw.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\stage\lords2hd.pak"; DestDir: "{app}"; Flags: ignoreversion
 ; the multiplayer layer (LotR2 Fix dplayx.dll by Wolfe and Socius): everyone in a game needs the same one
 Source: "..\dist\stage\dplayx.dll"; DestDir: "{app}"; Flags: ignoreversion
-; the settings are the player's: kept on an update
+; the settings are the player's: kept on an update; except once, updating from before 1.5.0 (an ini
+; without [Patch] IniVersion): replaced by the 1.5.0 defaults, the old one kept as lords2hd-before-1.5.0.ini
 Source: "..\dist\stage\lords2hd.ini"; DestDir: "{app}"; Flags: onlyifdoesntexist
+Source: "..\dist\stage\lords2hd.ini"; DestDir: "{app}"; Flags: ignoreversion; Check: IniFromBefore150; BeforeInstall: BackupOldIni
 Source: "..\dist\stage\lords2hd\*"; DestDir: "{app}\lords2hd"; Flags: ignoreversion recursesubdirs
 
 [UninstallDelete]
 Type: files; Name: "{app}\lords2hd.log"
 Type: files; Name: "{app}\lords2hd.ini"
+Type: files; Name: "{app}\lords2hd-before-1.5.0.ini"
 Type: files; Name: "{app}\lords2hd-remote.txt"
 Type: files; Name: "{app}\lords2hd-muted.txt"
 ; the multiplayer layer's own files, and the multiplayer session logs
@@ -78,6 +81,25 @@ begin
     Result := AddBackslash(P) + 'English\Lords of the Realm II'
   else
     Result := ExpandConstant('{commonpf32}\GOG Galaxy\Games\Lords of the Realm II');
+end;
+// An ini from before 1.5.0: it has no [Patch] IniVersion (1.5.0 changed the defaults: widescreen on,
+// the battle fixes). Checked once, before any file is copied, so the two [Files] lines agree.
+var IniChecked, IniOld: Boolean;
+function IniFromBefore150: Boolean;
+var P: String;
+begin
+  if not IniChecked then begin
+    P := ExpandConstant('{app}\lords2hd.ini');
+    IniOld := FileExists(P) and (GetIniString('Patch', 'IniVersion', '', P) = '');
+    IniChecked := True;
+  end;
+  Result := IniOld;
+end;
+procedure BackupOldIni;
+var P: String;
+begin
+  P := ExpandConstant('{app}\lords2hd.ini');
+  if FileExists(P) then FileCopy(P, ExpandConstant('{app}\lords2hd-before-1.5.0.ini'), False);
 end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin

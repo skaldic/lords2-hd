@@ -1,11 +1,24 @@
 # Builds the release: dist\Lords2-HD-<version>-setup.exe (Inno Setup) and the same files as a zip,
 # dist\Lords2-HD-<version>.zip, to be unzipped into the game's folder. Both hold the DLL (built fresh),
 # the default ini, the HD art packed into lords2hd.pak, the readme for players, the license and notice.
-#   .\tools\make_release.ps1 -Version 0.9.0 [-Pak <an existing lords2hd.pak to ship instead of packing the art again>]
-param([Parameter(Mandatory)][string]$Version, [string]$Pak = "")
+#   .\tools\make_release.ps1 -Version 0.9.0 -GameExe <a test copy's Lords2.exe>
+#       [-Pak <an existing lords2hd.pak to ship instead of packing the art again>]
+#       [-Integration <a copy of the game> -RefDll <the last release's ddraw.dll>]   (the slow checks too, ~30 min)
+# The tests run first (tests\run.ps1, the hook tests on GameExe included); nothing is built if one fails.
+param([Parameter(Mandatory)][string]$Version, [string]$Pak = "", [string]$GameExe = $env:L2HD_GAME_EXE,
+    [string]$Integration, [string]$RefDll)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $game = Split-Path $root -Parent
+
+if (-not $GameExe -or -not (Test-Path $GameExe)) {
+    throw "make_release: give -GameExe (or L2HD_GAME_EXE) a test copy's Lords2.exe: the hook tests must run before a release"
+}
+$ta = @{ GameExe = $GameExe }
+if ($Integration) { $ta.Integration = $Integration; if ($RefDll) { $ta.RefDll = $RefDll } }
+& "$root\tests\run.ps1" @ta
+if ($LASTEXITCODE -ne 0) { throw "make_release: the tests failed (exit $LASTEXITCODE): nothing built" }
+"make_release: the tests passed"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $stage = Join-Path $root "dist\stage"
 $zip = Join-Path $root "dist\Lords2-HD-$Version.zip"
@@ -19,8 +32,8 @@ Copy-Item "$root\hd\ddraw.dll" $stage
 Copy-Item "$root\multiplayer\dplayx\dplayx.dll" $stage
 Copy-Item "$root\multiplayer\CREDITS.md" "$stage\lords2hd\MULTIPLAYER-CREDITS.md"
 $ini = Get-Content "$root\hd\lords2hd.ini" -Raw
-if ($ini -notmatch '(?m)^Wide=0') { throw "the ini template has no Wide=0" }
-Set-Content "$stage\lords2hd.ini" ($ini -replace '(?m)^Wide=0', 'Wide=1') -Encoding ascii -NoNewline
+if ($ini -notmatch '(?m)^Wide=1') { throw "the ini template must ship Wide=1" }
+Set-Content "$stage\lords2hd.ini" $ini -Encoding ascii -NoNewline
 Copy-Item "$root\LICENSE.md", "$root\NOTICE.md" "$stage\lords2hd"
 Copy-Item "$root\hd\INSTALL.txt" "$stage\lords2hd\README.txt"
 # the art: one pack, read by the DLL (tools\make_pak.ps1)
