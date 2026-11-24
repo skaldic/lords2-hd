@@ -2,7 +2,8 @@
 # E8 rel32 calls, E9 rel32 jumps and absolute 32-bit pointers.
 #   .\tools\xrefs.ps1 004b5ee8 004b6034
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Targets)
-$exe = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "Lords2.exe"
+. "$PSScriptRoot\game_folder.ps1"
+$exe = Join-Path (Get-GameFolder) "Lords2.exe"
 Add-Type -TypeDefinition @'
 using System; using System.Collections.Generic;
 public static class Xrefs {

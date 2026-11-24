@@ -9,7 +9,8 @@ $ghidra = Get-ChildItem $tools -Directory -Filter "ghidra_*" | Select-Object -Fi
 $jdk = Get-ChildItem $tools -Directory -Filter "jdk*" | Select-Object -First 1
 if (-not $ghidra) { throw "Ghidra not found in $tools" }
 if ($jdk) { $env:JAVA_HOME = $jdk.FullName }
-$exe = Join-Path (Split-Path $root -Parent) "Lords2.exe"
+. "$PSScriptRoot\game_folder.ps1"
+$exe = Join-Path (Get-GameFolder) "Lords2.exe"
 $proj = Join-Path $root "ghidra_proj"
 New-Item -ItemType Directory -Force $proj | Out-Null
 $headless = Join-Path $ghidra.FullName "support\analyzeHeadless.bat"

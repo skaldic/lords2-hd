@@ -11,7 +11,7 @@ param(
     [switch]$Stop,
     [string]$Game = ""   # another copy of the game (e.g. a test install from the release zip)
 )
-$game = if ($Game) { $Game } else { Split-Path (Split-Path $PSScriptRoot -Parent) -Parent }
+. "$PSScriptRoot\..\tools\game_folder.ps1"; $game = Get-GameFolder $Game
 $shots = Join-Path $PSScriptRoot "shots"
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace BG -Name M -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);'

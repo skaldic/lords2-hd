@@ -3,7 +3,7 @@
 # redraws those frames in lords2hd\sprites\town1?.bin by the Scale2x rule from their own pixels.
 param([string[]]$Sets = @('town1a','town1b','town1c','town1d'))
 $ErrorActionPreference = 'Stop'
-$game = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 Add-Type -TypeDefinition @"
 using System; using System.IO;
 public static class Scale2x {

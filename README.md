@@ -334,6 +334,9 @@ The repository holds only original code: nothing extracted from the game is in i
 - `tools/make_pak.ps1` packs the art, voices, videos and video frames into `lords2hd.pak`;
   `tools/make_release.ps1 -Version x.y.z` makes the installer (Inno Setup 6, `tools/lords2hd.iss`)
   and the zip, with `dplayx.dll` built from `multiplayer/` (`multiplayer/dplayx/build.ps1`)
+- The scripts find the game folder (the one with `Lords2.exe`) from `-Game`, the `L2HD_GAME`
+  environment variable, a `.game-folder` file in the repository's root holding its path, or the
+  folder the repository sits in (`tools/game_folder.ps1`)
 - External tools (llvm-mingw, Real-ESRGAN, stable-diffusion.cpp and its models) are found through
   the `L2HD_TOOLS` environment variable, or `tools\external`
 - `NOTES.md` holds the reverse-engineering notes

@@ -2,12 +2,13 @@
 # assets\pl8\index.csv (file, frame, size, offset, palette, error).
 # Palette: the .256 of the same name when there is one, else -DefaultPalette.
 param(
-    [string]$Game = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
+    [string]$Game = "",
     [string]$Out = (Join-Path (Split-Path $PSScriptRoot -Parent) "assets\pl8"),
     [string]$DefaultPalette = "Lords2.256",
     [string]$Filter = "*.pl8",
     [switch]$KeyMagenta
 )
+. "$PSScriptRoot\game_folder.ps1"; $Game = Get-GameFolder $Game
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs") -ReferencedAssemblies System.Drawing
 New-Item -ItemType Directory -Force $Out | Out-Null
 

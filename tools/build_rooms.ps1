@@ -2,7 +2,7 @@
 # -Preview also writes 1x previews to hd\shots\wide\<name>.bmp.
 param([switch]$Preview, [switch]$ReuseFighters) # -ReuseFighters: the fighters upscaled by an earlier run
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $ErrorActionPreference = 'Stop'
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs"), (Join-Path $PSScriptRoot "Room.cs"), (Join-Path $PSScriptRoot "KeyArt.cs") -ReferencedAssemblies System.Drawing

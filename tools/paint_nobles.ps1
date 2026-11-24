@@ -4,7 +4,7 @@
 param([int]$Seed = 1, [int]$Steps = 30)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $sd = Join-Path $tools "sdcpp\bin\sd-cli.exe"
 $models = Join-Path $tools "sdcpp\models"   # FLUX.1 Fill [dev], as tools\expand_sides.ps1

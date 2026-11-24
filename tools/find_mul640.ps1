@@ -1,6 +1,7 @@
 # Finds "reg * 640" compiled as LEA reg,[reg+reg*4] ; SHL reg,7 in Lords2.exe: the pitch hidden
 # from an immediate search. Prints the address and register of each.
-$exe = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "Lords2.exe"
+. "$PSScriptRoot\game_folder.ps1"
+$exe = Join-Path (Get-GameFolder) "Lords2.exe"
 Add-Type -TypeDefinition @'
 using System; using System.Collections.Generic;
 public static class Mul640 {
