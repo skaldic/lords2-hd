@@ -162,9 +162,13 @@ Lords of the Realm II community. It replaces Windows' DirectPlay with its own ne
 port 47700, checks every turn that all players' games agree and repairs them if not, and fixes the
 game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 
-- The host allows the Windows Firewall prompt; the others must reach the host's TCP port 47700 (same
-  network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose Connect
-  to a game and type the host's address.
+- **Internet games:** a game you host is listed on the mod's lobby server, and other players find it
+  under Connect to a game → **Internet games**: no address and no port forward, and nobody sees
+  anyone's IP address. Anyone can join a listed game; set `relay_host=0` in `lords2hd.ini`
+  `[Multiplayer]` to keep yours off the list.
+- **By address:** the host allows the Windows Firewall prompt; the others must reach the host's TCP
+  port 47700 (same network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join,
+  choose Connect to a game and type the host's address. GameRanger works as before.
 - The game keeps running when you switch windows, so nobody waits for you.
 - **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
   game's folder from the moment a second player joins the lobby, with what's needed to debug the
