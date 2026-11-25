@@ -15,13 +15,14 @@ MULTIPLAYER
   it replaces Windows' DirectPlay with its own network code over TCP port 47700, checks every turn
   that all players' games agree and repairs them if not, and fixes the game's own multiplayer
   desyncs. Every player needs the same dplayx.dll (this patch's, or the same build from the Discord).
-- INTERNET GAMES: a game you host is listed on the mod's lobby server; to join one, choose Connect to
-  a game and press Internet games. No address and no port forward are needed, and nobody sees anyone's
-  IP address. Anyone can join a listed game: relay_host=0 in lords2hd.ini [Multiplayer] keeps yours
-  off the list.
-- BY ADDRESS: the host allows the Firewall prompt; the other players need to reach the host's TCP port
-  47700 (same network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose
-  Connect to a game and type the host's address. GameRanger works as before.
+- Multiplayer offers four ways in: Host an internet game, Host a private game, Join an internet game
+  and Join by address.
+- INTERNET GAMES are listed on the mod's lobby server: no address and no port forward are needed, and
+  nobody sees anyone's IP address. Anyone can join a listed game. relay_host=0 in lords2hd.ini
+  [Multiplayer] removes "Host an internet game".
+- PRIVATE GAMES / BY ADDRESS: the host allows the Firewall prompt; the other players need to reach the
+  host's TCP port 47700 (same network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin)
+  and type the host's address. GameRanger works as before.
 - The patch's own game fixes (Mop-Up, the computer's castles, wheat, besieged castles) are switched
   off in multiplayer, so players with different setups stay in step; set MultiplayerFixes=1 only if
   every player does. The game keeps running when you switch windows, so nobody waits for you.

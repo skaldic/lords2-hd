@@ -1864,7 +1864,7 @@ static int ask_join(void *ctx)
     HWND owner = sess ? GetWindow(sess, GW_OWNER) : NULL;
     INT_PTR r;
     char line[96], rh[128];
-    int rp, inet = rl_allowed() && rl_target(rh, sizeof rh, &rp);   /* relay.c: offer the internet list when there is a relay */
+    int rp, inet = g_pick_join != PICK_ADDRESS && rl_allowed() && rl_target(rh, sizeof rh, &rp);   /* relay.c: offer the internet list when there is a relay (not after the choice dialog's Join by address) */
     if (!owner) owner = sess;
     memset(tbuf, 0, sizeof tbuf);
     t->style = DS_MODALFRAME | DS_SETFONT | DS_CENTER | DS_SETFOREGROUND | WS_POPUP | WS_CAPTION | WS_SYSMENU;
@@ -1891,6 +1891,73 @@ static int ask_join(void *ctx)
     if (r != IDCANCEL) return 1;   /* the box could not open: fall back to the saved address */
     if (sess) PostMessageA(sess, WM_COMMAND, MAKEWPARAM(IDCANCEL, 0), 0);
     return 0;
+}
+
+/* ---- The Multiplayer choice (v14): in place of the game's own Connect-or-Create dialog (resource 0x6c), which only
+ * says Create or Join, four ways in. The game's handler (FUN_004b7xxx after DialogBoxParamA(0x6c)) takes 0x3ea = join
+ * (Connect), 0x3ec = create; anything else is Cancel. Shown only with a relay set, outside GameRanger and with the box
+ * enabled (ask=0 / LOTR2NET_HOST keep the stock dialog for automation); [Multiplayer] relay_host=0 hides "Host an
+ * internet game". The pick lasts this visit to the Multiplayer screens (relay.c g_pick_host / g_pick_join). */
+#define ID_PUBLIC 201
+#define ID_PRIVATE 202
+#define ID_JOININET 203
+#define ID_JOINADDR 204
+static int mp_choice_wanted(void)
+{
+    char rh[128];
+    int rp;
+    return rl_allowed() && ask_enabled() && rl_target(rh, sizeof rh, &rp);
+}
+static INT_PTR CALLBACK mp_choice_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    if (m == WM_INITDIALOG) return TRUE;
+    if (m == WM_COMMAND && HIWORD(wp) == BN_CLICKED) {
+        WORD id = LOWORD(wp);
+        if (id == ID_PUBLIC || id == ID_PRIVATE || id == ID_JOININET || id == ID_JOINADDR || id == IDCANCEL) { EndDialog(d, id); return TRUE; }
+    }
+    return FALSE;
+}
+static INT_PTR mp_choice(HWND owner)
+{
+    static DWORD tbuf[640];
+    DLGTEMPLATE *t = (DLGTEMPLATE *)tbuf;
+    WORD *p;
+    INT_PTR r;
+    int pub = dg_cfg("LOTR2NET_RELAY_HOST", "relay_host", 1), y = 7;
+    memset(tbuf, 0, sizeof tbuf);
+    t->style = DS_MODALFRAME | DS_SETFONT | DS_CENTER | DS_SETFOREGROUND | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    t->cdit = (WORD)(pub ? 9 : 7);
+    t->cx = 260; t->cy = pub ? 112 : 92;
+    p = (WORD *)(t + 1);
+    *p++ = 0; *p++ = 0;
+    p = dt_str(p, "Multiplayer");
+    *p++ = 8;
+    p = dt_str(p, "MS Shell Dlg");
+    if (pub) {
+        p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_PUBLIC, 0x80, "Host an internet game");
+        p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Listed online; anyone can join");
+        y += 20;
+    }
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_PRIVATE, 0x80, "Host a private game");
+    p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Not listed; players join by your address");
+    y += 20;
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_JOININET, 0x80, "Join an internet game");
+    p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Pick a game from the online list");
+    y += 20;
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_JOINADDR, 0x80, "Join by address");
+    p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Type the host's address");
+    y += 25;
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 203, y, 50, 15, IDCANCEL, 0x80, "Cancel");
+    r = DialogBoxIndirectParamA(GetModuleHandleA(NULL), t, owner, mp_choice_proc, 0);
+    switch (r) {
+    case ID_PUBLIC: InterlockedExchange(&g_pick_host, PICK_PUBLIC); logf_("Multiplayer choice: host an internet game"); return 0x3ec;
+    case ID_PRIVATE: InterlockedExchange(&g_pick_host, PICK_PRIVATE); logf_("Multiplayer choice: host a private game"); return 0x3ec;
+    case ID_JOININET: InterlockedExchange(&g_pick_join, PICK_INTERNET); logf_("Multiplayer choice: join an internet game"); return 0x3ea;
+    case ID_JOINADDR: InterlockedExchange(&g_pick_join, PICK_ADDRESS); logf_("Multiplayer choice: join by address"); return 0x3ea;
+    }
+    logf_("Multiplayer choice: %s", r == IDCANCEL ? "cancelled" : "dialog failed - cancelled");
+    return IDCANCEL;   /* neither 0x3ea nor 0x3ec: the game's own Cancel path */
 }
 
 static int enum_once(DPSD2 *want, ENUMSESS_CB cb, void *ctx, char *name, int nn, DWORD *seq);
@@ -2294,6 +2361,11 @@ static INT_PTR WINAPI gra_dbp(HINSTANCE h, LPCSTR t, HWND o, DLGPROC f, LPARAM l
         if (id == 0x6c) { logf_("GameRanger auto: Connect or Create -> %s", g_gra == 1 ? "Connect" : "Create"); return g_gra == 1 ? 0x3ea : 0x3ec; }
         if (id == 0x74 && g_gra == 2) { logf_("GameRanger auto: session name -> default"); return 0; }
     }
+    if (!g_gra && IS_INTRESOURCE(t) && LOWORD((ULONG_PTR)t) == 0x6c) {   /* the Multiplayer choice, in place of Connect or Create */
+        InterlockedExchange(&g_pick_host, 0);
+        InterlockedExchange(&g_pick_join, 0);
+        if (mp_choice_wanted()) return mp_choice(o);
+    }
     return g_dbp(h, t, o, f, l);
 }
 
@@ -2356,6 +2428,7 @@ static int __cdecl gra_title(void)
     DWORD rd;
     int k;
     if (RD32(0x568464)) return 1;
+    if (!g_dbp && g_exe_ok) gra_hook_dbp();   /* the Multiplayer choice dialog (DllMain may have been too early) */
     if (tried || !gr_mode()) return 0;
     tried = 1;
     if (!(v = gr_view())) { logf_("GameRanger auto: unknown GameRanger build - menus left to the player"); return 0; }
@@ -2437,7 +2510,7 @@ static DPHR WINAPI dp2_EnumSessions(Obj *t, DPSD2 *want, DWORD timeout, ENUMSESS
         }
         return menu_enum(want, cb, ctx, lb, dlg);
     }
-    if (InterlockedExchange(&g_ask_due, 0) && ask_enabled()) {
+    if (InterlockedExchange(&g_ask_due, 0) && ask_enabled() && g_pick_join != PICK_INTERNET) {   /* "Join an internet game": no box */
         int go;
         g_in_ask = 1;
         go = gr_join() || ask_join(ctx);
@@ -2824,6 +2897,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
         exe_patch_all();
         victory_patch();
         gra_patch();
+        if (g_exe_ok && !gra_hook_dbp()) logf_("Multiplayer choice dialog: DialogBoxParamA not hooked yet - tried again on the title screen");
         logf_("PROTO %lu (dll v%d, pace %d, exe_ok %d, slowlink %d, mpfix %d)", PROTO, DLL_VERSION, g_pace_ok, g_exe_ok, g_slowlink, g_mpfix);
     } else if (why == DLL_PROCESS_DETACH) {
         log_flush_exit();   /* write what is buffered; at process exit other threads may have died holding a lock,

@@ -65,6 +65,14 @@ static int rl_target(char *host, int cap, int *port)
 /* GameRanger relays its rooms itself: a game inside it never uses ours */
 static int rl_allowed(void) { return !GetModuleHandleA("GameRanger.dll"); }
 
+/* The Multiplayer choice dialog (dplayx.c mp_choice, in place of the game's Connect-or-Create dialog 0x6c): what the
+ * player picked for this visit. 0 = the stock dialog ran (relay_host and the address box decide, as before) */
+#define PICK_PUBLIC 1    /* host: listed on the relay */
+#define PICK_PRIVATE 2   /* host: not listed */
+#define PICK_INTERNET 1  /* join: straight to the relay's room list, no address box */
+#define PICK_ADDRESS 2   /* join: the address box, without its Internet games button */
+static volatile LONG g_pick_host, g_pick_join;
+
 static SOCKET rl_dial(DWORD ms)
 {
     char host[128];
@@ -261,7 +269,9 @@ static void rl_host_start(int gen)
     char host[128];
     int port;
     HANDLE th;
-    if (!rl_allowed() || !dg_cfg("LOTR2NET_RELAY_HOST", "relay_host", 1) || !rl_target(host, sizeof host, &port)) return;
+    if (!rl_allowed() || !rl_target(host, sizeof host, &port)) return;
+    if (g_pick_host == PICK_PRIVATE) { logf_("relay: a private game - not listed"); return; }
+    if (g_pick_host != PICK_PUBLIC && !dg_cfg("LOTR2NET_RELAY_HOST", "relay_host", 1)) return;
     InterlockedIncrement(&g_live);   /* before the thread runs: a Close right now must still wait for it */
     if ((th = CreateThread(NULL, 0, rl_host_thread, (LPVOID)(INT_PTR)gen, 0, NULL)) != NULL) CloseHandle(th);
     else { InterlockedDecrement(&g_live); logf_("relay: CreateThread failed (%lu) - the game is not listed", GetLastError()); }
@@ -286,7 +296,7 @@ static int rl_list_wanted(void)
 {
     char v[4] = "";
     if (!rl_allowed()) return 0;
-    return g_rl_list || (GetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", v, sizeof v) && v[0] == '1');
+    return g_rl_list || g_pick_join == PICK_INTERNET || (GetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", v, sizeof v) && v[0] == '1');
 }
 
 static DWORD WINAPI rl_list_thread(LPVOID a)
