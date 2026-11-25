@@ -373,6 +373,26 @@ static char g_menu_host[128], g_menu_msg[128];
 static void beacon_start(int port);
 static void grhb_start(int port);
 static void beacon_stop(void);
+/* host[:port] as typed (ini, env, address box): both ends trimmed, an optional :port split off into *port (left as it
+ * is without one). 0 = ok; -1 = it looks like IPv6, which fails loudly (F9: never fall back to loopback). what = which
+ * setting, for the log */
+static int parse_addr(char *host, int *port, const char *what)
+{
+    char *c, *l = host;
+    int n;
+    while (*l == ' ' || *l == '\t') l++;
+    if (l != host) memmove(host, l, strlen(l) + 1);
+    n = (int)strlen(host);
+    while (n > 0 && (host[n - 1] == '\r' || host[n - 1] == '\n' || host[n - 1] == ' ' || host[n - 1] == '\t')) host[--n] = 0;
+    c = strchr(host, ':');
+    if (c && (strchr(c + 1, ':') || host[0] == '[')) {
+        static int warned;
+        if (!warned++) logf_("%s '%s' looks like an IPv6 address - only IPv4 addresses and computer names work", what, host);
+        return -1;
+    }
+    if (c) { *c = 0; *port = parse_port(c + 1, what); }
+    return 0;
+}
 static void get_target(char *host, int *port)
 {
     char *e = getenv("LOTR2NET_HOST");
@@ -382,20 +402,7 @@ static void get_target(char *host, int *port)
     else if (e && *e) lstrcpynA(host, e, 120);
     else if (g_ask_host[0]) lstrcpynA(host, g_ask_host, 120);
     else ini_get("host", host, 120);
-    { /* trim both ends, optional :port */
-        char *c, *l = host;
-        int n;
-        while (*l == ' ' || *l == '\t') l++;
-        if (l != host) memmove(host, l, strlen(l) + 1);
-        n = (int)strlen(host);
-        while (n > 0 && (host[n - 1] == '\r' || host[n - 1] == '\n' || host[n - 1] == ' ' || host[n - 1] == '\t')) host[--n] = 0;
-        c = strchr(host, ':');
-        if (c && (strchr(c + 1, ':') || host[0] == '[')) {   /* F9: an IPv6 address must fail loudly, never fall back to loopback */
-            static int warned;
-            if (!warned++) logf_("host '%s' looks like an IPv6 address - only IPv4 addresses and computer names work", host);
-            if (g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "IPv6 is not supported: use an IPv4 address");
-        } else if (c) { *c = 0; *port = parse_port(c + 1, "host"); }
-    }
+    if (parse_addr(host, port, "host") && g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "IPv6 is not supported: use an IPv4 address");
     if (!host[0]) lstrcpyA(host, "127.0.0.1");
 }
 static int listen_port(void)
