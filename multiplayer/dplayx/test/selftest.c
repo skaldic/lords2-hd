@@ -71,6 +71,9 @@
  *   T40 (v14 relay, joiner side) two raw hosts on the relay, one of an older PROTO: EnumSessions in list mode
  *       (LOTR2NET_TEST_RELAYLIST) reports both, the old one marked "[host v..., yours v...]", each with its room id in
  *       the guidInstance and its players
+ *   T41 (v14 relay, joiner side) Open(join) with a room taken from that list joins through the relay: a raw host on
+ *       the relay pairs and does the handshake, the DLL gets its player; a missing room is DPERR_NOSESSIONS, a locked
+ *       one DPERR_ACTIVEPLAYERS, an unreachable relay DPERR_NOCONNECTION
  *   T37 (v12 settings) a lotr2net.ini beside the DLL at load moves into lords2hd.ini [Multiplayer]: keys lords2hd.ini
  *       lacks are copied, its own (ghost=1) win, other sections stay, the old file becomes lotr2net.ini.old
  */
@@ -264,6 +267,41 @@ static BOOL WINAPI cb40(const DPSD2 *d, DWORD *to, DWORD f, void *ctx)
         g40_n++;
     }
     return TRUE;
+}
+
+/* T41: a raw host on the relay that takes one joiner: JOIN -> its data conn -> the host's half of the handshake */
+static volatile LONG g41_paired;
+static int recv_n(SOCKET s, BYTE *b, int n) { int got = 0, r; while (got < n && (r = recv(s, (char *)b + got, n - got, 0)) > 0) got += r; return got == n; }
+static DWORD WINAPI raw_host41(LPVOID p)
+{
+    SOCKET c = (SOCKET)p, d;
+    BYTE b[128], st[5], in[21], f[97], dd[9];
+    int ty = 0;
+    DWORD t0 = GetTickCount();
+    while (GetTickCount() - t0 < 8000) {
+        ty = readframe(c, b, sizeof b);
+        if (ty == 4) break;
+        if (ty == 5) rl_raw_frame(c, 6, NULL, 0);   /* PING */
+        else if (!ty && WSAGetLastError() != WSAETIMEDOUT) return 0;
+    }
+    if (ty != 4) return 0;
+    if ((d = rl_raw(2, b, 16)) == INVALID_SOCKET) return 0;
+    if (!recv_n(d, st, 5) || st[0]) { closesocket(d); return 0; }
+    InterlockedExchange(&g41_paired, 1);
+    if (recv_n(d, in, 21)) {                                  /* T_HELLO */
+        memset(f, 0, sizeof f);
+        *(DWORD *)f = 93; f[4] = 2;                           /* T_INFO */
+        *(DWORD *)(f + 9) = 4;
+        strcpy((char *)f + 33, "raw41");
+        send(d, (char *)f, 97, 0);
+        if (recv_n(d, f, 37)) {                               /* T_CREATEPL */
+            *(DWORD *)dd = 5; dd[4] = 5; *(DWORD *)(dd + 5) = 0x1002;   /* T_PLAYERID */
+            send(d, (char *)dd, 9, 0);
+        }
+    }
+    Sleep(2000);
+    closesocket(d);
+    return 0;
 }
 
 /* raw joiner: create a player named nm on the open conn s, return its DPID (0 = failed) */
@@ -1575,6 +1613,49 @@ int main(int argc, char **argv)
                 r1, r2, g40_n, got1, want2, got2, guid_ok);
         result("T40 the relay's rooms in the session list", h1 != INVALID_SOCKET && h2 != INVALID_SOCKET && got1 >= 0 && got2 >= 0 && guid_ok, buf);
         _putenv("LOTR2NET_RELAY=");
+    }
+    {   /* T41 (v14 relay, joiner side): Open(join) with a room from the list joins through the relay; refusals map */
+        DWORD r1 = 0, r2 = 0, k, id41 = 0;
+        SOCKET h1, h2;
+        HANDLE th = NULL;
+        HR hr0 = -1, hr_none = -1, hr_locked = -1, hr_norelay = -1;
+        NAME_ nm = {sizeof nm, 0, "j41", NULL};
+        DPSD2 j = sd;
+        BYTE up[2] = {1, 1};
+        int found = 0, i, line;
+        _putenv("LOTR2NET_RELAY=127.0.0.1:47710");
+        SetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", "1");
+        h1 = rl_raw_host(proto, 4, "raw41", &r1);
+        if (h1 != INVALID_SOCKET) th = CreateThread(NULL, 0, raw_host41, (LPVOID)h1, 0, NULL);
+        for (k = 0; k < 10 && !found; k++) {   /* the room as the game gets it: from the session list */
+            g40_n = 0;
+            ((ENUMS)dp->vt[13])(dp, &sd, 1000, cb40, NULL, 0);
+            for (i = 0; i < g40_n; i++) if (!strcmp(g40_name[i], "raw41")) { j.guidInstance = g40_guid[i]; found = 1; }
+            if (!found) Sleep(200);
+        }
+        SetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", NULL);
+        if (found) {
+            hr0 = ((OPEN)dp->vt[24])(dp, &j, 1);
+            if (!hr0) ((CPL)dp->vt[6])(dp, &id41, &nm, NULL, NULL, 0, 0);
+        }
+        line = log_has("Open(join): paired with room", 1000);
+        ((CLOSE)dp->vt[4])(dp);
+        if (th) { WaitForSingleObject(th, 10000); CloseHandle(th); }
+        if (h1 != INVALID_SOCKET) closesocket(h1);
+        j.guidInstance.Data1 = 0x0badf00d;                    /* no such room */
+        hr_none = ((OPEN)dp->vt[24])(dp, &j, 1);
+        h2 = rl_raw_host(proto, 4, "lock41", &r2);            /* a locked room */
+        if (h2 != INVALID_SOCKET) { rl_raw_frame(h2, 3, up, 2); Sleep(300); }
+        j.guidInstance.Data1 = r2;
+        hr_locked = ((OPEN)dp->vt[24])(dp, &j, 1);
+        if (h2 != INVALID_SOCKET) closesocket(h2);
+        _putenv("LOTR2NET_RELAY=127.0.0.1:47719");            /* nobody there */
+        hr_norelay = ((OPEN)dp->vt[24])(dp, &j, 1);
+        _putenv("LOTR2NET_RELAY=");
+        sprintf(buf, "room %08lx listed %d, join hr=%08lx relay paired %ld, player %08lx, log line %d; no room %08lx locked %08lx no relay %08lx",
+                r1, found, (unsigned long)hr0, g41_paired, id41, line, (unsigned long)hr_none, (unsigned long)hr_locked, (unsigned long)hr_norelay);
+        result("T41 Open(join) of a relay room", found && hr0 == 0 && g41_paired && id41 == 0x1002 && line
+               && hr_none == (HR)0x887700DC && hr_locked == (HR)0x88770014 && hr_norelay == (HR)0x887700AA, buf);
     }
     {   /* T38 (v13 joiner side): the session clock follows the host's answers */
         SOCKET l = socket(AF_INET, SOCK_STREAM, 0);

@@ -371,3 +371,38 @@ static void rl_enum(DPSD2 *want, ENUMSESS_CB cb, void *ctx)
     }
     logf_("EnumSessions: relay list, %d room(s) (round %lu)", n, (unsigned long)seq);
 }
+/* 1 and the room id when g is one of ours */
+static int rl_room_of(const GUID *g, DWORD *id)
+{
+    if (!g->Data1 || g->Data2 != RELAY_GUID.Data2 || g->Data3 != RELAY_GUID.Data3 || memcmp(g->Data4, RELAY_GUID.Data4, 8)) return 0;
+    *id = g->Data1;
+    return 1;
+}
+
+
+/* ---- joiner: joining a room. Open(join) with a relay room's guidInstance: the relay pairs us with the host, then the
+ * socket carries the normal handshake (dp2_Open goes on from T_HELLO as for a socket from dial). *hr = why not */
+static SOCKET rl_join(DWORD room, DPHR *hr)
+{
+    BYTE st;
+    DWORD t0;
+    SOCKET s = rl_dial(2500);
+    if (s == INVALID_SOCKET) { logf_("Open(join): the relay was not reached"); *hr = DPERR_NOCONNECTION; return s; }
+    t0 = GetTickCount();
+    /* 12 s: longer than the relay's own 10 s pairing timeout, so its answer (5, host did not answer) is what arrives */
+    if (rl_header(s, 3, &room, 4) || recv_all(s, &st, 1, t0, 12000)) {
+        logf_("Open(join): no answer from the relay for room %08lx", (unsigned long)room);
+        closesocket(s);
+        *hr = DPERR_NOCONNECTION;
+        return INVALID_SOCKET;
+    }
+    if (st) {
+        logf_("Open(join): the relay refused room %08lx: %s (%u)", (unsigned long)room, rl_err(st), st);
+        closesocket(s);
+        *hr = st == 3 ? DPERR_NOSESSIONS : st == 4 ? DPERR_ACTIVEPLAYERS : st == 5 ? DPERR_NOCONNECTION : st == 2 ? DPERR_GENERIC : DPERR_UNAVAILABLE;
+        return INVALID_SOCKET;
+    }
+    set_rcvto(s, 0);
+    logf_("Open(join): paired with room %08lx through the relay", (unsigned long)room);
+    return s;
+}

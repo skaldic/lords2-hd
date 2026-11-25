@@ -1645,8 +1645,12 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         Out *jo;
         HANDLE th;
         int jagen;
-        s = dial(2500);
-        if (s == INVALID_SOCKET) {
+        DWORD room;
+        if (rl_room_of(&d->guidInstance, &room)) {   /* relay.c: a room from the internet list; GameRanger never lists one */
+            DPHR why = DPERR_NOCONNECTION;
+            logf_("Open(join): relay room %08lx", (unsigned long)room);
+            if ((s = rl_join(room, &why)) == INVALID_SOCKET) return why;
+        } else if ((s = dial(2500)) == INVALID_SOCKET) {
             if (g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "Could not reach the host");
             return DPERR_NOCONNECTION;
         }
