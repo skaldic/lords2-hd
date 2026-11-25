@@ -1769,6 +1769,7 @@ static DPHR WINAPI dp2_DestroyPlayer(Obj *t, DPID id)
  * (rig and agent automation). */
 #define ID_AHOST 101
 #define ID_APORT 102
+#define ID_AINET 103   /* relay.c: "Internet games" - the session list shows the relay's rooms instead */
 static volatile LONG g_ask_due;   /* set by DirectPlayCreate, taken by the first EnumSessions */
 static volatile LONG g_in_ask;    /* re-entrancy guard: the box runs a modal loop on the game thread */
 
@@ -1822,6 +1823,12 @@ static INT_PTR CALLBACK ask_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
         EndDialog(d, IDOK);
         return TRUE;
     }
+    if (m == WM_COMMAND && LOWORD(wp) == ID_AINET) {
+        InterlockedExchange(&g_rl_list, 1);
+        logf_("join address box: Internet games (the relay's room list)");
+        EndDialog(d, IDOK);
+        return TRUE;
+    }
     if (m == WM_COMMAND && LOWORD(wp) == IDCANCEL) { EndDialog(d, IDCANCEL); return TRUE; }
     return FALSE;
 }
@@ -1852,11 +1859,12 @@ static int ask_join(void *ctx)
     HWND sess = (ctx && IsWindow((HWND)ctx)) ? GetParent((HWND)ctx) : NULL;
     HWND owner = sess ? GetWindow(sess, GW_OWNER) : NULL;
     INT_PTR r;
-    char line[96];
+    char line[96], rh[128];
+    int rp, inet = rl_allowed() && rl_target(rh, sizeof rh, &rp);   /* relay.c: offer the internet list when there is a relay */
     if (!owner) owner = sess;
     memset(tbuf, 0, sizeof tbuf);
     t->style = DS_MODALFRAME | DS_SETFONT | DS_CENTER | DS_SETFOREGROUND | WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    t->cdit = 7;
+    t->cdit = inet ? 8 : 7;
     t->cx = 230; t->cy = 86;
     p = (WORD *)(t + 1);
     *p++ = 0; *p++ = 0;          /* no menu, default class */
@@ -1871,6 +1879,7 @@ static int ask_join(void *ctx)
     p = dt_item(p, SS_LEFT, 7, 37, 216, 18, 0xFFFF, 0x82, line);
     p = dt_item(p, BS_DEFPUSHBUTTON | WS_TABSTOP, 119, 64, 50, 15, IDOK, 0x80, "Connect");
     p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 173, 64, 50, 15, IDCANCEL, 0x80, "Cancel");
+    if (inet) p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, 64, 70, 15, ID_AINET, 0x80, "Internet games");
     logf_("join address box: shown (session dialog %p)", (void *)sess);
     r = DialogBoxIndirectParamA(GetModuleHandleA(NULL), t, owner, ask_proc, 0);
     if (r == IDOK) return 1;
@@ -2431,6 +2440,7 @@ static DPHR WINAPI dp2_EnumSessions(Obj *t, DPSD2 *want, DWORD timeout, ENUMSESS
         g_in_ask = 0;
         if (!go) return DP_OK;
     }
+    if (rl_list_wanted()) { rl_enum(want, cb, ctx); return DP_OK; }   /* relay.c: the internet games, by the box's button */
     enum_once(want, cb, ctx, NULL, 0, NULL);
     return DP_OK;
 }
@@ -2735,6 +2745,7 @@ __declspec(dllexport) DPHR WINAPI DirectPlayCreate(GUID *sp, void **out, void *o
     if (!out) return DPERR_INVALIDPARAMS;
     InterlockedIncrement(&dp1ref);
     InterlockedExchange(&g_ask_due, 1);   /* one per Connect press: the next EnumSessions asks for the address */
+    InterlockedExchange(&g_rl_list, 0);   /* relay.c: back to the address box's choice */
     *out = &dp1obj;
     return DP_OK;
 }
@@ -2801,6 +2812,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
         G.lsock = G.jsock = INVALID_SOCKET;
         dg_init();
         lf_init();
+        rl_init();
         dp2obj.vt = dp2_vt;
         dp1obj.vt = dp1_vt;
         logf_("---- dplayx.dll v%d loaded (pid %lu)", DLL_VERSION, GetCurrentProcessId());

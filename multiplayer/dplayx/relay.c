@@ -97,6 +97,14 @@ static int rl_to_utf8(const char *ansi, char *out, int cap)
     memcpy(out, u, n);
     return n;
 }
+static void rl_from_utf8(const BYTE *u, int n, char *out, int cap)
+{
+    WCHAR w[80];
+    int k = n ? MultiByteToWideChar(CP_UTF8, 0, (const char *)u, n, w, 80) : 0;
+    k = k > 0 ? WideCharToMultiByte(CP_ACP, 0, w, k, out, cap - 1, "?", NULL) : 0;
+    out[k > 0 ? k : 0] = 0;
+}
+
 /* ---- host: pairing one joiner. The relay sent JOIN(pair_code); our data connection must reach it within 10 s, so
  * this runs on its own thread, never waiting for the game or holding cs */
 typedef struct { BYTE code[16]; int gen; } RlPair;
@@ -257,4 +265,109 @@ static void rl_host_start(int gen)
     InterlockedIncrement(&g_live);   /* before the thread runs: a Close right now must still wait for it */
     if ((th = CreateThread(NULL, 0, rl_host_thread, (LPVOID)(INT_PTR)gen, 0, NULL)) != NULL) CloseHandle(th);
     else { InterlockedDecrement(&g_live); logf_("relay: CreateThread failed (%lu) - the game is not listed", GetLastError()); }
+}
+
+/* ---- joiner: the room list. The address box's "Internet games" button (or LOTR2NET_TEST_RELAYLIST=1) makes the
+ * game's own session list show the relay's rooms for this Connect visit (g_rl_list; DirectPlayCreate clears it). The
+ * dialog polls EnumSessions every 3 s from its UI loop, so the round trip runs on a worker, as enum_thread does, and
+ * the caller waits at most RL_WAIT_MS for it. Each room goes to the callback with a guidInstance that marks it as a
+ * relay room (RELAY_GUID, Data1 = room_id), which is how Open(join) knows to join through the relay. */
+#define RL_WAIT_MS 400
+#define RL_FRESH_MS 10000
+static const GUID RELAY_GUID = {0, 0x4c32, 0x4c52, {'L', '2', 'R', 'L', 'R', 'O', 'O', 'M'}};
+static volatile LONG g_rl_list;
+static CRITICAL_SECTION rlcs;
+typedef struct { DWORD id, proto; int players, maxpl; char name[48]; } RlRoom;
+static struct { int running, have, ok, n; DWORD t, seq; RlRoom r[RL_MAXROOMS]; } RL;
+
+static void rl_init(void) { InitializeCriticalSection(&rlcs); }   /* DllMain */
+
+static int rl_list_wanted(void)
+{
+    char v[4] = "";
+    if (!rl_allowed()) return 0;
+    return g_rl_list || (GetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", v, sizeof v) && v[0] == '1');
+}
+
+static DWORD WINAPI rl_list_thread(LPVOID a)
+{
+    SOCKET s = rl_dial(800);
+    BYTE type, *f = NULL;
+    DWORD n = 0, k = 1;
+    RlRoom r[RL_MAXROOMS];
+    int cnt = 0, ok = 0, i;
+    (void)a;
+    if (s != INVALID_SOCKET) {
+        if (!rl_header(s, 4, NULL, 0) && !sendf(s, RL_LIST, NULL, 0)) f = readf2(s, &type, &n, RL_MAXF, 3000);
+        closesocket(s);
+    }
+    if (f && type == RL_ROOMS && n >= 1) {
+        ok = 1;
+        for (i = 0; i < f[0] && cnt < RL_MAXROOMS; i++) {   /* room_id, proto, players, max, name str: checked against n */
+            int ln;
+            if (k + 11 > n || k + 11 + (ln = f[k + 10]) > n) { ok = 0; break; }
+            r[cnt].id = *(DWORD *)(f + k);
+            r[cnt].proto = *(DWORD *)(f + k + 4);
+            r[cnt].players = f[k + 8];
+            r[cnt].maxpl = f[k + 9];
+            rl_from_utf8(f + k + 11, ln, r[cnt].name, sizeof r[cnt].name);
+            if (r[cnt].id) cnt++;
+            k += 11 + ln;
+        }
+    }
+    free(f);
+    EnterCriticalSection(&rlcs);
+    RL.running = 0;
+    RL.have = 1;
+    RL.ok = ok;
+    RL.n = ok ? cnt : 0;
+    memcpy(RL.r, r, sizeof r);
+    RL.t = GetTickCount();
+    RL.seq++;
+    LeaveCriticalSection(&rlcs);
+    return 0;
+}
+
+/* dp2_EnumSessions in list mode: one callback per room of the newest answer */
+static void rl_enum(DPSD2 *want, ENUMSESS_CB cb, void *ctx)
+{
+    RlRoom r[RL_MAXROOMS];
+    int n = 0, i, have = 0, ok = 0;
+    DWORD t0 = GetTickCount(), seq = 0;
+    EnterCriticalSection(&rlcs);
+    if (!RL.running) {   /* a fresh round; this call takes any answer under RL_FRESH_MS old */
+        HANDLE th;
+        RL.running = 1;
+        if ((th = CreateThread(NULL, 0, rl_list_thread, NULL, 0, NULL)) != NULL) CloseHandle(th); else RL.running = 0;
+    }
+    for (;;) {
+        if (RL.have && GetTickCount() - RL.t < RL_FRESH_MS) {
+            have = 1; ok = RL.ok; n = RL.n; seq = RL.seq;
+            memcpy(r, RL.r, sizeof r);
+            if (!RL.running) break;
+        }
+        if (GetTickCount() - t0 >= RL_WAIT_MS) break;
+        LeaveCriticalSection(&rlcs);
+        Sleep(10);
+        EnterCriticalSection(&rlcs);
+    }
+    LeaveCriticalSection(&rlcs);
+    if (!have || !ok) { logf_("EnumSessions: relay list - %s", !have ? "round still running" : "no answer from the relay"); return; }
+    for (i = 0; i < n; i++) {
+        DPSD2 d;
+        DWORD to = 0;
+        char nm[96];   /* the callback's own buffer (F18) */
+        memset(&d, 0, sizeof d);
+        d.dwSize = sizeof d;
+        d.dwMaxPlayers = (DWORD)r[i].maxpl;
+        d.dwCurrentPlayers = (DWORD)r[i].players;
+        d.guidInstance = RELAY_GUID;
+        d.guidInstance.Data1 = r[i].id;
+        if (want) d.guidApplication = want->guidApplication;
+        if (r[i].proto == PROTO) lstrcpynA(nm, r[i].name, sizeof nm);
+        else snprintf(nm, sizeof nm, "%.24s [host v%lu, yours v%lu]", r[i].name, (unsigned long)r[i].proto, (unsigned long)PROTO);
+        d.lpszSessionName = nm;
+        if (!cb(&d, &to, 0, ctx)) break;
+    }
+    logf_("EnumSessions: relay list, %d room(s) (round %lu)", n, (unsigned long)seq);
 }
