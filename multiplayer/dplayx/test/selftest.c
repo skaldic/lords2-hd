@@ -76,6 +76,8 @@
  *   T41 (v14 relay, joiner side) Open(join) with a room taken from that list joins through the relay: a raw host on
  *       the relay pairs and does the handshake, the DLL gets its player; a missing room is DPERR_NOSESSIONS, a locked
  *       one DPERR_ACTIVEPLAYERS, an unreachable relay DPERR_NOCONNECTION
+ *   T42 (v14, last) with a module named GameRanger.dll loaded (a copy of version.dll), a host with a relay set is not
+ *       listed and EnumSessions shows no relay rooms: GameRanger keeps its own path
  *   T37 (v12 settings) a lotr2net.ini beside the DLL at load moves into lords2hd.ini [Multiplayer]: keys lords2hd.ini
  *       lacks are copied, its own (ghost=1) win, other sections stay, the old file becomes lotr2net.ini.old
  */
@@ -1792,6 +1794,37 @@ int main(int argc, char **argv)
         sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogSession '%.60s' ok %d, host alone %d, after Close none %d, summary %d (want 15)",
                 empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok, solo, closed, summ);
         result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok && solo && closed && summ == 15, buf);
+    }
+    if (rl_raw_list(NULL, 0) < 0) printf("SKIP T42: no lords2-relay on 127.0.0.1:%d\n", RELAY_PORT);
+    else {   /* T42 (v14): inside GameRanger the relay is never used. Last: GameRanger.dll stays loaded from here on */
+        char sys[MAX_PATH], gr[MAX_PATH];
+        HMODULE g;
+        NAME_ nm = {sizeof nm, 0, "host42", NULL};
+        DWORD me42 = 0, k;
+        DPSD2 s42 = sd;
+        int listed = 0, got = 0;
+        GetSystemDirectoryA(sys, sizeof sys);
+        lstrcatA(sys, "\\version.dll");
+        GetFullPathNameA("GameRanger.dll", sizeof gr, gr, NULL);
+        CopyFileA(sys, gr, FALSE);
+        g = LoadLibraryA(gr);   /* any module of that name is what dplayx looks for */
+        if (!g || !GetModuleHandleA("GameRanger.dll")) printf("SKIP T42: no stand-in GameRanger.dll (%lu)\n", GetLastError());
+        else {
+            _putenv("LOTR2NET_RELAY=127.0.0.1:47710");
+            SetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", "1");
+            s42.lpszSessionName = "gr42";
+            hr = ((OPEN)dp->vt[24])(dp, &s42, 2);
+            ((CPL)dp->vt[6])(dp, &me42, &nm, NULL, NULL, 0, 0);
+            for (k = 0; k < 15 && !listed; k++) { Sleep(100); listed = rl_raw_find("gr42", NULL); }
+            g40_n = 0;
+            ((ENUMS)dp->vt[13])(dp, &sd, 1000, cb40, NULL, 0);   /* list mode is off inside GameRanger */
+            for (k = 0; k < (DWORD)g40_n; k++) if (g40_guid[k].Data2 == 0x4c32) got++;
+            ((CLOSE)dp->vt[4])(dp);
+            SetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", NULL);
+            _putenv("LOTR2NET_RELAY=");
+            sprintf(buf, "open hr=%08lx, listed on the relay %d (want 0), relay rooms in the session list %d (want 0)", (unsigned long)hr, listed, got);
+            result("T42 inside GameRanger the relay is never used", hr == 0 && !listed && !got, buf);
+        }
     }
     printf("%s (%d failed)\n", fails ? "SOME FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;
