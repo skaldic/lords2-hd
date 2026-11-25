@@ -1320,6 +1320,8 @@ static DWORD accept_body(LPVOID a)
 
 static DWORD WINAPI accept_thread(LPVOID a) { DWORD r = accept_body(a); InterlockedDecrement(&g_live); return r; }
 
+#include "relay.c"
+
 /* ------------------------------------------------------ joiner: reader */
 static DWORD join_body(LPVOID a)
 {
@@ -1633,6 +1635,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         beacon_start(port);
         grhb_start(port);
         dg_start(aagen);
+        rl_host_start(aagen);
         return DP_OK;
     } else {
         SOCKET s;

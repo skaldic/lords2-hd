@@ -65,6 +65,9 @@
  *       session summary (v13) to session.txt
  *   T38 (v13 session clock, joiner side) a fake host answers the DLL's pings with its own clock: LF_NetClock has none
  *       before the first answer, then the host's time within 150 ms, and log lines are stamped [S ...]
+ *   T39 (v14 relay, host side; a local lords2-relay on 127.0.0.1:47710) a host with LOTR2NET_RELAY set lists its game
+ *       (name, PROTO, 1 player); a raw joiner joins through the relay with the normal handshake; the list shows 2
+ *       players; once the game locks the session the room leaves the list; Close removes the room
  *   T37 (v12 settings) a lotr2net.ini beside the DLL at load moves into lords2hd.ini [Multiplayer]: keys lords2hd.ini
  *       lacks are copied, its own (ghost=1) win, other sections stay, the old file becomes lotr2net.ini.old
  */
@@ -153,6 +156,82 @@ static int readframe(SOCKET s, BYTE *out, int cap)
         if (got < cap) memcpy(out + got, tmp, (int)(got + r <= cap ? r : cap - got));
         got += r;
     }
+    return hdr[4];
+}
+
+/* ---- v14 relay tests: a raw client of the local lords2-relay (run_wine / bt.sh start one on 127.0.0.1:47710) */
+#define RELAY_PORT 47710
+static SOCKET rl_raw(BYTE role, const void *extra, int n)   /* connected, header and role part sent */
+{
+    struct sockaddr_in a;
+    BYTE h[32];
+    DWORD tmo = 4000;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = inet_addr("127.0.0.1");
+    a.sin_port = htons(RELAY_PORT);
+    if (connect(s, (struct sockaddr *)&a, sizeof a)) { closesocket(s); return INVALID_SOCKET; }
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tmo, sizeof tmo);
+    memcpy(h, "L2RL", 4); h[4] = 1; h[5] = role;
+    if (n) memcpy(h + 6, extra, n);
+    send(s, (char *)h, 6 + n, 0);
+    return s;
+}
+static void rl_raw_frame(SOCKET s, BYTE type, const BYTE *p, int n)
+{
+    BYTE b[64];
+    *(DWORD *)b = (DWORD)n + 1; b[4] = type;
+    if (n) memcpy(b + 5, p, n);
+    send(s, (char *)b, 5 + n, 0);
+}
+typedef struct { DWORD id, proto; int players, maxpl; char name[40]; } RawRoom;
+static int rl_raw_list(RawRoom *r, int cap)   /* the relay's room list; -1 = no answer */
+{
+    BYTE b[1100];
+    int n = -1, i, k = 1, ty;
+    SOCKET s = rl_raw(4, NULL, 0);
+    if (s == INVALID_SOCKET) return -1;
+    rl_raw_frame(s, 8, NULL, 0);
+    ty = readframe(s, b, sizeof b);
+    if (ty == 9) {
+        n = b[0];
+        for (i = 0; i < n && i < cap; i++) {
+            int ln;
+            r[i].id = *(DWORD *)(b + k); r[i].proto = *(DWORD *)(b + k + 4);
+            r[i].players = b[k + 8]; r[i].maxpl = b[k + 9];
+            ln = b[k + 10];
+            memcpy(r[i].name, b + k + 11, ln < 39 ? ln : 39); r[i].name[ln < 39 ? ln : 39] = 0;
+            k += 11 + ln;
+        }
+        if (n > cap) n = cap;
+    }
+    closesocket(s);
+    return n;
+}
+static int rl_raw_find(const char *name, RawRoom *out)   /* 1 = a room of that name is listed */
+{
+    RawRoom r[20];
+    int n = rl_raw_list(r, 20), i;
+    for (i = 0; i < n; i++) if (!strcmp(r[i].name, name)) { if (out) *out = r[i]; return 1; }
+    return 0;
+}
+/* T_HELLO on an open conn s (a relayed one): the answer's type, its payload in out (up to 92 bytes) */
+static int hello_on(SOCKET s, DWORD proto, DWORD mode, BYTE *out)
+{
+    BYTE h[21], hdr[5];
+    DWORD len;
+    int r, got = 0;
+    *(DWORD *)h = 17; h[4] = 1;
+    memcpy(h + 5, "LOTR2NET", 8);
+    *(DWORD *)(h + 13) = proto;
+    *(DWORD *)(h + 17) = mode;
+    send(s, (char *)h, 21, 0);
+    while (got < 5 && (r = recv(s, (char *)hdr + got, 5 - got, 0)) > 0) got += r;
+    if (got < 5) return 0;
+    len = *(DWORD *)hdr - 1;
+    got = 0;
+    while ((DWORD)got < len && got < 92 && (r = recv(s, (char *)out + got, (int)(len < 92 ? len : 92) - got, 0)) > 0) got += r;
     return hdr[4];
 }
 
@@ -1399,6 +1478,42 @@ int main(int argc, char **argv)
         ((CLOSE)dp->vt[4])(dp);
         WaitForSingleObject(th, 10000);
         closesocket(l);
+    }
+    {   /* T39 (v14 relay, host side): the game is listed, a joiner comes in through the relay, the list follows */
+        typedef HR (WINAPI *SETSD)(void *, DPSD2 *, DWORD);
+        SOCKET js = INVALID_SOCKET;
+        NAME_ nm = {sizeof nm, 0, "host39", NULL};
+        DWORD me39 = 0, id39 = 0, k;
+        BYTE st = 0xff, info[92];
+        RawRoom rr;
+        int listed = 0, one = 0, two = 0, ty = 0, gone = 0, paired, closed;
+        DPSD2 s39 = sd;
+        s39.lpszSessionName = "relay39";
+        SetEnvironmentVariableA("LOTR2NET_RELAY", "127.0.0.1:47710");
+        _putenv("LOTR2NET_RELAY=127.0.0.1:47710");   /* the DLL reads it with getenv */
+        hr = ((OPEN)dp->vt[24])(dp, &s39, 2);
+        ((CPL)dp->vt[6])(dp, &me39, &nm, NULL, NULL, 0, 0);
+        for (k = 0; k < 30 && !(listed = rl_raw_find("relay39", &rr)); k++) Sleep(100);
+        for (k = 0; k < 20 && listed && !(one = rl_raw_find("relay39", &rr) && rr.players == 1); k++) Sleep(100);
+        if (listed) {   /* a joiner through the relay: status 0, then the normal handshake on that socket */
+            js = rl_raw(3, &rr.id, 4);
+            if (js != INVALID_SOCKET && recv(js, (char *)&st, 1, 0) == 1 && st == 0) {
+                ty = hello_on(js, proto, 2, info);
+                if (ty == 2) id39 = make_player(js, "r39");
+            }
+        }
+        paired = log_has("relay: joiner relay#", 1000) && log_has("'r39' created", 1000);
+        for (k = 0; k < 20 && listed && !(two = rl_raw_find("relay39", &rr) && rr.players == 2); k++) Sleep(100);
+        ((SETSD)dp->vt[31])(dp, &s39, 0);   /* the game locks the session when it starts: no longer listed */
+        for (k = 0; k < 20 && !(gone = !rl_raw_find("relay39", NULL)); k++) Sleep(100);
+        if (js != INVALID_SOCKET) closesocket(js);
+        ((CLOSE)dp->vt[4])(dp);
+        closed = log_has("relay: session closed - room", 2000);
+        SetEnvironmentVariableA("LOTR2NET_RELAY", NULL);
+        _putenv("LOTR2NET_RELAY=");
+        sprintf(buf, "open hr=%08lx listed %d (proto %lu, want %lu; %d/%d) 1 player %d, relay status %d, hello answer %d, player %08lx, paired+created %d, 2 players %d, locked gone %d, close logged %d",
+                (unsigned long)hr, listed, rr.proto, proto, rr.players, rr.maxpl, one, st, ty, id39, paired, two, gone, closed);
+        result("T39 host lists its game on the relay, a relayed joiner plays", hr == 0 && listed && rr.proto == proto && one && st == 0 && ty == 2 && id39 && paired && two && gone && closed, buf);
     }
     {   /* T38 (v13 joiner side): the session clock follows the host's answers */
         SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
