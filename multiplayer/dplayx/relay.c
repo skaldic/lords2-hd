@@ -27,9 +27,10 @@
 #define RL_ERROR 7    /* relay -> host: code u8, then the relay closes */
 #define RL_LIST 8     /* client -> relay */
 #define RL_ROOMS 9    /* relay -> client: count u8, then per room: room_id u32, proto u32, players u8, max u8, name str */
-#define RL_MAXF 1024  /* the relay's frame limit */
+#define RL_MAXF 2048  /* the relay's frame limit (ROOMS: 20 rooms of 64-byte names is ~1.5 KB) */
 #define RL_MAXROOMS 20
-#define RL_NAME 32    /* name bytes (UTF-8) the relay keeps */
+#define RL_NAME 64    /* name bytes (UTF-8) the relay keeps: as many as our own handshake carries, so a name that works
+                       * by address works here too (Jen's Mod Menu appends a 38-byte version marker it checks on the joiner) */
 #define RELAY_DEFAULT "139.59.200.92:47700"
 
 /* The relay's error codes (ERROR frames and the status byte of a data connection) */
@@ -287,7 +288,7 @@ static void rl_host_start(int gen)
 static const GUID RELAY_GUID = {0, 0x4c32, 0x4c52, {'L', '2', 'R', 'L', 'R', 'O', 'O', 'M'}};
 static volatile LONG g_rl_list;
 static CRITICAL_SECTION rlcs;
-typedef struct { DWORD id, proto; int players, maxpl; char name[48]; } RlRoom;
+typedef struct { DWORD id, proto; int players, maxpl; char name[RL_NAME + 8]; } RlRoom;
 static struct { int running, have, ok, n; DWORD t, seq; RlRoom r[RL_MAXROOMS]; } RL;
 
 static void rl_init(void) { InitializeCriticalSection(&rlcs); }   /* DllMain */

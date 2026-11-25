@@ -72,7 +72,7 @@
  *       players; once the game locks the session the room leaves the list; Close removes the room
  *   T40 (v14 relay, joiner side) two raw hosts on the relay, one of an older PROTO: EnumSessions in list mode
  *       (LOTR2NET_TEST_RELAYLIST) reports both, the old one marked "[host v..., yours v...]", each with its room id in
- *       the guidInstance and its players
+ *       the guidInstance and its players; the first has a 53-byte name with Jen's Mod Menu marker, which arrives whole
  *   T41 (v14 relay, joiner side) Open(join) with a room taken from that list joins through the relay: a raw host on
  *       the relay pairs and does the handshake, the DLL gets its player; a missing room is DPERR_NOSESSIONS, a locked
  *       one DPERR_ACTIVEPLAYERS, an unreachable relay DPERR_NOCONNECTION
@@ -195,10 +195,10 @@ static void rl_raw_frame(SOCKET s, BYTE type, const BYTE *p, int n)
     if (n) memcpy(b + 5, p, n);
     send(s, (char *)b, 5 + n, 0);
 }
-typedef struct { DWORD id, proto; int players, maxpl; char name[40]; } RawRoom;
+typedef struct { DWORD id, proto; int players, maxpl; char name[72]; } RawRoom;
 static int rl_raw_list(RawRoom *r, int cap)   /* the relay's room list; -1 = no answer */
 {
-    BYTE b[1100];
+    BYTE b[2100];
     int n = -1, i, k = 1, ty;
     SOCKET s = rl_raw(4, NULL, 0);
     if (s == INVALID_SOCKET) return -1;
@@ -211,7 +211,7 @@ static int rl_raw_list(RawRoom *r, int cap)   /* the relay's room list; -1 = no 
             r[i].id = *(DWORD *)(b + k); r[i].proto = *(DWORD *)(b + k + 4);
             r[i].players = b[k + 8]; r[i].maxpl = b[k + 9];
             ln = b[k + 10];
-            memcpy(r[i].name, b + k + 11, ln < 39 ? ln : 39); r[i].name[ln < 39 ? ln : 39] = 0;
+            memcpy(r[i].name, b + k + 11, ln < 71 ? ln : 71); r[i].name[ln < 71 ? ln : 71] = 0;
             k += 11 + ln;
         }
         if (n > cap) n = cap;
@@ -248,7 +248,7 @@ static int hello_on(SOCKET s, DWORD proto, DWORD mode, BYTE *out)
 /* a raw host on the relay: control conn, HOST sent, HOSTED read; *room = its id. INVALID_SOCKET = failed */
 static SOCKET rl_raw_host(DWORD proto, BYTE maxpl, const char *name, DWORD *room)
 {
-    BYTE b[64], r[64];
+    BYTE b[96], r[64];
     int n = (int)strlen(name);
     SOCKET s = rl_raw(1, NULL, 0);
     if (s == INVALID_SOCKET) return s;
@@ -1555,7 +1555,8 @@ int main(int argc, char **argv)
     if (rl_raw_list(NULL, 0) < 0)   /* bt.sh / a dev box start one; mp_selftest.ps1 does not */
         printf("SKIP T39-T41: no lords2-relay on 127.0.0.1:%d\n", RELAY_PORT);
     else {
-        {   /* T39 (v14 relay, host side): the game is listed, a joiner comes in through the relay, the list follows */
+    #define J39 "relay39|L2M1:67d6eb0557e113b822e476e439cb0c28"   /* 45 bytes, a Mod Menu marker: listed whole */
+    {   /* T39 (v14 relay, host side): the game is listed, a joiner comes in through the relay, the list follows */
             typedef HR (WINAPI *SETSD)(void *, DPSD2 *, DWORD);
             SOCKET js = INVALID_SOCKET;
             NAME_ nm = {sizeof nm, 0, "host39", NULL};
@@ -1564,13 +1565,13 @@ int main(int argc, char **argv)
             RawRoom rr;
             int listed = 0, one = 0, two = 0, ty = 0, gone = 0, paired, closed;
             DPSD2 s39 = sd;
-            s39.lpszSessionName = "relay39";
+            s39.lpszSessionName = J39;
             SetEnvironmentVariableA("LOTR2NET_RELAY", "127.0.0.1:47710");
             _putenv("LOTR2NET_RELAY=127.0.0.1:47710");   /* the DLL reads it with getenv */
             hr = ((OPEN)dp->vt[24])(dp, &s39, 2);
             ((CPL)dp->vt[6])(dp, &me39, &nm, NULL, NULL, 0, 0);
-            for (k = 0; k < 30 && !(listed = rl_raw_find("relay39", &rr)); k++) Sleep(100);
-            for (k = 0; k < 20 && listed && !(one = rl_raw_find("relay39", &rr) && rr.players == 1); k++) Sleep(100);
+            for (k = 0; k < 30 && !(listed = rl_raw_find(J39, &rr)); k++) Sleep(100);
+            for (k = 0; k < 20 && listed && !(one = rl_raw_find(J39, &rr) && rr.players == 1); k++) Sleep(100);
             if (listed) {   /* a joiner through the relay: status 0, then the normal handshake on that socket */
                 js = rl_raw(3, &rr.id, 4);
                 if (js != INVALID_SOCKET && recv(js, (char *)&st, 1, 0) == 1 && st == 0) {
@@ -1579,9 +1580,9 @@ int main(int argc, char **argv)
                 }
             }
             paired = log_has("relay: joiner relay#", 1000) && log_has("'r39' created", 1000);
-            for (k = 0; k < 20 && listed && !(two = rl_raw_find("relay39", &rr) && rr.players == 2); k++) Sleep(100);
+            for (k = 0; k < 20 && listed && !(two = rl_raw_find(J39, &rr) && rr.players == 2); k++) Sleep(100);
             ((SETSD)dp->vt[31])(dp, &s39, 0);   /* the game locks the session when it starts: no longer listed */
-            for (k = 0; k < 20 && !(gone = !rl_raw_find("relay39", NULL)); k++) Sleep(100);
+            for (k = 0; k < 20 && !(gone = !rl_raw_find(J39, NULL)); k++) Sleep(100);
             if (js != INVALID_SOCKET) closesocket(js);
             ((CLOSE)dp->vt[4])(dp);
             closed = log_has("relay: session closed - room", 2000);
@@ -1591,14 +1592,15 @@ int main(int argc, char **argv)
                     (unsigned long)hr, listed, rr.proto, proto, rr.players, rr.maxpl, one, st, ty, id39, paired, two, gone, closed);
             result("T39 host lists its game on the relay, a relayed joiner plays", hr == 0 && listed && rr.proto == proto && one && st == 0 && ty == 2 && id39 && paired && two && gone && closed, buf);
         }
-        {   /* T40 (v14 relay, joiner side): EnumSessions in list mode shows the relay's rooms in the game's own list */
+    #define J40 "Lords2 Session1|L2M1:67d6eb0557e113b822e476e439cb0c28"
+    {   /* T40 (v14 relay, joiner side): EnumSessions in list mode shows the relay's rooms in the game's own list */
             DWORD r1 = 0, r2 = 0, k;
             SOCKET h1, h2;
             int i, got1 = -1, got2 = -1, guid_ok = 0;
             char want2[96];
             _putenv("LOTR2NET_RELAY=127.0.0.1:47710");
             SetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", "1");
-            h1 = rl_raw_host(proto, 4, "raw40", &r1);
+            h1 = rl_raw_host(proto, 4, J40, &r1);   /* Jen's Mod Menu checks the whole name on the joiner */
             h2 = rl_raw_host(12000, 3, "old40", &r2);
             snprintf(want2, sizeof want2, "old40 [host v12000, yours v%lu]", proto);
             for (k = 0; k < 10 && (got1 < 0 || got2 < 0); k++) {
@@ -1606,7 +1608,7 @@ int main(int argc, char **argv)
                 ((ENUMS)dp->vt[13])(dp, &sd, 1000, cb40, NULL, 0);
                 got1 = got2 = -1;
                 for (i = 0; i < g40_n; i++) {
-                    if (!strcmp(g40_name[i], "raw40")) got1 = i;
+                    if (!strcmp(g40_name[i], J40)) got1 = i;
                     if (!strcmp(g40_name[i], want2)) got2 = i;
                 }
                 if (got1 < 0 || got2 < 0) Sleep(200);
@@ -1616,7 +1618,7 @@ int main(int argc, char **argv)
             SetEnvironmentVariableA("LOTR2NET_TEST_RELAYLIST", NULL);
             if (h1 != INVALID_SOCKET) closesocket(h1);
             if (h2 != INVALID_SOCKET) closesocket(h2);
-            sprintf(buf, "raw hosts %08lx %08lx, sessions %d: raw40 at %d, '%s' at %d, guid/players ok %d",
+            sprintf(buf, "raw hosts %08lx %08lx, sessions %d: the 53-byte name at %d, '%s' at %d, guid/players ok %d",
                     r1, r2, g40_n, got1, want2, got2, guid_ok);
             result("T40 the relay's rooms in the session list", h1 != INVALID_SOCKET && h2 != INVALID_SOCKET && got1 >= 0 && got2 >= 0 && guid_ok, buf);
             _putenv("LOTR2NET_RELAY=");
