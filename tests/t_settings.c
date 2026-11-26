@@ -182,6 +182,9 @@ static void t_fix_sites(void)
 	for (int i = 0; i < 7; i++) *(DWORD *)kReclaimWorkSites[i] = RECLAIM_WORK;
 	for (int i = 0; i < 10; i++) *(DWORD *)kReclaimMenSites[i] = RECLAIM_MEN;
 	for (int k = 0; k < 3; k++) *(DWORD *)kReclaimStageSites[k] = 200 * (k + 1);
+	memcpy(CASTLE_CAP, kCastleCap, sizeof kCastleCap);   // the castles' room, the AI's read of it, the army limit
+	memcpy((void *)AI_CAP_READ, "\x8B\x04\x85\x10\x8A\x4D\x00", 7);
+	memcpy((void *)0x004a97c1, "\x81\x7D\xFC\xDC\x05\x00\x00", 7);
 	g_chaseHookFailed = FALSE; g_dmapOn = FALSE;
 }
 static void t_shipped_settings(void)
@@ -214,7 +217,7 @@ static int t_panel(int i)
 	case M_JEN: return g_jenMods;         case M_JEN_RATION: return g_fixRation; case M_JEN_MPMSG: return g_mpMsgFix;
 	case M_JEN_FIELDS: return g_jenFieldLoss; case M_JEN_PILLAGE: return g_jenPillage;
 	case M_JEN_DOOR_IN: return g_jenDoorIn; case M_JEN_DOOR_OUT: return g_jenDoorOut;
-	case M_JEN_WORK: return g_jenWork;    case M_JEN_MEN: return g_jenMen;
+	case M_JEN_WORK: return g_jenWork;    case M_JEN_MEN: return g_jenMen;      case M_JEN_GARRISON: return g_jenGarrison;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }
@@ -311,39 +314,49 @@ TEST(f10_readme_table_matches_the_panel)
 	free(md);
 }
 
-TEST(f10_jen_tab_only_with_its_switch)
+TEST(f11_jen_panel_only_with_its_switch)
 {
 	t_shipped_settings();
-	CHECK(g_jenMods);                           // on as shipped: its tab, the message fix in
-	CHECK(menu_tab_shown(TAB_JEN));
-	CHECK_EQ(menu_tabs_shown(), MENU_TABS);
+	Surface *back = g_back; g_back = NULL;      // (the panel isn't drawn: no game to draw it)
+	g_menuOpen = FALSE; g_menuMods = FALSE; g_menuTab = 0;
+	CHECK(g_jenMods);                           // on as shipped: the message fix in
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);
 	CHECK(g_rationHooked);
-	menu_change(M_JEN);                         // off: no tab, the game's own code
+	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k < MODS_TAB0);   // F10: the patch's 4 tabs
+	CHECK(menu_key(VK_F11));                    // F11: the JenB's Mods panel, its own tabs only
+	CHECK(g_menuOpen && g_menuMods);
+	CHECK_EQ(g_menuTab, TAB_FIXES);
+	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k >= MODS_TAB0);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_CASTLES);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_FIXES);   // Tab wraps within the panel
+	menu_set_tab(g_menuTab - 1); CHECK_EQ(g_menuTab, TAB_CASTLES);
+	CHECK(menu_key(VK_F10));                    // F10 from it: the HD settings, at their last tab
+	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 0);
+	g_menuTab = 2;
+	CHECK(menu_link_shown());                   // Quality of life: the line to the JenB's Mods panel
+	CHECK(menu_key(VK_F11));
+	CHECK(g_menuMods); CHECK_EQ(g_menuTab, TAB_CASTLES);           // back at its last tab
+	CHECK(menu_key(VK_F11));                    // its own key closes it
+	CHECK(!g_menuOpen);
+	CHECK(menu_key(VK_F11)); CHECK_EQ(g_menuTab, TAB_CASTLES);     // and opens it again where it was left
+	CHECK(menu_key(VK_ESCAPE)); CHECK(!g_menuOpen);
+	CHECK(menu_key(VK_F10)); CHECK(!g_menuMods); CHECK_EQ(g_menuTab, 2);   // F10 too
+	CHECK(menu_key(VK_F10)); CHECK(!g_menuOpen);
+	menu_change(M_JEN);                         // off: no panel (F11 is the game's), the game's own code
 	CHECK(!g_jenMods);
-	CHECK(!menu_tab_shown(TAB_JEN));
-	CHECK_EQ(menu_tabs_shown(), MENU_TABS - 1);
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);
-	g_menuTab = 3; menu_set_tab(4);             // Tab from Battles steps over the hidden tab
-	CHECK_EQ(g_menuTab, 0);
-	g_menuTab = 0; menu_set_tab(-1);            // and Shift+Tab from Display
-	CHECK_EQ(g_menuTab, 3);
-	menu_change(M_JEN);                         // on: the tab shows and the message fix goes in at once
+	CHECK(!menu_key(VK_F11)); CHECK(!g_menuOpen);
+	g_menuTab = 2; CHECK(!menu_link_shown());
+	menu_change(M_JEN);                         // on: the message fix goes in at once
 	CHECK(g_jenMods);
-	CHECK(menu_tab_shown(TAB_JEN));
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x75); CHECK_EQ(*(BYTE *)0x00472f21, 0x35); CHECK_EQ(*(BYTE *)0x00472f25, 0x90);
-	g_menuTab = 3; menu_set_tab(4);
-	CHECK_EQ(g_menuTab, TAB_JEN);
 	menu_change(M_JEN_MPMSG);                   // its own switch: the game's code back
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F); CHECK_EQ(*(DWORD *)0x00472f22, 0x17);
 	menu_change(M_JEN_MPMSG);
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);
-	menu_change(M_JEN);                         // off: back, the tab hidden
-	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);
-	CHECK(!menu_tab_shown(TAB_JEN));
+	g_menuOpen = FALSE; g_menuMods = FALSE; g_menuTab = 0; g_back = back;
 	t_shipped_settings();
 }
-
 TEST(jen_castle_mods_go_in_and_out)
 {
 	*(int *)0x00553030 = 0;                     // single player
@@ -367,18 +380,31 @@ TEST(jen_castle_mods_go_in_and_out)
 	CHECK_EQ(*(DWORD *)0x0044c15a, RECLAIM_MEN);
 	menu_change(M_JEN_MEN);                     // 200 -> 400
 	CHECK_EQ(*(DWORD *)0x0044c15a, 400); CHECK_EQ(*(DWORD *)0x0044c502, 400);
+	CHECK(!g_jenGarrison); CHECK_EQ(CASTLE_CAP[4], 600);
+	menu_change(M_JEN_GARRISON);                // every castle as an army; the AI plans from the original sizes
+	for (int k = 0; k < 5; k++) { CHECK_EQ(CASTLE_CAP[k], 1500); CHECK_EQ(g_aiCap[k], kCastleCap[k]); }
+	CHECK_EQ(*(DWORD *)(AI_CAP_READ + 3), (DWORD)g_aiCap); CHECK_EQ(*(BYTE *)AI_CAP_READ, 0x8B);
+	*(DWORD *)0x004a97c4 = 300;                 // a smaller army limit (Jen's Army Size): followed, the AI capped by it
+	jen_sync();
+	CHECK_EQ(CASTLE_CAP[0], 300); CHECK_EQ(g_aiCap[0], 150); CHECK_EQ(g_aiCap[3], 300); CHECK_EQ(g_aiCap[4], 300);
+	*(DWORD *)0x004a97c4 = 1500;
+	jen_sync();
+	CHECK_EQ(CASTLE_CAP[2], 1500); CHECK_EQ(g_aiCap[4], 600);
 
 	*(int *)0x00553030 = 1;                     // a multiplayer game: the game's own, the switches kept
 	jen_sync();
 	CHECK_EQ(*(BYTE *)0x00449c79, 0x0F); CHECK_EQ(*(BYTE *)0x00466814, 0x0F); CHECK_EQ(*(BYTE *)0x0049f95f, 0xE8);
 	CHECK_EQ(*(DWORD *)0x00483aeb, DOOR_IN); CHECK_EQ(*(DWORD *)0x0044c187, RECLAIM_WORK);
 	CHECK_EQ(*(DWORD *)0x0044c19f, 200); CHECK_EQ(*(DWORD *)0x0044c15a, RECLAIM_MEN);
-	CHECK(!g_jenFieldLoss && g_jenDoorIn == 10000);
+	CHECK(memcmp(CASTLE_CAP, kCastleCap, sizeof kCastleCap) == 0); CHECK_EQ(*(DWORD *)(AI_CAP_READ + 3), 0x004d8a10);
+	CHECK(!g_jenFieldLoss && g_jenDoorIn == 10000 && g_jenGarrison);
 	*(int *)0x00553030 = 0;                     // back to single player: in again
 	jen_sync();
 	CHECK_EQ(*(BYTE *)0x00449c79, 0xE9); CHECK_EQ(*(DWORD *)0x00483aeb, 10000); CHECK_EQ(*(DWORD *)0x0044c1e3, 1200);
+	CHECK_EQ(CASTLE_CAP[1], 1500);
 	menu_change(M_JEN);                         // JenB's Mods off: all the game's own
 	CHECK_EQ(*(BYTE *)0x00449cd9, 0x0F); CHECK_EQ(*(DWORD *)0x00484a5c, DOOR_IN); CHECK_EQ(*(DWORD *)0x0044c502, RECLAIM_MEN);
+	CHECK(memcmp(CASTLE_CAP, kCastleCap, sizeof kCastleCap) == 0); CHECK_EQ(*(DWORD *)(AI_CAP_READ + 3), 0x004d8a10);
 	for (int j = 0; j < JC_COUNT; j++) CHECK(g_jcOk[j]);
 
 	t_shipped_settings();                       // code that isn't the game's: that mod stays out, the rest work

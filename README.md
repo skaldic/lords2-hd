@@ -249,7 +249,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
-| Quality of life | JenB's Mods | On (its own tab), Off | On | `JenMods` |
+| Quality of life | JenB's Mods | On (F11: its panel), Off | On | `JenMods` |
 | Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
@@ -258,27 +258,31 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Battles | Battle zoom-out * | On, Off | On | `BattleZoom` |
 | Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
-| JenB's Mods | Food ration fix | On, Off | On | `RationFix` |
-| JenB's Mods | Multiplayer messages | On, Off | On | `MpMessageFix` |
-| JenB's Mods | Weather wrecks fields | On (original), Off | On | `FieldDestruction` |
-| JenB's Mods | Pillaging | On (original), Off | On | `Pillaging` |
-| JenB's Mods | Inner castle door | 1000, 2500, 5000, 10000, 20000, 50000, 100000 | 5000 | `InnerDoor` |
-| JenB's Mods | Outer castle door | 5000, 10000, 20000, 40000, 80000, 100000 | 20000 | `OuterDoor` |
-| JenB's Mods | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
-| JenB's Mods | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
+| Fixes | Food ration fix | On, Off | On | `RationFix` |
+| Fixes | Multiplayer messages | On, Off | On | `MpMessageFix` |
+| Castles | Weather wrecks fields | On (original), Off | On | `FieldDestruction` |
+| Castles | Pillaging | On (original), Off | On | `Pillaging` |
+| Castles | Inner castle door | 1000, 2500, 5000, 10000, 20000, 50000, 100000 | 5000 | `InnerDoor` |
+| Castles | Outer castle door | 5000, 10000, 20000, 40000, 80000, 100000 | 20000 | `OuterDoor` |
+| Castles | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
+| Castles | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
+| Castles | Castle garrisons | Original (150 to 600), Army size (1500 each) | Original | `GarrisonLimits` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
 `MultiplayerFixes=1`.
 
-The JenB's Mods tab shows only while Quality of life → JenB's Mods is On. It holds the fixes and mods
-from Jen With a B's Lords II Mod Manager, rewritten for this patch with Jen's consent; with the switch
-Off the game is as without them. Its switches work at once. Weather wrecks fields: droughts and storms
-destroy fields. Pillaging: armies in an enemy county destroy its fields; Off also stops computer lords
-raising the people of a threatened county that has no castle, as in Jen's. The castle doors take that
-many blows before they give way in a siege. A destroyed field needs the reclaim work in all, and a
-season puts at most the second number into it. These six work in single player games only: in a
-multiplayer game everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can
-be anything from 1 to 100000 (doors) or 10000 (reclaim).
+The Fixes and Castles tabs are on a panel of their own, JenB's Mods: F11 opens it while Quality of
+life → JenB's Mods is On (or click the line under that tab's rows); F10 goes back to the HD settings.
+It holds the fixes and mods from Jen With a B's Lords II Mod Manager, rewritten for this patch with
+Jen's consent; with the switch Off the game is as without them. Its switches work at once. Weather
+wrecks fields: droughts and storms destroy fields. Pillaging: armies in an enemy county destroy its
+fields; Off also stops computer lords raising the people of a threatened county that has no castle,
+as in Jen's. The castle doors take that many blows before they give way in a siege. A destroyed
+field needs the reclaim work in all, and a season puts at most the second number into it. Castle
+garrisons: every castle holds as many men as an army may; computer lords still plan their garrisons
+by the original sizes. The Castles tab works in single player games only: in a multiplayer game
+everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
+from 1 to 100000 (doors) or 10000 (reclaim).
 
 ![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 

@@ -3952,8 +3952,8 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 5
-static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
+#define MENU_TABS 6
+static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox, g_menuLink; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
 // The Battles tab's fixes: g_bfSet[] is the panel's choice, taken at the next battle's start (battle_reset),
@@ -4035,11 +4035,21 @@ static const int kDoorOutSteps[] = { 5000, 10000, 20000, 40000, 80000, 100000 };
 static const int kReclaimWorkSteps[] = { 200, 400, 800, 1600, 3200 };
 static const int kReclaimMenSteps[] = { 100, 200, 400, 800 };
 static int step_next(int v, const int *s, int n) { for (int i = 0; i < n; i++) if (s[i] > v) return s[i]; return s[0]; }
-static BOOL g_jenFieldLoss = TRUE, g_jenPillage = TRUE;   // the switches: on is the game's own
+// Castle garrisons (Jen's Castle Garrison Limits): how many men each kind of castle holds, DAT_004d8a10 (150, 200,
+// 200, 400, 600), read wherever a castle's room counts (an army going in, the castle screen, the AI). On: every
+// castle holds as many as an army may (the game's army limit, the cmp at 0x4a97c1: 1500). The AI's garrison
+// planning (FUN_0049f12f: mov eax,[eax*4+004d8a10] at 0x49f28f) reads the original sizes from a copy, capped by the
+// army limit, as Jen's: else computer lords would empty their counties into their castles.
+static const DWORD kCastleCap[5] = { 150, 200, 200, 400, 600 };
+#define CASTLE_CAP ((DWORD *)0x004d8a10)
+#define AI_CAP_READ 0x0049f28f
+static DWORD g_aiCap[5];
+static DWORD army_limit(void) { return *(const DWORD *)0x004a97c4; } // (the army size limit, 1500 in the game)
+static BOOL g_jenFieldLoss = TRUE, g_jenPillage = TRUE, g_jenGarrison;   // the switches: on / off are the game's own
 static int g_jenDoorIn = DOOR_IN, g_jenDoorOut = DOOR_OUT, g_jenWork = RECLAIM_WORK, g_jenMen = RECLAIM_MEN;
-enum { JC_FIELD, JC_PILLAGE, JC_DOOR, JC_RECLAIM, JC_COUNT };
+enum { JC_FIELD, JC_PILLAGE, JC_DOOR, JC_RECLAIM, JC_GARRISON, JC_COUNT };
 static BOOL g_jcOk[JC_COUNT];   // its sites held the game's code at start-up
-static struct { BOOL fieldOff, pillageOff; int doorIn, doorOut, work, men; } g_jcNow; // what is in the code now
+static struct { BOOL fieldOff, pillageOff; int garrison, doorIn, doorOut, work, men; } g_jcNow; // what is in the code now (garrison: each castle's, 0 = the game's)
 static BOOL code_put(DWORD at, const void *b, int n)
 {
 	DWORD old;
@@ -4081,9 +4091,12 @@ static void jen_castle_check(void)
 	g_jcOk[JC_PILLAGE] = sites_hold(kPillageSites, 2, FALSE);
 	g_jcOk[JC_DOOR] = dwords_hold(kDoorInSites, 2, DOOR_IN) && dwords_hold(kDoorOutSites, 2, DOOR_OUT);
 	g_jcOk[JC_RECLAIM] = reclaim_hold(RECLAIM_WORK, RECLAIM_MEN);
-	g_jcNow.fieldOff = g_jcNow.pillageOff = FALSE;
+	g_jcOk[JC_GARRISON] = memcmp(CASTLE_CAP, kCastleCap, sizeof kCastleCap) == 0 && memcmp((const void *)AI_CAP_READ, "\x8B\x04\x85", 3) == 0 &&
+		*(const DWORD *)(AI_CAP_READ + 3) == (DWORD)CASTLE_CAP && *(const BYTE *)0x004a97c1 == 0x81 && army_limit() >= 50;
+	g_jcNow.fieldOff = g_jcNow.pillageOff = FALSE; g_jcNow.garrison = 0;
 	g_jcNow.doorIn = DOOR_IN; g_jcNow.doorOut = DOOR_OUT; g_jcNow.work = RECLAIM_WORK; g_jcNow.men = RECLAIM_MEN;
-	static const char *const kWhat[JC_COUNT] = { "00449c79 (weather and fields)", "00466814 (pillaging)", "00483aeb (castle doors)", "0044c15a (field reclaim)" };
+	static const char *const kWhat[JC_COUNT] = { "00449c79 (weather and fields)", "00466814 (pillaging)", "00483aeb (castle doors)",
+		"0044c15a (field reclaim)", "004d8a10 (castle garrisons)" };
 	for (int j = 0; j < JC_COUNT; j++) if (!g_jcOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
 }
 // Puts in what the switches ask for now (the game's own in a multiplayer game or with JenB's Mods off). Cheap
@@ -4120,6 +4133,27 @@ static void jen_sync(void)
 		if (g_jcOk[JC_RECLAIM]) logf_("field reclaim: %d work, %d a season", work, men);
 		else logf_("field reclaim: failed: unexpected code");
 	}
+	// (by the army limit as it is now: a garrison follows a changed army size)
+	DWORD lim = army_limit(), cap = on && g_jenGarrison ? lim : 0;
+	if (g_jcOk[JC_GARRISON] && cap != (DWORD)g_jcNow.garrison) {
+		BOOL garrison = cap != 0;
+		DWORD want[5], was[5];
+		for (int k = 0; k < 5; k++) {
+			want[k] = garrison ? cap : kCastleCap[k];
+			was[k] = g_jcNow.garrison ? (DWORD)g_jcNow.garrison : kCastleCap[k];
+		}
+		DWORD readWas = g_jcNow.garrison ? (DWORD)g_aiCap : (DWORD)CASTLE_CAP;
+		BOOL ok = memcmp(CASTLE_CAP, was, sizeof was) == 0 && *(const DWORD *)(AI_CAP_READ + 3) == readWas;
+		for (int k = 0; k < 5; k++) g_aiCap[k] = min(lim, kCastleCap[k]);
+		DWORD read = garrison ? (DWORD)g_aiCap : (DWORD)CASTLE_CAP;
+		ok = ok && code_put((DWORD)CASTLE_CAP, want, sizeof want) && code_put(AI_CAP_READ + 3, &read, 4);
+		g_jcOk[JC_GARRISON] = ok;
+		if (ok) g_jcNow.garrison = (int)cap;
+		if (!ok) logf_("castle garrisons: failed: unexpected code");
+		else if (garrison) logf_("castle garrisons: %lu in every castle (the AI plans for %lu %lu %lu %lu %lu)", (unsigned long)cap,
+			(unsigned long)g_aiCap[0], (unsigned long)g_aiCap[1], (unsigned long)g_aiCap[2], (unsigned long)g_aiCap[3], (unsigned long)g_aiCap[4]);
+		else logf_("castle garrisons: the game's own (150 200 200 400 600)");
+	}
 }
 static int clamp_ini(const char *key, int def, int most)
 {
@@ -4128,19 +4162,25 @@ static int clamp_ini(const char *key, int def, int most)
 }
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
 	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG,
-	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
+	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-#define TAB_JEN 4   // JenB's Mods: shown only while that switch is on
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "JenB's Mods" };
+// Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the JenB's Mods panel (F11, or
+// the link on Quality of life while JenB's Mods is on), with a tab for each group of Jen's mods (MODS_TAB0 on).
+#define MODS_TAB0 4
+#define TAB_FIXES 4
+#define TAB_CASTLES 5
+static BOOL g_menuMods;   // the open panel is the JenB's Mods one
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "Fixes", "Castles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, M_JEN, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
-	{ M_JEN_RATION, M_JEN_MPMSG, M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, -1 },
+	{ M_JEN_RATION, M_JEN_MPMSG, -1 },
+	{ M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_tab_shown(int tab) { return tab != TAB_JEN || g_jenMods; }
+static BOOL menu_tab_shown(int tab) { return g_menuMods ? tab >= MODS_TAB0 : tab < MODS_TAB0; } // the open panel's
 static int menu_tabs_shown(void) { int n = 0; for (int k = 0; k < MENU_TABS; k++) n += menu_tab_shown(k); return n; }
 static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY || i == M_SEASONS || i == M_JEN; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
@@ -4178,7 +4218,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		break;
 	}
 	case M_AI: snprintf(v, n, "%s", kAiLevel[g_aiLevelSet]); *restart = g_aiLevelSet && !g_aiOk; break; // from the next battle
-	case M_JEN: snprintf(v, n, "%s", g_jenMods ? "On (its own tab)" : "Off"); break;
+	case M_JEN: snprintf(v, n, "%s", g_jenMods ? "On (F11: its panel)" : "Off"); break;
 	case M_JEN_RATION: snprintf(v, n, "%s", !g_fixRation ? "Off" : g_rationHooked ? "On" : "On (unavailable)"); break;
 	case M_JEN_MPMSG: snprintf(v, n, "%s", g_mpMsgFix ? "On" : "Off"); break;
 	case M_JEN_FIELDS: snprintf(v, n, "%s%s", g_jenFieldLoss ? "On (original)" : "Off", g_jcOk[JC_FIELD] ? "" : " (unavailable)"); break;
@@ -4190,6 +4230,10 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		snprintf(v, n, "%d%s", x, !ok ? " (unavailable)" : x == orig ? " (original)" : "");
 		break;
 	}
+	case M_JEN_GARRISON:
+		if (g_jenGarrison) snprintf(v, n, "Army size (%lu each)%s", (unsigned long)army_limit(), g_jcOk[JC_GARRISON] ? "" : " (unavailable)");
+		else snprintf(v, n, "Original (150 to 600)%s", g_jcOk[JC_GARRISON] ? "" : " (unavailable)");
+		break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
@@ -4197,7 +4241,7 @@ static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
 	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics",
 	"JenB's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
-	"Outer castle door", "Field reclaim work", "Reclaim work a season" };
+	"Outer castle door", "Field reclaim work", "Reclaim work a season", "Castle garrisons" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -4286,6 +4330,7 @@ static void resound_sample(void)
 	case M_JEN_DOOR_OUT: g_jenDoorOut = step_next(g_jenDoorOut, kDoorOutSteps, 6); ini_set("Game", "OuterDoor", g_jenDoorOut); break;
 	case M_JEN_WORK: g_jenWork = step_next(g_jenWork, kReclaimWorkSteps, 5); ini_set("Game", "ReclaimWork", g_jenWork); break;
 	case M_JEN_MEN: g_jenMen = step_next(g_jenMen, kReclaimMenSteps, 4); ini_set("Game", "ReclaimPerSeason", g_jenMen); break;
+	case M_JEN_GARRISON: g_jenGarrison = !g_jenGarrison; ini_set("Game", "GarrisonLimits", g_jenGarrison); break;
 	}
 	if (i >= M_JEN) jen_sync();   // (in at once; the game's own in a multiplayer game)
 	logf_("settings panel: %s changed", kMenuLabel[i]);
@@ -4294,8 +4339,10 @@ static volatile LONG g_menuGen; // bumped at every change: the scroll is drawn a
 static void menu_scroll_keep(void);
 // at once, not at the game's next frame (the main menu shows few)
 static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); menu_scroll_keep(); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
+static int g_tabOf[2] = { 0, MODS_TAB0 };   // the tab each panel was last left on (menu_show_panel)
 static void menu_toggle(void)
 {
+	if (g_menuOpen) g_tabOf[g_menuMods] = g_menuTab;
 	if (!g_menuOpen) {
 		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 		g_battleZoomSet = GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
@@ -4311,6 +4358,16 @@ static void menu_set_tab(int tab) // (Tab / Shift+Tab step over a tab that isn't
 	while (!menu_tab_shown(tab)) tab = (tab + step + MENU_TABS) % MENU_TABS;
 	g_menuTab = tab; g_menuSel = 0;
 }
+// Shows one of the two panels (opening it if closed), each back at the tab it was last left on.
+static void menu_show_panel(BOOL mods)
+{
+	if (g_menuOpen) g_tabOf[g_menuMods] = g_menuTab;
+	if (g_menuMods != mods) g_menuSel = 0;
+	g_menuMods = mods;
+	g_menuTab = g_tabOf[mods];
+	if (!menu_tab_shown(g_menuTab)) menu_set_tab(mods ? MODS_TAB0 : 0);
+	if (!g_menuOpen) menu_toggle(); else menu_redraw();
+}
 // A key while the panel is open (or F10 to open it). TRUE: it was the panel's.
 static const char *upscale_name(void) { return g_upscaleCR == 2 ? "FSR 1" : g_upscaleCR ? "Catmull-Rom" : "bilinear"; }
 static BOOL menu_key(int vk)
@@ -4323,7 +4380,9 @@ static BOOL menu_key(int vk)
 		InterlockedExchange(&g_forcePresent, 1); mark_dirty();
 		return TRUE;
 	}
-	if (vk == VK_F10) { menu_toggle(); return TRUE; }
+	// F10: the patch's settings; F11: JenB's Mods (while on). The other panel's key switches to it; its own closes it.
+	if (vk == VK_F10) { if (g_menuOpen && !g_menuMods) menu_toggle(); else menu_show_panel(FALSE); return TRUE; }
+	if (vk == VK_F11 && (g_jenMods || (g_menuOpen && g_menuMods))) { if (g_menuOpen && g_menuMods) menu_toggle(); else menu_show_panel(TRUE); return TRUE; }
 	if (!g_menuOpen) return FALSE;
 	int n = menu_tab_count(g_menuTab);
 	switch (vk) {
@@ -4340,13 +4399,17 @@ static BOOL menu_key(int vk)
 // a drawing layer of their own; there it is the plain panel, drawn over the picture (menu_draw).
 static BOOL menu_as_scroll(void) { return TRUE; }
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
-static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW; // the plain panel's, in window coordinates
+static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW, g_menuLinkW; // the plain panel's, in window coordinates
+// The line under Quality of life's rows that opens the JenB's Mods panel (while JenB's Mods is on).
+static BOOL menu_link_shown(void) { return !g_menuMods && g_menuTab == 2 && g_jenMods; }
+static const char kModsLink[] = "JenB's Mods: press F11 or click here";
 // A click while the panel is open: window and game coordinates.
 static void menu_click(int wx, int wy, int gx, int gy)
 {
 	BOOL sc = g_msDrawn;
 	POINT p = { sc ? gx : wx, sc ? gy : wy };
 	const RECT *tabs = sc ? g_menuTabRect : g_menuTabRectW, *rows = sc ? g_menuRow : g_menuRowW, *box = sc ? &g_menuBox : &g_menuBoxW;
+	if (menu_link_shown() && PtInRect(sc ? &g_menuLink : &g_menuLinkW, p)) { menu_show_panel(TRUE); return; }
 	for (int k = 0; k < MENU_TABS; k++) if (PtInRect(&tabs[k], p)) { if (k != g_menuTab) menu_set_tab(k); menu_redraw(); return; }
 	for (int i = 0; i < g_menuRows; i++)
 		if (PtInRect(&rows[i], p)) { g_menuSel = i; menu_change(kMenuTabItems[g_menuTab][i]); menu_redraw(); return; }
@@ -4386,7 +4449,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	SetBkMode(dc, TRANSPARENT);
 	SetTextColor(dc, RGB(120, 20, 10));
 	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
-	DrawTextA(dc, "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, g_menuMods ? "JenB's Mods" : "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	// the tabs, on a line across the panel; the open one joins the paper below it
 	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 8, gap = fh / 2, tx0 = bx + (bw - tabs * tw - (tabs - 1) * gap) / 2, lw = max(1, fh / 12);
 	RECT ln = { bx + pad / 2, ty + th - lw, bx + bw - pad / 2, ty + th };
@@ -4439,14 +4502,20 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	}
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
-	if (g_menuTab == 0 || g_menuTab == 3 || g_menuTab == TAB_JEN) {
+	SetRectEmpty(&g_menuLinkW);
+	if (g_menuTab == 0 || g_menuTab == 3 || g_menuMods || menu_link_shown()) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
-		DrawTextA(dc, g_menuTab == TAB_JEN ? "From Jen With a B's Mod Manager; at once. All but messages are off in multiplayer games"
+		if (menu_link_shown()) { SetTextColor(dc, RGB(120, 20, 10)); SetRect(&g_menuLinkW, ox + f1.left, oy + f1.top, ox + f1.right, oy + f1.bottom); }
+		DrawTextA(dc, menu_link_shown() ? kModsLink
+			: g_menuTab == TAB_FIXES ? "From Jen With a B's Mod Manager; at once. The ration fix is off in multiplayer games"
+			: g_menuTab == TAB_CASTLES ? "From Jen With a B's Mod Manager; at once. Single player games only"
 			: g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
 			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SetTextColor(dc, RGB(80, 56, 30));
 	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
-	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, g_menuMods ? "Tab switches tabs  -  Click or Enter to change  -  F11 or Esc to close, F10 for the HD settings"
+		: "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	SelectObject(dc, old);
 	DeleteObject(title); DeleteObject(font); DeleteObject(bold); DeleteObject(small);
 	DeleteObject(paper); DeleteObject(edge); DeleteObject(hi); DeleteObject(back); DeleteObject(line);
@@ -8652,7 +8721,7 @@ static void menu_scroll_draw(void)
 	BYTE savedScreen = *(BYTE *)0x004eac50;
 	if (savedScreen == 0x1c || savedScreen == 0x1f) *(BYTE *)0x004eac50 = 0;
 	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
-	ctext("Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
+	ctext(g_menuMods ? "JenB's Mods" : "Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
 	if (!menu_tab_shown(g_menuTab)) menu_set_tab(0);
 	{ // the tabs side by side, spaced by their own widths; the open one red and underlined. With the
 	  // fifth (JenB's Mods) they may not fit: the gaps shrink, then the small lettering is used.
@@ -8703,11 +8772,17 @@ static void menu_scroll_draw(void)
 		ctext("* after a restart; the fixes from the next battle", x0, y0 + 200, MS_W, small, ink);
 		ctext("The fixes stay off in multiplayer games", x0, y0 + 214, MS_W, small, ink);
 	}
-	if (g_menuTab == TAB_JEN) { // under its rows
-		ctext("From Jen With a B's Lords II Mod Manager", x0, y0 + 200, MS_W, small, ink);
-		ctext("At once; all but messages stay off in multiplayer", x0, y0 + 214, MS_W, small, ink);
+	SetRectEmpty(&g_menuLink);
+	if (menu_link_shown()) { // under Quality of life's 8 rows: the way to the JenB's Mods panel
+		ctext(kModsLink, x0, y0 + 207, MS_W, small, red);
+		SetRect(&g_menuLink, x0 + 40, y0 + 203, x0 + MS_W - 40, y0 + 220);
 	}
-	const char *keys = "Click to change, right-click to close";
+	if (g_menuMods) { // under its rows
+		ctext("From Jen With a B's Lords II Mod Manager", x0, y0 + 200, MS_W, small, ink);
+		ctext(g_menuTab == TAB_FIXES ? "At once; the ration fix stays off in multiplayer" : "At once; single player games only",
+			x0, y0 + 214, MS_W, small, ink);
+	}
+	const char *keys = g_menuMods ? "Click to change; F10: the HD settings" : "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
 	*(BYTE *)0x004eac50 = savedScreen;
@@ -13827,6 +13902,7 @@ static void install_game_fixes(void)
 	g_jenDoorOut = clamp_ini("OuterDoor", DOOR_OUT, DOOR_MAX);
 	g_jenWork = clamp_ini("ReclaimWork", RECLAIM_WORK, RECLAIM_MAX);
 	g_jenMen = clamp_ini("ReclaimPerSeason", RECLAIM_MEN, RECLAIM_MAX);
+	g_jenGarrison = GetPrivateProfileIntA("Game", "GarrisonLimits", 0, g_iniPath) != 0;
 	jen_castle_check();
 	jen_sync();
 
