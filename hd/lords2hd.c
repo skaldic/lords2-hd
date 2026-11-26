@@ -112,6 +112,7 @@ static void draw_timed(int which, LARGE_INTEGER t0)
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
 // 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
 static BOOL g_remote;
+static BOOL g_lbDown; // the left button, as the driver last sent it (left_button_down)
 // An open drop-down menu in the zoomed-out battle (screen 50): the game draws it at battlefield
 // scale at g_menuX, g_menuY (h_menu_open); it is shown doubled from that corner, like the top bar
 // its title is in, 13 x 12 cells of 16 (the panel FUN_0040c725 draws and refreshes).
@@ -3952,7 +3953,7 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 7
+#define MENU_TABS 9
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox, g_menuLink; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
@@ -4282,23 +4283,46 @@ enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WA
 	M_JEN_DESIGN, M_JEN_DESIGN_LAST = M_JEN_DESIGN + 4, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys; M_JEN_DESIGN + kind)
 static BOOL menu_design(int i) { return i >= M_JEN_DESIGN && i <= M_JEN_DESIGN_LAST; }
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-// Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the Jen With a B's Mods panel (F11, or
-// the link on Quality of life while Jen With a B's Mods is on), with a tab for each group of Jen's mods (MODS_TAB0 on).
+// Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the Jen With a B's Mods panel (F11,
+// Mods > Mod Menu on the menu bar, or the link on Quality of life while Jen With a B's Mods is on), with its mods in
+// the groups of Jen's Mod Menu - Game, Economy, Building and Unit Mods - and its fixes (MODS_TAB0 on).
 #define MODS_TAB0 4
-#define TAB_FIXES 4
-#define TAB_CASTLES 5
-#define TAB_SIEGES 6
+#define TAB_GAME 4
+#define TAB_ECONOMY 5
+#define TAB_BUILDINGS 6
+#define TAB_UNITS 7
+#define TAB_FIXES 8
 static BOOL g_menuMods;   // the open panel is the Jen With a B's Mods one
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "Fixes", "Castles", "Sieges" };
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles",
+	"Game", "Economy", "Buildings", "Units", "Fixes" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, M_JEN, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
+	{ M_JEN_FIELDS, -1 },
+	{ M_JEN_WORK, M_JEN_MEN, -1 },
+	{ M_JEN_GARRISON, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_DESIGN, M_JEN_DESIGN + 1, M_JEN_DESIGN + 2, M_JEN_DESIGN + 3, M_JEN_DESIGN + 4, -1 },
+	{ M_JEN_PILLAGE, -1 },
 	{ M_JEN_RATION, M_JEN_MPMSG, -1 },
-	{ M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON, -1 },
-	{ M_JEN_DESIGN, M_JEN_DESIGN + 1, M_JEN_DESIGN + 2, M_JEN_DESIGN + 3, M_JEN_DESIGN + 4, -1 },
 };
+// What the Jen With a B's Mods panel says under its rows about the chosen one (two lines).
+static const char *menu_desc(int i, int line)
+{
+	static const char *const kDesc[][2] = {
+		{ "A food that runs out is made up from the other one (the", "original fed the full ration). Off in multiplayer games" }, // M_JEN_RATION
+		{ "In a multiplayer game, messages stay up until you close", "them (the original closed most of them at once)" },          // M_JEN_MPMSG
+		{ "On: droughts and storms destroy fields (the original).", "Off: they don't. Single player games only" },                  // M_JEN_FIELDS
+		{ "On: armies in an enemy county destroy its fields (the", "original). Off: they don't. Single player games only" },       // M_JEN_PILLAGE
+		{ "Blows a castle's inner door takes before it gives way", "in a siege (original 5000). Single player games only" },       // M_JEN_DOOR_IN
+		{ "Blows a castle's outer door takes before it gives way", "in a siege (original 20000). Single player games only" },      // M_JEN_DOOR_OUT
+		{ "Work to reclaim one destroyed field (original 800).", "Single player games only" },                                     // M_JEN_WORK
+		{ "The most work a season puts into reclaiming a field", "(original 200). Single player games only" },                     // M_JEN_MEN
+		{ "Original: castles hold 150 to 600 men by their kind.", "Army size: as many as an army may. Single player only" },      // M_JEN_GARRISON
+	};   // (lines of up to about 57 letters fit the scroll)
+	if (menu_design(i)) return line ? "skirmish castles. From the next siege; single player only" : "The map its sieges are fought on: its own or one of the";
+	return i >= M_JEN_RATION && i < M_JEN_DESIGN ? kDesc[i - M_JEN_RATION][line != 0] : NULL;
+}
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
 static BOOL menu_tab_shown(int tab) { return g_menuMods ? tab >= MODS_TAB0 : tab < MODS_TAB0; } // the open panel's
 static int menu_tabs_shown(void) { int n = 0; for (int k = 0; k < MENU_TABS; k++) n += menu_tab_shown(k); return n; }
@@ -4466,6 +4490,24 @@ static void resound_sample(void)
 	if (i >= M_JEN) jen_sync();   // (in at once; the game's own in a multiplayer game)
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
+// Reset All To Default (as on Jen's Mod Menu): every row of the Jen With a B's Mods panel back to what the patch
+// ships with - the mods the original game's, the two fixes on. The JenMods switch itself stays.
+static void menu_reset_jen(void)
+{
+	g_fixRation = TRUE; ini_set("Game", "RationFix", 1);
+	g_mpMsgFix = TRUE; ini_set("Game", "MpMessageFix", 1);
+	g_jenFieldLoss = TRUE; ini_set("Game", "FieldDestruction", 1);
+	g_jenPillage = TRUE; ini_set("Game", "Pillaging", 1);
+	g_jenDoorIn = DOOR_IN; ini_set("Game", "InnerDoor", DOOR_IN);
+	g_jenDoorOut = DOOR_OUT; ini_set("Game", "OuterDoor", DOOR_OUT);
+	g_jenWork = RECLAIM_WORK; ini_set("Game", "ReclaimWork", RECLAIM_WORK);
+	g_jenMen = RECLAIM_MEN; ini_set("Game", "ReclaimPerSeason", RECLAIM_MEN);
+	g_jenGarrison = FALSE; ini_set("Game", "GarrisonLimits", 0);
+	for (int k = 0; k < 5; k++) { g_jenDesign[k] = 0; WritePrivateProfileStringA("Game", kCdKey[k], "Original", g_iniPath); }
+	mpmsg_apply(g_jenMods && g_mpMsgFix);
+	jen_sync();
+	logf_("settings panel: Jen With a B's Mods reset to the defaults");
+}
 static volatile LONG g_menuGen; // bumped at every change: the scroll is drawn again
 static void menu_scroll_keep(void);
 // at once, not at the game's next frame (the main menu shows few)
@@ -4531,6 +4573,8 @@ static BOOL menu_key(int vk)
 static BOOL menu_as_scroll(void) { return TRUE; }
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
 static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW, g_menuLinkW; // the plain panel's, in window coordinates
+static RECT g_menuReset, g_menuResetW; // the Jen With a B's Mods panel's Reset All To Default line (scroll, plain panel)
+static const char kResetLink[] = "Reset all to default";
 // The line under Quality of life's rows that opens the Jen With a B's Mods panel (while Jen With a B's Mods is on).
 static BOOL menu_link_shown(void) { return !g_menuMods && g_menuTab == 2 && g_jenMods; }
 static const char kModsLink[] = "Jen With a B's Mods: press F11 or click here";
@@ -4541,10 +4585,19 @@ static void menu_click(int wx, int wy, int gx, int gy)
 	POINT p = { sc ? gx : wx, sc ? gy : wy };
 	const RECT *tabs = sc ? g_menuTabRect : g_menuTabRectW, *rows = sc ? g_menuRow : g_menuRowW, *box = sc ? &g_menuBox : &g_menuBoxW;
 	if (menu_link_shown() && PtInRect(sc ? &g_menuLink : &g_menuLinkW, p)) { menu_show_panel(TRUE); return; }
+	if (g_menuMods && PtInRect(sc ? &g_menuReset : &g_menuResetW, p)) { menu_reset_jen(); menu_redraw(); return; }
 	for (int k = 0; k < MENU_TABS; k++) if (PtInRect(&tabs[k], p)) { if (k != g_menuTab) menu_set_tab(k); menu_redraw(); return; }
 	for (int i = 0; i < g_menuRows; i++)
 		if (PtInRect(&rows[i], p)) { g_menuSel = i; menu_change(kMenuTabItems[g_menuTab][i]); menu_redraw(); return; }
 	if (!PtInRect(box, p)) menu_toggle(); // outside closes it
+}
+// The mouse over a row chooses it (on the Jen With a B's Mods panel its description shows): game coordinates.
+static void menu_hover(int gx, int gy)
+{
+	POINT p = { gx, gy };
+	if (!g_msDrawn) return;
+	for (int i = 0; i < g_menuRows; i++)
+		if (PtInRect(&g_menuRow[i], p)) { if (i != g_menuSel) { g_menuSel = i; menu_redraw(); } return; }
 }
 // The plain panel, where the game's colours are not the county map's (menus, battles): onto a DC
 // holding the picture (vw x vh), at window offset ox, oy.
@@ -4634,13 +4687,23 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
 	SetRectEmpty(&g_menuLinkW);
-	if (g_menuTab == 0 || g_menuTab == 3 || g_menuMods || menu_link_shown()) {
+	SetRectEmpty(&g_menuResetW);
+	if (g_menuMods) { // the chosen row's description, and Reset All To Default
+		int item = kMenuTabItems[g_menuTab][g_menuSel];
+		char d[160];
+		snprintf(d, sizeof d, "%s %s", menu_desc(item, 0) ? menu_desc(item, 0) : "", menu_desc(item, 1) ? menu_desc(item, 1) : "");
+		RECT f0 = { bx, by + bh - pad / 2 - 3 * rowH, bx + bw, by + bh - pad / 2 - 2 * rowH };
+		DrawTextA(dc, d, -1, &f0, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
+		SetTextColor(dc, RGB(120, 20, 10));
+		DrawTextA(dc, kResetLink, -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SetRect(&g_menuResetW, ox + f1.left, oy + f1.top, ox + f1.right, oy + f1.bottom);
+		SetTextColor(dc, RGB(80, 56, 30));
+	}
+	else if (g_menuTab == 0 || g_menuTab == 3 || menu_link_shown()) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
 		if (menu_link_shown()) { SetTextColor(dc, RGB(120, 20, 10)); SetRect(&g_menuLinkW, ox + f1.left, oy + f1.top, ox + f1.right, oy + f1.bottom); }
 		DrawTextA(dc, menu_link_shown() ? kModsLink
-			: g_menuTab == TAB_FIXES ? "From Jen With a B's Mod Manager; at once. The ration fix is off in multiplayer games"
-			: g_menuTab == TAB_CASTLES ? "From Jen With a B's Mod Manager; at once. Single player games only"
-			: g_menuTab == TAB_SIEGES ? "From Jen With a B's Mod Manager; from the next siege. Single player games only"
 			: g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
 			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		SetTextColor(dc, RGB(80, 56, 30));
@@ -7396,8 +7459,9 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	g_fake.x = fx;
 	g_fake.y = fy;
 	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
+	if (n == 2) g_lbDown = TRUE; else if (n == 3) g_lbDown = FALSE;
 	if (n == 6 && g_menuEatRUp) { g_menuEatRUp = FALSE; return 0; }
-	if (g_menuOpen) { if (n == 2) menu_click(-1, -1, fx, fy); if (n == 5) { menu_toggle(); g_menuEatRUp = TRUE; } return 0; } // the scroll only
+	if (g_menuOpen) { if (n == 1) menu_hover(fx, fy); if (n == 2) menu_click(-1, -1, fx, fy); if (n == 5) { menu_toggle(); g_menuEatRUp = TRUE; } return 0; } // the scroll only
 	{
 		static BOOL btnDown;
 		int btn = cycle_button_at(fx, fy);
@@ -7489,6 +7553,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
 			if (msg == WM_LBUTTONDOWN) { int mx = (short)LOWORD(lp), my = (short)HIWORD(lp); client_to_game(&mx, &my); menu_click((short)LOWORD(lp), (short)HIWORD(lp), mx, my); }
+			if (msg == WM_MOUSEMOVE) { int mx = (short)LOWORD(lp), my = (short)HIWORD(lp); client_to_game(&mx, &my); menu_hover(mx, my); }
 			if (msg == WM_RBUTTONDOWN) { menu_toggle(); g_menuEatRUp = TRUE; } // a right-click closes it, as the game's own menus
 			return 0;
 		}
@@ -8220,8 +8285,10 @@ static BOOL county_map_on(void);
 // The bar's menu titles (File, Options, Help): a table of {x, x end, y, text, items, count} at
 // 0x004dc428, drawn left to right from the first x (10), each 32 pixels after the last. Their drop-
 // downs open below them and clicks are matched against the x ranges the drawing wrote back, so
-// moving the first x to the wide map's left edge moves all of it.
-#define MENU_FIRST_X (*(short *)0x004dc428)
+// moving the first x to the wide map's left edge moves all of it. (menu_bar_install moves the table
+// to g_bar, with the HD title fourth.)
+static short *g_barTable = (short *)0x004dc428;
+#define MENU_FIRST_X (g_barTable[0])
 
 // The titles (FUN_0040c5b0) and an open drop-down (FUN_0040c725: panel and items, every frame)
 // are drawn with the clip reaching into the spare columns, where they now start.
@@ -8265,6 +8332,122 @@ static menu_hit_t o_menu_hit;
 static int __cdecl h_menu_hit(short *items, int n, int x, int y)
 {
 	return o_menu_hit(items, n, battle_zoom_on() ? menu_list_x(x) : x, y);
+}
+
+// The menu bar as AllYourBases asked and as Jen With a B's Mod Manager has it: the game's File, Options
+// and Help, with Help named Mods while Jen With a B's Mods is on (its list: Mod Menu first, which opens
+// that panel, then the game's help and About), and a fourth title, HD, whose list opens the F10 panel
+// at each of its tabs. The game's table can't grow where it is (other data follows it), so it is
+// copied to g_bar and the four places that pass it (with its count, 3) are pointed there. A title is
+// {x, x end, y, text group, items, count}; an item {y, text index, function}. The new texts have no
+// group in the game's text file: the five calls that look a title's or item's text up are pointed
+// at menu_text / menu_text_find, which draw these from here and pass the game's own on.
+typedef struct { short x, xEnd, y, text; void *items; short count, pad; } bar_title_t;
+typedef struct { short y, text; void (__cdecl *fn)(void); int pad; } bar_item_t;
+_Static_assert(sizeof(bar_title_t) == 16 && sizeof(bar_item_t) == 12, "the game's menu bar records");
+#define BAR_TITLES 4
+#define BAR_HELP 2          // Help / Mods
+#define TXT_HELP 3          // the Help title's text group
+#define TXT_HD 0x70         // the HD title's (none of the game's)
+#define TXT_MOD_MENU 100    // Mod Menu in the Help group (beyond its 7)
+#define BAR_GAP 16          // between titles (the game's 32 put HD on the shield next to them)
+// The open title's dark box is 16-pixel cells, its text's width / 16 + 2 (0x0040c677: add eax,2): with the
+// closer titles that reached into the next one; + 1 still holds the text with room to spare.
+#define BAR_BOX_ADD 0x0040c677
+static bar_title_t g_bar[BAR_TITLES];
+static bar_item_t g_helpItems[8], g_hdItems[4];
+static BOOL g_barOk;
+static volatile LONG g_menuPending; // a panel the menu bar asked for: 1-4 the F10 tabs, 5 the Mods panel
+static int g_menuPendingWait;
+static BOOL left_button_down(void)
+{
+	if (g_remote) return g_lbDown;
+	return GetAsyncKeyState(GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON) < 0; // (the physical button)
+}
+static void menu_ask(int what) { InterlockedExchange(&g_menuPending, what); g_menuPendingWait = 0; }
+static void __cdecl bar_mod_menu(void) { menu_ask(5); }
+static void __cdecl bar_hd0(void) { menu_ask(1); }
+static void __cdecl bar_hd1(void) { menu_ask(2); }
+static void __cdecl bar_hd2(void) { menu_ask(3); }
+static void __cdecl bar_hd3(void) { menu_ask(4); }
+static const char *menu_bar_text(int group, int index)
+{
+	if (!g_barOk) return NULL;
+	if (group == TXT_HELP && index == 0 && g_jenMods) return "Mods";
+	if (group == TXT_HELP && index == TXT_MOD_MENU) return "Mod Menu";
+	if (group == TXT_HD) return index >= 1 && index <= 4 ? kMenuTab[index - 1] : "HD";
+	return NULL;
+}
+typedef void (__cdecl *text_lookup_t)(int, int, int, int, void *, int);
+typedef void (__cdecl *text_find_t)(int, int);
+static void __cdecl menu_text(int group, int index, int x, int y, void *font, int colour)
+{
+	const char *s = menu_bar_text(group, index);
+	if (!s) { ((text_lookup_t)0x00402d37)(group, index, x, y, font, colour); return; }
+	*(const char **)0x005c9270 = s; // as FUN_00402d37 leaves it
+	((void (__cdecl *)(const char *, int, int, void *, int))0x00402637)(s, x, y, font, colour);
+	*(int *)0x005aeb84 = 0;
+}
+static void __cdecl menu_text_find(int group, int index) // FUN_004018d7: the title's text, for its highlight's width
+{
+	const char *s = menu_bar_text(group, index);
+	if (s) *(const char **)0x005c9270 = s;
+	else ((text_find_t)0x004018d7)(group, index);
+}
+// Help's list follows the Jen With a B's Mods switch (while no list is open): with Mod Menu, or the game's own.
+static void menu_bar_sync(void)
+{
+	if (!g_barOk || *(void **)0x00522cac) return;
+	g_bar[BAR_HELP].items = g_jenMods ? (void *)g_helpItems : (void *)(ULONG_PTR)0x004dc3d0;
+	g_bar[BAR_HELP].count = g_jenMods ? 8 : 7;
+}
+// The panel opens a few frames after the click, once the button is up: the list is gone from the
+// picture by then (the scroll keeps what it covers), and the game has seen the release.
+static void menu_pending_tick(void)
+{
+	menu_bar_sync();
+	int what = g_menuPending;
+	if (!what || left_button_down() || g_menuOpen || ++g_menuPendingWait < 4) return;
+	InterlockedExchange(&g_menuPending, 0);
+	if (what == 5) { if (g_jenMods) menu_show_panel(TRUE); }
+	else { g_tabOf[0] = what - 1; menu_show_panel(FALSE); }
+	logf_("menu bar: %s", what == 5 ? "Mod Menu" : kMenuTab[what - 1]);
+}
+static void menu_bar_install(void)
+{
+	static const DWORD kSites[4] = { 0x0041a0bf, 0x00430010, 0x004314d5, 0x00431911 }; // push 3; push 004dc428
+	static const DWORD kTextCalls[4] = { 0x0040c6b6, 0x0040c6e2, 0x0040c86e, 0x0040c89f }; // call 00402d37
+	static const BYTE kPush[7] = { 0x6A, 0x03, 0x68, 0x28, 0xC4, 0x4D, 0x00 }, kGap[7] = { 0x83, 0x05, 0x04, 0xD4, 0x5C, 0x00, 0x20 };
+	const bar_title_t *game = (const bar_title_t *)0x004dc428;
+	BOOL ok = game[BAR_HELP].text == TXT_HELP && game[BAR_HELP].count == 7 && game[BAR_HELP].items == (void *)0x004dc3d0 &&
+		!memcmp((const void *)0x0040c6f6, kGap, 7) && !memcmp((const void *)BAR_BOX_ADD, "\x83\xC0\x02", 3);
+	for (int i = 0; i < 4 && ok; i++) ok = !memcmp((const void *)(kSites[i] - 3), kPush, 7);
+	for (int i = 0; i < 4 && ok; i++) ok = *(BYTE *)kTextCalls[i] == 0xE8 && kTextCalls[i] + 5 + *(int *)(kTextCalls[i] + 1) == 0x00402d37;
+	ok = ok && *(BYTE *)0x0040c632 == 0xE8 && 0x0040c632 + 5 + *(int *)(0x0040c633) == 0x004018d7;
+	if (!ok) { logf_("not hooked: unexpected code or data at the menu bar (0x004dc428): no Mods and HD titles"); return; }
+	memcpy(g_bar, game, 3 * sizeof *g_bar);
+	g_bar[3] = (bar_title_t){ 0, 0, game[0].y, TXT_HD, g_hdItems, 4, 0 };
+	g_helpItems[0] = (bar_item_t){ 0, TXT_MOD_MENU, bar_mod_menu, 0 };
+	memcpy(g_helpItems + 1, (const void *)0x004dc3d0, 7 * sizeof *g_helpItems);
+	for (int i = 1; i < 8; i++) g_helpItems[i].y = (short)(i * 20);
+	void (__cdecl *const hd[4])(void) = { bar_hd0, bar_hd1, bar_hd2, bar_hd3 };
+	for (int i = 0; i < 4; i++) g_hdItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), hd[i], 0 };
+	g_barOk = TRUE;
+	menu_bar_sync();
+	for (int i = 0; i < 4; i++) {
+		BYTE b[7]; memcpy(b, kPush, 7);
+		b[1] = BAR_TITLES; *(DWORD *)(b + 3) = (DWORD)g_bar;
+		code_put(kSites[i] - 3, b, 7);
+	}
+	for (int i = 0; i < 4; i++) {
+		BYTE c[5] = { 0xE8 }; *(DWORD *)(c + 1) = (DWORD)menu_text - (kTextCalls[i] + 5);
+		code_put(kTextCalls[i], c, 5);
+	}
+	BYTE c[5] = { 0xE8 }; *(DWORD *)(c + 1) = (DWORD)menu_text_find - (0x0040c632 + 5);
+	code_put(0x0040c632, c, 5);
+	BYTE gap = BAR_GAP, box = 1; code_put(0x0040c6fc, &gap, 1); code_put(BAR_BOX_ADD + 2, &box, 1);
+	g_barTable = (short *)g_bar;
+	logf_("menu bar: File, Options, Help (Mods while Jen With a B's Mods is on), HD");
 }
 
 static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)
@@ -8793,7 +8976,7 @@ static void army_panel_keep(void)
 // lettering into its picture, like the army scroll, before every flush that would show the place
 // without it. What it covered is kept and put back when it closes.
 #define MS_W (28 * 16) // (wide enough for the four tabs side by side)
-#define MS_H (17 * 16)
+#define MS_H (18 * 16) // (tall enough for the Jen With a B's Mods panel's eight rows, two lines of description and Reset)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
 // The HD sprite layer under it, kept with g_msUnder: the scroll's own stamps replace it, and a picture
@@ -8910,10 +9093,14 @@ static void menu_scroll_draw(void)
 		ctext(kModsLink, x0, y0 + 207, MS_W, small, red);
 		SetRect(&g_menuLink, x0 + 40, y0 + 203, x0 + MS_W - 40, y0 + 220);
 	}
-	if (g_menuMods) { // under its rows
-		ctext("From Jen With a B's Lords II Mod Manager", x0, y0 + 200, MS_W, small, ink);
-		ctext(g_menuTab == TAB_FIXES ? "At once; the ration fix stays off in multiplayer" : g_menuTab == TAB_SIEGES ?
-			"From the next siege; single player games only" : "At once; single player games only", x0, y0 + 214, MS_W, small, ink);
+	SetRectEmpty(&g_menuReset);
+	if (g_menuMods) { // under its rows (8 at most, the last ending at y0 + 192): the chosen one's description, and
+		              // Reset All To Default as on Jen's Mod Menu
+		int item = kMenuTabItems[g_menuTab][g_menuSel];
+		for (int l = 0; l < 2; l++) if (menu_desc(item, l)) ctext(menu_desc(item, l), x0, y0 + 199 + l * 13, MS_W, small, ink);
+		ctext(kResetLink, x0, y0 + 230, MS_W, small, red);
+		int w = width(kResetLink, small);
+		SetRect(&g_menuReset, x0 + (MS_W - w) / 2 - 8, y0 + 227, x0 + (MS_W + w) / 2 + 8, y0 + 243);
 	}
 	const char *keys = g_menuMods ? "Click to change; F10: the HD settings" : "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
@@ -10132,6 +10319,7 @@ static void __cdecl h_show_frame(int force)
 	if (!*(void **)0x004eabd0) return;
 	stream_hold_tick();
 	army_panel_keep();
+	menu_pending_tick();
 	menu_scroll_keep();
 	// Old-game limit: unforced copies (the battle loop's, FUN_004b0000's and FUN_00430000's) go to the
 	// screen only once 50 ms have passed since the last (DAT_004eabe8), so battles showed at most 20
@@ -14230,6 +14418,7 @@ static void install(void)
 	// The yes/no box opener in every mode, not only wide: its Esc-twice soft-lock fix (h_yesno_open) is for
 	// 4:3 too (the same bug Jen With a B's Double-Escape Fix covers); with g_off 0 it moves nothing.
 	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
+	menu_bar_install(); // (before install_wide: its title moves use the new table)
 	install_wide();
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");

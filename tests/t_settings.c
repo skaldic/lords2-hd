@@ -329,21 +329,23 @@ TEST(f11_jen_panel_only_with_its_switch)
 	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k < MODS_TAB0);   // F10: the patch's 4 tabs
 	CHECK(menu_key(VK_F11));                    // F11: the Jen With a B's Mods panel, its own tabs only
 	CHECK(g_menuOpen && g_menuMods);
-	CHECK_EQ(g_menuTab, TAB_FIXES);
+	CHECK_EQ(g_menuTab, TAB_GAME);              // Jen's groups: Game, Economy, Building and Unit Mods, then the fixes
 	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k >= MODS_TAB0);
-	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_CASTLES);
-	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_SIEGES);
-	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_FIXES);   // Tab wraps within the panel
-	menu_set_tab(g_menuTab - 1); CHECK_EQ(g_menuTab, TAB_SIEGES);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_ECONOMY);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_BUILDINGS);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_UNITS);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_FIXES);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_GAME);    // Tab wraps within the panel
+	menu_set_tab(g_menuTab - 1); CHECK_EQ(g_menuTab, TAB_FIXES);
 	CHECK(menu_key(VK_F10));                    // F10 from it: the HD settings, at their last tab
 	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 0);
 	g_menuTab = 2;
 	CHECK(menu_link_shown());                   // Quality of life: the line to the Jen With a B's Mods panel
 	CHECK(menu_key(VK_F11));
-	CHECK(g_menuMods); CHECK_EQ(g_menuTab, TAB_SIEGES);            // back at its last tab
+	CHECK(g_menuMods); CHECK_EQ(g_menuTab, TAB_FIXES);             // back at its last tab
 	CHECK(menu_key(VK_F11));                    // its own key closes it
 	CHECK(!g_menuOpen);
-	CHECK(menu_key(VK_F11)); CHECK_EQ(g_menuTab, TAB_SIEGES);      // and opens it again where it was left
+	CHECK(menu_key(VK_F11)); CHECK_EQ(g_menuTab, TAB_FIXES);       // and opens it again where it was left
 	CHECK(menu_key(VK_ESCAPE)); CHECK(!g_menuOpen);
 	CHECK(menu_key(VK_F10)); CHECK(!g_menuMods); CHECK_EQ(g_menuTab, 2);   // F10 too
 	CHECK(menu_key(VK_F10)); CHECK(!g_menuOpen);

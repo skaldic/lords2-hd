@@ -141,6 +141,75 @@ TEST(hooks_jen_fixes_go_in)   // Jen With a B's Mods (on by default): the ration
 	t_unmap_game();
 }
 
+TEST(hooks_menu_bar_mods_and_hd)   // the menu bar: Help named Mods (Mod Menu first) while Jen With a B's Mods is on, and HD
+{
+	BOOL on;
+	char *log = t_install(0, &on);
+	if (!log) return;
+	CHECK_EQ(t_count_lines(log, "menu bar: File, Options"), 1);
+	CHECK(g_barOk);
+	static const DWORD sites[4] = { 0x0041a0bf, 0x00430010, 0x004314d5, 0x00431911 };
+	for (int i = 0; i < 4; i++) { CHECK_EQ(*(BYTE *)(sites[i] - 2), BAR_TITLES); CHECK_EQ(*(DWORD *)sites[i], (DWORD)g_bar); }
+	static const DWORD texts[4] = { 0x0040c6b6, 0x0040c6e2, 0x0040c86e, 0x0040c89f };
+	for (int i = 0; i < 4; i++) CHECK_EQ(texts[i] + 5 + *(int *)(texts[i] + 1), (DWORD)menu_text);
+	CHECK_EQ(0x0040c632 + 5 + *(int *)0x0040c633, (DWORD)menu_text_find);
+	CHECK_EQ(*(BYTE *)0x0040c6fc, BAR_GAP);
+	CHECK_EQ(*(BYTE *)(BAR_BOX_ADD + 2), 1);
+	CHECK_EQ(g_bar[0].text, 1); CHECK_EQ(g_bar[1].text, 2); CHECK_EQ(g_bar[2].text, TXT_HELP); CHECK_EQ(g_bar[3].text, TXT_HD);
+	CHECK(g_jenMods);
+	CHECK(g_bar[2].items == g_helpItems && g_bar[2].count == 8);
+	CHECK(g_helpItems[0].fn == bar_mod_menu);
+	CHECK_EQ((DWORD)g_helpItems[7].fn, 0x00434d60);          // the game's About, last
+	CHECK_EQ(g_helpItems[7].y, 140);
+	CHECK(!strcmp(menu_bar_text(TXT_HELP, 0), "Mods"));
+	CHECK(!strcmp(menu_bar_text(TXT_HELP, TXT_MOD_MENU), "Mod Menu"));
+	CHECK(menu_bar_text(TXT_HELP, 7) == NULL);                // About: the game's own text
+	CHECK(!strcmp(menu_bar_text(TXT_HD, 0), "HD"));
+	CHECK(!strcmp(menu_bar_text(TXT_HD, 3), "Quality of life"));
+	CHECK(MENU_FIRST_X == g_bar[0].x);
+	g_jenMods = FALSE; menu_bar_sync();                       // off: Help as the game has it
+	CHECK_EQ((DWORD)g_bar[2].items, 0x004dc3d0); CHECK_EQ(g_bar[2].count, 7);
+	CHECK(menu_bar_text(TXT_HELP, 0) == NULL);
+	g_jenMods = TRUE; menu_bar_sync();
+	// HD > Quality of life: the panel opens at that tab once the button is up, a few frames on
+	Surface *back = g_back; g_back = NULL;
+	BOOL remote = g_remote; g_remote = TRUE; g_lbDown = TRUE;
+	g_menuOpen = FALSE;
+	bar_hd2();
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(!g_menuOpen);                                       // the button still down
+	g_lbDown = FALSE;
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 2);
+	menu_toggle();
+	bar_mod_menu();                                           // Mods > Mod Menu: the Jen With a B's Mods panel
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && g_menuMods);
+	menu_toggle();
+	g_menuMods = FALSE; g_menuTab = 0; g_remote = remote; g_back = back;
+	free(log);
+	t_unmap_game();
+}
+
+TEST(jen_reset_all_to_default)
+{
+	t_shipped_settings();
+	menu_change(M_JEN_RATION); menu_change(M_JEN_FIELDS); menu_change(M_JEN_DOOR_IN); menu_change(M_JEN_WORK);
+	menu_change(M_JEN_GARRISON); menu_change(M_JEN_DESIGN + 4);
+	CHECK(!g_fixRation && !g_jenFieldLoss && g_jenGarrison && g_jenDesign[4]);
+	menu_reset_jen();
+	CHECK(g_fixRation && g_mpMsgFix && g_jenFieldLoss && g_jenPillage && !g_jenGarrison);
+	CHECK_EQ(g_jenDoorIn, DOOR_IN); CHECK_EQ(g_jenDoorOut, DOOR_OUT); CHECK_EQ(g_jenWork, RECLAIM_WORK); CHECK_EQ(g_jenMen, RECLAIM_MEN);
+	for (int k = 0; k < 5; k++) CHECK_EQ(g_jenDesign[k], 0);
+	char v[32];
+	GetPrivateProfileStringA("Game", "RoyalCastleDesign", "?", v, sizeof v, g_iniPath); CHECK(!strcmp(v, "Original"));
+	CHECK_EQ(GetPrivateProfileIntA("Game", "RationFix", 0, g_iniPath), 1);
+	CHECK_EQ(GetPrivateProfileIntA("Game", "InnerDoor", 0, g_iniPath), DOOR_IN);
+	CHECK(g_jenMods);                                         // the switch itself stays
+	for (int i = M_JEN_RATION; i < M_COUNT; i++) CHECK(menu_desc(i, 0) != NULL && menu_desc(i, 1) != NULL); // every row described
+	t_shipped_settings();
+}
+
 /* ---- the 1.4.0 crash: a NULL trampoline called from code that runs without its hook ---- */
 
 static BOOL t_ident(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }

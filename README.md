@@ -229,6 +229,11 @@ it, right-click to close. Most changes apply at once; those marked * (widescreen
 drawing on the graphics card or the processor) after a restart, and the battle fixes from the next
 battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed timings.
 
+The same can be reached with the mouse from the menu bar at the top of the county map and battles:
+**HD** opens the scroll at any of its four tabs, and **Mods** (the game's Help, renamed while Jen With
+a B's Mods is on, with the game's help still in its list) starts with **Mod Menu**, which opens the
+Jen With a B's Mods panel.
+
 | Tab | Setting | Choices | Default | In `lords2hd.ini` |
 |---|---|---|---|---|
 | Display | AI art: paintings | On, Off | On | `HDScreens` |
@@ -258,26 +263,28 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Battles | Battle zoom-out * | On, Off | On | `BattleZoom` |
 | Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
+| Game | Weather wrecks fields | On (original), Off | On | `FieldDestruction` |
+| Economy | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
+| Economy | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
+| Buildings | Castle garrisons | Original (150 to 600), Army size (1500 each) | Original | `GarrisonLimits` |
+| Buildings | Inner castle door | 1000, 2500, 5000, 10000, 20000, 50000, 100000 | 5000 | `InnerDoor` |
+| Buildings | Outer castle door | 5000, 10000, 20000, 40000, 80000, 100000 | 20000 | `OuterDoor` |
+| Buildings | Wooden palisade | Original, River Island | Original | `PalisadeDesign` |
+| Buildings | Motte and bailey | Original, Wooden Palace | Original | `MotteDesign` |
+| Buildings | Norman keep | Original, Leeds Castle, Expanded Keep | Original | `KeepDesign` |
+| Buildings | Stone castle | Original, Curtain Wall, The Ell, Portchester | Original | `StoneCastleDesign` |
+| Buildings | Royal castle | Original, Chambers, Island Castle, Goodrich | Original | `RoyalCastleDesign` |
+| Units | Pillaging | On (original), Off | On | `Pillaging` |
 | Fixes | Food ration fix | On, Off | On | `RationFix` |
 | Fixes | Multiplayer messages | On, Off | On | `MpMessageFix` |
-| Castles | Weather wrecks fields | On (original), Off | On | `FieldDestruction` |
-| Castles | Pillaging | On (original), Off | On | `Pillaging` |
-| Castles | Inner castle door | 1000, 2500, 5000, 10000, 20000, 50000, 100000 | 5000 | `InnerDoor` |
-| Castles | Outer castle door | 5000, 10000, 20000, 40000, 80000, 100000 | 20000 | `OuterDoor` |
-| Castles | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
-| Castles | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
-| Castles | Castle garrisons | Original (150 to 600), Army size (1500 each) | Original | `GarrisonLimits` |
-| Sieges | Wooden palisade | Original, River Island | Original | `PalisadeDesign` |
-| Sieges | Motte and bailey | Original, Wooden Palace | Original | `MotteDesign` |
-| Sieges | Norman keep | Original, Leeds Castle, Expanded Keep | Original | `KeepDesign` |
-| Sieges | Stone castle | Original, Curtain Wall, The Ell, Portchester | Original | `StoneCastleDesign` |
-| Sieges | Royal castle | Original, Chambers, Island Castle, Goodrich | Original | `RoyalCastleDesign` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
 `MultiplayerFixes=1`.
 
-The Fixes, Castles and Sieges tabs are on a panel of their own, Jen With a B's Mods: F11 opens it while Quality of
-life → Jen With a B's Mods is On (or click the line under that tab's rows); F10 goes back to the HD settings.
+The Game, Economy, Buildings, Units and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
+as on Jen's Mod Menu: F11 or Mods → Mod Menu opens it while Quality of life → Jen With a B's Mods is On (or
+click the line under that tab's rows); F10 goes back to the HD settings. Pointing at a line shows what it
+does below the list, and Reset all to default puts every line back as the patch ships it.
 It holds the fixes and mods from Jen With a B's Lords II Mod Manager, rewritten for this patch with
 Jen's consent; with the switch Off the game is as without them. Its switches work at once. Weather
 wrecks fields: droughts and storms destroy fields. Pillaging: armies in an enemy county destroy its
@@ -285,15 +292,15 @@ fields; Off also stops computer lords raising the people of a threatened county 
 as in Jen's. The castle doors take that many blows before they give way in a siege. A destroyed
 field needs the reclaim work in all, and a season puts at most the second number into it. Castle
 garrisons: every castle holds as many men as an army may; computer lords still plan their garrisons
-by the original sizes. The Castles tab works in single player games only: in a multiplayer game
-everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
+by the original sizes. The mods (all but the Fixes tab) work in single player games only: in a
+multiplayer game everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
 from 1 to 100000 (doors) or 10000 (reclaim).
 
-Sieges (Jen's Castle Design): a siege on each kind of castle can be fought on one of the game's own
+The five castle kinds on the Buildings tab (Jen's Castle Design): a siege on each kind of castle can be fought on one of the game's own
 skirmish castles instead of its usual map, from the next siege. Each kind offers the ones Jen picked as
 fitting it; only the map changes, the castle's garrison and doors stay its kind's. The maps come from the
 game's STNFIEL2.PL8 (it is off if the file is missing). Single player campaign games only, like the
-Castles tab.
+other mods.
 
 ![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 
