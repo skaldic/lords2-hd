@@ -3992,8 +3992,143 @@ static BOOL mpmsg_apply(BOOL on)
 	FlushInstructionCache(GetCurrentProcess(), (void *)q, 8);
 	return memcmp((const void *)q, want, 8) == 0;
 }
+// The castle and field mods from Jen's Mod Manager (his patch sites and values), single player only: in a
+// multiplayer game (DAT_00553030) the game's own code is back, as each player's settings could differ. They
+// are changes to the game's code, put in or taken out by jen_sync on the game's thread (window_proc, the F10
+// panel, start-up); each site is checked to hold what was last put there before it is written.
+typedef struct { DWORD at; BYTE n; BYTE game[6], mod[6]; } JenSite;
+// Weather wrecking fields (FUN_00449889, each county at the season's weather): a drought (weather 1) or storms
+// (5) destroy fields (FUN_00469a9c 0x18 / 0x17, message 0x8f / 0x90 to the owner). Off: the two "weather 1 / 5?"
+// jne become jmp to the same place, so neither happens.
+static const JenSite kFieldLossSites[] = {
+	{ 0x00449c79, 6, { 0x0F, 0x85, 0x48, 0x00, 0x00, 0x00 }, { 0xE9, 0x49, 0x00, 0x00, 0x00, 0x90 } },
+	{ 0x00449cd9, 6, { 0x0F, 0x85, 0x48, 0x00, 0x00, 0x00 }, { 0xE9, 0x49, 0x00, 0x00, 0x00, 0x90 } },
+};
+// Pillaging: an army in a county its lord doesn't own destroys a field each step (FUN_0046673c: FUN_00469e5b,
+// the two lords' relations FUN_004a1ee1, sound 3). Off: that "owner differs?" jne becomes a jmp to the end (the
+// army's counter before it still counts). And, as Jen's, the AI's step for its threatened counties without a
+// castle (FUN_0049f431, called from FUN_0049f93d: an army raised from the people, the food moved out) is not
+// called: its call is nopped (the caller's add esp,4 after it stays).
+static const JenSite kPillageSites[] = {
+	{ 0x00466814, 6, { 0x0F, 0x85, 0x05, 0x00, 0x00, 0x00 }, { 0xE9, 0x75, 0x00, 0x00, 0x00, 0x90 } },
+	{ 0x0049f95f, 5, { 0xE8, 0xCD, 0xFA, 0xFF, 0xFF }, { 0x90, 0x90, 0x90, 0x90, 0x90 } },
+};
+// Castle doors in a siege (FUN_00483a88 and FUN_00484a0c, a blow on a door): the inner door gives way after
+// 5000 points of blows, the outer one after 20000 (cmp immediates).
+#define DOOR_IN 5000
+#define DOOR_OUT 20000
+#define DOOR_MAX 100000
+static const DWORD kDoorInSites[] = { 0x00483aeb, 0x00484a5c }, kDoorOutSites[] = { 0x00483b41, 0x00484ac7 };
+// Reclaiming a destroyed field (FUN_0044c093 a season's work, FUN_0044c278 the forecast): 800 work in all, at most
+// 200 a season on one field; the field's picture steps at a quarter, half and three quarters of the work.
+#define RECLAIM_WORK 800
+#define RECLAIM_MEN 200
+#define RECLAIM_MAX 10000   // (the work done is kept in a short)
+static const DWORD kReclaimWorkSites[] = { 0x0044c187, 0x0044c195, 0x0044c205, 0x0044c2f2, 0x0044c45b, 0x0044c469, 0x0044c4c6 };
+static const DWORD kReclaimMenSites[] = { 0x0044c15a, 0x0044c167, 0x0044c16e, 0x0044c312, 0x0044c31f, 0x0044c42e, 0x0044c43b,
+	0x0044c442, 0x0044c4f5, 0x0044c502 };
+static const DWORD kReclaimStageSites[3] = { 0x0044c19f, 0x0044c1c1, 0x0044c1e3 };
+static DWORD reclaim_stage(int k, int work) { return (DWORD)((k * work + 3) / 4); } // as Jen's: 200, 400, 600 for 800
+// The F10 choices (the ini takes any value from 1 to the most)
+static const int kDoorInSteps[] = { 1000, 2500, 5000, 10000, 20000, 50000, 100000 };
+static const int kDoorOutSteps[] = { 5000, 10000, 20000, 40000, 80000, 100000 };
+static const int kReclaimWorkSteps[] = { 200, 400, 800, 1600, 3200 };
+static const int kReclaimMenSteps[] = { 100, 200, 400, 800 };
+static int step_next(int v, const int *s, int n) { for (int i = 0; i < n; i++) if (s[i] > v) return s[i]; return s[0]; }
+static BOOL g_jenFieldLoss = TRUE, g_jenPillage = TRUE;   // the switches: on is the game's own
+static int g_jenDoorIn = DOOR_IN, g_jenDoorOut = DOOR_OUT, g_jenWork = RECLAIM_WORK, g_jenMen = RECLAIM_MEN;
+enum { JC_FIELD, JC_PILLAGE, JC_DOOR, JC_RECLAIM, JC_COUNT };
+static BOOL g_jcOk[JC_COUNT];   // its sites held the game's code at start-up
+static struct { BOOL fieldOff, pillageOff; int doorIn, doorOut, work, men; } g_jcNow; // what is in the code now
+static BOOL code_put(DWORD at, const void *b, int n)
+{
+	DWORD old;
+	if (!VirtualProtect((void *)at, n, PAGE_EXECUTE_READWRITE, &old)) return FALSE;
+	memcpy((void *)at, b, n);
+	VirtualProtect((void *)at, n, old, &old);
+	FlushInstructionCache(GetCurrentProcess(), (void *)at, n);
+	return TRUE;
+}
+static BOOL sites_hold(const JenSite *s, int n, BOOL mod)
+{
+	for (int i = 0; i < n; i++) if (memcmp((const void *)s[i].at, mod ? s[i].mod : s[i].game, s[i].n)) return FALSE;
+	return TRUE;
+}
+static BOOL sites_put(const JenSite *s, int n, BOOL mod)
+{
+	if (!sites_hold(s, n, !mod)) return sites_hold(s, n, mod);
+	BOOL ok = TRUE;
+	for (int i = 0; i < n; i++) ok &= code_put(s[i].at, mod ? s[i].mod : s[i].game, s[i].n);
+	return ok && sites_hold(s, n, mod);
+}
+static BOOL dwords_hold(const DWORD *at, int n, DWORD v) { for (int i = 0; i < n; i++) if (*(const DWORD *)at[i] != v) return FALSE; return TRUE; }
+static BOOL dwords_put(const DWORD *at, int n, DWORD from, DWORD to)
+{
+	if (!dwords_hold(at, n, from)) return FALSE;
+	for (int i = 0; i < n; i++) if (!code_put(at[i], &to, 4)) return FALSE;
+	return TRUE;
+}
+static BOOL reclaim_hold(int work, int men)
+{
+	if (!dwords_hold(kReclaimWorkSites, 7, work) || !dwords_hold(kReclaimMenSites, 10, men)) return FALSE;
+	for (int k = 0; k < 3; k++) if (*(const DWORD *)kReclaimStageSites[k] != reclaim_stage(k + 1, work)) return FALSE;
+	return TRUE;
+}
+// At start-up: which of them can go in (the game's code at every site), all as the game's own for now.
+static void jen_castle_check(void)
+{
+	g_jcOk[JC_FIELD] = sites_hold(kFieldLossSites, 2, FALSE) && memcmp((const void *)0x00449c5e, "\x50\xE8\xC8\xF7\x01\x00", 6) == 0;
+	g_jcOk[JC_PILLAGE] = sites_hold(kPillageSites, 2, FALSE);
+	g_jcOk[JC_DOOR] = dwords_hold(kDoorInSites, 2, DOOR_IN) && dwords_hold(kDoorOutSites, 2, DOOR_OUT);
+	g_jcOk[JC_RECLAIM] = reclaim_hold(RECLAIM_WORK, RECLAIM_MEN);
+	g_jcNow.fieldOff = g_jcNow.pillageOff = FALSE;
+	g_jcNow.doorIn = DOOR_IN; g_jcNow.doorOut = DOOR_OUT; g_jcNow.work = RECLAIM_WORK; g_jcNow.men = RECLAIM_MEN;
+	static const char *const kWhat[JC_COUNT] = { "00449c79 (weather and fields)", "00466814 (pillaging)", "00483aeb (castle doors)", "0044c15a (field reclaim)" };
+	for (int j = 0; j < JC_COUNT; j++) if (!g_jcOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
+}
+// Puts in what the switches ask for now (the game's own in a multiplayer game or with JenB's Mods off). Cheap
+// when nothing changed: called for every window message.
+static void jen_sync(void)
+{
+	BOOL on = g_jenMods && !*(int *)0x00553030;
+	BOOL fieldOff = on && !g_jenFieldLoss, pillageOff = on && !g_jenPillage;
+	int doorIn = on ? g_jenDoorIn : DOOR_IN, doorOut = on ? g_jenDoorOut : DOOR_OUT;
+	int work = on ? g_jenWork : RECLAIM_WORK, men = on ? g_jenMen : RECLAIM_MEN;
+	if (g_jcOk[JC_FIELD] && fieldOff != g_jcNow.fieldOff) {
+		g_jcOk[JC_FIELD] = sites_put(kFieldLossSites, 2, fieldOff);
+		if (g_jcOk[JC_FIELD]) g_jcNow.fieldOff = fieldOff;
+		logf_("weather wrecks fields: %s", !g_jcOk[JC_FIELD] ? "failed: unexpected code" : fieldOff ? "off" : "on (the game's own)");
+	}
+	if (g_jcOk[JC_PILLAGE] && pillageOff != g_jcNow.pillageOff) {
+		g_jcOk[JC_PILLAGE] = sites_put(kPillageSites, 2, pillageOff);
+		if (g_jcOk[JC_PILLAGE]) g_jcNow.pillageOff = pillageOff;
+		logf_("pillaging: %s", !g_jcOk[JC_PILLAGE] ? "failed: unexpected code" : pillageOff ? "off" : "on (the game's own)");
+	}
+	if (g_jcOk[JC_DOOR] && (doorIn != g_jcNow.doorIn || doorOut != g_jcNow.doorOut)) {
+		g_jcOk[JC_DOOR] = dwords_put(kDoorInSites, 2, g_jcNow.doorIn, doorIn) && dwords_put(kDoorOutSites, 2, g_jcNow.doorOut, doorOut);
+		if (g_jcOk[JC_DOOR]) g_jcNow.doorIn = doorIn, g_jcNow.doorOut = doorOut;
+		if (g_jcOk[JC_DOOR]) logf_("castle doors: inner %d, outer %d", doorIn, doorOut);
+		else logf_("castle doors: failed: unexpected code");
+	}
+	if (g_jcOk[JC_RECLAIM] && (work != g_jcNow.work || men != g_jcNow.men)) {
+		BOOL ok = reclaim_hold(g_jcNow.work, g_jcNow.men);
+		for (int i = 0; ok && i < 7; i++) ok = code_put(kReclaimWorkSites[i], &(DWORD){ (DWORD)work }, 4);
+		for (int i = 0; ok && i < 10; i++) ok = code_put(kReclaimMenSites[i], &(DWORD){ (DWORD)men }, 4);
+		for (int k = 0; ok && k < 3; k++) ok = code_put(kReclaimStageSites[k], &(DWORD){ reclaim_stage(k + 1, work) }, 4);
+		g_jcOk[JC_RECLAIM] = ok && reclaim_hold(work, men);
+		if (g_jcOk[JC_RECLAIM]) g_jcNow.work = work, g_jcNow.men = men;
+		if (g_jcOk[JC_RECLAIM]) logf_("field reclaim: %d work, %d a season", work, men);
+		else logf_("field reclaim: failed: unexpected code");
+	}
+}
+static int clamp_ini(const char *key, int def, int most)
+{
+	int v = GetPrivateProfileIntA("Game", key, def, g_iniPath);
+	return v < 1 ? 1 : v > most ? most : v;
+}
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
-	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
+	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG,
+	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 #define TAB_JEN 4   // JenB's Mods: shown only while that switch is on
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "JenB's Mods" };
@@ -4002,7 +4137,7 @@ static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, M_JEN, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
-	{ M_JEN_RATION, M_JEN_MPMSG, -1 },
+	{ M_JEN_RATION, M_JEN_MPMSG, M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
 static BOOL menu_tab_shown(int tab) { return tab != TAB_JEN || g_jenMods; }
@@ -4046,13 +4181,23 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 	case M_JEN: snprintf(v, n, "%s", g_jenMods ? "On (its own tab)" : "Off"); break;
 	case M_JEN_RATION: snprintf(v, n, "%s", !g_fixRation ? "Off" : g_rationHooked ? "On" : "On (unavailable)"); break;
 	case M_JEN_MPMSG: snprintf(v, n, "%s", g_mpMsgFix ? "On" : "Off"); break;
+	case M_JEN_FIELDS: snprintf(v, n, "%s%s", g_jenFieldLoss ? "On (original)" : "Off", g_jcOk[JC_FIELD] ? "" : " (unavailable)"); break;
+	case M_JEN_PILLAGE: snprintf(v, n, "%s%s", g_jenPillage ? "On (original)" : "Off", g_jcOk[JC_PILLAGE] ? "" : " (unavailable)"); break;
+	case M_JEN_DOOR_IN: case M_JEN_DOOR_OUT: case M_JEN_WORK: case M_JEN_MEN: {
+		int x = i == M_JEN_DOOR_IN ? g_jenDoorIn : i == M_JEN_DOOR_OUT ? g_jenDoorOut : i == M_JEN_WORK ? g_jenWork : g_jenMen;
+		int orig = i == M_JEN_DOOR_IN ? DOOR_IN : i == M_JEN_DOOR_OUT ? DOOR_OUT : i == M_JEN_WORK ? RECLAIM_WORK : RECLAIM_MEN;
+		BOOL ok = g_jcOk[i == M_JEN_DOOR_IN || i == M_JEN_DOOR_OUT ? JC_DOOR : JC_RECLAIM];
+		snprintf(v, n, "%d%s", x, !ok ? " (unavailable)" : x == orig ? " (original)" : "");
+		break;
+	}
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
 	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics",
-	"JenB's Mods", "Food ration fix", "Multiplayer messages" };
+	"JenB's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
+	"Outer castle door", "Field reclaim work", "Reclaim work a season" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -4135,7 +4280,14 @@ static void resound_sample(void)
 	case M_JEN: g_jenMods = !g_jenMods; ini_set("Game", "JenMods", g_jenMods); mpmsg_apply(g_jenMods && g_mpMsgFix); break;
 	case M_JEN_RATION: g_fixRation = !g_fixRation; ini_set("Game", "RationFix", g_fixRation); break; // (read at each county's food step)
 	case M_JEN_MPMSG: g_mpMsgFix = !g_mpMsgFix; ini_set("Game", "MpMessageFix", g_mpMsgFix); mpmsg_apply(g_jenMods && g_mpMsgFix); break;
+	case M_JEN_FIELDS: g_jenFieldLoss = !g_jenFieldLoss; ini_set("Game", "FieldDestruction", g_jenFieldLoss); break;
+	case M_JEN_PILLAGE: g_jenPillage = !g_jenPillage; ini_set("Game", "Pillaging", g_jenPillage); break;
+	case M_JEN_DOOR_IN: g_jenDoorIn = step_next(g_jenDoorIn, kDoorInSteps, 7); ini_set("Game", "InnerDoor", g_jenDoorIn); break;
+	case M_JEN_DOOR_OUT: g_jenDoorOut = step_next(g_jenDoorOut, kDoorOutSteps, 6); ini_set("Game", "OuterDoor", g_jenDoorOut); break;
+	case M_JEN_WORK: g_jenWork = step_next(g_jenWork, kReclaimWorkSteps, 5); ini_set("Game", "ReclaimWork", g_jenWork); break;
+	case M_JEN_MEN: g_jenMen = step_next(g_jenMen, kReclaimMenSteps, 4); ini_set("Game", "ReclaimPerSeason", g_jenMen); break;
 	}
+	if (i >= M_JEN) jen_sync();   // (in at once; the game's own in a multiplayer game)
 	logf_("settings panel: %s changed", kMenuLabel[i]);
 }
 static volatile LONG g_menuGen; // bumped at every change: the scroll is drawn again
@@ -4289,7 +4441,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	SetTextColor(dc, RGB(80, 56, 30));
 	if (g_menuTab == 0 || g_menuTab == 3 || g_menuTab == TAB_JEN) {
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
-		DrawTextA(dc, g_menuTab == TAB_JEN ? "From Jen With a B's Mod Manager; at once. The ration fix is off in multiplayer games"
+		DrawTextA(dc, g_menuTab == TAB_JEN ? "From Jen With a B's Mod Manager; at once. All but messages are off in multiplayer games"
 			: g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
 			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	}
@@ -7105,6 +7257,7 @@ static BOOL keep_running(void)
 
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+	jen_sync();   // JenB's castle and field mods: out as a multiplayer game starts, back after it (the game's thread)
 	if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || (msg == WM_KEYDOWN && !(lp & 0x40000000))) perf_input(); // latency (perf_end)
 	if (g_clickLog && (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_KEYDOWN ||
 		msg == WM_ACTIVATEAPP || msg == WM_ACTIVATE || msg == WM_SETFOCUS || msg == WM_KILLFOCUS ||
@@ -8552,7 +8705,7 @@ static void menu_scroll_draw(void)
 	}
 	if (g_menuTab == TAB_JEN) { // under its rows
 		ctext("From Jen With a B's Lords II Mod Manager", x0, y0 + 200, MS_W, small, ink);
-		ctext("At once; the ration fix stays off in multiplayer", x0, y0 + 214, MS_W, small, ink);
+		ctext("At once; all but messages stay off in multiplayer", x0, y0 + 214, MS_W, small, ink);
 	}
 	const char *keys = "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
@@ -13665,6 +13818,17 @@ static void install_game_fixes(void)
 	// Only what this player sees changes, so it stays on in multiplayer. Part of JenB's Mods (mpmsg_apply).
 	BOOL msgOn = g_jenMods && g_mpMsgFix;
 	logf_("multiplayer message fix %s", mpmsg_apply(msgOn) ? (msgOn ? "on" : "off") : "failed: unexpected code at 00472f20");
+
+	// JenB's castle and field mods (jen_sync): single player only; each as the game's own unless its switch says
+	// otherwise.
+	g_jenFieldLoss = GetPrivateProfileIntA("Game", "FieldDestruction", 1, g_iniPath) != 0;
+	g_jenPillage = GetPrivateProfileIntA("Game", "Pillaging", 1, g_iniPath) != 0;
+	g_jenDoorIn = clamp_ini("InnerDoor", DOOR_IN, DOOR_MAX);
+	g_jenDoorOut = clamp_ini("OuterDoor", DOOR_OUT, DOOR_MAX);
+	g_jenWork = clamp_ini("ReclaimWork", RECLAIM_WORK, RECLAIM_MAX);
+	g_jenMen = clamp_ini("ReclaimPerSeason", RECLAIM_MEN, RECLAIM_MAX);
+	jen_castle_check();
+	jen_sync();
 
 	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
 	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8

@@ -173,6 +173,15 @@ static void t_fix_sites(void)
 		msg[] = { 0x0F, 0x85, 0x17, 0x00, 0x00, 0x00 };   // JenB's Mods: the ration cut and the message close, as in the exe
 	memcpy((void *)0x0044e4a2, ration, sizeof ration); memcpy((void *)0x0044e523, rationOn, sizeof rationOn);
 	memcpy((void *)0x00472f20, msg, sizeof msg);
+	for (int i = 0; i < 2; i++) {               // JenB's castle and field mods: the game's code at their sites
+		memcpy((void *)kFieldLossSites[i].at, kFieldLossSites[i].game, kFieldLossSites[i].n);
+		memcpy((void *)kPillageSites[i].at, kPillageSites[i].game, kPillageSites[i].n);
+		*(DWORD *)kDoorInSites[i] = DOOR_IN; *(DWORD *)kDoorOutSites[i] = DOOR_OUT;
+	}
+	memcpy((void *)0x00449c5e, "\x50\xE8\xC8\xF7\x01\x00", 6);
+	for (int i = 0; i < 7; i++) *(DWORD *)kReclaimWorkSites[i] = RECLAIM_WORK;
+	for (int i = 0; i < 10; i++) *(DWORD *)kReclaimMenSites[i] = RECLAIM_MEN;
+	for (int k = 0; k < 3; k++) *(DWORD *)kReclaimStageSites[k] = 200 * (k + 1);
 	g_chaseHookFailed = FALSE; g_dmapOn = FALSE;
 }
 static void t_shipped_settings(void)
@@ -203,6 +212,9 @@ static int t_panel(int i)
 	case M_WHEEL: return g_wheelZoom;     case M_AI: return g_aiLevelSet;       case M_COUNTY: return g_countyZoom;
 	case M_SEASONS: return g_seasons;
 	case M_JEN: return g_jenMods;         case M_JEN_RATION: return g_fixRation; case M_JEN_MPMSG: return g_mpMsgFix;
+	case M_JEN_FIELDS: return g_jenFieldLoss; case M_JEN_PILLAGE: return g_jenPillage;
+	case M_JEN_DOOR_IN: return g_jenDoorIn; case M_JEN_DOOR_OUT: return g_jenDoorOut;
+	case M_JEN_WORK: return g_jenWork;    case M_JEN_MEN: return g_jenMen;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }
@@ -223,7 +235,8 @@ TEST(f10_changes_are_saved_and_read_back)
 {
 	t_shipped_settings();
 	for (int i = 0; i < M_COUNT; i++) {
-		int states = i == M_UPSCALE || i == M_FPS || i == M_AI || i == M_WHEEL ? 3 : i == M_TUTORIAL ? 2 : 2;
+		int states = i == M_UPSCALE || i == M_FPS || i == M_AI || i == M_WHEEL ? 3 : i == M_JEN_DOOR_IN ? 7 :
+			i == M_JEN_DOOR_OUT ? 6 : i == M_JEN_WORK ? 5 : i == M_JEN_MEN ? 4 : 2;
 		int first = t_panel(i);
 		for (int s = 0; s < states; s++) {
 			if (i == M_TUTORIAL && s == 1) break;   // (Every time -> Off is fine; Off -> Once calls the game)
@@ -328,6 +341,59 @@ TEST(f10_jen_tab_only_with_its_switch)
 	menu_change(M_JEN);                         // off: back, the tab hidden
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);
 	CHECK(!menu_tab_shown(TAB_JEN));
+	t_shipped_settings();
+}
+
+TEST(jen_castle_mods_go_in_and_out)
+{
+	*(int *)0x00553030 = 0;                     // single player
+	t_shipped_settings();
+	for (int j = 0; j < JC_COUNT; j++) CHECK(g_jcOk[j]);
+	CHECK_EQ(*(BYTE *)0x00449c79, 0x0F);        // as shipped: the game's own everywhere
+	CHECK_EQ(*(BYTE *)0x00466814, 0x0F); CHECK_EQ(*(BYTE *)0x0049f95f, 0xE8);
+	CHECK_EQ(*(DWORD *)0x00483aeb, DOOR_IN); CHECK_EQ(*(DWORD *)0x00484ac7, DOOR_OUT);
+	menu_change(M_JEN_FIELDS);                  // weather: both jne now jmp to where they went
+	CHECK_EQ(*(BYTE *)0x00449c79, 0xE9); CHECK_EQ(0x00449c79 + 5 + *(DWORD *)0x00449c7a, 0x00449cc7);
+	CHECK_EQ(*(BYTE *)0x00449cd9, 0xE9); CHECK_EQ(0x00449cd9 + 5 + *(DWORD *)0x00449cda, 0x00449d27);
+	menu_change(M_JEN_PILLAGE);                 // pillaging: to the function's end; the AI's call nopped
+	CHECK_EQ(*(BYTE *)0x00466814, 0xE9); CHECK_EQ(0x00466814 + 5 + *(DWORD *)0x00466815, 0x0046688e);
+	CHECK_EQ(*(DWORD *)0x0049f95f, 0x90909090); CHECK_EQ(*(BYTE *)0x0049f963, 0x90);
+	menu_change(M_JEN_DOOR_IN);                 // 5000 -> 10000
+	CHECK_EQ(g_jenDoorIn, 10000); CHECK_EQ(*(DWORD *)0x00483aeb, 10000); CHECK_EQ(*(DWORD *)0x00484a5c, 10000);
+	CHECK_EQ(*(DWORD *)0x00483b41, DOOR_OUT);
+	menu_change(M_JEN_WORK);                    // 800 -> 1600: every site, the picture's steps a quarter each
+	CHECK_EQ(*(DWORD *)0x0044c187, 1600); CHECK_EQ(*(DWORD *)0x0044c4c6, 1600);
+	CHECK_EQ(*(DWORD *)0x0044c19f, 400); CHECK_EQ(*(DWORD *)0x0044c1c1, 800); CHECK_EQ(*(DWORD *)0x0044c1e3, 1200);
+	CHECK_EQ(*(DWORD *)0x0044c15a, RECLAIM_MEN);
+	menu_change(M_JEN_MEN);                     // 200 -> 400
+	CHECK_EQ(*(DWORD *)0x0044c15a, 400); CHECK_EQ(*(DWORD *)0x0044c502, 400);
+
+	*(int *)0x00553030 = 1;                     // a multiplayer game: the game's own, the switches kept
+	jen_sync();
+	CHECK_EQ(*(BYTE *)0x00449c79, 0x0F); CHECK_EQ(*(BYTE *)0x00466814, 0x0F); CHECK_EQ(*(BYTE *)0x0049f95f, 0xE8);
+	CHECK_EQ(*(DWORD *)0x00483aeb, DOOR_IN); CHECK_EQ(*(DWORD *)0x0044c187, RECLAIM_WORK);
+	CHECK_EQ(*(DWORD *)0x0044c19f, 200); CHECK_EQ(*(DWORD *)0x0044c15a, RECLAIM_MEN);
+	CHECK(!g_jenFieldLoss && g_jenDoorIn == 10000);
+	*(int *)0x00553030 = 0;                     // back to single player: in again
+	jen_sync();
+	CHECK_EQ(*(BYTE *)0x00449c79, 0xE9); CHECK_EQ(*(DWORD *)0x00483aeb, 10000); CHECK_EQ(*(DWORD *)0x0044c1e3, 1200);
+	menu_change(M_JEN);                         // JenB's Mods off: all the game's own
+	CHECK_EQ(*(BYTE *)0x00449cd9, 0x0F); CHECK_EQ(*(DWORD *)0x00484a5c, DOOR_IN); CHECK_EQ(*(DWORD *)0x0044c502, RECLAIM_MEN);
+	for (int j = 0; j < JC_COUNT; j++) CHECK(g_jcOk[j]);
+
+	t_shipped_settings();                       // code that isn't the game's: that mod stays out, the rest work
+	*(BYTE *)0x00466815 = 0x06;
+	read_settings(); install_game_fixes();
+	CHECK(!g_jcOk[JC_PILLAGE]); CHECK(g_jcOk[JC_FIELD]);
+	char v[96]; BOOL rs;
+	menu_value(M_JEN_PILLAGE, v, sizeof v, &rs); CHECK(strstr(v, "unavailable") != NULL);
+	menu_change(M_JEN_PILLAGE);
+	CHECK_EQ(*(BYTE *)0x00466814, 0x0F); CHECK_EQ(*(BYTE *)0x00466815, 0x06);
+	WritePrivateProfileStringA("Game", "InnerDoor", "999999", g_iniPath);   // the ini's numbers: kept in range
+	WritePrivateProfileStringA("Game", "ReclaimWork", "0", g_iniPath);
+	t_fix_sites(); install_game_fixes();
+	CHECK_EQ(g_jenDoorIn, DOOR_MAX); CHECK_EQ(g_jenWork, 1);
+	CHECK_EQ(*(DWORD *)0x00483aeb, DOOR_MAX); CHECK_EQ(*(DWORD *)0x0044c19f, 1);
 	t_shipped_settings();
 }
 
