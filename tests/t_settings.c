@@ -169,6 +169,10 @@ static void t_fix_sites(void)
 {
 	memset((void *)0x00436000, 0, 0x004b0000 - 0x00436000);
 	for (int i = 0; i < (int)(sizeof kFixSites / sizeof *kFixSites); i++) memcpy((void *)kFixSites[i].at, kFixSites[i].code, 6);
+	static const BYTE ration[] = { 0x39, 0x8C, 0x40, 0x34, 0xFB, 0x53, 0x00 }, rationOn[] = { 0x8B, 0x45, 0xE0 },
+		msg[] = { 0x0F, 0x85, 0x17, 0x00, 0x00, 0x00 };   // JenB's Mods: the ration cut and the message close, as in the exe
+	memcpy((void *)0x0044e4a2, ration, sizeof ration); memcpy((void *)0x0044e523, rationOn, sizeof rationOn);
+	memcpy((void *)0x00472f20, msg, sizeof msg);
 	g_chaseHookFailed = FALSE; g_dmapOn = FALSE;
 }
 static void t_shipped_settings(void)
@@ -198,6 +202,7 @@ static int t_panel(int i)
 	case M_FPS: return g_statsOn;         case M_MINIPOP: return g_miniPop;     case M_ARROWS: return g_arrowsOn;
 	case M_WHEEL: return g_wheelZoom;     case M_AI: return g_aiLevelSet;       case M_COUNTY: return g_countyZoom;
 	case M_SEASONS: return g_seasons;
+	case M_JEN: return g_jenMods;         case M_JEN_RATION: return g_fixRation; case M_JEN_MPMSG: return g_mpMsgFix;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }
@@ -291,6 +296,34 @@ TEST(f10_readme_table_matches_the_panel)
 	}
 	CHECK_EQ(rows, M_COUNT);
 	free(md);
+}
+
+TEST(f10_jen_tab_only_with_its_switch)
+{
+	t_shipped_settings();
+	CHECK(!g_jenMods);                          // off as shipped: no tab, the game's own code
+	CHECK(!menu_tab_shown(TAB_JEN));
+	CHECK_EQ(menu_tabs_shown(), MENU_TABS - 1);
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);
+	CHECK(g_rationHooked);
+	g_menuTab = 3; menu_set_tab(4);             // Tab from Battles steps over the hidden tab
+	CHECK_EQ(g_menuTab, 0);
+	g_menuTab = 0; menu_set_tab(-1);            // and Shift+Tab from Display
+	CHECK_EQ(g_menuTab, 3);
+	menu_change(M_JEN);                         // on: the tab shows and the message fix goes in at once
+	CHECK(g_jenMods);
+	CHECK(menu_tab_shown(TAB_JEN));
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x75); CHECK_EQ(*(BYTE *)0x00472f21, 0x35); CHECK_EQ(*(BYTE *)0x00472f25, 0x90);
+	g_menuTab = 3; menu_set_tab(4);
+	CHECK_EQ(g_menuTab, TAB_JEN);
+	menu_change(M_JEN_MPMSG);                   // its own switch: the game's code back
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F); CHECK_EQ(*(DWORD *)0x00472f22, 0x17);
+	menu_change(M_JEN_MPMSG);
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);
+	menu_change(M_JEN);                         // off: back, the tab hidden
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);
+	CHECK(!menu_tab_shown(TAB_JEN));
+	t_shipped_settings();
 }
 
 TEST(f10_restart_marks)

@@ -66,6 +66,10 @@ TEST(ration_step_writes_the_county)
 	*(int *)(0x0053fb30 + 3 * 0x300) = 100;     // grain in store: 200 short = 1200 food = 120 cattle
 	COUNTY_B(3, 0x0053fb0f) = 40;
 	MP_SESSION = 0;
+	g_jenMods = FALSE;                          // JenB's Mods off: the game's own cut
+	l2hd_ration_step(ebp);
+	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 40);
+	g_jenMods = TRUE;
 	l2hd_ration_step(ebp);
 	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 160);
 	CHECK_EQ(*(int *)(0x0053fb28 + 3 * 0x300), 100);
@@ -78,6 +82,7 @@ TEST(ration_step_writes_the_county)
 	l2hd_ration_step(ebp);
 	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 40);
 	MP_SESSION = 0;
+	g_jenMods = FALSE;
 }
 
 /* ================================ castle cap fix */

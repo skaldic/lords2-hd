@@ -249,6 +249,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
+| Quality of life | JenB's Mods | On (its own tab), Off | Off | `JenMods` |
 | Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
@@ -257,9 +258,15 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Battles | Battle zoom-out * | On, Off | On | `BattleZoom` |
 | Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
+| JenB's Mods | Food ration fix | On, Off | On | `RationFix` |
+| JenB's Mods | Multiplayer messages | On, Off | On | `MpMessageFix` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
 `MultiplayerFixes=1`.
+
+The JenB's Mods tab shows only while Quality of life → JenB's Mods is On. It holds the fixes and mods
+from Jen With a B's Lords II Mod Manager, rewritten for this patch with Jen's consent; with the switch
+Off the game is as without them. Its switches work at once.
 
 ![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 
