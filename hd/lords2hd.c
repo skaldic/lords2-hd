@@ -3952,7 +3952,7 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 6
+#define MENU_TABS 7
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox, g_menuLink; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
@@ -4160,17 +4160,136 @@ static int clamp_ini(const char *key, int def, int most)
 	int v = GetPrivateProfileIntA("Game", key, def, g_iniPath);
 	return v < 1 ? 1 : v > most ? most : v;
 }
+// Castle design (Jen's): a campaign siege fought on one of the game's skirmish castles instead of the castle's own
+// layout. A siege map is two 80x80 layers (the ground; the troops, gates and the rest), records 2*kind and 2*kind+1
+// of stnfield.pl8, read through the file loader by FUN_0047c4ba (its call at 0x47c5e4) and FUN_0047cec1 (0x47cf9d),
+// kind = DAT_00553528 (0 wooden palisade .. 4 royal castle). The skirmish sieges are the 15 castles of STNFIEL2.PL8,
+// in BATTLES.ENG's order (its 0, 1, 4, 5 and 6 are the campaign's five); each kind may take the ones Jen picked as
+// fitting it. From the next siege, in single player campaign games only (not the skirmish sieges, DAT_0057a0f0,
+// nor a multiplayer game); everything about the castle but its map (garrison, doors) stays its kind's.
+#define CD_REC 0x1900
+#define CD_LAYOUTS 15
+#define CD_KIND ((const int *)0x00553528)
+#define CD_SKIRMISH ((const int *)0x0057a0f0)
+static const char *const kCastleKind[5] = { "Wooden palisade", "Motte and bailey", "Norman keep", "Stone castle", "Royal castle" };
+static const char *const kCdKey[5] = { "PalisadeDesign", "MotteDesign", "KeepDesign", "StoneCastleDesign", "RoyalCastleDesign" };
+static const char *const kCdName[CD_LAYOUTS] = { "The Palisade", "Castle Acre", "River Island", "Wooden Palace", "Norman Keep",
+	"Bodiam Castle", "Royal Castle", "Leeds Castle", "Curtain Wall", "Chambers", "The Ell", "Island Castle", "Goodrich",
+	"Portchester", "Expanded Keep" };
+static const signed char kCdChoices[5][3] = { { 2, -1, -1 }, { 3, -1, -1 }, { 7, 14, -1 }, { 8, 10, 13 }, { 9, 11, 12 } }; // (Jen's)
+static int cd_count(int kind) { int n = 0; while (n < 3 && kCdChoices[kind][n] >= 0) n++; return n; }
+static int g_jenDesign[5];                          // each kind's choice: 0 its own layout, k its k-th skirmish castle
+static BYTE *g_cdRec;                               // STNFIEL2.PL8's 30 records (NULL: missing, or not as the game's)
+static BOOL g_cdCalls;                              // the two reads are the game's calls (their return addresses are known)
+static int g_cdKind = -1, g_cdLayout = -1;          // what the siege being set up got at its first read
+static int g_cdLastKind = -1, g_cdLastLayout = -1;  // the siege set up last (both layers given)
+static BOOL cd_ok(void) { return g_cdRec && g_cdCalls; }
+static void castle_design_load(void)
+{
+	static const char *const kWhere[2] = { "STNFIEL2.PL8", "Pl8\\STNFIEL2.PL8" };   // (where Jen's looks)
+	free(g_cdRec); g_cdRec = NULL;
+	for (int w = 0; w < 2 && !g_cdRec; w++) {
+		char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\%s", g_gameDir, kWhere[w]);
+		FILE *f = fopen(p, "rb");
+		if (!f) continue;
+		fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+		BYTE *b = n >= 0x1e8 + 30 * CD_REC && n < 0x1000000 ? malloc(n) : NULL;
+		BOOL ok = b && fread(b, 1, n, f) == (size_t)n;
+		fclose(f);
+		BYTE *rec = ok ? malloc(30 * CD_REC) : NULL;
+		for (int i = 0; rec && i < 30; i++) {   // record i's offset: 3 bytes at 16 * i + 12
+			long at = b[i * 16 + 12] | b[i * 16 + 13] << 8 | b[i * 16 + 14] << 16;
+			if (at < 0x1e8 || at > n - CD_REC) { free(rec); rec = NULL; break; }
+			memcpy(rec + i * CD_REC, b + at, CD_REC);
+		}
+		free(b);
+		g_cdRec = rec;
+	}
+	if (!g_cdRec) logf_("castle design: STNFIEL2.PL8 missing or not as the game's, so it is off");
+}
+static BOOL cd_file(const char *name)
+{
+	const char *b = name;
+	for (const char *p = name; *p; p++) if (*p == '\\' || *p == '/') b = p + 1;
+	return !lstrcmpiA(b, "stnfield.pl8");
+}
+// From the file loader (h_load_file), by its caller: the siege's ground (returning to 0x47c5e9) decides its layout,
+// the second layer (0x47cfa2) follows it. -1: the game reads its own.
+static int castle_design_read(const void *ret, const char *name, void *buffer, unsigned size)
+{
+	if (ret == (const void *)0x0047c5e9) {
+		g_cdKind = g_cdLayout = g_cdLastKind = g_cdLastLayout = -1;
+		int kind = *CD_KIND, k = kind >= 0 && kind < 5 ? g_jenDesign[kind] : 0;
+		if (!cd_ok() || !g_jenMods || *(const int *)0x00553030 || *CD_SKIRMISH || size != CD_REC || !cd_file(name) ||
+			k < 1 || k > cd_count(kind)) return -1;
+		g_cdKind = kind; g_cdLayout = kCdChoices[kind][k - 1];
+		memcpy(buffer, g_cdRec + 2 * g_cdLayout * CD_REC, CD_REC);
+		logf_("castle design: a siege on a %s, fought on %s", kCastleKind[kind], kCdName[g_cdLayout]);
+		return CD_REC;
+	}
+	if (ret != (const void *)0x0047cfa2) return -1;
+	int layout = g_cdLayout;
+	BOOL same = layout >= 0 && cd_ok() && *CD_KIND == g_cdKind && size == CD_REC && cd_file(name);
+	if (same) {
+		memcpy(buffer, g_cdRec + (2 * layout + 1) * CD_REC, CD_REC);
+		g_cdLastKind = g_cdKind; g_cdLastLayout = layout;
+	}
+	g_cdKind = g_cdLayout = -1;
+	return same ? CD_REC : -1;
+}
+// Expanded Keep on a Norman keep (Jen's fix): placing the troops (FUN_0046e4c8: FUN_0046e70e tries FUN_00496155, the
+// nearest free cell in a growing ring, at 0x46e73c), the one meant for (44,27) lands at (45,26), outside the walls. It
+// goes to (43,24) when that cell is free. Only on that layout as STNFIEL2.PL8 has it, and on the field as it was laid.
+#define FREE_SPOT_CALL 0x0046e73c
+typedef int (__cdecl *free_spot_t)(int x, int y, int ring);
+static free_spot_t g_freeSpot = (free_spot_t)0x00496155;
+static BOOL g_cdSpotHooked;
+static int __cdecl h_free_spot(int x, int y, int ring)
+{
+	int found = g_freeSpot(x, y, ring);
+	int *cx = (int *)0x00569570, *cy = (int *)0x00569578;   // (the cell it found)
+	const BYTE *cell = (const BYTE *)0x005440e0;            // the battlefield, 8 bytes a cell: +1 flags, +3 ground, +5 unit
+	enum { C1 = 26 * 80 + 44, C2 = 27 * 80 + 44, C3 = 24 * 80 + 43 };
+	if (!found || g_cdLastKind != 2 || g_cdLastLayout != 14 || !g_cdRec || x != 0x2c || y != 0x1b || ring != 1 ||
+		*cx != 0x2d || *cy != 0x1a) return found;
+	const BYTE *a = g_cdRec + 28 * CD_REC, *b = a + CD_REC;
+	int unit = *(const int *)0x0053f014;
+	if (*(const int *)0x005530ec != 0x11 || unit < 1 || unit > 0x50) return found;
+	if (a[C1] != 0xdb || b[C1] != 0x0a || a[C2] != 0x35 || b[C2] != 0x0a || a[C3] != 0xb9 || b[C3] != 0x28) return found;
+	if (cell[C1 * 8 + 3] != 0xdb || cell[C2 * 8 + 3] != 0x35 || cell[C3 * 8 + 3] != 0xb9) return found;
+	if (!(cell[C1 * 8 + 1] & 0x10) || !(cell[C2 * 8 + 1] & 0x10) || cell[C3 * 8 + 1] || cell[C3 * 8 + 5]) return found;
+	if (g_freeSpot(0x2b, 0x18, 0) && *cx == 0x2b && *cy == 0x18) logf_("castle design: Expanded Keep's troop %d at (43,24)", unit);
+	else { *cx = 0x2d; *cy = 0x1a; }
+	return found;
+}
+static void castle_design_check(void)
+{
+	static const BYTE kRead1[5] = { 0xE8, 0xF0, 0x32, 0x03, 0x00 }, kRead2[5] = { 0xE8, 0x37, 0x29, 0x03, 0x00 },  // call 004af8d9
+		kSpot[5] = { 0xE8, 0x14, 0x7A, 0x02, 0x00 };                                                                // call 00496155
+	castle_design_load();
+	g_cdCalls = !memcmp((const void *)0x0047c5e4, kRead1, 5) && !memcmp((const void *)0x0047cf9d, kRead2, 5);
+	if (!g_cdCalls) logf_("not hooked: unexpected code at 0047c5e4 (castle design)");
+	BYTE mine[5] = { 0xE8 };
+	*(DWORD *)(mine + 1) = (DWORD)h_free_spot - (FREE_SPOT_CALL + 5);
+	g_cdSpotHooked = !memcmp((const void *)FREE_SPOT_CALL, mine, 5) ||
+		(!memcmp((const void *)FREE_SPOT_CALL, kSpot, 5) && code_put(FREE_SPOT_CALL, mine, 5));
+	if (!g_cdSpotHooked) logf_("not hooked: unexpected code at 0046e73c (castle design: Expanded Keep's troops)");
+	g_cdKind = g_cdLayout = g_cdLastKind = g_cdLastLayout = -1;
+}
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
 	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG,
-	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
+	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON,
+	M_JEN_DESIGN, M_JEN_DESIGN_LAST = M_JEN_DESIGN + 4, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys; M_JEN_DESIGN + kind)
+static BOOL menu_design(int i) { return i >= M_JEN_DESIGN && i <= M_JEN_DESIGN_LAST; }
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 // Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the Jen With a B's Mods panel (F11, or
 // the link on Quality of life while Jen With a B's Mods is on), with a tab for each group of Jen's mods (MODS_TAB0 on).
 #define MODS_TAB0 4
 #define TAB_FIXES 4
 #define TAB_CASTLES 5
+#define TAB_SIEGES 6
 static BOOL g_menuMods;   // the open panel is the Jen With a B's Mods one
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "Fixes", "Castles" };
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "Fixes", "Castles", "Sieges" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
@@ -4178,6 +4297,7 @@ static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
 	{ M_JEN_RATION, M_JEN_MPMSG, -1 },
 	{ M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON, -1 },
+	{ M_JEN_DESIGN, M_JEN_DESIGN + 1, M_JEN_DESIGN + 2, M_JEN_DESIGN + 3, M_JEN_DESIGN + 4, -1 },
 };
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
 static BOOL menu_tab_shown(int tab) { return g_menuMods ? tab >= MODS_TAB0 : tab < MODS_TAB0; } // the open panel's
@@ -4186,6 +4306,11 @@ static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL 
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
+	if (menu_design(i)) { // a castle kind's siege map
+		int k = i - M_JEN_DESIGN, c = g_jenDesign[k];
+		snprintf(v, n, "%s%s", c ? kCdName[kCdChoices[k][c - 1]] : "Original", cd_ok() ? "" : " (unavailable)");
+		return;
+	}
 	switch (i) {
 	case M_UPSCALE: snprintf(v, n, "%s", g_upscaleCR == 2 ? "AMD FSR 1 (sharpest)" : g_upscaleCR ? "Catmull-Rom (sharp)" : "Bilinear (soft)"); break;
 	case M_SCREENS: snprintf(v, n, "%s", g_showScreens ? "On" : "Off"); *restart = g_showScreens && !g_hdScreens; break;
@@ -4241,7 +4366,8 @@ static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
 	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics",
 	"Jen With a B's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
-	"Outer castle door", "Field reclaim work", "Reclaim work a season", "Castle garrisons" };
+	"Outer castle door", "Field reclaim work", "Reclaim work a season", "Castle garrisons", "Wooden palisade", "Motte and bailey",
+	"Norman keep", "Stone castle", "Royal castle" };   // (the last five: kCastleKind)
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -4331,6 +4457,11 @@ static void resound_sample(void)
 	case M_JEN_WORK: g_jenWork = step_next(g_jenWork, kReclaimWorkSteps, 5); ini_set("Game", "ReclaimWork", g_jenWork); break;
 	case M_JEN_MEN: g_jenMen = step_next(g_jenMen, kReclaimMenSteps, 4); ini_set("Game", "ReclaimPerSeason", g_jenMen); break;
 	case M_JEN_GARRISON: g_jenGarrison = !g_jenGarrison; ini_set("Game", "GarrisonLimits", g_jenGarrison); break;
+	}
+	if (menu_design(i)) { // Original -> its skirmish castles -> Original (read at the next siege)
+		int k = i - M_JEN_DESIGN;
+		g_jenDesign[k] = (g_jenDesign[k] + 1) % (cd_count(k) + 1);
+		WritePrivateProfileStringA("Game", kCdKey[k], g_jenDesign[k] ? kCdName[kCdChoices[k][g_jenDesign[k] - 1]] : "Original", g_iniPath);
 	}
 	if (i >= M_JEN) jen_sync();   // (in at once; the game's own in a multiplayer game)
 	logf_("settings panel: %s changed", kMenuLabel[i]);
@@ -4509,6 +4640,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 		DrawTextA(dc, menu_link_shown() ? kModsLink
 			: g_menuTab == TAB_FIXES ? "From Jen With a B's Mod Manager; at once. The ration fix is off in multiplayer games"
 			: g_menuTab == TAB_CASTLES ? "From Jen With a B's Mod Manager; at once. Single player games only"
+			: g_menuTab == TAB_SIEGES ? "From Jen With a B's Mod Manager; from the next siege. Single player games only"
 			: g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
 			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		SetTextColor(dc, RGB(80, 56, 30));
@@ -7894,7 +8026,8 @@ static int g_frameIndex = -1;
 
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
-	int n = o_load_file(name, buffer, size, offset);
+	int n = castle_design_read(__builtin_return_address(0), name, buffer, size); // (a siege's map: Jen's castle design)
+	if (n < 0) n = o_load_file(name, buffer, size, offset);
 	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
 		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
 	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
@@ -8779,8 +8912,8 @@ static void menu_scroll_draw(void)
 	}
 	if (g_menuMods) { // under its rows
 		ctext("From Jen With a B's Lords II Mod Manager", x0, y0 + 200, MS_W, small, ink);
-		ctext(g_menuTab == TAB_FIXES ? "At once; the ration fix stays off in multiplayer" : "At once; single player games only",
-			x0, y0 + 214, MS_W, small, ink);
+		ctext(g_menuTab == TAB_FIXES ? "At once; the ration fix stays off in multiplayer" : g_menuTab == TAB_SIEGES ?
+			"From the next siege; single player games only" : "At once; single player games only", x0, y0 + 214, MS_W, small, ink);
 	}
 	const char *keys = g_menuMods ? "Click to change; F10: the HD settings" : "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
@@ -13905,6 +14038,14 @@ static void install_game_fixes(void)
 	g_jenGarrison = GetPrivateProfileIntA("Game", "GarrisonLimits", 0, g_iniPath) != 0;
 	jen_castle_check();
 	jen_sync();
+	for (int k = 0; k < 5; k++) {   // castle design: each kind's map by its name ("Original", or one of its skirmish castles)
+		char s[32];
+		GetPrivateProfileStringA("Game", kCdKey[k], "Original", s, sizeof s, g_iniPath);
+		g_jenDesign[k] = 0;
+		for (int c = 0; c < cd_count(k); c++) if (!lstrcmpiA(s, kCdName[kCdChoices[k][c]])) g_jenDesign[k] = c + 1;
+	}
+	castle_design_check();
+	logf_("castle design: %s%s", cd_ok() ? "ready" : "unavailable", g_cdSpotHooked ? "" : " (Expanded Keep's troop fix unavailable)");
 
 	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
 	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8

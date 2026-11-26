@@ -185,6 +185,9 @@ static void t_fix_sites(void)
 	memcpy(CASTLE_CAP, kCastleCap, sizeof kCastleCap);   // the castles' room, the AI's read of it, the army limit
 	memcpy((void *)AI_CAP_READ, "\x8B\x04\x85\x10\x8A\x4D\x00", 7);
 	memcpy((void *)0x004a97c1, "\x81\x7D\xFC\xDC\x05\x00\x00", 7);
+	memcpy((void *)0x0047c5e4, "\xE8\xF0\x32\x03\x00", 5);   // castle design: the two siege map reads, the troops' free-cell search
+	memcpy((void *)0x0047cf9d, "\xE8\x37\x29\x03\x00", 5);
+	memcpy((void *)FREE_SPOT_CALL, "\xE8\x14\x7A\x02\x00", 5);
 	g_chaseHookFailed = FALSE; g_dmapOn = FALSE;
 }
 static void t_shipped_settings(void)
@@ -205,6 +208,7 @@ static void t_shipped_settings(void)
 /* The panel's value of an item, as an int. */
 static int t_panel(int i)
 {
+	if (menu_design(i)) return g_jenDesign[i - M_JEN_DESIGN];
 	switch (i) {
 	case M_UPSCALE: return g_upscaleCR;   case M_SCREENS: return g_showScreens; case M_TILES: return g_showTiles;
 	case M_TEXT: return g_hdText;         case M_WAVES: return g_shoreWaves;    case M_LIMIT: return g_frameLimit;
@@ -238,7 +242,7 @@ TEST(f10_changes_are_saved_and_read_back)
 {
 	t_shipped_settings();
 	for (int i = 0; i < M_COUNT; i++) {
-		int states = i == M_UPSCALE || i == M_FPS || i == M_AI || i == M_WHEEL ? 3 : i == M_JEN_DOOR_IN ? 7 :
+		int states = menu_design(i) ? cd_count(i - M_JEN_DESIGN) + 1 : i == M_UPSCALE || i == M_FPS || i == M_AI || i == M_WHEEL ? 3 : i == M_JEN_DOOR_IN ? 7 :
 			i == M_JEN_DOOR_OUT ? 6 : i == M_JEN_WORK ? 5 : i == M_JEN_MEN ? 4 : 2;
 		int first = t_panel(i);
 		for (int s = 0; s < states; s++) {
@@ -328,17 +332,18 @@ TEST(f11_jen_panel_only_with_its_switch)
 	CHECK_EQ(g_menuTab, TAB_FIXES);
 	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k >= MODS_TAB0);
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_CASTLES);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_SIEGES);
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_FIXES);   // Tab wraps within the panel
-	menu_set_tab(g_menuTab - 1); CHECK_EQ(g_menuTab, TAB_CASTLES);
+	menu_set_tab(g_menuTab - 1); CHECK_EQ(g_menuTab, TAB_SIEGES);
 	CHECK(menu_key(VK_F10));                    // F10 from it: the HD settings, at their last tab
 	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 0);
 	g_menuTab = 2;
 	CHECK(menu_link_shown());                   // Quality of life: the line to the Jen With a B's Mods panel
 	CHECK(menu_key(VK_F11));
-	CHECK(g_menuMods); CHECK_EQ(g_menuTab, TAB_CASTLES);           // back at its last tab
+	CHECK(g_menuMods); CHECK_EQ(g_menuTab, TAB_SIEGES);            // back at its last tab
 	CHECK(menu_key(VK_F11));                    // its own key closes it
 	CHECK(!g_menuOpen);
-	CHECK(menu_key(VK_F11)); CHECK_EQ(g_menuTab, TAB_CASTLES);     // and opens it again where it was left
+	CHECK(menu_key(VK_F11)); CHECK_EQ(g_menuTab, TAB_SIEGES);      // and opens it again where it was left
 	CHECK(menu_key(VK_ESCAPE)); CHECK(!g_menuOpen);
 	CHECK(menu_key(VK_F10)); CHECK(!g_menuMods); CHECK_EQ(g_menuTab, 2);   // F10 too
 	CHECK(menu_key(VK_F10)); CHECK(!g_menuOpen);
@@ -420,6 +425,99 @@ TEST(jen_castle_mods_go_in_and_out)
 	t_fix_sites(); install_game_fixes();
 	CHECK_EQ(g_jenDoorIn, DOOR_MAX); CHECK_EQ(g_jenWork, 1);
 	CHECK_EQ(*(DWORD *)0x00483aeb, DOOR_MAX); CHECK_EQ(*(DWORD *)0x0044c19f, 1);
+	t_shipped_settings();
+}
+
+/* Castle design: a STNFIEL2.PL8 shaped as the game's (30 records at their offsets, record r all r + 1, Expanded Keep's
+ * cells as in the game's), the free-cell search played by t_free_spot: (45,26) for (44,27), (43,24) when it is free. */
+static int t_spotFree;
+static int __cdecl t_free_spot(int x, int y, int ring)
+{
+	(void)ring;
+	if (x == 0x2b && y == 0x18) { if (!t_spotFree) return 0; *(int *)0x00569570 = 0x2b; *(int *)0x00569578 = 0x18; return 1; }
+	*(int *)0x00569570 = 0x2d; *(int *)0x00569578 = 0x1a;
+	return 1;
+}
+static void t_write_stnfiel2(void)
+{
+	long n = 0x1e8 + 30 * CD_REC;
+	BYTE *b = calloc(1, n);
+	for (int r = 0; r < 30; r++) {
+		long at = 0x1e8 + r * CD_REC;
+		b[r * 16 + 12] = at & 255; b[r * 16 + 13] = at >> 8 & 255; b[r * 16 + 14] = at >> 16 & 255;
+		memset(b + at, r + 1, CD_REC);
+	}
+	BYTE *a = b + 0x1e8 + 28 * CD_REC, *c = a + CD_REC;
+	a[26 * 80 + 44] = 0xdb; c[26 * 80 + 44] = 0x0a; a[27 * 80 + 44] = 0x35; c[27 * 80 + 44] = 0x0a;
+	a[24 * 80 + 43] = 0xb9; c[24 * 80 + 43] = 0x28;
+	t_write("STNFIEL2.PL8", b, n);
+	free(b);
+}
+static int t_first(BYTE *buf) { return castle_design_read((const void *)0x0047c5e9, "stnfield.pl8", buf, CD_REC); }
+static int t_second(BYTE *buf) { return castle_design_read((const void *)0x0047cfa2, "stnfield.pl8", buf, CD_REC); }
+TEST(jen_castle_design)
+{
+	*(int *)0x00553030 = 0; *(int *)0x0057a0f0 = 0;  // a single player campaign game
+	char p[MAX_PATH]; t_path(p, sizeof p, "STNFIEL2.PL8"); DeleteFileA(p);
+	t_shipped_settings();
+	char v[96]; BOOL rs; BYTE buf[CD_REC];
+	CHECK(!cd_ok());                                  // no STNFIEL2.PL8: unavailable, the game reads its own
+	menu_value(M_JEN_DESIGN + 4, v, sizeof v, &rs); CHECK(strstr(v, "Original") == v && strstr(v, "unavailable"));
+	t_write_stnfiel2();
+	t_shipped_settings();
+	CHECK(cd_ok()); CHECK(g_cdSpotHooked);
+	CHECK_EQ(*(BYTE *)FREE_SPOT_CALL, 0xE8);          // the troops' free-cell search calls h_free_spot
+	CHECK_EQ(FREE_SPOT_CALL + 5 + *(DWORD *)(FREE_SPOT_CALL + 1), (DWORD)h_free_spot);
+	for (int k = 0; k < 5; k++) { menu_value(M_JEN_DESIGN + k, v, sizeof v, &rs); CHECK(!strcmp(v, "Original")); CHECK(!strcmp(kMenuLabel[M_JEN_DESIGN + k], kCastleKind[k])); }
+	*(int *)0x00553528 = 4;                           // a royal castle, as shipped: its own map
+	CHECK_EQ(t_first(buf), -1); CHECK_EQ(t_second(buf), -1);
+	menu_change(M_JEN_DESIGN + 4); menu_change(M_JEN_DESIGN + 4); menu_change(M_JEN_DESIGN + 4);   // Chambers, Island Castle, Goodrich
+	menu_value(M_JEN_DESIGN + 4, v, sizeof v, &rs); CHECK(!strcmp(v, "Goodrich"));
+	char s[32]; GetPrivateProfileStringA("Game", "RoyalCastleDesign", "", s, sizeof s, g_iniPath); CHECK(!strcmp(s, "Goodrich"));
+	memset(buf, 0, sizeof buf);
+	CHECK_EQ(t_first(buf), CD_REC); CHECK_EQ(buf[0], 2 * 12 + 1); CHECK_EQ(buf[CD_REC - 1], 2 * 12 + 1);   // Goodrich's ground
+	CHECK_EQ(castle_design_read((const void *)0x0047cfa2, "C:\\x\\STNFIELD.PL8", buf, CD_REC), CD_REC);
+	CHECK_EQ(buf[0], 2 * 12 + 2);                     // and its troops' layer
+	CHECK_EQ(g_cdLastKind, 4); CHECK_EQ(g_cdLastLayout, 12);
+	CHECK_EQ(t_second(buf), -1);                      // a second layer without a first: the game's
+	CHECK_EQ(castle_design_read((const void *)0x00401234, "stnfield.pl8", buf, CD_REC), -1);   // another caller
+	CHECK_EQ(castle_design_read((const void *)0x0047c5e9, "stnfield.pl8", buf, 1000), -1);     // another read
+	*(int *)0x0057a0f0 = 1; CHECK_EQ(t_first(buf), -1); CHECK_EQ(g_cdLastKind, -1); *(int *)0x0057a0f0 = 0;   // a skirmish siege
+	*(int *)0x00553030 = 1; CHECK_EQ(t_first(buf), -1); *(int *)0x00553030 = 0;                                 // multiplayer
+	menu_change(M_JEN); CHECK_EQ(t_first(buf), -1); menu_change(M_JEN);                                         // Jen's mods off
+	t_read_back(M_JEN_DESIGN + 4); CHECK_EQ(g_jenDesign[4], 3);   // the ini's name read at start-up
+	*(int *)0x00553528 = 3; CHECK_EQ(t_first(buf), -1); t_second(buf);   // the other kinds keep their own
+	menu_change(M_JEN_DESIGN + 4);                    // round to Original again
+	menu_value(M_JEN_DESIGN + 4, v, sizeof v, &rs); CHECK(!strcmp(v, "Original"));
+	*(int *)0x00553528 = 4; CHECK_EQ(t_first(buf), -1);
+
+	free_spot_t was = g_freeSpot; g_freeSpot = t_free_spot;   // Expanded Keep on a Norman keep: (45,26) -> (43,24)
+	menu_change(M_JEN_DESIGN + 2); menu_change(M_JEN_DESIGN + 2);
+	menu_value(M_JEN_DESIGN + 2, v, sizeof v, &rs); CHECK(!strcmp(v, "Expanded Keep"));
+	*(int *)0x00553528 = 2;
+	CHECK_EQ(t_first(buf), CD_REC); CHECK_EQ(t_second(buf), CD_REC); CHECK_EQ(g_cdLastLayout, 14);
+	BYTE *cell = (BYTE *)0x005440e0;
+	enum { C1 = 26 * 80 + 44, C2 = 27 * 80 + 44, C3 = 24 * 80 + 43 };
+	cell[C1 * 8 + 3] = 0xdb; cell[C1 * 8 + 1] = 0x10; cell[C2 * 8 + 3] = 0x35; cell[C2 * 8 + 1] = 0x10;
+	cell[C3 * 8 + 3] = 0xb9; cell[C3 * 8 + 1] = 0; cell[C3 * 8 + 5] = 0;
+	*(int *)0x005530ec = 0x11; *(int *)0x0053f014 = 5;
+	t_spotFree = 1;
+	CHECK_EQ(h_free_spot(0x2c, 0x1b, 1), 1); CHECK_EQ(*(int *)0x00569570, 0x2b); CHECK_EQ(*(int *)0x00569578, 0x18);
+	t_spotFree = 0;                                   // (43,24) taken: where the game put it
+	CHECK_EQ(h_free_spot(0x2c, 0x1b, 1), 1); CHECK_EQ(*(int *)0x00569570, 0x2d); CHECK_EQ(*(int *)0x00569578, 0x1a);
+	t_spotFree = 1;
+	h_free_spot(0x2c, 0x1b, 2); CHECK_EQ(*(int *)0x00569570, 0x2d);   // another ring, another cell: as the game's
+	h_free_spot(0x2c, 0x1a, 1); CHECK_EQ(*(int *)0x00569570, 0x2d);
+	cell[C1 * 8 + 3] = 0x01;                          // another field (a battle after it): as the game's
+	h_free_spot(0x2c, 0x1b, 1); CHECK_EQ(*(int *)0x00569570, 0x2d);
+	cell[C1 * 8 + 3] = 0xdb;
+	menu_change(M_JEN_DESIGN + 2);                    // its own map again: as the game's
+	CHECK_EQ(t_first(buf), -1);
+	h_free_spot(0x2c, 0x1b, 1); CHECK_EQ(*(int *)0x00569570, 0x2d);
+	g_freeSpot = was;
+	memset(cell, 0, 80 * 80 * 8);
+	*(int *)0x005530ec = 0; *(int *)0x0053f014 = 0; *(int *)0x00553528 = 0;
+	DeleteFileA(p);
 	t_shipped_settings();
 }
 

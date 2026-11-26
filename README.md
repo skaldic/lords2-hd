@@ -267,11 +267,16 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Castles | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
 | Castles | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
 | Castles | Castle garrisons | Original (150 to 600), Army size (1500 each) | Original | `GarrisonLimits` |
+| Sieges | Wooden palisade | Original, River Island | Original | `PalisadeDesign` |
+| Sieges | Motte and bailey | Original, Wooden Palace | Original | `MotteDesign` |
+| Sieges | Norman keep | Original, Leeds Castle, Expanded Keep | Original | `KeepDesign` |
+| Sieges | Stone castle | Original, Curtain Wall, The Ell, Portchester | Original | `StoneCastleDesign` |
+| Sieges | Royal castle | Original, Chambers, Island Castle, Goodrich | Original | `RoyalCastleDesign` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
 `MultiplayerFixes=1`.
 
-The Fixes and Castles tabs are on a panel of their own, Jen With a B's Mods: F11 opens it while Quality of
+The Fixes, Castles and Sieges tabs are on a panel of their own, Jen With a B's Mods: F11 opens it while Quality of
 life → Jen With a B's Mods is On (or click the line under that tab's rows); F10 goes back to the HD settings.
 It holds the fixes and mods from Jen With a B's Lords II Mod Manager, rewritten for this patch with
 Jen's consent; with the switch Off the game is as without them. Its switches work at once. Weather
@@ -283,6 +288,12 @@ garrisons: every castle holds as many men as an army may; computer lords still p
 by the original sizes. The Castles tab works in single player games only: in a multiplayer game
 everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
 from 1 to 100000 (doors) or 10000 (reclaim).
+
+Sieges (Jen's Castle Design): a siege on each kind of castle can be fought on one of the game's own
+skirmish castles instead of its usual map, from the next siege. Each kind offers the ones Jen picked as
+fitting it; only the map changes, the castle's garrison and doors stay its kind's. The maps come from the
+game's STNFIEL2.PL8 (it is off if the file is missing). Single player campaign games only, like the
+Castles tab.
 
 ![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 
