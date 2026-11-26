@@ -146,7 +146,7 @@ TEST(hooks_menu_bar_mods_and_hd)   // the menu bar: Help named Mods (Mod Menu fi
 	BOOL on;
 	char *log = t_install(0, &on);
 	if (!log) return;
-	CHECK_EQ(t_count_lines(log, "menu bar: File, Options"), 1);
+	CHECK_EQ(t_count_lines(log, "menu bar: File, Options, Help, Mods"), 1);
 	CHECK(g_barOk);
 	static const DWORD sites[4] = { 0x0041a0bf, 0x00430010, 0x004314d5, 0x00431911 };
 	for (int i = 0; i < 4; i++) { CHECK_EQ(*(BYTE *)(sites[i] - 2), BAR_TITLES); CHECK_EQ(*(DWORD *)sites[i], (DWORD)g_bar); }
@@ -155,8 +155,23 @@ TEST(hooks_menu_bar_mods_and_hd)   // the menu bar: Help named Mods (Mod Menu fi
 	CHECK_EQ(0x0040c632 + 5 + *(int *)0x0040c633, (DWORD)menu_text_find);
 	CHECK_EQ(*(BYTE *)0x0040c6fc, BAR_GAP);
 	CHECK_EQ(*(BYTE *)(BAR_BOX_ADD + 2), 1);
-	CHECK_EQ(g_bar[0].text, 1); CHECK_EQ(g_bar[1].text, 2); CHECK_EQ(g_bar[2].text, TXT_HELP); CHECK_EQ(g_bar[3].text, TXT_HD);
+	CHECK_EQ(BAR_DRAW_CALL + 5 + *(int *)(BAR_DRAW_CALL + 1), (DWORD)menu_bar_draw);
 	CHECK(g_jenMods);
+	// in a battle (no lords' shields on the bar): File, Options, Help (the game's), Mods, HD
+	*(int *)0x0057c8fc = 1; g_bar[0].x = 10;
+	CHECK_EQ(menu_bar_layout(), 5);
+	CHECK_EQ(g_bar[0].text, 1); CHECK_EQ(g_bar[1].text, 2); CHECK_EQ(g_bar[2].text, TXT_HELP); CHECK_EQ(g_bar[3].text, TXT_MODS); CHECK_EQ(g_bar[4].text, TXT_HD);
+	CHECK_EQ((DWORD)g_bar[2].items, 0x004dc3d0); CHECK_EQ(g_bar[2].count, 7);
+	CHECK(menu_bar_text(TXT_HELP, 0) == NULL);                // Help keeps its name
+	CHECK(g_bar[3].items == g_modsItems && g_bar[3].count == 5 && g_modsItems[4].fn == bar_mods4 && g_modsItems[4].y == 80);
+	CHECK(!strcmp(menu_bar_text(TXT_MODS, 0), "Mods"));
+	CHECK(!strcmp(menu_bar_text(TXT_MODS, 3), "Building Mods"));
+	CHECK(!strcmp(menu_bar_text(TXT_HD, 0), "HD"));
+	CHECK(!strcmp(menu_bar_text(TXT_HD, 3), "Quality of life"));
+	// the 4:3 county map (the shields from x 270): Help named Mods, Mod Menu first, then HD; the fifth unclickable
+	*(int *)0x0057c8fc = 0;
+	CHECK_EQ(menu_bar_layout(), 4);
+	CHECK_EQ(g_bar[2].text, TXT_HELP); CHECK_EQ(g_bar[3].text, TXT_HD);
 	CHECK(g_bar[2].items == g_helpItems && g_bar[2].count == 8);
 	CHECK(g_helpItems[0].fn == bar_mod_menu);
 	CHECK_EQ((DWORD)g_helpItems[7].fn, 0x00434d60);          // the game's About, last
@@ -164,13 +179,21 @@ TEST(hooks_menu_bar_mods_and_hd)   // the menu bar: Help named Mods (Mod Menu fi
 	CHECK(!strcmp(menu_bar_text(TXT_HELP, 0), "Mods"));
 	CHECK(!strcmp(menu_bar_text(TXT_HELP, TXT_MOD_MENU), "Mod Menu"));
 	CHECK(menu_bar_text(TXT_HELP, 7) == NULL);                // About: the game's own text
-	CHECK(!strcmp(menu_bar_text(TXT_HD, 0), "HD"));
-	CHECK(!strcmp(menu_bar_text(TXT_HD, 3), "Quality of life"));
-	CHECK(MENU_FIRST_X == g_bar[0].x);
-	g_jenMods = FALSE; menu_bar_sync();                       // off: Help as the game has it
-	CHECK_EQ((DWORD)g_bar[2].items, 0x004dc3d0); CHECK_EQ(g_bar[2].count, 7);
+	CHECK(g_bar[4].x >= g_bar[4].xEnd);
+	g_bar[0].x = 10 - 104;                                    // the wide county map (16:9): room for all five
+	CHECK_EQ(menu_bar_layout(), 5);
+	CHECK(MENU_FIRST_X == g_bar[0].x && g_bar[0].x == 10 - 104);
+	g_bar[0].x = 10;
+	g_jenMods = FALSE;                                        // off: the game's three and HD, everywhere
+	CHECK_EQ(menu_bar_layout(), 4);
+	CHECK_EQ((DWORD)g_bar[2].items, 0x004dc3d0); CHECK_EQ(g_bar[3].text, TXT_HD);
 	CHECK(menu_bar_text(TXT_HELP, 0) == NULL);
-	g_jenMods = TRUE; menu_bar_sync();
+	*(int *)0x0057c8fc = 1;
+	CHECK_EQ(menu_bar_layout(), 4);
+	g_jenMods = TRUE; *(int *)0x0057c8fc = 0;
+	*(void **)0x00522cac = &g_bar[2];                         // a list open: the layout stays
+	*(int *)0x0057c8fc = 1; CHECK_EQ(menu_bar_layout(), 4); *(int *)0x0057c8fc = 0;
+	*(void **)0x00522cac = NULL;
 	// HD > Quality of life: the panel opens at that tab once the button is up, a few frames on
 	Surface *back = g_back; g_back = NULL;
 	BOOL remote = g_remote; g_remote = TRUE; g_lbDown = TRUE;
@@ -182,9 +205,13 @@ TEST(hooks_menu_bar_mods_and_hd)   // the menu bar: Help named Mods (Mod Menu fi
 	for (int i = 0; i < 6; i++) menu_pending_tick();
 	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 2);
 	menu_toggle();
-	bar_mod_menu();                                           // Mods > Mod Menu: the Jen With a B's Mods panel
+	bar_mod_menu();                                           // (Help as) Mods > Mod Menu: the Jen With a B's Mods panel
 	for (int i = 0; i < 6; i++) menu_pending_tick();
 	CHECK(g_menuOpen && g_menuMods);
+	menu_toggle();
+	bar_mods2();                                              // Mods > Building Mods: that tab
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && g_menuMods); CHECK_EQ(g_menuTab, TAB_BUILDINGS);
 	menu_toggle();
 	g_menuMods = FALSE; g_menuTab = 0; g_remote = remote; g_back = back;
 	free(log);

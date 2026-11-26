@@ -4471,7 +4471,10 @@ static void resound_sample(void)
 		break;
 	}
 	case M_AI: g_aiLevelSet = (g_aiLevelSet + 1) % AI_LEVELS; ini_set("Game", "BattleAI", g_aiLevelSet); break;
-	case M_JEN: g_jenMods = !g_jenMods; ini_set("Game", "JenMods", g_jenMods); mpmsg_apply(g_jenMods && g_mpMsgFix); break;
+	case M_JEN: // (the menu bar's Mods title comes or goes: the county bar drawn again, FUN_00419c78's flag)
+		g_jenMods = !g_jenMods; ini_set("Game", "JenMods", g_jenMods); mpmsg_apply(g_jenMods && g_mpMsgFix);
+		*(int *)0x0056d6a0 = 1;
+		break;
 	case M_JEN_RATION: g_fixRation = !g_fixRation; ini_set("Game", "RationFix", g_fixRation); break; // (read at each county's food step)
 	case M_JEN_MPMSG: g_mpMsgFix = !g_mpMsgFix; ini_set("Game", "MpMessageFix", g_mpMsgFix); mpmsg_apply(g_jenMods && g_mpMsgFix); break;
 	case M_JEN_FIELDS: g_jenFieldLoss = !g_jenFieldLoss; ini_set("Game", "FieldDestruction", g_jenFieldLoss); break;
@@ -8334,30 +8337,38 @@ static int __cdecl h_menu_hit(short *items, int n, int x, int y)
 	return o_menu_hit(items, n, battle_zoom_on() ? menu_list_x(x) : x, y);
 }
 
-// The menu bar as AllYourBases asked and as Jen With a B's Mod Manager has it: the game's File, Options
-// and Help, with Help named Mods while Jen With a B's Mods is on (its list: Mod Menu first, which opens
-// that panel, then the game's help and About), and a fourth title, HD, whose list opens the F10 panel
-// at each of its tabs. The game's table can't grow where it is (other data follows it), so it is
-// copied to g_bar and the four places that pass it (with its count, 3) are pointed there. A title is
-// {x, x end, y, text group, items, count}; an item {y, text index, function}. The new texts have no
-// group in the game's text file: the five calls that look a title's or item's text up are pointed
-// at menu_text / menu_text_find, which draw these from here and pass the game's own on.
+// The menu bar as AllYourBases asked: the game's File, Options and Help, then Mods (while Jen With a B's Mods
+// is on), whose list opens that panel at each of its tabs (Jen's Mod Menu groups), and HD, whose list opens
+// the F10 panel at each of its tabs. The game's table can't grow where it is (other data follows it), so
+// it is copied to g_bar and the four places that pass it (with its count, 3) are pointed there, with 5.
+// A title is {x, x end, y, text group, items, count}; an item {y, text index, function}. The new texts
+// have no group in the game's text file: the five calls that look a title's or item's text up are
+// pointed at menu_text / menu_text_find, which draw these from here and pass the game's own on.
+// Where the bar is short of room - the 4:3 county map, where the rival lords' shields follow the titles
+// from x 270 - Mods takes Help's place instead, as on Jen's Mod Manager: Help named Mods, with Mod Menu
+// first in its list. The layout is chosen as the bar is drawn (menu_bar_draw: its one drawing call).
 typedef struct { short x, xEnd, y, text; void *items; short count, pad; } bar_title_t;
 typedef struct { short y, text; void (__cdecl *fn)(void); int pad; } bar_item_t;
 _Static_assert(sizeof(bar_title_t) == 16 && sizeof(bar_item_t) == 12, "the game's menu bar records");
-#define BAR_TITLES 4
-#define BAR_HELP 2          // Help / Mods
+#define BAR_TITLES 5
+#define BAR_HELP 2          // Help (Mods in the short layout)
 #define TXT_HELP 3          // the Help title's text group
+#define TXT_MODS 0x71       // the Mods title's (none of the game's)
 #define TXT_HD 0x70         // the HD title's (none of the game's)
 #define TXT_MOD_MENU 100    // Mod Menu in the Help group (beyond its 7)
-#define BAR_GAP 16          // between titles (the game's 32 put HD on the shield next to them)
+#define BAR_GAP 16          // between titles (the game's 32: five titles reached into the shields)
+#define BAR_DRAW_CALL 0x0041a0c3 // FUN_00419c78's call 0040c5b0 (g_bar, n): the bar's only drawing
+#define LORD_SHIELDS_X 270  // FUN_00419c78: one shield for each rival lord from here (not in battles)
+#define BAR_ROOM_X 266      // the five titles must end left of the shields
 // The open title's dark box is 16-pixel cells, its text's width / 16 + 2 (0x0040c677: add eax,2): with the
 // closer titles that reached into the next one; + 1 still holds the text with room to spare.
 #define BAR_BOX_ADD 0x0040c677
 static bar_title_t g_bar[BAR_TITLES];
-static bar_item_t g_helpItems[8], g_hdItems[4];
-static BOOL g_barOk;
-static volatile LONG g_menuPending; // a panel the menu bar asked for: 1-4 the F10 tabs, 5 the Mods panel
+static bar_item_t g_helpItems[8], g_hdItems[4], g_modsItems[5];
+static bar_title_t g_barFile, g_barOptions, g_barHelp, g_barMods, g_barHd; // the titles the layouts take from
+static BOOL g_barOk, g_helpAsMods;
+static int g_barShown = BAR_TITLES; // titles in the layout drawn last
+static volatile LONG g_menuPending; // a panel the menu bar asked for: 1-4 the F10 tabs, 5 the Mods panel, 6-10 its tabs
 static int g_menuPendingWait;
 static BOOL left_button_down(void)
 {
@@ -8370,11 +8381,19 @@ static void __cdecl bar_hd0(void) { menu_ask(1); }
 static void __cdecl bar_hd1(void) { menu_ask(2); }
 static void __cdecl bar_hd2(void) { menu_ask(3); }
 static void __cdecl bar_hd3(void) { menu_ask(4); }
+static void __cdecl bar_mods0(void) { menu_ask(6); }
+static void __cdecl bar_mods1(void) { menu_ask(7); }
+static void __cdecl bar_mods2(void) { menu_ask(8); }
+static void __cdecl bar_mods3(void) { menu_ask(9); }
+static void __cdecl bar_mods4(void) { menu_ask(10); }
+// The Mods list's lines: Jen's names for the groups (the panel's tabs say them shorter)
+static const char *const kModsLine[5] = { "Game Mods", "Economy Mods", "Building Mods", "Unit Mods", "Fixes" };
 static const char *menu_bar_text(int group, int index)
 {
 	if (!g_barOk) return NULL;
-	if (group == TXT_HELP && index == 0 && g_jenMods) return "Mods";
+	if (group == TXT_HELP && index == 0 && g_helpAsMods) return "Mods";
 	if (group == TXT_HELP && index == TXT_MOD_MENU) return "Mod Menu";
+	if (group == TXT_MODS) return index >= 1 && index <= 5 ? kModsLine[index - 1] : "Mods";
 	if (group == TXT_HD) return index >= 1 && index <= 4 ? kMenuTab[index - 1] : "HD";
 	return NULL;
 }
@@ -8394,24 +8413,45 @@ static void __cdecl menu_text_find(int group, int index) // FUN_004018d7: the ti
 	if (s) *(const char **)0x005c9270 = s;
 	else ((text_find_t)0x004018d7)(group, index);
 }
-// Help's list follows the Jen With a B's Mods switch (while no list is open): with Mod Menu, or the game's own.
-static void menu_bar_sync(void)
+// The titles for now: File, Options, Help, [Mods,] HD - or, short of room with Jen With a B's Mods on, File,
+// Options, Help as Mods, HD. Titles past the layout's get an empty x range: the game's clicks (FUN_0040e00a,
+// counting 5) never land on them. Kept while a list is open (the game holds a pointer to its title).
+static int menu_bar_layout(void)
 {
-	if (!g_barOk || *(void **)0x00522cac) return;
-	g_bar[BAR_HELP].items = g_jenMods ? (void *)g_helpItems : (void *)(ULONG_PTR)0x004dc3d0;
-	g_bar[BAR_HELP].count = g_jenMods ? 8 : 7;
+	if (!g_barOk) return BAR_TITLES;
+	if (*(void **)0x00522cac) return g_barShown;
+	BOOL battle = *(int *)0x0057c8fc != 0; // (no shields then: FUN_00419c78)
+	int x0 = g_bar[0].x; // the first title's x, moved left on the wide map (h_bar_tiles)
+	BOOL room = battle || x0 + 300 <= BAR_ROOM_X; // (five titles take about 300 pixels)
+	bar_title_t t[BAR_TITLES] = { g_barFile, g_barOptions, g_barHelp, g_barHd, g_barHd };
+	int n = 4;
+	g_helpAsMods = FALSE;
+	if (g_jenMods && room) { t[3] = g_barMods; n = 5; }
+	else if (g_jenMods) { g_helpAsMods = TRUE; t[2].items = g_helpItems; t[2].count = 8; }
+	t[0].x = (short)x0;
+	for (int i = n; i < BAR_TITLES; i++) t[i].x = t[i].xEnd = -0x7000;
+	memcpy(g_bar, t, sizeof t);
+	return g_barShown = n;
+}
+static void __cdecl menu_bar_draw(short *table, int n)
+{
+	(void)n;
+	((void (__cdecl *)(short *, int))0x0040c5b0)(table, menu_bar_layout());
 }
 // The panel opens a few frames after the click, once the button is up: the list is gone from the
 // picture by then (the scroll keeps what it covers), and the game has seen the release.
 static void menu_pending_tick(void)
 {
-	menu_bar_sync();
 	int what = g_menuPending;
 	if (!what || left_button_down() || g_menuOpen || ++g_menuPendingWait < 4) return;
 	InterlockedExchange(&g_menuPending, 0);
-	if (what == 5) { if (g_jenMods) menu_show_panel(TRUE); }
+	if (what >= 5) {
+		if (!g_jenMods) return;
+		if (what > 5) g_tabOf[1] = MODS_TAB0 + what - 6;
+		menu_show_panel(TRUE);
+	}
 	else { g_tabOf[0] = what - 1; menu_show_panel(FALSE); }
-	logf_("menu bar: %s", what == 5 ? "Mod Menu" : kMenuTab[what - 1]);
+	logf_("menu bar: %s", what == 5 ? "Mod Menu" : what > 5 ? kModsLine[what - 6] : kMenuTab[what - 1]);
 }
 static void menu_bar_install(void)
 {
@@ -8424,16 +8464,21 @@ static void menu_bar_install(void)
 	for (int i = 0; i < 4 && ok; i++) ok = !memcmp((const void *)(kSites[i] - 3), kPush, 7);
 	for (int i = 0; i < 4 && ok; i++) ok = *(BYTE *)kTextCalls[i] == 0xE8 && kTextCalls[i] + 5 + *(int *)(kTextCalls[i] + 1) == 0x00402d37;
 	ok = ok && *(BYTE *)0x0040c632 == 0xE8 && 0x0040c632 + 5 + *(int *)(0x0040c633) == 0x004018d7;
+	ok = ok && *(BYTE *)BAR_DRAW_CALL == 0xE8 && BAR_DRAW_CALL + 5 + *(int *)(BAR_DRAW_CALL + 1) == 0x0040c5b0;
 	if (!ok) { logf_("not hooked: unexpected code or data at the menu bar (0x004dc428): no Mods and HD titles"); return; }
-	memcpy(g_bar, game, 3 * sizeof *g_bar);
-	g_bar[3] = (bar_title_t){ 0, 0, game[0].y, TXT_HD, g_hdItems, 4, 0 };
+	g_barFile = game[0]; g_barOptions = game[1]; g_barHelp = game[2];
+	g_barMods = (bar_title_t){ 0, 0, game[0].y, TXT_MODS, g_modsItems, 5, 0 };
+	g_barHd = (bar_title_t){ 0, 0, game[0].y, TXT_HD, g_hdItems, 4, 0 };
 	g_helpItems[0] = (bar_item_t){ 0, TXT_MOD_MENU, bar_mod_menu, 0 };
 	memcpy(g_helpItems + 1, (const void *)0x004dc3d0, 7 * sizeof *g_helpItems);
 	for (int i = 1; i < 8; i++) g_helpItems[i].y = (short)(i * 20);
 	void (__cdecl *const hd[4])(void) = { bar_hd0, bar_hd1, bar_hd2, bar_hd3 };
 	for (int i = 0; i < 4; i++) g_hdItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), hd[i], 0 };
+	void (__cdecl *const mods[5])(void) = { bar_mods0, bar_mods1, bar_mods2, bar_mods3, bar_mods4 };
+	for (int i = 0; i < 5; i++) g_modsItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), mods[i], 0 };
+	g_bar[0].x = game[0].x;
 	g_barOk = TRUE;
-	menu_bar_sync();
+	menu_bar_layout();
 	for (int i = 0; i < 4; i++) {
 		BYTE b[7]; memcpy(b, kPush, 7);
 		b[1] = BAR_TITLES; *(DWORD *)(b + 3) = (DWORD)g_bar;
@@ -8445,9 +8490,11 @@ static void menu_bar_install(void)
 	}
 	BYTE c[5] = { 0xE8 }; *(DWORD *)(c + 1) = (DWORD)menu_text_find - (0x0040c632 + 5);
 	code_put(0x0040c632, c, 5);
+	*(DWORD *)(c + 1) = (DWORD)menu_bar_draw - (BAR_DRAW_CALL + 5);
+	code_put(BAR_DRAW_CALL, c, 5);
 	BYTE gap = BAR_GAP, box = 1; code_put(0x0040c6fc, &gap, 1); code_put(BAR_BOX_ADD + 2, &box, 1);
 	g_barTable = (short *)g_bar;
-	logf_("menu bar: File, Options, Help (Mods while Jen With a B's Mods is on), HD");
+	logf_("menu bar: File, Options, Help, Mods (while Jen With a B's Mods is on), HD");
 }
 
 static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)

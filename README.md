@@ -229,10 +229,11 @@ it, right-click to close. Most changes apply at once; those marked * (widescreen
 drawing on the graphics card or the processor) after a restart, and the battle fixes from the next
 battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed timings.
 
-The same can be reached with the mouse from the menu bar at the top of the county map and battles:
-**HD** opens the scroll at any of its four tabs, and **Mods** (the game's Help, renamed while Jen With
-a B's Mods is on, with the game's help still in its list) starts with **Mod Menu**, which opens the
-Jen With a B's Mods panel.
+The same can be reached with the mouse from the menu bar at the top of the county map and battles,
+which reads File, Options, Help, **Mods**, **HD**: HD opens the scroll at any of its four tabs, and
+Mods (while Jen With a B's Mods is on) opens that panel at any of its groups. On the county map at 4:3
+the rival lords' shields leave room for four titles only: there Help is named Mods and its list starts
+with **Mod Menu**, as in Jen's Mod Manager, with the game's help below it.
 
 | Tab | Setting | Choices | Default | In `lords2hd.ini` |
 |---|---|---|---|---|
@@ -282,7 +283,7 @@ The four battle fixes, like the other game fixes, stay off in multiplayer unless
 `MultiplayerFixes=1`.
 
 The Game, Economy, Buildings, Units and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
-as on Jen's Mod Menu: F11 or Mods → Mod Menu opens it while Quality of life → Jen With a B's Mods is On (or
+as on Jen's Mod Menu: F11 or the Mods title opens it while Quality of life → Jen With a B's Mods is On (or
 click the line under that tab's rows); F10 goes back to the HD settings. Pointing at a line shows what it
 does below the list, and Reset all to default puts every line back as the patch ships it.
 It holds the fixes and mods from Jen With a B's Lords II Mod Manager, rewritten for this patch with
