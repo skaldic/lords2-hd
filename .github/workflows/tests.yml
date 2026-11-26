@@ -1,0 +1,71 @@
+# Unit tests on every pull request and on main: the same tests\run.ps1 as at home, without the game.
+# The hook tests need a copy of Lords2.exe, which can't be on GitHub, so they skip themselves here
+# (run them locally with tests\run.ps1 -GameExe <copy of Lords2.exe>).
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The same compiler as the release builds (tools\find_cc.ps1 finds it through L2HD_TOOLS)
+  LLVM_MINGW: llvm-mingw-20261006-msvcrt-x86_64
+  LLVM_MINGW_URL: https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-msvcrt-x86_64.zip
+  LLVM_MINGW_SHA256: 24847b37a951c8583c3f7ec061de2eb87f6394215c8ef3fdc4565ed0835396e1
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache llvm-mingw
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\tools
+          key: ${{ env.LLVM_MINGW }}
+
+      - name: Get llvm-mingw
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "$env:RUNNER_TEMP\llvm-mingw.zip"
+          Invoke-WebRequest -UseBasicParsing $env:LLVM_MINGW_URL -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:LLVM_MINGW_SHA256) { throw "llvm-mingw download has sha256 $hash, expected $env:LLVM_MINGW_SHA256" }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\tools"
+
+      - name: Use llvm-mingw
+        run: |
+          "L2HD_TOOLS=$env:RUNNER_TEMP\tools" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          & "$env:RUNNER_TEMP\tools\$env:LLVM_MINGW\bin\i686-w64-mingw32-clang.exe" --version
+
+      - name: Unit tests (tests\run.ps1)
+        run: |
+          powershell -ExecutionPolicy Bypass -File tests\run.ps1
+          exit $LASTEXITCODE
+
+      - name: Build ddraw.dll and dplayx.dll
+        run: |
+          powershell -ExecutionPolicy Bypass -File hd\build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -ExecutionPolicy Bypass -File multiplayer\dplayx\build.ps1
+          exit $LASTEXITCODE
+
+      - name: Multiplayer self-test (tests\mp_selftest.ps1)
+        run: |
+          powershell -ExecutionPolicy Bypass -File tests\mp_selftest.ps1
+          exit $LASTEXITCODE
