@@ -13293,9 +13293,12 @@ static int __cdecl h_wheat_scale(int county, int grain)
 // ration split by the food slider (0x0053fb0f, percent from cattle): cattle at DAT_00567594 (10) food each,
 // grain at DAT_0057cb30 (6) each. Each share was then cut to what is in store on its own (0x0044e4a2 ..
 // 0x0044e523: cattle 0x0053fb34 -> 0x0053fb2c, grain 0x0053fb30 -> 0x0053fb28), so with one food run out the
-// people ate less than their ration while the other food stayed in store. Now, with the slider between its
+// county ate less than its ration, yet happiness comes from the ration level (0x0053f9c1), not from what
+// was eaten: setting the slider towards an empty food saved food for free. Now, with the slider between its
 // ends, a share that runs short is made up from the other food at those rates (rounded up), as far as it
-// lasts. At 0% or 100% the player chose one food: unchanged. Off in multiplayer unless MultiplayerFixes=1.
+// lasts, so the county eats its ration. At 0% or 100% the player chose one food: unchanged. As in Jen's
+// DLL only this second cut is changed; the first (before the game lowers the ration to what the shares
+// allow) is left as it is. Off in multiplayer unless MultiplayerFixes=1.
 static BOOL g_fixRation;
 static void ration_share(int haveCattle, int haveGrain, int needCattle, int needGrain, int cattlePct,
 	int cattleFood, int grainFood, int *cattle, int *grain)
