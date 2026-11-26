@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DLL_VERSION 11  /* 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
+#define DLL_VERSION 14  /* 14: the lords2-relay internet lobby (relay.c): a host lists its game, the address box's "Internet games" lists the rooms in the game's own session list, Open(join) of a room pairs through the relay; game wire unchanged, bumped so v13 and v14 never share a game; 13: session clock - the host's T_PONG carries its session time, every log line is stamped [S <s>] in it, on every PC (diag.c; a v12 peer would send 16-byte pings, so v12 is refused), a summary per session in session.txt, desync.txt gone (the summary and dplayx.log have it), settings in lords2hd.ini; 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
 /* PROTO digits: thousands = DLL_VERSION, hundreds = pace patch applied (0/1), tens = 2*exe_ok + slowlink (0..3),
  * units = mpfix (0/1). g_exe_ok / g_pace_ok / g_mpfix are set in exepatch.c, g_slowlink once at load from
  * LOTR2NET_SLOWLINK. DLL_VERSION 7 carries resync wire version RS_VER 1 (a peer of another DLL version is refused). */
@@ -93,7 +93,7 @@ enum { T_HELLO = 1, T_INFO, T_REJECT, T_CREATEPL, T_PLAYERID, T_SYS_CREATE, T_SY
 #define MODE_JOIN 2
 static const char MAGIC[8] = {'L', 'O', 'T', 'R', '2', 'N', 'E', 'T'};
 
-typedef struct Msg { struct Msg *next; DPID from, to; DWORD len; BYTE data[4]; } Msg;   /* allocated to fit len */
+typedef struct Msg { struct Msg *next; DPID from, to; DWORD len, t_us; BYTE data[4]; } Msg;   /* allocated to fit len; t_us: when queued (diag.c) */
 typedef struct { int used; DPID id; char name[32]; int conn; DWORD lord, hello_t; int hello_n; BYTE cp_next; DWORD cp_n, cp_h;
     struct { DWORD tk[64], tt[64]; int z_tok; DWORD z_t; long hw_ahead, hw_hb; int hw_infl, hw_tick, b_tok, l_tok; DWORD b_t, l_t, old_r, nd, hb_last, hb_t, wd_n, hb_pre, hb_pre_t; int lead_add; BYTE seq, sq[10], sqi; } tr; } Player;   /* lord, hello_*, cp_*, tr: host only (trust.c) */
 /* One outbound queue + writer thread per socket (review #2): a game thread or reader only appends under oc and never
@@ -109,7 +109,7 @@ typedef struct Out {
     volatile LONG refs, stop, dead, wdone;
     char tag[16];
 } Out;
-typedef struct { int used; SOCKET s; Out *o; int haveplayer, ncreate, sync_n, rs_n, bad_lord, dt_tok, dt_over, dt_rate; DWORD sync_t, rs_t, lord, dt_t; u_long ip; } Conn;   /* ip: the peer's address (F3 per-address caps) */   /* lord: the one lord slot this conn may speak for (resync.c rs_conn_lord) */
+typedef struct { int used; SOCKET s; Out *o; int haveplayer, ncreate, sync_n, rs_n, bad_lord, dt_tok, dt_over, dt_rate, dg_n; DWORD sync_t, rs_t, lord, dt_t, dg_t; u_long ip; } Conn;   /* ip: the peer's address (F3 per-address caps) */   /* lord: the one lord slot this conn may speak for (resync.c rs_conn_lord) */
 
 static CRITICAL_SECTION cs;
 static struct {
@@ -149,6 +149,9 @@ static CRITICAL_SECTION logcs;
 static DWORD log_bytes;
 static int log_capped;
 static int log_force;   /* sync.c sets it around SYNC/DESYNC lines (see logf_) */
+static int g_log_hb;    /* log_heartbeats=1: per-message 0x0a lines too (diag.c) */
+static volatile LONG g_msg_stopped;   /* per-message lines have stopped at the log cap; a new session folder resets it (sesslog.c) */
+static void lf_copy_all(void);
 
 /* ------------------------------------------------------------------ logging */
 /* Async log (review #14): logf_ only appends to a 512 KB buffer under logcs; a below-normal-priority thread writes it
@@ -249,13 +252,17 @@ static void log_flush_exit(void)
     }
 }
 
+static int clk_now_ms(DWORD *ms);   /* diag.c: the session clock */
+/* [S 123.456] = the session clock (the host's, on every PC: diag.c); [  123.456] = since this DLL loaded (no session
+ * clock yet: before a session, or a joiner before the host's first answer) */
 static void logf_(const char *fmt, ...)
 {
     char b[600];
-    DWORD n, t = GetTickCount() - t0;
-    int r;
+    DWORD n, t;
+    int r, s = clk_now_ms(&t);
     va_list ap;
-    n = (DWORD)sprintf(b, "[%6lu.%03lu] %s ", t / 1000, t % 1000, G.host ? "H" : "J");
+    if (!s) t = GetTickCount() - t0;
+    n = (DWORD)sprintf(b, "[%s%6lu.%03lu] %s ", s ? "S " : "  ", t / 1000, t % 1000, G.host ? "H" : "J");
     va_start(ap, fmt);
     r = _vsnprintf(b + n, sizeof(b) - n - 2, fmt, ap);
     va_end(ap);
@@ -272,9 +279,9 @@ static void logmsg(const char *dir, DPID from, DPID to, const BYTE *d, DWORD len
 {
     /* 5-peer rig 2026-10-07: per-message lines filled the 8 MB cap in ~9 minutes and the later conn-drop line was lost.
      * They stop at LOG_CAP - 2 MB; events (conns, players, TRUST, errors) keep the last 2 MB. */
-    static volatile LONG msg_stopped;
+    if (!g_log_hb && len == 8 && d[0] == 0x0a) return;   /* v12: a frozen peer repeats these up to 140 times a second; the DIAG lines count them */
     if (log_bytes > LOG_CAP - (2u << 20)) {
-        if (!InterlockedExchange(&msg_stopped, 1)) logf_("per-message lines stop here (log at %u MB); events are still logged", (LOG_CAP >> 20) - 2);
+        if (!InterlockedExchange(&g_msg_stopped, 1)) logf_("per-message lines stop here (log at %u MB); events are still logged", (LOG_CAP >> 20) - 2);
         return;
     }
     logf_("MSG %s from=%08lx to=%08lx size=%lu b4=%02x %02x %02x %02x", dir, from, to, len,
@@ -294,42 +301,57 @@ static void ensure_init(void)
     wsa_ok = 1;
 }
 
-/* lotr2net.ini beside Lords2.exe: "key=value" lines; returns 1 and the trimmed value when key is present */
+/* Settings: [Multiplayer] in lords2hd.ini beside Lords2.exe, shared with the HD ddraw. Returns 1 and the value when key
+ * is there (an empty value too). The profile API reads ANSI, UTF-8 and UTF-16 files alike. */
+#define INI_SEC "Multiplayer"
+static void ini_path(char *p, int cap) { snprintf(p, cap, "%slords2hd.ini", exedir); }
+
 static int ini_get(const char *key, char *out, int cap)
 {
-    char p[MAX_PATH + 16], line[512];
+    char p[MAX_PATH + 16];
+    int n;
+    ini_path(p, sizeof p);
+    GetPrivateProfileStringA(INI_SEC, key, "\x01", out, cap, p);
+    if (out[0] == 1) { out[0] = 0; return 0; }   /* the default: no such key */
+    { char *c = strpbrk(out, ";#"); if (c) *c = 0; }   /* F9: "mpfix=off ; rig" is "off" (no value here holds ; or #) */
+    n = (int)strlen(out);
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = 0;
+    return 1;
+}
+
+/* Up to v12 the settings were key=value lines in lotr2net.ini. Once, at load: each key lords2hd.ini does not have yet is
+ * copied into [Multiplayer] (lords2hd.ini wins), then the file becomes lotr2net.ini.old. DllMain, before any ini_get */
+static void ini_migrate(void)
+{
+    char p[MAX_PATH + 16], old[MAX_PATH + 16], ini[MAX_PATH + 16], line[512], v[8];
     FILE *f;
-    int kl = (int)strlen(key), found = 0, first = 1;
-    lstrcpynA(p, exedir, MAX_PATH);
-    lstrcatA(p, "lotr2net.ini");
-    f = fopen(p, "r");
-    if (!f) return 0;
-    while (!found && fgets(line, sizeof line, f)) {
-        char *s = line;
-        if (first) {   /* review tb2 F9: Notepad's "UTF-8" adds a BOM; "Unicode" (UTF-16) cannot be read as ASCII at all */
-            static int warned;
+    int n = 0, first = 1;
+    snprintf(p, sizeof p, "%slotr2net.ini", exedir);
+    if (!(f = fopen(p, "r"))) return;
+    ini_path(ini, sizeof ini);
+    while (fgets(line, sizeof line, f)) {
+        char *s = line, *eq, *e;
+        if (first) {
             first = 0;
-            if ((BYTE)s[0] == 0xFF || (BYTE)s[0] == 0xFE) {
-                if (!warned++) logf_("lotr2net.ini is saved as Unicode (UTF-16) - it is IGNORED; save it as ANSI or UTF-8");
-                break;
-            }
+            if ((BYTE)s[0] == 0xFF || (BYTE)s[0] == 0xFE) { logf_("lotr2net.ini is saved as Unicode (UTF-16) - not moved"); fclose(f); return; }
             if ((BYTE)s[0] == 0xEF && (BYTE)s[1] == 0xBB && (BYTE)s[2] == 0xBF) s += 3;
         }
         while (*s == ' ' || *s == '\t') s++;
-        if (_strnicmp(s, key, kl)) continue;
-        s += kl;
-        while (*s == ' ' || *s == '\t') s++;
-        if (*s != '=') continue;
-        s++;
-        while (*s == ' ' || *s == '\t') s++;
-        lstrcpynA(out, s, cap);
-        { char *c = strpbrk(out, ";#"); if (c) *c = 0; }   /* F9: "mpfix=off ; rig" is "off" (no value here holds ; or #) */
-        int n = (int)strlen(out);
-        while (n > 0 && (out[n - 1] == '\r' || out[n - 1] == '\n' || out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = 0;
-        found = 1;
+        if (*s == ';' || *s == '#' || *s == '[' || !(eq = strchr(s, '='))) continue;
+        e = eq;
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t')) e--;
+        *e = 0;
+        e = eq + 1;
+        while (*e == ' ' || *e == '\t') e++;
+        { int k = (int)strlen(e); while (k > 0 && (e[k - 1] == '\r' || e[k - 1] == '\n' || e[k - 1] == ' ' || e[k - 1] == '\t')) e[--k] = 0; }
+        if (!*s || ini_get(s, v, sizeof v)) continue;
+        if (WritePrivateProfileStringA(INI_SEC, s, e, ini)) n++;
     }
     fclose(f);
-    return found;
+    if (first) return;   /* nothing was read: an empty or unreadable file stays */
+    snprintf(old, sizeof old, "%slotr2net.ini.old", exedir);
+    logf_("lotr2net.ini: %d setting(s) moved to lords2hd.ini [%s]; the file is now lotr2net.ini.old%s", n, INI_SEC,
+          MoveFileExA(p, old, MOVEFILE_REPLACE_EXISTING) ? "" : " - NOT renamed");
 }
 
 static int parse_port(const char *t, const char *what)
@@ -338,11 +360,12 @@ static int parse_port(const char *t, const char *what)
     if (v < 1024 || v > 65535) { logf_("%s port '%s' out of range - using %d", what, t, PORT_DEFAULT); return PORT_DEFAULT; }
     return v;
 }
-/* The address typed into our Connect box (ask_join), used for this run even when lotr2net.ini cannot be written. */
+/* The address typed into our Connect box (ask_join), used for this run even when lords2hd.ini cannot be written. */
 static char g_ask_host[128];
-/* ddraw's in-game Multiplayer menu (ddraw/mpmenu.c, 2026-10-06): mode 1 = the next Connect joins g_menu_host with no
- * Win32 window at all (no address box; the session list stays invisible and its first session is taken, or it is
- * cancelled with g_menu_msg saying why), mode 2 = the next Create (nothing to do here). Game thread only. */
+/* Menu join (GameRanger auto-setup, gra_title): g_menu 1 = the next Connect joins g_menu_host with no Win32 window at
+ * all (no address box; the session list stays invisible and its first session is taken, or it is cancelled with
+ * g_menu_msg saying why). It began for the LotR2 Fix ddraw's title-menu screens, which Lords2HD does not ship.
+ * Game thread only. */
 static int g_menu, g_menu_tries;
 static DWORD g_menu_seq, g_menu_t0;   /* menu_enum: last enum round counted, when this menu join began (#15) */
 static volatile LONG g_enum_gen;       /* bumped per menu join: an older round is never taken for a newer join */
@@ -350,6 +373,26 @@ static char g_menu_host[128], g_menu_msg[128];
 static void beacon_start(int port);
 static void grhb_start(int port);
 static void beacon_stop(void);
+/* host[:port] as typed (ini, env, address box): both ends trimmed, an optional :port split off into *port (left as it
+ * is without one). 0 = ok; -1 = it looks like IPv6, which fails loudly (F9: never fall back to loopback). what = which
+ * setting, for the log */
+static int parse_addr(char *host, int *port, const char *what)
+{
+    char *c, *l = host;
+    int n;
+    while (*l == ' ' || *l == '\t') l++;
+    if (l != host) memmove(host, l, strlen(l) + 1);
+    n = (int)strlen(host);
+    while (n > 0 && (host[n - 1] == '\r' || host[n - 1] == '\n' || host[n - 1] == ' ' || host[n - 1] == '\t')) host[--n] = 0;
+    c = strchr(host, ':');
+    if (c && (strchr(c + 1, ':') || host[0] == '[')) {
+        static int warned;
+        if (!warned++) logf_("%s '%s' looks like an IPv6 address - only IPv4 addresses and computer names work", what, host);
+        return -1;
+    }
+    if (c) { *c = 0; *port = parse_port(c + 1, what); }
+    return 0;
+}
 static void get_target(char *host, int *port)
 {
     char *e = getenv("LOTR2NET_HOST");
@@ -359,20 +402,7 @@ static void get_target(char *host, int *port)
     else if (e && *e) lstrcpynA(host, e, 120);
     else if (g_ask_host[0]) lstrcpynA(host, g_ask_host, 120);
     else ini_get("host", host, 120);
-    { /* trim both ends, optional :port */
-        char *c, *l = host;
-        int n;
-        while (*l == ' ' || *l == '\t') l++;
-        if (l != host) memmove(host, l, strlen(l) + 1);
-        n = (int)strlen(host);
-        while (n > 0 && (host[n - 1] == '\r' || host[n - 1] == '\n' || host[n - 1] == ' ' || host[n - 1] == '\t')) host[--n] = 0;
-        c = strchr(host, ':');
-        if (c && (strchr(c + 1, ':') || host[0] == '[')) {   /* F9: an IPv6 address must fail loudly, never fall back to loopback */
-            static int warned;
-            if (!warned++) logf_("host '%s' looks like an IPv6 address - only IPv4 addresses and computer names work", host);
-            if (g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "IPv6 is not supported: use an IPv4 address");
-        } else if (c) { *c = 0; *port = parse_port(c + 1, "host"); }
-    }
+    if (parse_addr(host, port, "host") && g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "IPv6 is not supported: use an IPv4 address");
     if (!host[0]) lstrcpyA(host, "127.0.0.1");
 }
 static int listen_port(void)
@@ -691,9 +721,11 @@ static SOCKET dial(DWORD ms) { char host[128]; int port; get_target(host, &port)
 /* ---- state helpers (cs held) ---- */
 static int pl_count(void) { int i, n = 0; for (i = 0; i < MAXPL; i++) n += G.pl[i].used; return n; }
 static Player *pl_find(DPID id) { int i; for (i = 0; i < MAXPL; i++) if (G.pl[i].used && G.pl[i].id == id) return &G.pl[i]; return NULL; }
+static void dg_roster_add(DPID id, const char *name);   /* diag.c: the session summary's player list */
 static Player *pl_add(DPID id, const char *name, int conn)
 {
     int i;
+    dg_roster_add(id, name);
     for (i = 0; i < MAXPL; i++) if (!G.pl[i].used) {
         G.pl[i].used = 1; G.pl[i].id = id; G.pl[i].conn = conn; G.pl[i].lord = 0; G.pl[i].hello_t = 0; G.pl[i].hello_n = 0; G.pl[i].cp_next = 0; G.pl[i].cp_n = G.pl[i].cp_h = 0; memset(&G.pl[i].tr, 0, sizeof G.pl[i].tr);
         lstrcpynA(G.pl[i].name, name ? name : "", 32);
@@ -711,6 +743,8 @@ static Player *pl_add(DPID id, const char *name, int conn)
  * sender's order, so copy 0 always arrives first and is always taken. With QSHED messages already waiting, copies
  * 0x40/0x80 are not queued: the game would have dropped them anyway. Copy 0 and system messages are never shed. */
 static DWORD g_qin, g_qout;   /* messages queued to / taken by our game so far (cs; trust.c review7 R7-4) */
+static DWORD dg_us(void);
+static void dg_on_rx(DPID from, const BYTE *d, DWORD len);
 static int qpush(DPID from, DPID to, const BYTE *d, DWORD len, int force)
 {
     Msg *m;
@@ -724,8 +758,9 @@ static int qpush(DPID from, DPID to, const BYTE *d, DWORD len, int force)
     if (len > MAXRECV + 64) len = MAXRECV + 64;
     m = (Msg *)malloc(sizeof(Msg) + len);
     if (!m) { logf_("queue_push: out of memory - message dropped"); return 2; }
-    m->next = NULL; m->from = from; m->to = to; m->len = len;
+    m->next = NULL; m->from = from; m->to = to; m->len = len; m->t_us = dg_us();
     memcpy(m->data, d, len);
+    dg_on_rx(from, d, len);
     if (G.qt) G.qt->next = m; else G.qh = m;
     G.qt = m;
     G.qcount++; g_qin++;
@@ -795,6 +830,8 @@ static int jsend(BYTE type, const void *p, DWORD n)
 #include "sync.c"
 #include "resync.c"
 #include "trust.c"
+#include "diag.c"
+#include "sesslog.c"
 
 /* ---- v10 ghost hub. The game asks for DPSESSION_MIGRATEHOST and handles DPSYS_HOST (FUN_004b8c3a ->
  * FUN_0043e6a2(4): that peer's game takes the host flag 0x553248 and the host duties). Our joiners reach only the hub
@@ -802,7 +839,7 @@ static int jsend(BYTE type, const void *p, DWORD n)
  * process keeps relaying for the joiners instead of ending the game for all of them: no traffic to or from its own
  * game, no sync compare, resync or trust work (trust would drop the new game host's host-only messages), and the
  * lowest remaining player id is sent T_HOST so its DLL hands its game DPSYS_HOST. Ends when the last joiner leaves.
- * Off with ghost=0 in lotr2net.ini or LOTR2NET_GHOST=0. cs held unless said. */
+ * Off with ghost=0 in lords2hd.ini or LOTR2NET_GHOST=0. cs held unless said. */
 static volatile LONG g_ghost_done;   /* the hub closed: a reader thread resets the window title outside cs */
 static int ghost_enabled(void)   /* cs NOT held (ini read) */
 {
@@ -1054,6 +1091,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
     G.conns[ci].lord = 0; G.conns[ci].bad_lord = 0;   /* resync.c: bound at its first record */
     G.conns[ci].sync_n = 0; G.conns[ci].sync_t = 0;
     G.conns[ci].rs_n = 0; G.conns[ci].rs_t = 0;
+    G.conns[ci].dg_n = 0; G.conns[ci].dg_t = 0;
     G.conns[ci].dt_tok = DATA_BURST; G.conns[ci].dt_over = 0; G.conns[ci].dt_t = GetTickCount(); G.conns[ci].dt_rate = data_rate();
     InterlockedIncrement(&g_live);
     tj = GetTickCount();
@@ -1113,6 +1151,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
                 }
                 { BYTE m[36]; *(DWORD *)m = id; memcpy(m + 4, p->name, 32); bcast(ci, T_SYS_CREATE, m, 36); }
                 logf_("player %08lx '%s' created for conn %d", id, p->name, ci);
+                lf_begin();
             } else osend(o, T_PLAYERID, &id, 4);
         } else if (type == T_SYNC && n >= SY_HDR && n <= SY_HDR + SYNC_MAXR * 4) {
             if (G.conns[ci].haveplayer) {   /* compare, relay to the others; a flood is cut at SYNC_PER_S */
@@ -1145,6 +1184,8 @@ static DWORD WINAPI conn_thread(LPVOID a)
                     rs_on_up(ci, cid, f, n);
                 } else if (G.conns[ci].rs_n == RESYNC_PER_S + 1) SLOG("conn %d: over %d resync frames in 1 s - extra dropped", ci, RESYNC_PER_S);
             }
+        } else if ((type == T_PING || type == T_PONG) && G.conns[ci].haveplayer) {
+            dg_on_frame(ci, type, f, n);   /* diag.c: answered or relayed here, never queued for the game */
         } else if (type == T_DESTROYPL && n >= 4) {
             Player *p = pl_find(*(DWORD *)f);
             if (p && p->conn == ci) { host_remove_player(p, ci); G.conns[ci].haveplayer = 0; }
@@ -1279,6 +1320,8 @@ static DWORD accept_body(LPVOID a)
 
 static DWORD WINAPI accept_thread(LPVOID a) { DWORD r = accept_body(a); InterlockedDecrement(&g_live); return r; }
 
+#include "relay.c"
+
 /* ------------------------------------------------------ joiner: reader */
 static DWORD join_body(LPVOID a)
 {
@@ -1349,6 +1392,8 @@ static DWORD join_body(LPVOID a)
             }
         } else if (type == T_SYNC && n >= SY_HDR && n <= SY_HDR + SYNC_MAXR * 4) {
             sy_on_peer(f, n);
+        } else if (type == T_PING || type == T_PONG) {
+            dg_on_frame(-1, type, f, n);
         } else if (type == T_HOST && n >= 4) {   /* v10: the hub's game left; this player plays the game host now */
             DPID id = *(DWORD *)f;
             logf_("game host is now player %08lx%s", (unsigned long)id, id == G.myid ? " - this game (DPSYS_HOST)" : "");
@@ -1436,6 +1481,7 @@ static void do_close(int may_ghost)
     EnterCriticalSection(&cs);
     if (G.ghost) { LeaveCriticalSection(&cs); return; }   /* v10: hub for the last game; nothing of this game is left */
     if (G.open && G.host && G.locked && ghost_ok && ghost_go()) {
+        lf_snapshot("the host's game left; this PC keeps relaying for the other players (ghost hub)");
         for (i = 0; i < MAXCONN; i++) if (G.conns[i].used) {   /* R12-2: hold each link until DESTROY + T_HOST have left */
             InterlockedIncrement(&G.conns[i].o->refs);
             os[no++] = G.conns[i].o;
@@ -1453,11 +1499,13 @@ static void do_close(int may_ghost)
             Sleep(5);
         }
         for (i = 0; i < no; i++) out_release(os[i]);
+        lf_summary();
         ghost_title(   /* R13-2: skipped inside if the last player left during the wait */
             "Lords of the Realm II - still hosting the last game for the other players: keep this window open");
         return;
     }
     if (G.open) {
+        lf_snapshot(!G.host && !G.connected ? "the link to the host was lost" : "the game closed the session");
         G.gen++;
         if (G.host) {
             if (G.lsock != INVALID_SOCKET) closesocket(G.lsock);
@@ -1492,6 +1540,7 @@ static void do_close(int may_ghost)
     for (i = 0; i < no; i++) { kill_sock(os[i]->s); out_release(os[i]); }
     for (t0 = GetTickCount(); g_live > 0 && GetTickCount() - t0 < 3000;) Sleep(5);
     if (g_live > 0) logf_("Close: %ld network thread(s) still running after 3 s (their sockets close when they exit)", g_live);
+    lf_end();
 }
 
 static DPHR WINAPI dp2_QI(Obj *t, const GUID *iid, void **out)
@@ -1554,6 +1603,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         int port = listen_port();
         SOCKET l;
         CArg *aa = (CArg *)malloc(sizeof *aa);
+        int aagen;
         HANDLE th;
         if (!aa) return DPERR_GENERIC;
         l = open_listener(port);
@@ -1568,7 +1618,8 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.lsock = l; G.jsock = INVALID_SOCKET;
         G.host = 1; G.open = 1; G.locked = 0; G.nextid = 0x1000; G.myid = 0;
         G.gen++;
-        aa->s = l; aa->gen = G.gen;
+        clk_open(1);
+        aa->s = l; aa->gen = aagen = G.gen;
         LeaveCriticalSection(&cs);
         InterlockedIncrement(&g_live);   /* before the thread runs: a Close right now must still wait for it */
         th = CreateThread(NULL, 0, accept_thread, aa, 0, NULL);
@@ -1583,6 +1634,8 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         logf_("Open(create) listening on %d name='%s' max=%lu", port, G.sname, G.maxpl);
         beacon_start(port);
         grhb_start(port);
+        dg_start(aagen);
+        rl_host_start(aagen);
         return DP_OK;
     } else {
         SOCKET s;
@@ -1591,8 +1644,13 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         CArg *ja;
         Out *jo;
         HANDLE th;
-        s = dial(2500);
-        if (s == INVALID_SOCKET) {
+        int jagen;
+        DWORD room;
+        if (rl_room_of(&d->guidInstance, &room)) {   /* relay.c: a room from the internet list; GameRanger never lists one */
+            DPHR why = DPERR_NOCONNECTION;
+            logf_("Open(join): relay room %08lx", (unsigned long)room);
+            if ((s = rl_join(room, &why)) == INVALID_SOCKET) return why;
+        } else if ((s = dial(2500)) == INVALID_SOCKET) {
             if (g_menu == 1) snprintf(g_menu_msg, sizeof g_menu_msg, "Could not reach the host");
             return DPERR_NOCONNECTION;
         }
@@ -1623,7 +1681,8 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.sname[63] = 0;
         G.jsock = s; G.jout = jo; G.lsock = INVALID_SOCKET; G.host = 0; G.open = 1; G.connected = 1; G.myid = 0;
         G.gen++;
-        ja->s = s; ja->gen = G.gen; ja->o = jo;
+        clk_open(0);
+        ja->s = s; ja->gen = jagen = G.gen; ja->o = jo;
         if (!G.evPid) G.evPid = CreateEventA(NULL, FALSE, FALSE, NULL);
         LeaveCriticalSection(&cs);
         free(f);
@@ -1639,6 +1698,8 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         }
         CloseHandle(th);
         logf_("Open(join) ok, session '%s'", G.sname);
+        lf_begin();
+        dg_start(jagen);
         return DP_OK;
     }
 }
@@ -1707,11 +1768,12 @@ static DPHR WINAPI dp2_DestroyPlayer(Obj *t, DPID id)
  * The game's session list is a Win32 dialog (FUN_004b85b7): WM_INITDIALOG calls EnumSessions once with ctx = its
  * list box, then WM_TIMER every 3 s calls it again. The first EnumSessions after each DirectPlayCreate (one per
  * Connect press) shows this box on the game thread, before the list is visible. OK saves host=addr[:port] into
- * lotr2net.ini (other lines kept) and uses it at once; Cancel presses the session dialog's own Cancel (id 2, which
+ * lords2hd.ini (other lines kept) and uses it at once; Cancel presses the session dialog's own Cancel (id 2, which
  * releases the DirectPlay object and goes back a screen). Skipped when LOTR2NET_HOST is set or the ini has ask=0
  * (rig and agent automation). */
 #define ID_AHOST 101
 #define ID_APORT 102
+#define ID_AINET 103   /* relay.c: "Internet games" - the session list shows the relay's rooms instead */
 static volatile LONG g_ask_due;   /* set by DirectPlayCreate, taken by the first EnumSessions */
 static volatile LONG g_in_ask;    /* re-entrancy guard: the box runs a modal loop on the game thread */
 
@@ -1723,43 +1785,11 @@ static int ask_enabled(void)
     return 1;
 }
 
-/* Replace (or add) host= in lotr2net.ini, keeping every other line; drops the installer's "; host= unset" note. */
 static int ini_set_host(const char *val)
 {
-    char p[MAX_PATH + 16], q[MAX_PATH + 16], line[512];
-    FILE *f, *o;
-    int done = 0;
-    lstrcpynA(p, exedir, MAX_PATH);
-    lstrcatA(p, "lotr2net.ini");
-    lstrcpynA(q, exedir, MAX_PATH);
-    lstrcatA(q, "lotr2net.ini.tmp");
-    o = fopen(q, "w");
-    if (!o) return 0;
-    f = fopen(p, "r");
-    if (f) {
-        int first = 1;
-        while (fgets(line, sizeof line, f)) {
-            char *s = line;
-            if (first && (BYTE)s[0] == 0xEF && (BYTE)s[1] == 0xBB && (BYTE)s[2] == 0xBF) memmove(line, line + 3, strlen(line + 3) + 1);   /* F9: written back as plain ASCII */
-            first = 0;
-            while (*s == ' ' || *s == '\t') s++;
-            if (*s == ';') {
-                char *c = s + 1;
-                while (*c == ' ' || *c == '\t') c++;
-                if (!_strnicmp(c, "host=", 5) && strstr(c, "unset")) continue;
-            } else if (!_strnicmp(s, "host", 4)) {
-                char *c = s + 4;
-                while (*c == ' ' || *c == '\t') c++;
-                if (*c == '=') { if (!done) fprintf(o, "host=%s\n", val); done = 1; continue; }
-            }
-            fputs(line, o);
-            if (line[0] && line[strlen(line) - 1] != '\n') fputc('\n', o);
-        }
-        fclose(f);
-    }
-    if (!done) fprintf(o, "host=%s\n", val);
-    if (fclose(o) || !MoveFileExA(q, p, MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(q); return 0; }
-    return 1;
+    char p[MAX_PATH + 16];
+    ini_path(p, sizeof p);
+    return WritePrivateProfileStringA(INI_SEC, "host", val, p) != 0;
 }
 
 static INT_PTR CALLBACK ask_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
@@ -1793,7 +1823,13 @@ static INT_PTR CALLBACK ask_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
         if (port == PORT_DEFAULT) snprintf(val, sizeof val, "%s", a);
         else snprintf(val, sizeof val, "%s:%d", a, port);
         lstrcpynA(g_ask_host, val, sizeof g_ask_host);
-        logf_("join address box: %s (%s)", val, ini_set_host(val) ? "saved to lotr2net.ini" : "lotr2net.ini NOT writable, this run only");
+        logf_("join address box: %s (%s)", val, ini_set_host(val) ? "saved to lords2hd.ini" : "lords2hd.ini NOT writable, this run only");
+        EndDialog(d, IDOK);
+        return TRUE;
+    }
+    if (m == WM_COMMAND && LOWORD(wp) == ID_AINET) {
+        InterlockedExchange(&g_rl_list, 1);
+        logf_("join address box: Internet games (the relay's room list)");
         EndDialog(d, IDOK);
         return TRUE;
     }
@@ -1827,11 +1863,12 @@ static int ask_join(void *ctx)
     HWND sess = (ctx && IsWindow((HWND)ctx)) ? GetParent((HWND)ctx) : NULL;
     HWND owner = sess ? GetWindow(sess, GW_OWNER) : NULL;
     INT_PTR r;
-    char line[96];
+    char line[96], rh[128];
+    int rp, inet = g_pick_join != PICK_ADDRESS && rl_allowed() && rl_target(rh, sizeof rh, &rp);   /* relay.c: offer the internet list when there is a relay (not after the choice dialog's Join by address) */
     if (!owner) owner = sess;
     memset(tbuf, 0, sizeof tbuf);
     t->style = DS_MODALFRAME | DS_SETFONT | DS_CENTER | DS_SETFOREGROUND | WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    t->cdit = 7;
+    t->cdit = inet ? 8 : 7;
     t->cx = 230; t->cy = 86;
     p = (WORD *)(t + 1);
     *p++ = 0; *p++ = 0;          /* no menu, default class */
@@ -1846,6 +1883,7 @@ static int ask_join(void *ctx)
     p = dt_item(p, SS_LEFT, 7, 37, 216, 18, 0xFFFF, 0x82, line);
     p = dt_item(p, BS_DEFPUSHBUTTON | WS_TABSTOP, 119, 64, 50, 15, IDOK, 0x80, "Connect");
     p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 173, 64, 50, 15, IDCANCEL, 0x80, "Cancel");
+    if (inet) p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, 64, 70, 15, ID_AINET, 0x80, "Internet games");
     logf_("join address box: shown (session dialog %p)", (void *)sess);
     r = DialogBoxIndirectParamA(GetModuleHandleA(NULL), t, owner, ask_proc, 0);
     if (r == IDOK) return 1;
@@ -1853,6 +1891,73 @@ static int ask_join(void *ctx)
     if (r != IDCANCEL) return 1;   /* the box could not open: fall back to the saved address */
     if (sess) PostMessageA(sess, WM_COMMAND, MAKEWPARAM(IDCANCEL, 0), 0);
     return 0;
+}
+
+/* ---- The Multiplayer choice (v14): in place of the game's own Connect-or-Create dialog (resource 0x6c), which only
+ * says Create or Join, four ways in. The game's handler (FUN_004b7xxx after DialogBoxParamA(0x6c)) takes 0x3ea = join
+ * (Connect), 0x3ec = create; anything else is Cancel. Shown only with a relay set, outside GameRanger and with the box
+ * enabled (ask=0 / LOTR2NET_HOST keep the stock dialog for automation); [Multiplayer] relay_host=0 hides "Host an
+ * internet game". The pick lasts this visit to the Multiplayer screens (relay.c g_pick_host / g_pick_join). */
+#define ID_PUBLIC 201
+#define ID_PRIVATE 202
+#define ID_JOININET 203
+#define ID_JOINADDR 204
+static int mp_choice_wanted(void)
+{
+    char rh[128];
+    int rp;
+    return rl_allowed() && ask_enabled() && rl_target(rh, sizeof rh, &rp);
+}
+static INT_PTR CALLBACK mp_choice_proc(HWND d, UINT m, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    if (m == WM_INITDIALOG) return TRUE;
+    if (m == WM_COMMAND && HIWORD(wp) == BN_CLICKED) {
+        WORD id = LOWORD(wp);
+        if (id == ID_PUBLIC || id == ID_PRIVATE || id == ID_JOININET || id == ID_JOINADDR || id == IDCANCEL) { EndDialog(d, id); return TRUE; }
+    }
+    return FALSE;
+}
+static INT_PTR mp_choice(HWND owner)
+{
+    static DWORD tbuf[640];
+    DLGTEMPLATE *t = (DLGTEMPLATE *)tbuf;
+    WORD *p;
+    INT_PTR r;
+    int pub = dg_cfg("LOTR2NET_RELAY_HOST", "relay_host", 1), y = 7;
+    memset(tbuf, 0, sizeof tbuf);
+    t->style = DS_MODALFRAME | DS_SETFONT | DS_CENTER | DS_SETFOREGROUND | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    t->cdit = (WORD)(pub ? 9 : 7);
+    t->cx = 260; t->cy = pub ? 112 : 92;
+    p = (WORD *)(t + 1);
+    *p++ = 0; *p++ = 0;
+    p = dt_str(p, "Multiplayer");
+    *p++ = 8;
+    p = dt_str(p, "MS Shell Dlg");
+    if (pub) {
+        p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_PUBLIC, 0x80, "Host an internet game");
+        p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Listed online; anyone can join");
+        y += 20;
+    }
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_PRIVATE, 0x80, "Host a private game");
+    p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Not listed; players join by your address");
+    y += 20;
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_JOININET, 0x80, "Join an internet game");
+    p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Pick a game from the online list");
+    y += 20;
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, y, 100, 15, ID_JOINADDR, 0x80, "Join by address");
+    p = dt_item(p, SS_LEFT, 112, y + 3, 141, 9, 0xFFFF, 0x82, "Type the host's address");
+    y += 25;
+    p = dt_item(p, BS_PUSHBUTTON | WS_TABSTOP, 203, y, 50, 15, IDCANCEL, 0x80, "Cancel");
+    r = DialogBoxIndirectParamA(GetModuleHandleA(NULL), t, owner, mp_choice_proc, 0);
+    switch (r) {
+    case ID_PUBLIC: InterlockedExchange(&g_pick_host, PICK_PUBLIC); logf_("Multiplayer choice: host an internet game"); return 0x3ec;
+    case ID_PRIVATE: InterlockedExchange(&g_pick_host, PICK_PRIVATE); logf_("Multiplayer choice: host a private game"); return 0x3ec;
+    case ID_JOININET: InterlockedExchange(&g_pick_join, PICK_INTERNET); logf_("Multiplayer choice: join an internet game"); return 0x3ea;
+    case ID_JOINADDR: InterlockedExchange(&g_pick_join, PICK_ADDRESS); logf_("Multiplayer choice: join by address"); return 0x3ea;
+    }
+    logf_("Multiplayer choice: %s", r == IDCANCEL ? "cancelled" : "dialog failed - cancelled");
+    return IDCANCEL;   /* neither 0x3ea nor 0x3ec: the game's own Cancel path */
 }
 
 static int enum_once(DPSD2 *want, ENUMSESS_CB cb, void *ctx, char *name, int nn, DWORD *seq);
@@ -1888,44 +1993,9 @@ static DPHR menu_enum(DPSD2 *want, ENUMSESS_CB cb, void *ctx, HWND lb, HWND dlg)
     return DP_OK;
 }
 
-__declspec(dllexport) void WINAPI LF_NetMenu(int mode, const char *host, int port)
-{
-    char val[160];
-    g_menu = mode;
-    g_menu_tries = 0;
-    g_menu_seq = 0;
-    g_menu_t0 = GetTickCount();
-    InterlockedIncrement(&g_enum_gen);
-    g_menu_msg[0] = 0;
-    if (mode == 1 && host) {
-        if (port < 1024 || port > 65535) { logf_("menu join: port %d out of range 1024-65535 - using %d", port, PORT_DEFAULT); port = PORT_DEFAULT; }   /* F9 */
-        if (port == PORT_DEFAULT) snprintf(val, sizeof val, "%s", host);
-        else snprintf(val, sizeof val, "%s:%d", host, port);
-        lstrcpynA(g_menu_host, val, sizeof g_menu_host);
-        lstrcpynA(g_ask_host, val, sizeof g_ask_host);
-        logf_("menu join %s (%s)", val, ini_set_host(val) ? "saved to lotr2net.ini" : "lotr2net.ini NOT writable, this run only");
-    } else logf_("menu mode %d", mode);
-}
-/* The address the menu shows first: what Connect would use now (env, last typed, ini); empty if none. */
-__declspec(dllexport) void WINAPI LF_NetMenuGet(char *host, int n, int *port)
-{
-    char h[128], *e = getenv("LOTR2NET_HOST");
-    int m = g_menu;
-    g_menu = 0;
-    h[0] = 0;
-    if ((e && *e) || g_ask_host[0] || ini_get("host", h, 120)) get_target(h, port);
-    else *port = PORT_DEFAULT;
-    g_menu = m;
-    lstrcpynA(host, h, n);
-}
-__declspec(dllexport) int WINAPI LF_NetMenuMsg(char *buf, int n)
-{
-    lstrcpynA(buf, g_menu_msg, n);
-    g_menu_msg[0] = 0;
-    return buf[0] != 0;
-}
-
 /* ---------------------------------------------------------------- local search (2026-10-06, Matthew: "Search local")
+ * Used by gr_join (a joiner inside GameRanger finds its host with no typed address); the LotR2 Fix title menu's
+ * "Search local games" screen that it was made for is not part of Lords2HD.
  * Host: while a session is open, a UDP socket on the game port answers "L2FIND1" with "L2HERE1" + port, PROTO, players,
  * max, locked, computer name. Searcher: sends "L2FIND1" to the directed broadcast of every up IPv4 adapter that can
  * broadcast (LAN, Wi-Fi, Hamachi, TAP VPNs), plus 255.255.255.255 and 127.0.0.1, three times over 1.5 s, and lists every
@@ -2224,7 +2294,7 @@ static DWORD WINAPI find_thread(LPVOID a)
 }
 
 /* start != 0: begin a search (results cleared). Returns -1 while searching, else how many were found. */
-__declspec(dllexport) int WINAPI LF_NetFind(int start)
+static int net_find(int start)
 {
     if (start && !InterlockedCompareExchange(&g_finding, 1, 0)) {
         HANDLE th;
@@ -2238,23 +2308,6 @@ __declspec(dllexport) int WINAPI LF_NetFind(int start)
     return g_finding ? -1 : g_nfound;
 }
 
-/* Result i: a label for the menu, the address and port to connect to. state: 0 joinable, 1 started, 2 other version. */
-__declspec(dllexport) int WINAPI LF_NetFindGet(int i, char *label, int ln, char *host, int hn, int *port, int *state)
-{
-    int ok = 0;
-    EnterCriticalSection(&findcs);
-    if (i >= 0 && i < g_nfound) {
-        Found *f = &g_found[i];
-        snprintf(label, ln, "%d/%d  %s", f->players, f->maxpl, f->name);
-        lstrcpynA(host, f->host, hn);
-        *port = f->port;
-        *state = f->proto != PROTO ? 2 : f->locked ? 1 : 0;
-        ok = 1;
-    }
-    LeaveCriticalSection(&findcs);
-    return ok;
-}
-
 /* Connect inside GameRanger: search (up to ~2 s, on the game thread like the address box it replaces) and take the
  * joinable host of this build, preferring one at a GameRanger room address. 0 = none found: the box is shown. */
 static int gr_join(void)
@@ -2264,8 +2317,8 @@ static int gr_join(void)
     DWORD t0 = GetTickCount();
     if (!gr_mode()) return 0;
     np = gr_peers(peers, 16);
-    LF_NetFind(1);
-    while ((n = LF_NetFind(0)) < 0 && GetTickCount() - t0 < 3000) Sleep(50);
+    net_find(1);
+    while ((n = net_find(0)) < 0 && GetTickCount() - t0 < 3000) Sleep(50);
     if (n < 0) n = 0;
     EnterCriticalSection(&findcs);
     for (i = 0; i < g_nfound; i++) {
@@ -2286,7 +2339,7 @@ static int gr_join(void)
 }
 
 /* ---- GameRanger auto-setup (2026-10-28): inside GameRanger the menus always take the same answers, so the title's
- * Multiplayer path runs by itself, the way ddraw's mpmenu drives it: the title screen's own input code (gra_patch,
+ * Multiplayer path runs by itself, the way the LotR2 Fix ddraw's title menu (mpmenu) drove it: the title screen's own input code (gra_patch,
  * where the game starts Multiplayer by itself when launched from a DirectPlay lobby) calls the game's Multiplayer
  * handler FUN_00432b05 on the first title frame, with its dialogs answered in DialogBoxParamA: Connect or Create (0x6c) by GameRanger's hosting flag, the session name
  * (0x74) default. The connection method list picks GameRanger's line (dp EnumerateA); a joiner first finds the host
@@ -2307,6 +2360,11 @@ static INT_PTR WINAPI gra_dbp(HINSTANCE h, LPCSTR t, HWND o, DLGPROC f, LPARAM l
         WORD id = LOWORD((ULONG_PTR)t);
         if (id == 0x6c) { logf_("GameRanger auto: Connect or Create -> %s", g_gra == 1 ? "Connect" : "Create"); return g_gra == 1 ? 0x3ea : 0x3ec; }
         if (id == 0x74 && g_gra == 2) { logf_("GameRanger auto: session name -> default"); return 0; }
+    }
+    if (!g_gra && IS_INTRESOURCE(t) && LOWORD((ULONG_PTR)t) == 0x6c) {   /* the Multiplayer choice, in place of Connect or Create */
+        InterlockedExchange(&g_pick_host, 0);
+        InterlockedExchange(&g_pick_join, 0);
+        if (mp_choice_wanted()) return mp_choice(o);
     }
     return g_dbp(h, t, o, f, l);
 }
@@ -2370,6 +2428,7 @@ static int __cdecl gra_title(void)
     DWORD rd;
     int k;
     if (RD32(0x568464)) return 1;
+    if (!g_dbp && g_exe_ok) gra_hook_dbp();   /* the Multiplayer choice dialog (DllMain may have been too early) */
     if (tried || !gr_mode()) return 0;
     tried = 1;
     if (!(v = gr_view())) { logf_("GameRanger auto: unknown GameRanger build - menus left to the player"); return 0; }
@@ -2388,7 +2447,7 @@ static int __cdecl gra_title(void)
         g_menu_t0 = GetTickCount();
     }
     rd = RD32(A_REDRAW);
-    *(volatile DWORD *)0x59154c = 2; *(volatile DWORD *)0x591550 = 0; *(volatile DWORD *)0x591558 = 0;   /* as mpmenu run() */
+    *(volatile DWORD *)0x59154c = 2; *(volatile DWORD *)0x591550 = 0; *(volatile DWORD *)0x591558 = 0;   /* as LotR2 Fix mpmenu's run() */
     ((void (__cdecl *)(void))0x432b05)();
     g_gra = 0;
     g_menu = 0;
@@ -2451,13 +2510,14 @@ static DPHR WINAPI dp2_EnumSessions(Obj *t, DPSD2 *want, DWORD timeout, ENUMSESS
         }
         return menu_enum(want, cb, ctx, lb, dlg);
     }
-    if (InterlockedExchange(&g_ask_due, 0) && ask_enabled()) {
+    if (InterlockedExchange(&g_ask_due, 0) && ask_enabled() && g_pick_join != PICK_INTERNET) {   /* "Join an internet game": no box */
         int go;
         g_in_ask = 1;
         go = gr_join() || ask_join(ctx);
         g_in_ask = 0;
         if (!go) return DP_OK;
     }
+    if (rl_list_wanted()) { rl_enum(want, cb, ctx); return DP_OK; }   /* relay.c: the internet games, by the box's button */
     enum_once(want, cb, ctx, NULL, 0, NULL);
     return DP_OK;
 }
@@ -2617,6 +2677,7 @@ static DPHR WINAPI dp2_Send(Obj *t, DPID from, DPID to, DWORD flags, BYTE *buf, 
         return DPERR_INVALIDOBJECT;
     }
     sync_on_send(buf, size);   /* game thread: our sync check at msgs 0x08/0x0c/0x0a (sync.c) */
+    dg_on_send(buf, size);
     if (rs_test_hold(from, (const BYTE *)buf, size)) return DP_OK;   /* test switch only (test_corrupt mode 8) */
     m = (BYTE *)malloc(8 + size);
     if (!m) { logf_("Send: out of memory"); return DPERR_GENERIC; }
@@ -2658,12 +2719,14 @@ static DPHR WINAPI dp2_Receive(Obj *t, DPID *from, DPID *to, DWORD flags, BYTE *
             logmsg("RECV", m->from, m->to, m->data, m->len);
             if (!(flags & DPRECEIVE_PEEK)) {
                 if (m->from) rs_on_deliver(m->data, m->len);   /* joiner, msg 0x16: rollback bookkeeping (resync.c) */
+                dg_on_take(m->t_us);
                 G.qh = m->next; if (!G.qh) G.qt = NULL; G.qcount--; g_qout++; free(m);
             }
             r = DP_OK;
         }
     }
     LeaveCriticalSection(&cs);
+    if (r == DPERR_NOMESSAGES) dg_on_pump();
     return r;
 }
 
@@ -2759,6 +2822,7 @@ __declspec(dllexport) DPHR WINAPI DirectPlayCreate(GUID *sp, void **out, void *o
     if (!out) return DPERR_INVALIDPARAMS;
     InterlockedIncrement(&dp1ref);
     InterlockedExchange(&g_ask_due, 1);   /* one per Connect press: the next EnumSessions asks for the address */
+    InterlockedExchange(&g_rl_list, 0);   /* relay.c: back to the address box's choice */
     *out = &dp1obj;
     return DP_OK;
 }
@@ -2823,16 +2887,22 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
         if (!sl) sl = strrchr(exedir, '/');
         if (sl) sl[1] = 0; else exedir[0] = 0;
         G.lsock = G.jsock = INVALID_SOCKET;
+        dg_init();
+        lf_init();
+        rl_init();
         dp2obj.vt = dp2_vt;
         dp1obj.vt = dp1_vt;
         logf_("---- dplayx.dll v%d loaded (pid %lu)", DLL_VERSION, GetCurrentProcessId());
+        ini_migrate();
         exe_patch_all();
         victory_patch();
         gra_patch();
+        if (g_exe_ok && !gra_hook_dbp()) logf_("Multiplayer choice dialog: DialogBoxParamA not hooked yet - tried again on the title screen");
         logf_("PROTO %lu (dll v%d, pace %d, exe_ok %d, slowlink %d, mpfix %d)", PROTO, DLL_VERSION, g_pace_ok, g_exe_ok, g_slowlink, g_mpfix);
     } else if (why == DLL_PROCESS_DETACH) {
         log_flush_exit();   /* write what is buffered; at process exit other threads may have died holding a lock,
                              * so it only tries */
+        lf_copy_all();      /* the game's last status.txt lines come after our Close */
     }
     return TRUE;
 }

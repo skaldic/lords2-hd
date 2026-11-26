@@ -43,7 +43,7 @@
  *  - 0x17 / 0x18 (save / load on every peer, name from the payload): the name must be a plain file name.
  * Not enforced, logged only ("TRUST note"): a county or army order for an object the host's own copy says another
  * lord owns - the host may be a few ticks behind the sender, so a just-captured county or a just-raised army could
- * read wrong. lotr2net.ini trust=strict enforces it too; trust=0 logs every finding and drops nothing.
+ * read wrong. lords2hd.ini trust=strict enforces it too; trust=0 logs every finding and drops nothing.
  * A dropped message is never relayed or queued; the sender's own game has acted on it, so a cheat desyncs only the
  * cheater (the sync check and resync then repair with the host's copy). */
 
@@ -56,7 +56,7 @@ static int tr_mode(void)
         if (e && *e) lstrcpynA(v, e, sizeof v);
         else if (!ini_get("trust", v, sizeof v)) v[0] = 0;
         tr_mode_v = !v[0] ? 1 : !_stricmp(v, "strict") ? 2 : cfg_on(v) ? 1 : 0;
-        SLOG("TRUST mode %s (lotr2net.ini trust= / LOTR2NET_TRUST)", tr_mode_v == 2 ? "strict" : tr_mode_v ? "on" : "LOG ONLY");
+        SLOG("TRUST mode %s (lords2hd.ini trust= / LOTR2NET_TRUST)", tr_mode_v == 2 ? "strict" : tr_mode_v ? "on" : "LOG ONLY");
     }
     return tr_mode_v;
 }

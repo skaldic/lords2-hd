@@ -53,7 +53,7 @@ function Copy-IntoGame($from, $to) {
 function Invoke-Battle($name, $dll, $tag) {
     Copy-IntoGame $dll "$Game\ddraw.dll"
     foreach ($k in @(@('Debug', 'Remote', '1'), @('Debug', 'RemoteVisible', '0'), @('Debug', 'BattleSeed', '1'), @('Debug', 'BattleLog', '1'),
-            @('Debug', 'Timing', '0'), @('Debug', 'MpLogs', '0'))) { [void][L2T.Ini]::WritePrivateProfileString($k[0], $k[1], $k[2], $ini) }
+            @('Debug', 'Timing', '0'), @('Multiplayer', 'MpLogs', '0'))) { [void][L2T.Ini]::WritePrivateProfileString($k[0], $k[1], $k[2], $ini) }
     Remove-Item "$Game\lords2hd-battle.txt", "$Game\lords2hd.log" -ErrorAction SilentlyContinue
     $d = $defs[$name]
     $steps = $boot + @('wait:4', 'click:320,174', 'wait:6', 'click:431,226', 'wait:10') + $d.pre +

@@ -28,7 +28,7 @@
  *
  * BOUNDS: at most RS_TRIES repairs per turn number; uploads waited for at most RS_WAIT_MS; the file is RS_FILE bytes
  * per joiner in RS_CHUNK pieces. VERSION: RS_VER in every BEGIN frame, plus PROTO (dll v7) at connect.
- * REFUSED (stock behaviour kept, logged): resync=0 (lotr2net.ini) or LOTR2NET_RESYNC=0 on the HOST; exe not the
+ * REFUSED (stock behaviour kept, logged): resync=0 (lords2hd.ini) or LOTR2NET_RESYNC=0 on the HOST; exe not the
  * 5 Jun 1997 build or a save table that does not walk to exactly 225 entries / 267028 bytes with the expected
  * tables; no turn-end copy for this turn; castles.dat not 204800 bytes; a file write failing.
  * NOT REPAIRED: local-only bytes (camera, selection, fog bits, advisor slots, battle leftovers: kept per peer by
@@ -186,7 +186,7 @@ static DWORD rs_fnv(const BYTE *p, DWORD n, DWORD h) { while (n--) { h ^= *p++; 
 /* game thread, cs NOT held: copy the save image at our turn-end sync point; returns the REST hash (all shared bytes,
  * sync.c region 37) or 0 when resync is unavailable */
 static int rs_write(const char *name, const BYTE *b, DWORD n);
-static int rs_dump = -1;   /* test aid, off by default: lotr2net.ini resync_dump=1 writes each turn-end copy (rsdump_t<turn>_e<epoch>.bin)
+static int rs_dump = -1;   /* test aid, off by default: lords2hd.ini resync_dump=1 writes each turn-end copy (rsdump_t<turn>_e<epoch>.bin)
                             * and the mask (rsmask.bin) beside the saves, so two peers' REST-DIFF can be diffed byte by byte */
 static DWORD rs_snapshot(DWORD turn, DWORD epoch)
 {
@@ -429,7 +429,7 @@ static DWORD rs_battle_auth(int kind, DWORD id, DWORD turn, DWORD epoch)
  * so a peer's copy of its own counties, armies and noble holds nothing the host lacks, and taking it let a joiner write
  * any gold, troops or waypoints into everyone's game. So the host's copy now wins for everything EXCEPT the objects of a
  * battle the host itself saw that peer own this turn (rs_note_battle: the owner is the only one who played it out).
- * lotr2net.ini on the HOST: resync_authority=owner restores the v8 rule (every peer is the authority for its own
+ * lords2hd.ini on the HOST: resync_authority=owner restores the v8 rule (every peer is the authority for its own
  * objects). Read once. */
 static int rs_owner_auth = -1;
 static int rs_owner_mode(void)
@@ -437,7 +437,7 @@ static int rs_owner_mode(void)
     if (rs_owner_auth < 0) {
         char v[16];
         rs_owner_auth = ini_get("resync_authority", v, sizeof v) && !_stricmp(v, "owner");
-        SLOG("RESYNC authority policy: %s", rs_owner_auth ? "owner (lotr2net.ini resync_authority=owner): each peer for its own objects, the battle owner for its battles"
+        SLOG("RESYNC authority policy: %s", rs_owner_auth ? "owner (lords2hd.ini resync_authority=owner): each peer for its own objects, the battle owner for its battles"
                                                          : "host: the host's copy for everything except battles the host saw a peer own");
     }
     return rs_owner_auth;
@@ -888,7 +888,7 @@ static void rs_reset(void)
     InterlockedExchange(&rs_ready, 0);
 }
 
-/* ---- test switch: LOTR2NET_TEST_CORRUPT="turn,va,mode" (or test_corrupt= in lotr2net.ini). Game thread, from
+/* ---- test switch: LOTR2NET_TEST_CORRUPT="turn,va,mode" (or test_corrupt= in lords2hd.ini). Game thread, from
  * sync_on_send. Applied once, at turn >= N in the campaign (tick >= 50):
  *   mode 1: xor 0x01 into the byte at va;
  *   mode 2: +1 at va and -1 at va+1 (an 8-bit-sum-neutral change the game's own check cannot see);

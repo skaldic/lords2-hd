@@ -10,7 +10,7 @@
  *   continue: the host's Continue works at once instead of 6 s after Create. Always on, host-local.
  *   pace  : multiplayer steps at the speed dial instead of a permanent 2x catch-up, dial 100 keeps its 2 ms gate, level battle peers step once. Always on.
  *   mpfix : the multiplayer desync/late-command patches from ../mp-fix-manifest.md, all-or-nothing.
- *           ON by default since v5 (2026-10-06 rig A/B, ../mp-fix-manifest.md "Rig results"); lotr2net.ini "mpfix=0" or
+ *           ON by default since v5 (2026-10-06 rig A/B, ../mp-fix-manifest.md "Rig results"); lords2hd.ini "mpfix=0" or
  *           env LOTR2NET_MPFIX=0 turns it off (env wins). Includes the v11 rally-clear hook on setup_battle (patch_rally). Peers must match; the handshake
  *           version carries it, so a mismatched pair is refused with a clear log line instead of desyncing.
  * Our own code. ASCII only. */

@@ -177,7 +177,7 @@ static void t_shipped_settings(void)
 	t_repo(p, sizeof p, "hd\\lords2hd.ini");
 	CopyFileA(p, g_iniPath, FALSE);
 	SetFileAttributesA(g_iniPath, FILE_ATTRIBUTE_NORMAL);
-	WritePrivateProfileStringA("Debug", "MpLogs", "0", g_iniPath);
+	WritePrivateProfileStringA("Multiplayer", "MpLogs", "0", g_iniPath);
 	WritePrivateProfileStringA("Debug", "Remote", "1", g_iniPath);   // (mutes the Lords2Resounded sample)
 	read_settings();
 	t_fix_sites();
