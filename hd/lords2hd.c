@@ -5739,6 +5739,43 @@ static BOOL cz_win_spans(int sx, int sw)
 	}
 	return TRUE;
 }
+// A message from the game's queue over the zoomed-out county map (an envoy's letter, an event, a report): every
+// frame the game redraws the map under it, then the scroll (h_redraw_map, then draw_msg). What the scroll's draw
+// changes is the scroll, so each row's span of that change (frame columns g_msgA[y] .. g_msgB[y] of the wide map,
+// show window g_msgSx, g_msgSw) is left as the game drew it by cz_field, the zoomed-out map round it - instead of
+// the normal view coming back for as long as the message is up, and the zoom after. g_msgId: the message the
+// spans are of (DAT_0053e910); g_msgOk: the scroll was found (else the normal view, so it always shows).
+static int g_msgA[GAME_H], g_msgB[GAME_H], g_msgSx, g_msgSw, g_msgId;
+static BOOL g_msgOk;
+static BYTE g_msgBefore[MAX_W * GAME_H];
+static BOOL msg_spans_begin(void)
+{
+	int sx = g_off - g_extra, sw = GAME_W + g_extra;
+	if (!g_czOut || !g_back || sx < 0 || sx + sw > g_back->w || sw > MAX_W) return FALSE;
+	for (int y = 24; y < GAME_H; y++) memcpy(g_msgBefore + y * sw, g_back->bits + y * g_back->pitch + sx, sw);
+	return TRUE;
+}
+static void msg_spans_end(void)
+{
+	static int a[GAME_H], b[GAME_H];
+	int sx = g_off - g_extra, sw = GAME_W + g_extra, x1g = g_extra + PANEL_X, rows = 0;   // (the map's field: frame columns 0 .. x1g)
+	for (int y = 0; y < GAME_H; y++) {
+		int x0 = 0, x1 = 0;
+		if (y >= 24) {
+			const BYTE *now = g_back->bits + y * g_back->pitch + sx, *was = g_msgBefore + y * sw;
+			x1 = x1g;
+			while (x0 < x1 && now[x0] == was[x0]) x0++;
+			while (x1 > x0 && now[x1 - 1] == was[x1 - 1]) x1--;
+		}
+		a[y] = x0; b[y] = x1;
+		rows += x1 > x0;
+	}
+	EnterCriticalSection(&g_lock);
+	memcpy(g_msgA, a, sizeof a); memcpy(g_msgB, b, sizeof b);
+	g_msgSx = sx; g_msgSw = sw; g_msgId = *(int *)0x0053e910;
+	g_msgOk = rows >= 16;
+	LeaveCriticalSection(&g_lock);
+}
 static void cz_span(const cz_buf *cz, int sw, int Y, int x0, int x1);
 // cz: the county map zoomed out shows where the window was (else the kept map at the normal size).
 static void window_shift(int screen, int sx, int sw, const cz_buf *cz)
@@ -5892,13 +5929,17 @@ static BOOL present(void)
 	BOOL czTake = InterlockedExchange(&g_czReadyNew, 0) != 0;
 	BOOL czNew = czTake && InterlockedExchange(&g_czReadyChanged, 0) != 0;   // (a picture like the last forces nothing)
 	if (czTake) { cz_buf *t = g_czShown; g_czShown = g_czReady; g_czReady = t; }
+	// A message over the map: where its scroll is (msg_spans_end), for cz_field to leave it.
+	BOOL msgUp = map_message_up(), msgSpans = msgUp && g_msgOk && g_msgId == *(int *)0x0053e910 && g_msgSx == sx && g_msgSw == sw;
+	if (msgSpans) { memcpy(g_czWinA, g_msgA, sizeof g_czWinA); memcpy(g_czWinB, g_msgB, sizeof g_czWinB); }
 	LeaveCriticalSection(&g_lock);
 	// The county map zoomed out: its own picture takes the map's field (cz_field).
 	const cz_buf *cz = g_czShown;
 	// (Under a window over the map - the Town Center, the boxes a click on the map opens - too: the window
 	// stays as the game drew it, moved to the middle as ever, the zoomed-out map round it. czWin below.)
-	// (A message from the game's queue over the map: the normal view while it is up, so the scroll shows.)
-	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && !map_message_up() && (map_screen(screen) || (window_screen(screen) && g_snapW == sw)) &&
+	// (A message from the game's queue over the map: its scroll as the game drew it, the zoomed-out map round it;
+	// the normal view while it is up when the scroll wasn't found, so it always shows.)
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (!msgUp || msgSpans) && (map_screen(screen) || msgSpans || (window_screen(screen) && g_snapW == sw)) &&
 		g_wideScreen && MAP_ZOOM_NOW() == 0 && cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
 	InterlockedExchange(&g_czShowing, czOn);
 	static BOOL czWas;
@@ -5977,8 +6018,8 @@ static BOOL present(void)
 		text_overlay(sx, sw); ct_add(3, &ct);
 		// A window over the zoomed-out map: where it is (no window found there - the map behind it moved: the
 		// normal view, as without the zoom).
-		BOOL czWin = czOn && !map_screen(screen);
-		if (czWin && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
+		BOOL czWin = czOn && (msgSpans || !map_screen(screen));
+		if (czWin && !msgSpans && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
 		scroll_overlays_catch(sx, sw);
 		if (czOn) cz_field(cz, sw, czWin);
 		scroll_overlays_lay(sw);
@@ -5987,7 +6028,7 @@ static BOOL present(void)
 		video_overlay(pal, sx, sw);
 		hv_overlay(pal, sx, sw);
 		// (Zoomed out with the window closed, the map covers what the frame still holds of it: nothing to move.)
-		if (g_wideScreen && !(czOn && map_screen(screen))) window_shift(screen, sx, sw, czOn ? cz : NULL);
+		if (g_wideScreen && !(czOn && (map_screen(screen) || msgSpans))) window_shift(screen, sx, sw, czOn ? cz : NULL);
 		else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
@@ -8005,7 +8046,9 @@ static void draw_msg(draw_msg_t orig)
 	scroll_shift(wide ? g_extra / 2 : 0);
 	video_scroll_shift(wide ? g_extra / 2 : 0);
 	g_drawingLeft = wide;
+	BOOL spans = wide && msg_spans_begin();
 	orig();
+	if (spans) msg_spans_end();
 	g_drawingLeft = FALSE;
 }
 static void __cdecl h_msg_a(void) { draw_msg(o_msg_a); }
@@ -9257,11 +9300,10 @@ static void cz_hd(cz_buf *b, int pitch)
 // Draws the zoomed-out county map into g_czDraw (the game thread, after the normal redraw).
 static void cz_draw(void)
 {
-	// A message over the map: no zoomed-out picture while it is up, and the one from before it is not shown
-	// after it closes (the turn may have changed the map): the normal view until the next redraw makes a new one.
-	if (g_czOut && map_message_up()) { InterlockedIncrement(&g_czGen); return; }
+	// (Under a window, or a message from the game's queue: the map as the game redraws it there, every frame -
+	// the scroll is laid over it by the presenter, msg_spans_end.)
 	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
-		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
+		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID) && !map_message_up()) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;
 	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
 	int rowsAll = CZ_M + 24 + H + CZ_BELOW;
 	if (pitch - W < 2 * CZ_M + 64) return;   // (the frame is as wide as the zoomed-out battlefield: not without BattleZoom)
