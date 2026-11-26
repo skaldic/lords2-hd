@@ -265,9 +265,14 @@ with **Mod Menu**, as in Jen's Mod Manager, with the game's help below it.
 | Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
 | Game | Weather wrecks fields | On (original), Off | On | `FieldDestruction` |
+| Game | Uncapped game speed | Off (original), On | Off | `UncappedSpeed` |
+| Game | Black Death | On (original), Milder, Off | On | `BlackDeath` |
+| Game | Population average | Original, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000 | Original | `PopulationTarget` |
 | Economy | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
 | Economy | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
-| Buildings | Castle garrisons | Original (150 to 600), Army size (1500 each) | Original | `GarrisonLimits` |
+| Economy | Uncapped resources | Off (original: 999 a season), On (99,999,999) | Off | `UncappedResources` |
+| Economy | Resource multiplier | 1x (original) to 10x | 1x | `ResourceMultiplier` |
+| Buildings | Castle garrisons | Original (150 to 600), Army size (1500 each, or the Army size below) | Original | `GarrisonLimits` |
 | Buildings | Inner castle door | 1000, 2500, 5000, 10000, 20000, 50000, 100000 | 5000 | `InnerDoor` |
 | Buildings | Outer castle door | 5000, 10000, 20000, 40000, 80000, 100000 | 20000 | `OuterDoor` |
 | Buildings | Wooden palisade | Original, River Island | Original | `PalisadeDesign` |
@@ -276,13 +281,27 @@ with **Mod Menu**, as in Jen's Mod Manager, with the game's help below it.
 | Buildings | Stone castle | Original, Curtain Wall, The Ell, Portchester | Original | `StoneCastleDesign` |
 | Buildings | Royal castle | Original, Chambers, Island Castle, Goodrich | Original | `RoyalCastleDesign` |
 | Units | Pillaging | On (original), Off | On | `Pillaging` |
+| Units | Army size | 500, 1000, 1500, 2000, 3000, 5000, 10000 | 1500 | `ArmySize` |
+| Units | Scaled army icons | Off (original: 300 and 600), On | Off | `ScaledArmyIcons` |
+| Unit stats | Stats of | Peasants, Archers, Swordsmen, Macemen, Pikemen, Crossbowmen, Knights | Archers | (the unit the rows below show) |
+| Unit stats | Melee strength | half to three times the original (1 to 100) | Original | `<Unit>MeleeStrength` in `[Units]` |
+| Unit stats | Ranged defence | half to three times the original (0 to 100) | Original | `<Unit>RangedDefence` in `[Units]` |
+| Unit stats | Auto-calc strength | half to three times the original (0 to 100) | Original | `<Unit>AutoCalcStrength` in `[Units]` |
+| Unit stats | Ranged strength | half to three times the original (0 to 1000) | Original | `<Unit>RangedStrength` in `[Units]` |
+| Unit stats | Attack range | half to three times the original (0 to 50 cells) | Original | `<Unit>AttackRange` in `[Units]` |
+| Unit stats | Attack speed | 25, 50, 100 (the time between shots) | Original | `<Unit>AttackSpeed` in `[Units]` |
+| Unit costs | Costs of | Peasants, Archers, Swordsmen, Macemen, Pikemen, Crossbowmen, Knights | Archers | (the unit the rows below show) |
+| Unit costs | Wood cost | half to three times the original (0 to 10000) | Original | `<Unit>WoodCost` in `[Units]` |
+| Unit costs | Iron cost | half to three times the original (0 to 10000) | Original | `<Unit>IronCost` in `[Units]` |
+| Unit costs | Sell price | half to three times the original (1 to 10000) | Original | `<Unit>SellPrice` in `[Units]` |
+| Unit costs | Buy price | Original (sell price + the merchant's share), or a price | Original | `<Unit>BuyPrice` in `[Units]` |
 | Fixes | Food ration fix | On, Off | On | `RationFix` |
 | Fixes | Multiplayer messages | On, Off | On | `MpMessageFix` |
 
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
 `MultiplayerFixes=1`.
 
-The Game, Economy, Buildings, Units and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
+The Game, Economy, Buildings, Units, Unit stats, Unit costs and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
 as on Jen's Mod Menu: F11 or the Mods title opens it while Quality of life → Jen With a B's Mods is On (or
 click the line under that tab's rows); F10 goes back to the HD settings. Pointing at a line shows what it
 does below the list, and Reset all to default puts every line back as the patch ships it.
@@ -296,6 +315,18 @@ garrisons: every castle holds as many men as an army may; computer lords still p
 by the original sizes. The mods (all but the Fixes tab) work in single player games only: in a
 multiplayer game everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
 from 1 to 100000 (doors) or 10000 (reclaim).
+
+Uncapped game speed lets the game speed go past 10 (set back to 10 when turned off). The Black Death can be milder
+(Jen's 50% Reduced: about half as deadly) or off (it spares every county; the event still comes up). Population
+average steers each county's births towards that population in the long run, by Jen's formula. Uncapped resources
+lifts the cap of 999 on a season's wood, iron and stone, and the resource multiplier multiplies them (not the
+blacksmith's weapons); 2x and more turn Uncapped resources on. Army size is the most men in an army; castle
+garrisons set to Army size follow it, and Scaled army icons moves the two- and three-man army icons to a fifth and
+two fifths of it. Unit stats and Unit costs change one unit at a time: pick it on the first row, then click a
+stat to step through half to three times its original value (attack speed: 2x or 4x faster or slower; peasants
+have no ranged stats or price). The sell price applies at once in the game being played; a buy price replaces
+the merchant's sell price plus share for you and the computer lords. Each unit's values are kept in `[Units]`
+in `lords2hd.ini` (a missing key is the original), where any value in the range is allowed.
 
 The five castle kinds on the Buildings tab (Jen's Castle Design): a siege on each kind of castle can be fought on one of the game's own
 skirmish castles instead of its usual map, from the next siege. Each kind offers the ones Jen picked as

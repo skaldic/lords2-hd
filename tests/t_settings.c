@@ -188,6 +188,26 @@ static void t_fix_sites(void)
 	memcpy((void *)0x0047c5e4, "\xE8\xF0\x32\x03\x00", 5);   // castle design: the two siege map reads, the troops' free-cell search
 	memcpy((void *)0x0047cf9d, "\xE8\x37\x29\x03\x00", 5);
 	memcpy((void *)FREE_SPOT_CALL, "\xE8\x14\x7A\x02\x00", 5);
+	// Jen With a B's game, economy and unit mods: the game's code at the hooks and patches, its unit tables
+	for (int h = 0; h < JEN_HOOKS; h++) memcpy((void *)kJenHooks[h].at, kJenHooks[h].game, kJenHooks[h].n);
+	memcpy((void *)kPlagueOff[0].at, kPlagueOff[0].game, 6);
+	for (int i = 0; i < 7; i++) *(BYTE *)kPlagueMild[i].at = kPlagueMild[i].game[0];
+	*(BYTE *)(RES_CAP_AT - 3) = 0xC7; *(DWORD *)RES_CAP_AT = RES_CAP;
+	*(DWORD *)kArmySites[1] = ARMY_SIZE;   // (the first: the cmp above)
+	*(DWORD *)kIconSites[0] = ICON_1; *(DWORD *)kIconSites[1] = ICON_2;
+	for (int u = 0; u < UNITS; u++) {
+		memcpy((void *)unit_at(u, US_MELEE), kMeleeGame[u], 8);
+		BYTE *r = (BYTE *)kUnitRdefAt[u];
+		r[-6] = 0xC6; r[-5] = 0x05; *(DWORD *)(r - 4) = 0x005545f2; *r = (BYTE)kUnitGame[u][US_RDEF];
+		*(DWORD *)unit_at(u, US_AUTO) = kUnitGame[u][US_AUTO];
+		if (kUnitRanged[u] >= 0) {
+			*(DWORD *)unit_at(u, US_RANGE) = kUnitGame[u][US_RANGE] * 8; *(DWORD *)unit_at(u, US_SPEED) = kUnitGame[u][US_SPEED];
+			*(DWORD *)(unit_at(u, US_RANGE) + 8) = kRangedRest[u]; *(DWORD *)unit_at(u, US_RSTR) = kUnitGame[u][US_RSTR];
+		}
+		if (kUnitCost[u] >= 0) { *(DWORD *)unit_at(u, UC_WOOD) = kUnitGame[u][UC_WOOD]; *(DWORD *)unit_at(u, UC_IRON) = kUnitGame[u][UC_IRON]; }
+		if (kUnitPrice[u] >= 0) { *(DWORD *)unit_at(u, UC_SELL) = kUnitGame[u][UC_SELL]; *(int *)(0x005532a0 + 16 * kUnitPrice[u]) = kUnitGame[u][UC_SELL]; }
+	}
+	*GAME_SPEED = 50;
 	g_chaseHookFailed = FALSE; g_dmapOn = FALSE;
 }
 static void t_shipped_settings(void)
@@ -204,11 +224,13 @@ static void t_shipped_settings(void)
 	g_showScreens = g_hdScreens; g_showTiles = g_hdTiles;
 	g_wantWideSet = g_wantWide; g_battleZoomSet = g_battleZoom;
 	*(int *)0x0053f24c = 1;                     // the game's own tutorial option: on, as it ships
+	g_unitSel = 1;                              // the unit rows show archers, as at start-up
 }
 /* The panel's value of an item, as an int. */
 static int t_panel(int i)
 {
 	if (menu_design(i)) return g_jenDesign[i - M_JEN_DESIGN];
+	if (menu_unit_row(i)) return g_unitSet[g_unitSel][menu_unit_stat(i)];
 	switch (i) {
 	case M_UPSCALE: return g_upscaleCR;   case M_SCREENS: return g_showScreens; case M_TILES: return g_showTiles;
 	case M_TEXT: return g_hdText;         case M_WAVES: return g_shoreWaves;    case M_LIMIT: return g_frameLimit;
@@ -222,6 +244,9 @@ static int t_panel(int i)
 	case M_JEN_FIELDS: return g_jenFieldLoss; case M_JEN_PILLAGE: return g_jenPillage;
 	case M_JEN_DOOR_IN: return g_jenDoorIn; case M_JEN_DOOR_OUT: return g_jenDoorOut;
 	case M_JEN_WORK: return g_jenWork;    case M_JEN_MEN: return g_jenMen;      case M_JEN_GARRISON: return g_jenGarrison;
+	case M_JEN_SPEED: return g_jenSpeed;  case M_JEN_PLAGUE: return g_jenPlague;  case M_JEN_POP: return g_jenPop;
+	case M_JEN_UNCAP: return g_jenUncap;  case M_JEN_RESMUL: return g_jenResMul; case M_JEN_ARMY: return g_jenArmy;
+	case M_JEN_ICONS: return g_jenIcons;  case M_JEN_UNIT: case M_JEN_UNIT_C: return g_unitSel;
 	default: return g_bfSet[i - M_BF_PATH];
 	}
 }
@@ -243,7 +268,9 @@ TEST(f10_changes_are_saved_and_read_back)
 	t_shipped_settings();
 	for (int i = 0; i < M_COUNT; i++) {
 		int states = menu_design(i) ? cd_count(i - M_JEN_DESIGN) + 1 : i == M_UPSCALE || i == M_FPS || i == M_AI || i == M_WHEEL ? 3 : i == M_JEN_DOOR_IN ? 7 :
-			i == M_JEN_DOOR_OUT ? 6 : i == M_JEN_WORK ? 5 : i == M_JEN_MEN ? 4 : 2;
+			i == M_JEN_DOOR_OUT ? 6 : i == M_JEN_WORK ? 5 : i == M_JEN_MEN ? 4 : i == M_JEN_PLAGUE ? 3 : i == M_JEN_POP ? 9 :
+			i == M_JEN_RESMUL ? RESMUL_MAX : i == M_JEN_ARMY ? 7 : i == M_JEN_UNIT || i == M_JEN_UNIT_C ? UNITS : 2;
+		if (menu_unit_row(i)) { int st[8]; states = unit_steps(g_unitSel, menu_unit_stat(i), st); }
 		int first = t_panel(i);
 		for (int s = 0; s < states; s++) {
 			if (i == M_TUTORIAL && s == 1) break;   // (Every time -> Off is fine; Off -> Once calls the game)
@@ -305,7 +332,9 @@ TEST(f10_readme_table_matches_the_panel)
 		// the key: changing the setting in the panel writes it
 		char key[64] = { 0 };
 		if (cell[4][0] == '`') { lstrcpynA(key, cell[4] + 1, sizeof key); char *e = strchr(key, '`'); if (e) *e = 0; }
-		const char *sec = it >= M_BF_PATH ? "Game" : "Display";
+		const char *sec = menu_unit_row(it) ? "Units" : it >= M_BF_PATH ? "Game" : "Display";
+		if (!strncmp(key, "<Unit>", 6)) { char k2[64]; snprintf(k2, sizeof k2, "%s%s", kUnitKey[g_unitSel], key + 6); lstrcpynA(key, k2, sizeof key); }
+		if (!key[0]) { CHECK(it == M_JEN_UNIT || it == M_JEN_UNIT_C); t_shipped_settings(); continue; }   // (the unit rows' unit: not saved)
 		char before[64], after[64];
 		GetPrivateProfileStringA(sec, key, "?", before, sizeof before, g_iniPath);
 		if (it != M_TUTORIAL || *(int *)0x0053f24c) menu_change(it);
@@ -334,6 +363,8 @@ TEST(f11_jen_panel_only_with_its_switch)
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_ECONOMY);
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_BUILDINGS);
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_UNITS);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_STATS);
+	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_COSTS);
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_FIXES);
 	menu_set_tab(g_menuTab + 1); CHECK_EQ(g_menuTab, TAB_GAME);    // Tab wraps within the panel
 	menu_set_tab(g_menuTab - 1); CHECK_EQ(g_menuTab, TAB_FIXES);
@@ -391,10 +422,11 @@ TEST(jen_castle_mods_go_in_and_out)
 	menu_change(M_JEN_GARRISON);                // every castle as an army; the AI plans from the original sizes
 	for (int k = 0; k < 5; k++) { CHECK_EQ(CASTLE_CAP[k], 1500); CHECK_EQ(g_aiCap[k], kCastleCap[k]); }
 	CHECK_EQ(*(DWORD *)(AI_CAP_READ + 3), (DWORD)g_aiCap); CHECK_EQ(*(BYTE *)AI_CAP_READ, 0x8B);
-	*(DWORD *)0x004a97c4 = 300;                 // a smaller army limit (Jen's Army Size): followed, the AI capped by it
+	g_jenArmy = 300;                            // a smaller army limit (Jen's Army Size): followed, the AI capped by it
 	jen_sync();
+	CHECK_EQ(*(DWORD *)0x004a97c4, 300); CHECK_EQ(*(DWORD *)0x004aa1b5, 300);
 	CHECK_EQ(CASTLE_CAP[0], 300); CHECK_EQ(g_aiCap[0], 150); CHECK_EQ(g_aiCap[3], 300); CHECK_EQ(g_aiCap[4], 300);
-	*(DWORD *)0x004a97c4 = 1500;
+	g_jenArmy = ARMY_SIZE;
 	jen_sync();
 	CHECK_EQ(CASTLE_CAP[2], 1500); CHECK_EQ(g_aiCap[4], 600);
 
@@ -427,6 +459,110 @@ TEST(jen_castle_mods_go_in_and_out)
 	t_fix_sites(); install_game_fixes();
 	CHECK_EQ(g_jenDoorIn, DOOR_MAX); CHECK_EQ(g_jenWork, 1);
 	CHECK_EQ(*(DWORD *)0x00483aeb, DOOR_MAX); CHECK_EQ(*(DWORD *)0x0044c19f, 1);
+	t_shipped_settings();
+}
+TEST(jen_econ_mods_go_in_and_out)
+{
+	*(int *)0x00553030 = 0;                     // single player
+	t_shipped_settings();
+	for (int j = 0; j < JE_COUNT; j++) CHECK(g_jeOk[j]);
+	// Uncapped game speed: the game speed's slider only; off again: back to 10
+	CHECK(!l2hd_speed_free(GAME_SPEED));
+	menu_change(M_JEN_SPEED);
+	CHECK(l2hd_speed_free(GAME_SPEED)); CHECK(!l2hd_speed_free((const int *)0x0053f234));
+	*GAME_SPEED = 150;
+	menu_change(M_JEN_SPEED);
+	CHECK(!l2hd_speed_free(GAME_SPEED)); CHECK_EQ(*GAME_SPEED, 100);
+	// Black Death: milder (Jen's 7 bytes), off (the "under 100?" jge nopped, the milder bytes back), the original
+	menu_change(M_JEN_PLAGUE);
+	CHECK_EQ(*(BYTE *)0x00448fc6, 0xEC); CHECK_EQ(*(BYTE *)0x00449037, 0x0A); CHECK_EQ(*(BYTE *)0x00449069, 0x3F); CHECK_EQ(*(BYTE *)0x00448f83, 0x0F);
+	menu_change(M_JEN_PLAGUE);
+	CHECK_EQ(*(BYTE *)0x00448fc6, 0xD8); CHECK_EQ(*(DWORD *)0x00448f83, 0x90909090); CHECK_EQ(*(WORD *)0x00448f87, 0x9090);
+	menu_change(M_JEN_PLAGUE);
+	CHECK_EQ(*(BYTE *)0x00448f83, 0x0F); CHECK_EQ(*(BYTE *)0x00448f84, 0x8D); CHECK_EQ(*(BYTE *)0x00449055, 0x19);
+	// Resource multiplier 2x: Uncapped resources on with it; wood, iron and stone doubled, not the weapons (industry 2)
+	menu_change(M_JEN_RESMUL);
+	CHECK(g_jenUncap); CHECK_EQ(*(DWORD *)RES_CAP_AT, RES_UNCAPPED); CHECK_EQ(g_liveResMul, 2);
+	int fr[16] = { 0 }; BYTE *ebp = (BYTE *)&fr[8];
+	*(int *)(ebp + 0xc) = 0; *(int *)(ebp - 0xc) = 600; l2hd_res_prod(ebp); CHECK_EQ(*(int *)(ebp - 0xc), 1200);
+	*(int *)(ebp + 0xc) = 2; *(int *)(ebp - 0xc) = 600; l2hd_res_prod(ebp); CHECK_EQ(*(int *)(ebp - 0xc), 600);
+	*(int *)(ebp + 0xc) = 3; *(int *)(ebp - 0x18) = 700; l2hd_res_ui(ebp); CHECK_EQ(*(int *)(ebp - 0x18), 1400);
+	menu_change(M_JEN_UNCAP);                   // capped again: 999 a season, the forecast too
+	CHECK_EQ(*(DWORD *)RES_CAP_AT, RES_CAP);
+	*(int *)(ebp + 0xc) = 1; *(int *)(ebp - 0xc) = 600; l2hd_res_prod(ebp); CHECK_EQ(*(int *)(ebp - 0xc), 999);
+	*(int *)(ebp - 0x18) = 700; l2hd_res_ui(ebp); CHECK_EQ(*(int *)(ebp - 0x18), 999);
+	// Population average: Jen's formula (worked by hand), and the hook's county
+	CHECK_EQ(pop_births(0, 1000, 100, 50, 0, 0), 100);              // off
+	CHECK_EQ(pop_births(1000, 1000, 100, 50, 0, 0), 32);            // 100 * 35000 / 111000: fewer
+	CHECK_EQ(pop_births(1000, 100, 10, 0, 0, 0), 16);               // 10 * 48500 / 31000: more, at most +250
+	CHECK_EQ(pop_births(1000, 100, 10, 0, 0, 5885), 10 + 5);        // more, but under 6000 people
+	CHECK_EQ(pop_births(3000, 1000, 20, 0, 0, 0), 20 + 105);        // from 2000: (120000 - 15000 + 500) / 1000 more
+	CHECK_EQ(pop_births(3000, 8000 / 1, 20, 0, 0, 0), 20);          // (more than 5999: left alone)
+	CHECK_EQ(pop_births(1050, 1000, 100, 50, 0, 0), 100);           // (below 2000 only in hundreds)
+	while (g_jenPop != 1000) menu_change(M_JEN_POP);
+	CHECK_EQ(g_livePop, 1000);
+	*(int *)0x0056d5dc = 3;
+	BYTE *k2 = (BYTE *)0x0053f9d4 + 2 * 0x300;
+	*(int *)k2 = 1000; *(int *)(k2 + 0xc) = 100; *(int *)(k2 + 0x10) = 50; *(int *)(k2 + 0x18) = 0; *(int *)(k2 + 0x1c) = 0;
+	*(int *)(ebp - 4) = 2; l2hd_pop_step(ebp); CHECK_EQ(*(int *)(k2 + 0xc), 32);
+	*(int *)(ebp - 4) = 4; *(int *)(k2 + 0xc) = 100; l2hd_pop_step(ebp); CHECK_EQ(*(int *)(k2 + 0xc), 100);   // (past the counties)
+	// Army size 2000 and scaled icons (a fifth and two fifths of it); the garrisons follow the army size
+	menu_change(M_JEN_ARMY);
+	CHECK_EQ(*(DWORD *)0x004a97c4, 2000); CHECK_EQ(*(DWORD *)0x004aa1b5, 2000);
+	CHECK_EQ(*(DWORD *)0x00465257, ICON_1);
+	menu_change(M_JEN_ICONS);
+	CHECK_EQ(*(DWORD *)0x00465257, 400); CHECK_EQ(*(DWORD *)0x004652b7, 800);
+	menu_change(M_JEN_GARRISON); CHECK_EQ(CASTLE_CAP[0], 2000);
+	// Unit stats and costs (archers): melee scaled as Jen's, the range in cells x 8, the sell price at once, a buy price
+	CHECK_EQ(g_unitSel, 1);
+	menu_change(M_JEN_STAT + US_MELEE);         // 5 -> 6: 6, 5, 4, 2
+	WORD *mw = (WORD *)unit_at(1, US_MELEE);
+	CHECK_EQ(mw[0], 6); CHECK_EQ(mw[1], 5); CHECK_EQ(mw[2], 4); CHECK_EQ(mw[3], 2);
+	menu_change(M_JEN_STAT + US_RANGE);         // 15 -> 19 cells
+	CHECK_EQ(*(DWORD *)0x004d97c4, 19 * 8);
+	menu_change(M_JEN_STAT + US_SPEED);         // 50 -> 100: 2x slower
+	CHECK_EQ(*(DWORD *)0x004d97c8, 100);
+	char v[96]; BOOL rs;
+	menu_value(M_JEN_STAT + US_SPEED, v, sizeof v, &rs); CHECK(!strcmp(v, "2x slower"));
+	menu_change(M_JEN_COST + UC_SELL - UNIT_STATS);   // 16 -> 20
+	CHECK_EQ(*(DWORD *)0x004d8938, 20); CHECK_EQ(*(int *)(0x005532a0 + 16 * 10), 20);
+	CHECK_EQ(l2hd_buy_price(10), 0);            // the game's own buy price
+	menu_change(M_JEN_COST + UC_BUY - UNIT_STATS);    // a price of its own: round twice the original sell price, half of it first
+	CHECK_EQ(g_unitSet[1][UC_BUY], 16); CHECK_EQ(l2hd_buy_price(10), 16); CHECK_EQ(l2hd_buy_price(4), 0);
+	char key[48]; snprintf(key, sizeof key, "ArcherMeleeStrength");
+	CHECK_EQ((int)GetPrivateProfileIntA("Units", key, -1, g_iniPath), 6);
+	g_unitSel = 6;                              // knights: a ranged defence in the code (imm8 at 0x482b56)
+	menu_change(M_JEN_STAT + US_RDEF);          // 25 -> 31
+	CHECK_EQ(*(BYTE *)0x00482b56, 31);
+	menu_value(M_JEN_STAT + US_RANGE, v, sizeof v, &rs); CHECK(!strcmp(v, "-"));   // no ranged stats
+	g_unitSel = 0;
+	menu_change(M_JEN_COST + UC_SELL - UNIT_STATS); CHECK_EQ(g_unitSet[0][UC_SELL], -1);   // peasants: no price
+	g_unitSel = 1;
+
+	*(int *)0x00553030 = 1;                     // a multiplayer game: all the game's own, the settings kept
+	jen_sync();
+	CHECK(!l2hd_speed_free(GAME_SPEED)); CHECK_EQ(g_liveResMul, 1); CHECK_EQ(g_livePop, 0); CHECK_EQ(l2hd_buy_price(10), 0);
+	CHECK_EQ(*(DWORD *)0x004a97c4, ARMY_SIZE); CHECK_EQ(*(DWORD *)0x00465257, ICON_1); CHECK_EQ(*(DWORD *)0x004652b7, ICON_2);
+	CHECK_EQ(mw[0], 5); CHECK_EQ(mw[1], 4); CHECK_EQ(*(DWORD *)0x004d97c4, 120); CHECK_EQ(*(BYTE *)0x00482b56, 25);
+	CHECK_EQ(*(DWORD *)0x004d8938, 16); CHECK_EQ(*(int *)(0x005532a0 + 16 * 10), 16);
+	CHECK_EQ(CASTLE_CAP[0], 150);              // the garrisons: the original sizes
+	CHECK(g_jenArmy == 2000 && g_jenIcons && g_unitSet[1][US_MELEE] == 6);
+	*(int *)0x00553030 = 0;                     // back to single player: in again
+	jen_sync();
+	CHECK_EQ(*(DWORD *)0x004a97c4, 2000); CHECK_EQ(mw[0], 6); CHECK_EQ(*(int *)(0x005532a0 + 16 * 10), 20); CHECK_EQ(l2hd_buy_price(10), 16);
+	CHECK_EQ(*(DWORD *)0x004652b7, 800);
+	t_shipped_settings();                       // the ini's [Units]: read back; anything in range, attack speed one of Jen's three
+	WritePrivateProfileStringA("Units", "KnightMeleeStrength", "500", g_iniPath);
+	WritePrivateProfileStringA("Units", "CrossbowmanAttackSpeed", "60", g_iniPath);
+	WritePrivateProfileStringA("Units", "PeasantSellPrice", "10", g_iniPath);
+	t_fix_sites(); install_game_fixes();
+	CHECK_EQ(g_unitSet[6][US_MELEE], 100); CHECK_EQ(g_unitSet[5][US_SPEED], 50); CHECK_EQ(g_unitSet[0][UC_SELL], -1);
+	CHECK_EQ(*(WORD *)unit_at(6, US_MELEE), 100); CHECK_EQ(*(DWORD *)0x004d97dc, 50);
+	t_shipped_settings();                       // data that isn't the game's: the unit mods stay out, the rest work
+	*(BYTE *)0x00482b56 = 26;
+	read_settings(); install_game_fixes();
+	CHECK(!g_jeOk[JE_UNITS]); CHECK(g_jeOk[JE_ARMY]);
+	menu_value(M_JEN_STAT + US_MELEE, v, sizeof v, &rs); CHECK(strstr(v, "unavailable") != NULL);
 	t_shipped_settings();
 }
 

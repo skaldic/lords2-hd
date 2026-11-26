@@ -3953,7 +3953,7 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 9
+#define MENU_TABS 11
 static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox, g_menuLink; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
@@ -4035,6 +4035,8 @@ static const int kDoorInSteps[] = { 1000, 2500, 5000, 10000, 20000, 50000, 10000
 static const int kDoorOutSteps[] = { 5000, 10000, 20000, 40000, 80000, 100000 };
 static const int kReclaimWorkSteps[] = { 200, 400, 800, 1600, 3200 };
 static const int kReclaimMenSteps[] = { 100, 200, 400, 800 };
+static const int kPopSteps[] = { 0, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000 };   // (0: the game's own)
+static const int kArmySteps[] = { 500, 1000, 1500, 2000, 3000, 5000, 10000 };
 static int step_next(int v, const int *s, int n) { for (int i = 0; i < n; i++) if (s[i] > v) return s[i]; return s[0]; }
 // Castle garrisons (Jen's Castle Garrison Limits): how many men each kind of castle holds, DAT_004d8a10 (150, 200,
 // 200, 400, 600), read wherever a castle's room counts (an army going in, the castle screen, the AI). On: every
@@ -4085,6 +4087,318 @@ static BOOL reclaim_hold(int work, int men)
 	for (int k = 0; k < 3; k++) if (*(const DWORD *)kReclaimStageSites[k] != reclaim_stage(k + 1, work)) return FALSE;
 	return TRUE;
 }
+// Jen With a B's game, economy and unit mods (Jen's patch sites and values, read from Mod Manager 1.4.1), single
+// player only like the castle mods: jen_sync puts the game's own back in a multiplayer game. The four that run code of
+// ours (game speed, resource multiplier, population average, merchant prices) are hooked once at start-up and do
+// what the game does while the g_live* values jen_sync sets say so.
+//
+// Uncapped game speed: the game speed slider's "+" (FUN_00434e9e, shared with the slider at 0x53f234) adds 10 while
+// below 100 (speed 10): its jge at 0x434eb1. On: no limit for the game speed (the other slider keeps its own). Off
+// again: a speed above 10 is set back to 10 (as Jen's).
+#define SPEED_AT 0x00434eb1
+#define GAME_SPEED ((int *)0x0053f230)
+// Black Death (FUN_00448f6f, the plague in a county): a county under 100 people is spared it. Off (Jen's Disabled):
+// every county is (the jge after "under 100?" nopped; the event still comes up, as Jen's). Milder (Jen's 50% Reduced):
+// the people it takes (40, 30, 20 or 30 in a hundred by difficulty, DAT_0053fbab) halved, and the county's DAT_0053f9bb
+// loses 10 instead of 20, capped at 63 instead of 25.
+static const JenSite kPlagueOff[] = { { 0x00448f83, 6, { 0x0F, 0x8D, 0x23, 0x00, 0x00, 0x00 }, { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } } };
+static const JenSite kPlagueMild[] = {
+	{ 0x00448fc6, 1, { 0xD8 }, { 0xEC } }, { 0x00448fe6, 1, { 0xE2 }, { 0xF1 } }, { 0x00449006, 1, { 0xEC }, { 0xF6 } },
+	{ 0x00449026, 1, { 0xE2 }, { 0xF1 } }, { 0x00449037, 1, { 0x14 }, { 0x0A } }, { 0x00449055, 1, { 0x19 }, { 0x3F } },
+	{ 0x00449069, 1, { 0x19 }, { 0x3F } },
+};
+// Uncapped resources: an industry's output in a season is at most 999 (FUN_0044ef4e, the mov at 0x44f00d, for wood,
+// iron and stone). On: 99,999,999.
+#define RES_CAP_AT 0x0044f010
+#define RES_CAP 999
+#define RES_UNCAPPED 99999999
+// Resource multiplier (1x to 10x): a season's wood, iron and stone (FUN_0044ea92 at 0x44ec79, industry 0, 1 and 3;
+// not the blacksmith's weapons, 2) and the forecast of it (FUN_0044f318 at 0x44f5eb) times the multiplier; the output
+// still capped at 999 unless Uncapped resources is on.
+#define RESMUL_PROD 0x0044ec79
+#define RESMUL_UI 0x0044f5eb
+#define RESMUL_MAX 10
+// Population average (Jen's): each county's births at its season's growth (FUN_00449ef3, at 0x44a290 before
+// population += births - deaths) steered towards a long-run average (pop_births). 0 = the game's own.
+#define POP_AT 0x0044a290
+#define POP_MIN 500
+#define POP_MAX 5000
+// Army size: the most men in an army (two cmp immediates; the game's 1500). Castle garrisons follow it.
+static const DWORD kArmySites[2] = { 0x004a97c4, 0x004aa1b5 };
+#define ARMY_SIZE 1500
+#define ARMY_MIN 50
+#define ARMY_MAX 10000
+// Scaled army icons: an army shows one man up to 300, two up to 600, three above (cmp immediates at 0x465250 and
+// 0x4652b0). On: a fifth and two fifths of the army size.
+static const DWORD kIconSites[2] = { 0x00465257, 0x004652b7 };
+#define ICON_1 300
+#define ICON_2 600
+// Unit stats and costs (Jen's Unit Stats and Unit Costs), each unit's in the game's tables:
+//   melee strength  4 words at 0x4d98f8 + 8 m (Jen's: the first set, the other three scaled with it)
+//   ranged defence  the imm8 of a mov byte [0x5545f2] in each unit's set-up
+//   auto-calc       a dword at 0x4d4b98 + 4 a (its strength when a battle is worked out)
+//   wood, iron      the blacksmith's cost of one, dwords at 0x4d8990 + 8 w and + 4
+//   sell price      the merchant's, a dword at 0x4d8910 + 4 s, copied to 0x5532a0 + 16 s at a new game (FUN_0042847c)
+//   buy price       the game's is the sell price + the merchant's share (FUN_0041608b, FUN_00428xxx and the AI's
+//                   FUN_004a4xxx); a set price replaces it there, by four hooks (merchant stubs)
+//   ranged          archers' and crossbowmen's at 0x4d97b0 + 20 k: range in cells x 8, attack speed (25, 50 or 100:
+//                   the time between shots), ranged strength at + 12
+#define UNITS 7
+enum { US_MELEE, US_RDEF, US_AUTO, US_RSTR, US_RANGE, US_SPEED, UC_WOOD, UC_IRON, UC_SELL, UC_BUY, US_COUNT };
+#define UNIT_STATS 6   // the Unit stats tab's (US_*), then the Unit costs tab's 4 (UC_*)
+#define UNIT_COSTS 4
+static const char *const kUnitName[UNITS] = { "Peasants", "Archers", "Swordsmen", "Macemen", "Pikemen", "Crossbowmen", "Knights" };
+static const char *const kUnitKey[UNITS] = { "Peasant", "Archer", "Swordsman", "Maceman", "Pikeman", "Crossbowman", "Knight" };
+static const char *const kStatKey[US_COUNT] = { "MeleeStrength", "RangedDefence", "AutoCalcStrength", "RangedStrength",
+	"AttackRange", "AttackSpeed", "WoodCost", "IronCost", "SellPrice", "BuyPrice" };
+static const int kStatMin[US_COUNT] = { 1, 0, 0, 0, 0, 25, 0, 0, 1, 1 }, kStatMax[US_COUNT] = { 100, 100, 100, 1000, 50, 100, 10000, 10000, 10000, 10000 };
+static const signed char kUnitMelee[UNITS] = { 0, 5, 2, 3, 4, 1, 6 }, kUnitAuto[UNITS] = { 0, 5, 3, 2, 4, 1, 6 },
+	kUnitCost[UNITS] = { -1, 4, 2, 1, 3, 0, 5 }, kUnitPrice[UNITS] = { -1, 10, 13, 11, 9, 12, 14 }, kUnitRanged[UNITS] = { -1, 1, -1, -1, -1, 2, -1 };
+static const DWORD kUnitRdefAt[UNITS] = { 0x00482640, 0x00482a7d, 0x004827f2, 0x004828cb, 0x004829a4, 0x00482719, 0x00482b56 };
+static const WORD kMeleeGame[UNITS][4] = { { 5, 4, 3, 2 }, { 5, 4, 3, 2 }, { 15, 12, 10, 6 }, { 15, 12, 10, 6 }, { 10, 8, 6, 5 }, { 5, 4, 3, 2 }, { 20, 15, 11, 6 } };
+// The game's values as the panel shows them (range in cells; buy 0: the game's own price; -1: the unit has none)
+static const int kUnitGame[UNITS][US_COUNT] = {
+	{ 5, 0, 2, -1, -1, -1, -1, -1, -1, -1 },          // peasants
+	{ 5, 0, 13, 50, 15, 50, 13, 0, 16, 0 },          // archers
+	{ 15, 12, 13, -1, -1, -1, 3, 10, 23, 0 },        // swordsmen
+	{ 15, 35, 8, -1, -1, -1, 4, 4, 10, 0 },          // macemen
+	{ 10, 35, 9, -1, -1, -1, 6, 3, 13, 0 },          // pikemen
+	{ 5, 12, 16, 200, 8, 100, 6, 10, 24, 0 },        // crossbowmen
+	{ 20, 25, 22, -1, -1, -1, 4, 18, 44, 0 },        // knights
+};
+static const DWORD kRangedRest[UNITS] = { 0, 4, 0, 0, 0, 4, 0 }; // (+8 of the ranged record, not changed; checked)
+static BOOL unit_has(int u, int s) { return kUnitGame[u][s] >= 0; }
+static DWORD unit_at(int u, int s) // where it is kept
+{
+	switch (s) {
+	case US_MELEE: return 0x004d98f8 + 8 * kUnitMelee[u];
+	case US_RDEF: return kUnitRdefAt[u];
+	case US_AUTO: return 0x004d4b98 + 4 * kUnitAuto[u];
+	case US_RSTR: return 0x004d97b0 + 20 * kUnitRanged[u] + 12;
+	case US_RANGE: return 0x004d97b0 + 20 * kUnitRanged[u];
+	case US_SPEED: return 0x004d97b0 + 20 * kUnitRanged[u] + 4;
+	case UC_WOOD: return 0x004d8990 + 8 * kUnitCost[u];
+	case UC_IRON: return 0x004d8994 + 8 * kUnitCost[u];
+	case UC_SELL: return 0x004d8910 + 4 * kUnitPrice[u];
+	}
+	return 0;
+}
+static void melee_words(int u, int v, WORD w[4]) // Jen's: the first v, the others in proportion
+{
+	int b0 = kMeleeGame[u][0];
+	for (int k = 0; k < 4; k++) { int x = (kMeleeGame[u][k] * v + b0 / 2) / b0; w[k] = (WORD)min(x, 0xffff); }
+	w[0] = (WORD)v;
+}
+static BOOL unit_holds(int u, int s, int v)
+{
+	DWORD at = unit_at(u, s);
+	if (s == US_MELEE) { WORD w[4]; melee_words(u, v, w); return memcmp((const void *)at, w, 8) == 0; }
+	if (s == US_RDEF) return *(const BYTE *)at == v;
+	if (s == US_RANGE) return *(const DWORD *)at == (DWORD)v * 8;
+	return *(const DWORD *)at == (DWORD)v;
+}
+static BOOL unit_put(int u, int s, int v)
+{
+	DWORD at = unit_at(u, s);
+	if (s == US_MELEE) { WORD w[4]; melee_words(u, v, w); return code_put(at, w, 8); }
+	if (s == US_RDEF) { BYTE b = (BYTE)v; return code_put(at, &b, 1); }
+	DWORD d = s == US_RANGE ? (DWORD)v * 8 : (DWORD)v;
+	return code_put(at, &d, 4);
+}
+static int g_jenSpeed, g_jenPlague, g_jenPop, g_jenUncap, g_jenResMul = 1, g_jenArmy = ARMY_SIZE, g_jenIcons; // the switches
+static int g_unitSet[UNITS][US_COUNT];   // the units' settings: -1 = the game's own
+static int g_unitSel = 1;                // the unit the Unit stats and Unit costs tabs show (archers: they have every one)
+enum { JE_SPEED, JE_PLAGUE, JE_RESCAP, JE_RESMUL, JE_POP, JE_ARMY, JE_ICONS, JE_UNITS, JE_BUY, JE_COUNT };
+static BOOL g_jeOk[JE_COUNT];            // its sites held the game's code or data at start-up (the hooks: they went in)
+static BOOL g_jeHooked[JE_COUNT];        // (the hooks: put in once, by install_game_fixes)
+static struct { int plague, uncap, army, icon1, icon2, unit[UNITS][US_COUNT], sellLive[UNITS]; } g_jeNow; // in the game now
+// What the hooks do now (jen_sync): 0 / 1x = the game's own
+static volatile LONG g_liveSpeed, g_liveResMul = 1, g_liveUncap, g_livePop, g_liveBuy[16];
+static int unit_orig(int u, int s) { return kUnitGame[u][s]; }
+static int unit_value(int u, int s) { return g_unitSet[u][s] >= 0 ? g_unitSet[u][s] : unit_orig(u, s); }
+// The panel's choices for a unit's stat, ascending, its original among them: half to three times it (for an original
+// 0, a few small ones); attack speed 25, 50 or 100 (Jen's); the buy price the game's own (0), then round twice the sell price.
+static int unit_steps(int u, int s, int *out)
+{
+	static const int kPct[] = { 50, 75, 100, 125, 150, 200, 300 }, kFromZero[] = { 0, 5, 10, 25, 50 };
+	static const int kSpeed[] = { 25, 50, 100 };
+	int n = 0, o = unit_orig(u, s);
+	if (!unit_has(u, s)) return 0;
+	if (s == US_SPEED) { for (int i = 0; i < 3; i++) out[n++] = kSpeed[i]; return n; }
+	if (s == UC_BUY) { out[n++] = 0; o = 2 * unit_orig(u, UC_SELL); }
+	for (int i = 0; i < (o ? 7 : 5); i++) {
+		int v = o ? (o * kPct[i] + 50) / 100 : kFromZero[i];
+		v = max(kStatMin[s], min(kStatMax[s], v));
+		if (n && out[n - 1] >= v) continue;
+		out[n++] = v;
+	}
+	return n;
+}
+static void unit_write_ini(int u, int s)
+{
+	char key[48], v[16]; snprintf(key, sizeof key, "%s%s", kUnitKey[u], kStatKey[s]); snprintf(v, sizeof v, "%d", g_unitSet[u][s]);
+	WritePrivateProfileStringA("Units", key, g_unitSet[u][s] < 0 ? NULL : v, g_iniPath);
+}
+static void unit_step(int u, int s) // the next choice up, round to the first
+{
+	int st[8], n = unit_steps(u, s, st), cur = s == UC_BUY ? max(g_unitSet[u][s], 0) : unit_value(u, s), v;
+	if (!n) return;
+	v = st[0];
+	for (int i = 0; i < n; i++) if (st[i] > cur) { v = st[i]; break; }
+	g_unitSet[u][s] = s == UC_BUY ? (v > 0 ? v : -1) : v == unit_orig(u, s) ? -1 : v;
+	unit_write_ini(u, s);
+}
+static void unit_read_ini(void)
+{
+	for (int u = 0; u < UNITS; u++)
+		for (int s = 0; s < US_COUNT; s++) {
+			char key[48]; snprintf(key, sizeof key, "%s%s", kUnitKey[u], kStatKey[s]);
+			int v = unit_has(u, s) ? GetPrivateProfileIntA("Units", key, -1, g_iniPath) : -1;
+			if (v >= 0) v = max(kStatMin[s], min(kStatMax[s], v));
+			if (v >= 0 && s == US_SPEED) v = v < 38 ? 25 : v < 75 ? 50 : 100;   // (Jen's three)
+			if (v == unit_orig(u, s) && s != UC_BUY) v = -1;
+			g_unitSet[u][s] = v;
+		}
+}
+static void unit_text(int u, int s, char *v, int n)
+{
+	int x = unit_value(u, s), o = unit_orig(u, s);
+	if (!unit_has(u, s)) { snprintf(v, n, "-"); return; }   // (peasants have no ranged stats, nor a price)
+	if (s == US_SPEED) {
+		if (x == o) snprintf(v, n, "Original (%d)", x);
+		else snprintf(v, n, "%dx %s", x < o ? o / x : x / o, x < o ? "faster" : "slower");
+	}
+	else if (s == UC_BUY) {
+		if (g_unitSet[u][s] <= 0) snprintf(v, n, "Original (sell price + share)");
+		else snprintf(v, n, "%d", x);
+	}
+	else if (x == o) snprintf(v, n, "Original (%d%s)", x, s == US_RANGE ? " cells" : "");
+	else snprintf(v, n, "%d%s", x, s == US_RANGE ? " cells" : "");
+	int l = (int)strlen(v);
+	if (!g_jeOk[s == UC_BUY ? JE_BUY : JE_UNITS] && l < n) snprintf(v + l, n - l, " (unavailable)");
+}
+// Jen's Population Average for one county at its growth: the births pushed towards a long-run population near the
+// target (64-bit, as Jen's). Below 2000 (500 to 1900, in hundreds) the births are scaled by (50 T - 15 pop) / (1000
+// (rate pop / 100 + 1)), the rate falling from 100 to 1 as the county grows, up 250 a season at most; from 2000 on,
+// the births only gain (40 T - 15 pop) / 1000, at most 250. Either way the population stays under 6000.
+static int pop_births(int target, int pop, int births, int deaths, int emig, int immig)
+{
+	static const int kRate[20][2] = { { 40, 100 }, { 80, 70 }, { 100, 50 }, { 250, 30 }, { 500, 20 }, { 700, 15 }, { 800, 14 },
+		{ 900, 13 }, { 1000, 12 }, { 1100, 11 }, { 1200, 10 }, { 1300, 9 }, { 1400, 8 }, { 1500, 7 }, { 1600, 6 }, { 1700, 5 },
+		{ 1800, 4 }, { 1900, 3 }, { 2000, 2 }, { 3000, 1 } };
+	if (target <= 0 || pop < 1 || pop > 5999 || births < 0 || deaths < 0 || emig < 0 || immig < 0) return births;
+	long long room = 6000LL - pop - births + deaths + emig - immig;
+	if (target >= 2000) {
+		long long t = 40LL * target - 15LL * pop;
+		if (t <= 0 || room <= 0) return births;
+		long long bonus = (t + 500) / 1000;
+		if (bonus > room) bonus = room;
+		if (bonus < 1 || bonus > 250) return births;
+		return births + (int)bonus;
+	}
+	if (target < 500 || target % 100) return births;
+	long long num = 50LL * target - 15LL * pop, rate = 1;
+	if (num < 0) num = 0;
+	for (int i = 0; i < 20; i++) if (pop < kRate[i][0]) { rate = kRate[i][1]; break; }
+	long long a = rate * pop / 100;
+	if (a < 1) a = 1;
+	long long k = a * 1000 + 1000, r = (births * num + k / 2) / k;
+	if (r > births) {
+		long long up = r - births, cap = room > 0 ? room : 0;
+		if (up > 250) up = 250;
+		if (up > cap) up = cap;
+		r = births + up;
+	}
+	return r > 0x7fffffff ? births : (int)r;
+}
+// What jen_sync puts in now for these (on: Jen With a B's Mods on, a single player game). Army size before the army icons
+// and the castle garrisons, which follow it.
+static void jen_econ_sync(BOOL on)
+{
+	InterlockedExchange(&g_liveSpeed, on && g_jenSpeed && g_jeOk[JE_SPEED]);
+	if (!g_liveSpeed && g_jeOk[JE_SPEED] && *GAME_SPEED > 100) *GAME_SPEED = 100;   // (Jen's: back to speed 10)
+	int plague = on ? g_jenPlague : 0;
+	if (g_jeOk[JE_PLAGUE] && plague != g_jeNow.plague) {
+		BOOL ok = sites_put(kPlagueMild, 7, plague == 1) && sites_put(kPlagueOff, 1, plague == 2);
+		g_jeOk[JE_PLAGUE] = ok;
+		if (ok) g_jeNow.plague = plague;
+		logf_("black death: %s", !ok ? "failed: unexpected code" : plague == 2 ? "off" : plague ? "milder" : "the game's own");
+	}
+	int uncap = on && g_jenUncap ? RES_UNCAPPED : RES_CAP;
+	if (g_jeOk[JE_RESCAP] && uncap != g_jeNow.uncap) {
+		static const DWORD kAt[1] = { RES_CAP_AT };
+		BOOL ok = dwords_put(kAt, 1, g_jeNow.uncap, uncap);
+		g_jeOk[JE_RESCAP] = ok;
+		if (ok) g_jeNow.uncap = uncap;
+		logf_("uncapped resources: %s", !ok ? "failed: unexpected code" : uncap != RES_CAP ? "on" : "off (999 a season)");
+	}
+	InterlockedExchange(&g_liveUncap, g_jeNow.uncap != RES_CAP);
+	InterlockedExchange(&g_liveResMul, on && g_jeOk[JE_RESMUL] ? g_jenResMul : 1);
+	InterlockedExchange(&g_livePop, on && g_jeOk[JE_POP] ? g_jenPop : 0);
+	int army = on ? g_jenArmy : ARMY_SIZE;
+	if (g_jeOk[JE_ARMY] && army != g_jeNow.army) {
+		BOOL ok = dwords_put(kArmySites, 2, g_jeNow.army, army);
+		g_jeOk[JE_ARMY] = ok;
+		if (ok) g_jeNow.army = army;
+		logf_("army size: %s%d", ok ? "" : "failed: unexpected code; ", army);
+	}
+	int lim = g_jeNow.army, icon1 = on && g_jenIcons ? lim / 5 : ICON_1, icon2 = on && g_jenIcons ? lim * 2 / 5 : ICON_2;
+	if (g_jeOk[JE_ICONS] && (icon1 != g_jeNow.icon1 || icon2 != g_jeNow.icon2)) {
+		BOOL ok = dwords_put(&kIconSites[0], 1, g_jeNow.icon1, icon1) && dwords_put(&kIconSites[1], 1, g_jeNow.icon2, icon2);
+		g_jeOk[JE_ICONS] = ok;
+		if (ok) g_jeNow.icon1 = icon1, g_jeNow.icon2 = icon2;
+		logf_("army icons: %s%d and %d men", ok ? "" : "failed: unexpected code; ", icon1, icon2);
+	}
+	for (int u = 0; u < UNITS && g_jeOk[JE_UNITS]; u++)
+		for (int s = 0; s < UC_BUY; s++) {
+			if (!unit_has(u, s)) continue;
+			int want = on && g_unitSet[u][s] >= 0 ? g_unitSet[u][s] : unit_orig(u, s);
+			if (want == g_jeNow.unit[u][s]) continue;
+			if (!unit_holds(u, s, g_jeNow.unit[u][s]) || !unit_put(u, s, want)) {
+				g_jeOk[JE_UNITS] = FALSE;
+				logf_("unit stats: failed: unexpected data at %08lx", (unsigned long)unit_at(u, s));
+				break;
+			}
+			g_jeNow.unit[u][s] = want;
+			logf_("unit stats: %s %s %d", kUnitKey[u], kStatKey[s], want);
+		}
+	for (int u = 0; u < UNITS && g_jeOk[JE_UNITS]; u++) { // the sell price in the game being played (the copy a new game makes)
+		if (!unit_has(u, UC_SELL)) continue;
+		int *live = (int *)(0x005532a0 + 16 * kUnitPrice[u]), want = g_jeNow.unit[u][UC_SELL];
+		if (*live != want && (*live == unit_orig(u, UC_SELL) || *live == g_jeNow.sellLive[u])) *live = want;
+		g_jeNow.sellLive[u] = want;
+	}
+	for (int u = 0; u < UNITS; u++)
+		if (unit_has(u, UC_BUY)) InterlockedExchange(&g_liveBuy[kUnitPrice[u]], on && g_jeOk[JE_BUY] && g_unitSet[u][UC_BUY] > 0 ? g_unitSet[u][UC_BUY] : 0);
+}
+static void jen_econ_check(void)
+{
+	g_jeOk[JE_SPEED] = g_jeHooked[JE_SPEED];
+	g_jeOk[JE_PLAGUE] = sites_hold(kPlagueOff, 1, FALSE) && sites_hold(kPlagueMild, 7, FALSE);
+	static const DWORD kCapAt[1] = { RES_CAP_AT };
+	g_jeOk[JE_RESCAP] = *(const BYTE *)(RES_CAP_AT - 3) == 0xC7 && dwords_hold(kCapAt, 1, RES_CAP);
+	g_jeOk[JE_RESMUL] = g_jeHooked[JE_RESMUL];
+	g_jeOk[JE_POP] = g_jeHooked[JE_POP];
+	g_jeOk[JE_ARMY] = dwords_hold(kArmySites, 2, ARMY_SIZE);
+	g_jeOk[JE_ICONS] = *(const DWORD *)kIconSites[0] == ICON_1 && *(const DWORD *)kIconSites[1] == ICON_2;
+	BOOL units = TRUE;
+	for (int u = 0; u < UNITS; u++) {
+		for (int s = 0; s < UC_BUY; s++) if (unit_has(u, s) && !unit_holds(u, s, unit_orig(u, s))) units = FALSE;
+		if (kUnitRanged[u] >= 0 && *(const DWORD *)(0x004d97b0 + 20 * kUnitRanged[u] + 8) != kRangedRest[u]) units = FALSE;
+		if (*(const BYTE *)(kUnitRdefAt[u] - 6) != 0xC6 || *(const DWORD *)(kUnitRdefAt[u] - 4) != 0x005545f2) units = FALSE;
+	}
+	g_jeOk[JE_UNITS] = units;
+	g_jeOk[JE_BUY] = g_jeHooked[JE_BUY];
+	g_jeNow.plague = 0; g_jeNow.uncap = RES_CAP; g_jeNow.army = ARMY_SIZE; g_jeNow.icon1 = ICON_1; g_jeNow.icon2 = ICON_2;
+	for (int u = 0; u < UNITS; u++) {
+		for (int s = 0; s < US_COUNT; s++) g_jeNow.unit[u][s] = unit_orig(u, s);
+		g_jeNow.sellLive[u] = unit_orig(u, UC_SELL);
+	}
+	static const char *const kWhat[JE_COUNT] = { "00434eb1 (game speed)", "00448f83 (black death)", "0044f010 (uncapped resources)",
+		"0044ec79 (resource multiplier)", "0044a290 (population average)", "004a97c4 (army size)", "00465257 (army icons)",
+		"004d98f8 (unit stats)", "004162b1 (merchant prices)" };
+	for (int j = 0; j < JE_COUNT; j++) if (!g_jeOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
+}
 // At start-up: which of them can go in (the game's code at every site), all as the game's own for now.
 static void jen_castle_check(void)
 {
@@ -4099,6 +4413,7 @@ static void jen_castle_check(void)
 	static const char *const kWhat[JC_COUNT] = { "00449c79 (weather and fields)", "00466814 (pillaging)", "00483aeb (castle doors)",
 		"0044c15a (field reclaim)", "004d8a10 (castle garrisons)" };
 	for (int j = 0; j < JC_COUNT; j++) if (!g_jcOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
+	jen_econ_check();
 }
 // Puts in what the switches ask for now (the game's own in a multiplayer game or with Jen With a B's Mods off). Cheap
 // when nothing changed: called for every window message.
@@ -4108,6 +4423,7 @@ static void jen_sync(void)
 	BOOL fieldOff = on && !g_jenFieldLoss, pillageOff = on && !g_jenPillage;
 	int doorIn = on ? g_jenDoorIn : DOOR_IN, doorOut = on ? g_jenDoorOut : DOOR_OUT;
 	int work = on ? g_jenWork : RECLAIM_WORK, men = on ? g_jenMen : RECLAIM_MEN;
+	jen_econ_sync(on);   // (the army size first: the garrisons follow it)
 	if (g_jcOk[JC_FIELD] && fieldOff != g_jcNow.fieldOff) {
 		g_jcOk[JC_FIELD] = sites_put(kFieldLossSites, 2, fieldOff);
 		if (g_jcOk[JC_FIELD]) g_jcNow.fieldOff = fieldOff;
@@ -4280,7 +4596,13 @@ static void castle_design_check(void)
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
 	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG,
 	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON,
-	M_JEN_DESIGN, M_JEN_DESIGN_LAST = M_JEN_DESIGN + 4, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys; M_JEN_DESIGN + kind)
+	M_JEN_DESIGN, M_JEN_DESIGN_LAST = M_JEN_DESIGN + 4, M_JEN_SPEED, M_JEN_PLAGUE, M_JEN_POP, M_JEN_UNCAP, M_JEN_RESMUL,
+	M_JEN_ARMY, M_JEN_ICONS, M_JEN_UNIT, M_JEN_STAT, M_JEN_STAT_LAST = M_JEN_STAT + UNIT_STATS - 1, M_JEN_UNIT_C, M_JEN_COST,
+	M_JEN_COST_LAST = M_JEN_COST + UNIT_COSTS - 1, M_COUNT };
+	// (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys, but the unit rows' [Units] ones; M_JEN_DESIGN + kind;
+	// M_JEN_UNIT / M_JEN_UNIT_C: the unit the rows after them show, M_JEN_STAT + US_*, M_JEN_COST + UC_* - UNIT_STATS)
+static BOOL menu_unit_row(int i) { return (i >= M_JEN_STAT && i <= M_JEN_STAT_LAST) || (i >= M_JEN_COST && i <= M_JEN_COST_LAST); }
+static int menu_unit_stat(int i) { return i <= M_JEN_STAT_LAST ? i - M_JEN_STAT : UNIT_STATS + i - M_JEN_COST; }
 static BOOL menu_design(int i) { return i >= M_JEN_DESIGN && i <= M_JEN_DESIGN_LAST; }
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
 // Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the Jen With a B's Mods panel (F11,
@@ -4291,19 +4613,23 @@ static BOOL menu_design(int i) { return i >= M_JEN_DESIGN && i <= M_JEN_DESIGN_L
 #define TAB_ECONOMY 5
 #define TAB_BUILDINGS 6
 #define TAB_UNITS 7
-#define TAB_FIXES 8
+#define TAB_STATS 8
+#define TAB_COSTS 9
+#define TAB_FIXES 10
 static BOOL g_menuMods;   // the open panel is the Jen With a B's Mods one
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles",
-	"Game", "Economy", "Buildings", "Units", "Fixes" };
+	"Game", "Economy", "Buildings", "Units", "Unit stats", "Unit costs", "Fixes" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
 	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, M_JEN, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
-	{ M_JEN_FIELDS, -1 },
-	{ M_JEN_WORK, M_JEN_MEN, -1 },
+	{ M_JEN_FIELDS, M_JEN_SPEED, M_JEN_PLAGUE, M_JEN_POP, -1 },
+	{ M_JEN_WORK, M_JEN_MEN, M_JEN_UNCAP, M_JEN_RESMUL, -1 },
 	{ M_JEN_GARRISON, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_DESIGN, M_JEN_DESIGN + 1, M_JEN_DESIGN + 2, M_JEN_DESIGN + 3, M_JEN_DESIGN + 4, -1 },
-	{ M_JEN_PILLAGE, -1 },
+	{ M_JEN_PILLAGE, M_JEN_ARMY, M_JEN_ICONS, -1 },
+	{ M_JEN_UNIT, M_JEN_STAT, M_JEN_STAT + 1, M_JEN_STAT + 2, M_JEN_STAT + 3, M_JEN_STAT + 4, M_JEN_STAT + 5, -1 },
+	{ M_JEN_UNIT_C, M_JEN_COST, M_JEN_COST + 1, M_JEN_COST + 2, M_JEN_COST + 3, -1 },
 	{ M_JEN_RATION, M_JEN_MPMSG, -1 },
 };
 // What the Jen With a B's Mods panel says under its rows about the chosen one (two lines).
@@ -4320,6 +4646,28 @@ static const char *menu_desc(int i, int line)
 		{ "The most work a season puts into reclaiming a field", "(original 200). Single player games only" },                     // M_JEN_MEN
 		{ "Original: castles hold 150 to 600 men by their kind.", "Army size: as many as an army may. Single player only" },      // M_JEN_GARRISON
 	};   // (lines of up to about 57 letters fit the scroll)
+	static const char *const kDesc2[][2] = {
+		{ "On: the game speed goes past 10 (the original's most).", "Off again: back to 10. Single player games only" },       // M_JEN_SPEED
+		{ "Milder: the Black Death takes about half as many people.", "Off: it spares every county. Single player only" },     // M_JEN_PLAGUE
+		{ "Steers each county's births towards this population", "in the long run (Jen's). Single player games only" },       // M_JEN_POP
+		{ "On: an industry's output a season isn't capped at 999", "(wood, iron and stone). Single player games only" },       // M_JEN_UNCAP
+		{ "Wood, iron and stone a season times this; 2x and more", "turn Uncapped resources on. Single player games only" },   // M_JEN_RESMUL
+		{ "The most men in an army (original 1500); castle", "garrisons follow it. Single player games only" },              // M_JEN_ARMY
+		{ "On: an army's icon shows 2 and 3 men from a fifth and", "two fifths of the army size. Single player games only" },  // M_JEN_ICONS
+		{ "The unit the rows below change (each has its own).", "Click for the next one" },                                     // M_JEN_UNIT
+		{ "Its strength in close combat.", "Single player games only" },                                                       // US_MELEE
+		{ "How well it stands up to arrows and bolts.", "Single player games only" },                                          // US_RDEF
+		{ "Its strength when a battle is worked out without being", "fought. Single player games only" },                     // US_AUTO
+		{ "The strength of its arrows or bolts.", "Archers and crossbowmen only. Single player games only" },                  // US_RSTR
+		{ "How far it shoots, in cells.", "Archers and crossbowmen only. Single player games only" },                          // US_RANGE
+		{ "The time between its shots (faster: shorter).", "Archers and crossbowmen only. Single player games only" },         // US_SPEED
+		{ "The unit the rows below change (each has its own).", "Click for the next one" },                                     // M_JEN_UNIT_C
+		{ "Wood the blacksmith uses to make one.", "Single player games only" },                                               // UC_WOOD
+		{ "Iron the blacksmith uses to make one.", "Single player games only" },                                               // UC_IRON
+		{ "What the merchant pays for one (it asks for that plus", "a share, unless the buy price is set). Single player only" }, // UC_SELL
+		{ "What the merchant asks for one, from you and the", "computer lords. Single player games only" },                    // UC_BUY
+	};
+	if (i >= M_JEN_SPEED && i < M_COUNT) return kDesc2[i - M_JEN_SPEED][line != 0];
 	if (menu_design(i)) return line ? "skirmish castles. From the next siege; single player only" : "The map its sieges are fought on: its own or one of the";
 	return i >= M_JEN_RATION && i < M_JEN_DESIGN ? kDesc[i - M_JEN_RATION][line != 0] : NULL;
 }
@@ -4335,6 +4683,7 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		snprintf(v, n, "%s%s", c ? kCdName[kCdChoices[k][c - 1]] : "Original", cd_ok() ? "" : " (unavailable)");
 		return;
 	}
+	if (menu_unit_row(i)) { unit_text(g_unitSel, menu_unit_stat(i), v, n); return; }
 	switch (i) {
 	case M_UPSCALE: snprintf(v, n, "%s", g_upscaleCR == 2 ? "AMD FSR 1 (sharpest)" : g_upscaleCR ? "Catmull-Rom (sharp)" : "Bilinear (soft)"); break;
 	case M_SCREENS: snprintf(v, n, "%s", g_showScreens ? "On" : "Off"); *restart = g_showScreens && !g_hdScreens; break;
@@ -4383,6 +4732,20 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		if (g_jenGarrison) snprintf(v, n, "Army size (%lu each)%s", (unsigned long)army_limit(), g_jcOk[JC_GARRISON] ? "" : " (unavailable)");
 		else snprintf(v, n, "Original (150 to 600)%s", g_jcOk[JC_GARRISON] ? "" : " (unavailable)");
 		break;
+	case M_JEN_SPEED: snprintf(v, n, "%s%s", g_jenSpeed ? "On" : "Off (original)", g_jeOk[JE_SPEED] ? "" : " (unavailable)"); break;
+	case M_JEN_PLAGUE: snprintf(v, n, "%s%s", g_jenPlague == 2 ? "Off" : g_jenPlague ? "Milder" : "On (original)", g_jeOk[JE_PLAGUE] ? "" : " (unavailable)"); break;
+	case M_JEN_POP:
+		if (g_jenPop) snprintf(v, n, "%d%s", g_jenPop, g_jeOk[JE_POP] ? "" : " (unavailable)");
+		else snprintf(v, n, "Original%s", g_jeOk[JE_POP] ? "" : " (unavailable)");
+		break;
+	case M_JEN_UNCAP: snprintf(v, n, "%s%s", g_jenUncap ? "On (99,999,999)" : "Off (original: 999)", g_jeOk[JE_RESCAP] ? "" : " (unavailable)"); break;
+	case M_JEN_RESMUL: snprintf(v, n, "%dx%s%s", g_jenResMul, g_jenResMul == 1 ? " (original)" : "", g_jeOk[JE_RESMUL] ? "" : " (unavailable)"); break;
+	case M_JEN_ARMY: snprintf(v, n, "%d%s%s", g_jenArmy, g_jenArmy == ARMY_SIZE ? " (original)" : "", g_jeOk[JE_ARMY] ? "" : " (unavailable)"); break;
+	case M_JEN_ICONS:
+		if (g_jenIcons) snprintf(v, n, "On (2 men from %d, 3 from %d)%s", g_jenArmy / 5, g_jenArmy * 2 / 5, g_jeOk[JE_ICONS] ? "" : " (unavailable)");
+		else snprintf(v, n, "Off (original: 300 and 600)%s", g_jeOk[JE_ICONS] ? "" : " (unavailable)");
+		break;
+	case M_JEN_UNIT: case M_JEN_UNIT_C: snprintf(v, n, "%s", kUnitName[g_unitSel]); break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
@@ -4391,7 +4754,10 @@ static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings
 	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics",
 	"Jen With a B's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
 	"Outer castle door", "Field reclaim work", "Reclaim work a season", "Castle garrisons", "Wooden palisade", "Motte and bailey",
-	"Norman keep", "Stone castle", "Royal castle" };   // (the last five: kCastleKind)
+	"Norman keep", "Stone castle", "Royal castle",   // (these five: kCastleKind)
+	"Uncapped game speed", "Black Death", "Population average", "Uncapped resources", "Resource multiplier", "Army size",
+	"Scaled army icons", "Stats of", "Melee strength", "Ranged defence", "Auto-calc strength", "Ranged strength", "Attack range",
+	"Attack speed", "Costs of", "Wood cost", "Iron cost", "Sell price", "Buy price" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -4484,7 +4850,19 @@ static void resound_sample(void)
 	case M_JEN_WORK: g_jenWork = step_next(g_jenWork, kReclaimWorkSteps, 5); ini_set("Game", "ReclaimWork", g_jenWork); break;
 	case M_JEN_MEN: g_jenMen = step_next(g_jenMen, kReclaimMenSteps, 4); ini_set("Game", "ReclaimPerSeason", g_jenMen); break;
 	case M_JEN_GARRISON: g_jenGarrison = !g_jenGarrison; ini_set("Game", "GarrisonLimits", g_jenGarrison); break;
+	case M_JEN_SPEED: g_jenSpeed = !g_jenSpeed; ini_set("Game", "UncappedSpeed", g_jenSpeed); break;
+	case M_JEN_PLAGUE: g_jenPlague = (g_jenPlague + 1) % 3; ini_set("Game", "BlackDeath", g_jenPlague); break;
+	case M_JEN_POP: g_jenPop = step_next(g_jenPop, kPopSteps, 9); ini_set("Game", "PopulationTarget", g_jenPop); break;
+	case M_JEN_UNCAP: g_jenUncap = !g_jenUncap; ini_set("Game", "UncappedResources", g_jenUncap); break;
+	case M_JEN_RESMUL: // (2x and more: Uncapped resources on, as Jen's)
+		g_jenResMul = g_jenResMul % RESMUL_MAX + 1; ini_set("Game", "ResourceMultiplier", g_jenResMul);
+		if (g_jenResMul > 1 && !g_jenUncap) { g_jenUncap = TRUE; ini_set("Game", "UncappedResources", 1); }
+		break;
+	case M_JEN_ARMY: g_jenArmy = step_next(g_jenArmy, kArmySteps, 7); ini_set("Game", "ArmySize", g_jenArmy); break;
+	case M_JEN_ICONS: g_jenIcons = !g_jenIcons; ini_set("Game", "ScaledArmyIcons", g_jenIcons); break;
+	case M_JEN_UNIT: case M_JEN_UNIT_C: g_unitSel = (g_unitSel + 1) % UNITS; break;
 	}
+	if (menu_unit_row(i)) unit_step(g_unitSel, menu_unit_stat(i));
 	if (menu_design(i)) { // Original -> its skirmish castles -> Original (read at the next siege)
 		int k = i - M_JEN_DESIGN;
 		g_jenDesign[k] = (g_jenDesign[k] + 1) % (cd_count(k) + 1);
@@ -4507,6 +4885,14 @@ static void menu_reset_jen(void)
 	g_jenMen = RECLAIM_MEN; ini_set("Game", "ReclaimPerSeason", RECLAIM_MEN);
 	g_jenGarrison = FALSE; ini_set("Game", "GarrisonLimits", 0);
 	for (int k = 0; k < 5; k++) { g_jenDesign[k] = 0; WritePrivateProfileStringA("Game", kCdKey[k], "Original", g_iniPath); }
+	g_jenSpeed = 0; ini_set("Game", "UncappedSpeed", 0);
+	g_jenPlague = 0; ini_set("Game", "BlackDeath", 0);
+	g_jenPop = 0; ini_set("Game", "PopulationTarget", 0);
+	g_jenUncap = 0; ini_set("Game", "UncappedResources", 0);
+	g_jenResMul = 1; ini_set("Game", "ResourceMultiplier", 1);
+	g_jenArmy = ARMY_SIZE; ini_set("Game", "ArmySize", ARMY_SIZE);
+	g_jenIcons = 0; ini_set("Game", "ScaledArmyIcons", 0);
+	for (int u = 0; u < UNITS; u++) for (int s = 0; s < US_COUNT; s++) if (g_unitSet[u][s] >= 0) { g_unitSet[u][s] = -1; unit_write_ini(u, s); }
 	mpmsg_apply(g_jenMods && g_mpMsgFix);
 	jen_sync();
 	logf_("settings panel: Jen With a B's Mods reset to the defaults");
@@ -8364,11 +8750,12 @@ _Static_assert(sizeof(bar_title_t) == 16 && sizeof(bar_item_t) == 12, "the game'
 // closer titles that reached into the next one; + 1 still holds the text with room to spare.
 #define BAR_BOX_ADD 0x0040c677
 static bar_title_t g_bar[BAR_TITLES];
-static bar_item_t g_helpItems[8], g_hdItems[4], g_modsItems[5];
+#define MODS_LINES 7 // the Mods list: one line for each tab of the Jen With a B's Mods panel
+static bar_item_t g_helpItems[8], g_hdItems[4], g_modsItems[MODS_LINES];
 static bar_title_t g_barFile, g_barOptions, g_barHelp, g_barMods, g_barHd; // the titles the layouts take from
 static BOOL g_barOk, g_helpAsMods;
 static int g_barShown = BAR_TITLES; // titles in the layout drawn last
-static volatile LONG g_menuPending; // a panel the menu bar asked for: 1-4 the F10 tabs, 5 the Mods panel, 6-10 its tabs
+static volatile LONG g_menuPending; // a panel the menu bar asked for: 1-4 the F10 tabs, 5 the Mods panel, 6-12 its tabs
 static int g_menuPendingWait;
 static BOOL left_button_down(void)
 {
@@ -8386,14 +8773,16 @@ static void __cdecl bar_mods1(void) { menu_ask(7); }
 static void __cdecl bar_mods2(void) { menu_ask(8); }
 static void __cdecl bar_mods3(void) { menu_ask(9); }
 static void __cdecl bar_mods4(void) { menu_ask(10); }
+static void __cdecl bar_mods5(void) { menu_ask(11); }
+static void __cdecl bar_mods6(void) { menu_ask(12); }
 // The Mods list's lines: Jen's names for the groups (the panel's tabs say them shorter)
-static const char *const kModsLine[5] = { "Game Mods", "Economy Mods", "Building Mods", "Unit Mods", "Fixes" };
+static const char *const kModsLine[MODS_LINES] = { "Game Mods", "Economy Mods", "Building Mods", "Unit Mods", "Unit Stats", "Unit Costs", "Fixes" };
 static const char *menu_bar_text(int group, int index)
 {
 	if (!g_barOk) return NULL;
 	if (group == TXT_HELP && index == 0 && g_helpAsMods) return "Mods";
 	if (group == TXT_HELP && index == TXT_MOD_MENU) return "Mod Menu";
-	if (group == TXT_MODS) return index >= 1 && index <= 5 ? kModsLine[index - 1] : "Mods";
+	if (group == TXT_MODS) return index >= 1 && index <= MODS_LINES ? kModsLine[index - 1] : "Mods";
 	if (group == TXT_HD) return index >= 1 && index <= 4 ? kMenuTab[index - 1] : "HD";
 	return NULL;
 }
@@ -8467,15 +8856,15 @@ static void menu_bar_install(void)
 	ok = ok && *(BYTE *)BAR_DRAW_CALL == 0xE8 && BAR_DRAW_CALL + 5 + *(int *)(BAR_DRAW_CALL + 1) == 0x0040c5b0;
 	if (!ok) { logf_("not hooked: unexpected code or data at the menu bar (0x004dc428): no Mods and HD titles"); return; }
 	g_barFile = game[0]; g_barOptions = game[1]; g_barHelp = game[2];
-	g_barMods = (bar_title_t){ 0, 0, game[0].y, TXT_MODS, g_modsItems, 5, 0 };
+	g_barMods = (bar_title_t){ 0, 0, game[0].y, TXT_MODS, g_modsItems, MODS_LINES, 0 };
 	g_barHd = (bar_title_t){ 0, 0, game[0].y, TXT_HD, g_hdItems, 4, 0 };
 	g_helpItems[0] = (bar_item_t){ 0, TXT_MOD_MENU, bar_mod_menu, 0 };
 	memcpy(g_helpItems + 1, (const void *)0x004dc3d0, 7 * sizeof *g_helpItems);
 	for (int i = 1; i < 8; i++) g_helpItems[i].y = (short)(i * 20);
 	void (__cdecl *const hd[4])(void) = { bar_hd0, bar_hd1, bar_hd2, bar_hd3 };
 	for (int i = 0; i < 4; i++) g_hdItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), hd[i], 0 };
-	void (__cdecl *const mods[5])(void) = { bar_mods0, bar_mods1, bar_mods2, bar_mods3, bar_mods4 };
-	for (int i = 0; i < 5; i++) g_modsItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), mods[i], 0 };
+	void (__cdecl *const mods[MODS_LINES])(void) = { bar_mods0, bar_mods1, bar_mods2, bar_mods3, bar_mods4, bar_mods5, bar_mods6 };
+	for (int i = 0; i < MODS_LINES; i++) g_modsItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), mods[i], 0 };
 	g_bar[0].x = game[0].x;
 	g_barOk = TRUE;
 	menu_bar_layout();
@@ -10545,6 +10934,8 @@ static char __cdecl h_game_frame(void)
 		// that patches that skip out (jmp at 0x4bbb92, Wolfe's dplayx) puts the gate back.
 		BOOL fastGated = *(int *)0x00553030 == 0 || *(BYTE *)0x004bbb92 == 0xE9;
 		if (slow >= 0 && slow < 10 && (slow != 0 || fastGated)) gateWait[0] = slow * 10 + 2;
+		if (slow < 0) gateWait[0] = 0;   // past speed 10 (Jen With a B's Uncapped game speed): no gate, a step every frame,
+		                                 // as fast as the game runs (held to the frame limit it would be slower than speed 10)
 		int scroll = (100 - *(int *)0x0053f234) / 10;
 		if (scroll >= 0 && scroll < 10) gateWait[1] = (scroll + (SCREEN_ID == 0x10 ? 2 : 0)) * 12 + 2;
 		DWORD t = timeGetTime();
@@ -13987,6 +14378,99 @@ __attribute__((naked)) static void ration_stub(void)
 		"ret");
 }
 
+// Jen With a B's resource multiplier, population average, game speed and merchant prices (jen_econ_sync): the stubs at
+// the game's sites, each doing what the game did there while its g_live* value says so.
+__attribute__((used)) void __cdecl l2hd_res_prod(BYTE *frame)   // FUN_0044ea92's frame: the industry at +0xc, its output at -0xc
+{
+	int mul = g_liveResMul, ind = *(const int *)(frame + 0xc), *out = (int *)(frame - 0xc);
+	if (mul <= 1 || ind == 2) return;   // (2: the blacksmith's weapons)
+	long long v = (long long)*out * mul;
+	if (!g_liveUncap && v > RES_CAP) v = RES_CAP;
+	*out = (int)min(v, 0x7fffffffLL);
+}
+__attribute__((used)) void __cdecl l2hd_res_ui(BYTE *frame)     // FUN_0044f318's: the industry at +0xc, the forecast at -0x18
+{
+	int mul = g_liveResMul, ind = *(const int *)(frame + 0xc), *out = (int *)(frame - 0x18);
+	if (mul <= 1 || ind == 2) return;
+	long long v = (long long)*out * mul;
+	if (!g_liveUncap && v > RES_CAP) v = RES_CAP;   // (as the season will give)
+	*out = (int)min(v, 0x7fffffffLL);
+}
+__attribute__((used)) void __cdecl l2hd_pop_step(BYTE *frame)   // FUN_00449ef3's: the county at -4
+{
+	int target = g_livePop, c = *(const int *)(frame - 4);
+	if (!target || c < 1 || c > 0x200 || c > *(const int *)0x0056d5dc) return;
+	BYTE *k = (BYTE *)0x0053f9d4 + c * 0x300;   // population; births +0xc, deaths +0x10, leaving +0x18, arriving +0x1c
+	int *births = (int *)(k + 0xc);
+	*births = pop_births(target, *(int *)k, *births, *(int *)(k + 0x10), *(int *)(k + 0x18), *(int *)(k + 0x1c));
+}
+__attribute__((used)) int __cdecl l2hd_speed_free(const int *slider) { return g_liveSpeed && slider == GAME_SPEED; }
+__attribute__((used)) int __cdecl l2hd_buy_price(int item) { return item >= 9 && item <= 14 ? (int)g_liveBuy[item] : 0; }
+__attribute__((naked)) static void resprod_stub(void)
+{
+	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_res_prod\n\t" "addl $4, %esp\n\t" "popal\n\t"
+		"movl -0xc(%ebp), %eax\n\t" "movl 0xc(%ebp), %ecx\n\t" "pushl $0x0044ec7f\n\t" "ret");
+}
+__attribute__((naked)) static void resui_stub(void)
+{
+	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_res_ui\n\t" "addl $4, %esp\n\t" "popal\n\t"
+		"movl -0x18(%ebp), %eax\n\t" "movl 0xc(%ebp), %ecx\n\t" "pushl $0x0044f5f1\n\t" "ret");
+}
+__attribute__((naked)) static void pop_stub(void)
+{
+	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_pop_step\n\t" "addl $4, %esp\n\t" "popal\n\t"
+		"movl -4(%ebp), %eax\n\t" "shll $8, %eax\n\t" "pushl $0x0044a296\n\t" "ret");
+}
+__attribute__((naked)) static void speed_stub(void)   // after cmp [eax],ecx: the slider's value, its most
+{
+	__asm__("pushal\n\t" "pushl %eax\n\t" "call _l2hd_speed_free\n\t" "addl $4, %esp\n\t" "testl %eax, %eax\n\t" "popal\n\t"
+		"jnz 1f\n\t" "cmpl %ecx, (%eax)\n\t" "jl 1f\n\t" "pushl $0x00434ec4\n\t" "ret\n"
+		"1:\n\t" "pushl $0x00434eb7\n\t" "ret");
+}
+// The merchant's buy price (item 9-14: the weapons): a set price, else the game's sell price + share. The item from
+// DAT_0056d8ac (the trade screen) or the AI's third argument.
+#define MERCHANT_STUB(name, item, fixed, game, back) \
+	__attribute__((naked)) static void name(void) \
+	{ \
+		__asm__("pushal\n\t" "pushl " item "\n\t" "call _l2hd_buy_price\n\t" "addl $4, %esp\n\t" "movl %eax, 28(%esp)\n\t" "popal\n\t" \
+			"testl %eax, %eax\n\t" "jz 1f\n\t" fixed "pushl $" back "\n\t" "ret\n" "1:\n\t" game "pushl $" back "\n\t" "ret"); \
+	}
+MERCHANT_STUB(buy0_stub, "0x0056d8ac", "movl %eax, -4(%ebp)\n\t", "movl -0x10(%ebp), %eax\n\t" "addl %eax, -4(%ebp)\n\t", "0x004162b7")
+MERCHANT_STUB(buy1_stub, "0x0056d8ac", "", "movl -4(%ebp), %eax\n\t" "addl 0x0057c8c0, %eax\n\t", "0x00429088")
+MERCHANT_STUB(buy2_stub, "0x10(%ebp)", "", "movl -0xc(%ebp), %eax\n\t" "addl -4(%ebp), %eax\n\t", "0x004a4bb9")
+MERCHANT_STUB(buy3_stub, "0x10(%ebp)", "", "movl -0x10(%ebp), %eax\n\t" "addl -4(%ebp), %eax\n\t", "0x004a4ce8")
+typedef struct { DWORD at; BYTE n; BYTE game[9]; void (*stub)(void); int je; } JenHook;
+static const JenHook kJenHooks[] = {
+	{ SPEED_AT, 6, { 0x0F, 0x8D, 0x0D, 0x00, 0x00, 0x00 }, speed_stub, JE_SPEED },
+	{ RESMUL_PROD, 6, { 0x8B, 0x45, 0xF4, 0x8B, 0x4D, 0x0C }, resprod_stub, JE_RESMUL },
+	{ RESMUL_UI, 6, { 0x8B, 0x45, 0xE8, 0x8B, 0x4D, 0x0C }, resui_stub, JE_RESMUL },
+	{ POP_AT, 6, { 0x8B, 0x45, 0xFC, 0xC1, 0xE0, 0x08 }, pop_stub, JE_POP },
+	{ 0x004162b1, 6, { 0x8B, 0x45, 0xF0, 0x01, 0x45, 0xFC }, buy0_stub, JE_BUY },
+	{ 0x0042907f, 9, { 0x8B, 0x45, 0xFC, 0x03, 0x05, 0xC0, 0xC8, 0x57, 0x00 }, buy1_stub, JE_BUY },
+	{ 0x004a4bb3, 6, { 0x8B, 0x45, 0xF4, 0x03, 0x45, 0xFC }, buy2_stub, JE_BUY },
+	{ 0x004a4ce2, 6, { 0x8B, 0x45, 0xF0, 0x03, 0x45, 0xFC }, buy3_stub, JE_BUY },
+};
+#define JEN_HOOKS ((int)(sizeof kJenHooks / sizeof *kJenHooks))
+// Puts the stubs in (each mod's sites all or none), unless they are already there from an earlier start-up (the tests).
+static void jen_econ_hook(void)
+{
+	static const int kMods[] = { JE_SPEED, JE_RESMUL, JE_POP, JE_BUY };
+	for (int m = 0; m < 4; m++) {
+		int je = kMods[m];
+		BOOL ok = TRUE, mine = TRUE;
+		for (int h = 0; h < JEN_HOOKS; h++) {
+			if (kJenHooks[h].je != je) continue;
+			const BYTE *p = (const BYTE *)kJenHooks[h].at;
+			BOOL in = p[0] == 0xE9 && *(const DWORD *)(p + 1) + kJenHooks[h].at + 5 == (DWORD)kJenHooks[h].stub;
+			mine &= in;
+			ok &= in || !memcmp(p, kJenHooks[h].game, kJenHooks[h].n);
+		}
+		if (ok && !mine)
+			for (int h = 0; h < JEN_HOOKS; h++) if (kJenHooks[h].je == je) ok &= redirect((BYTE *)kJenHooks[h].at, kJenHooks[h].n, kJenHooks[h].stub);
+		g_jeHooked[je] = ok;
+	}
+}
+
 // Besieged castles. The game's rule (Readme, "Besieged Castles"): no army may enter a castle or
 // strengthen its garrison until the siege is lifted. The human order checks it (FUN_004a9372 refuses
 // when the garrison army's besieger link 0x0052f24a is set), but the arrival itself, FUN_004a79a3
@@ -14271,6 +14755,16 @@ static void install_game_fixes(void)
 	g_jenWork = clamp_ini("ReclaimWork", RECLAIM_WORK, RECLAIM_MAX);
 	g_jenMen = clamp_ini("ReclaimPerSeason", RECLAIM_MEN, RECLAIM_MAX);
 	g_jenGarrison = GetPrivateProfileIntA("Game", "GarrisonLimits", 0, g_iniPath) != 0;
+	g_jenSpeed = GetPrivateProfileIntA("Game", "UncappedSpeed", 0, g_iniPath) != 0;
+	g_jenPlague = max(0, min(2, (int)GetPrivateProfileIntA("Game", "BlackDeath", 0, g_iniPath)));
+	g_jenPop = GetPrivateProfileIntA("Game", "PopulationTarget", 0, g_iniPath);
+	g_jenPop = g_jenPop <= 0 ? 0 : max(POP_MIN, min(POP_MAX, g_jenPop)) / 100 * 100;   // (Jen's: in hundreds)
+	g_jenUncap = GetPrivateProfileIntA("Game", "UncappedResources", 0, g_iniPath) != 0;
+	g_jenResMul = max(1, min(RESMUL_MAX, (int)GetPrivateProfileIntA("Game", "ResourceMultiplier", 1, g_iniPath)));
+	g_jenArmy = max(ARMY_MIN, min(ARMY_MAX, (int)GetPrivateProfileIntA("Game", "ArmySize", 1500, g_iniPath)));
+	g_jenIcons = GetPrivateProfileIntA("Game", "ScaledArmyIcons", 0, g_iniPath) != 0;
+	unit_read_ini();
+	jen_econ_hook();
 	jen_castle_check();
 	jen_sync();
 	for (int k = 0; k < 5; k++) {   // castle design: each kind's map by its name ("Original", or one of its skirmish castles)
