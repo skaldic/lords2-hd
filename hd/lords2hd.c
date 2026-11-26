@@ -3176,6 +3176,17 @@ static int __cdecl h_stream_play(DWORD n)
 // Dropped into lords2hd\music, they are turned into the WAVs above on a low-priority thread at start,
 // by Windows' own decoder (Media Foundation, loaded by hand so the DLL still loads where it's missing).
 // Each file is matched to a track by its name; files already converted are skipped.
+// One of the game's own sound files: next to the exe, or in its WAV folder, where the CD's layout
+// keeps them (the exe looks there itself; a player's GOG install had that layout).
+static void game_wav_path(char *out, size_t n, const char *file)
+{
+	snprintf(out, n, "%s\\%s", g_gameDir, file);
+	if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return;
+	char alt[MAX_PATH];
+	snprintf(alt, sizeof alt, "%s\\wav\\%s", g_gameDir, file);
+	if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) lstrcpynA(out, alt, (int)n);
+}
+
 static const char *music_track(const char *file)
 {
 	char s[MAX_PATH];
@@ -3367,7 +3378,7 @@ static int best_offset(const float *needle, int n, const float *hay, int from, i
 static void music_trim(const char *wav, const char *track)
 {
 	char ref[MAX_PATH];
-	snprintf(ref, sizeof ref, "%s\\%s", g_gameDir, track);
+	game_wav_path(ref, sizeof ref, track);
 	BYTE *gd = NULL, *rd = NULL; DWORD gb = 0, rb = 0, grate = 0, rrate = 0; WORD gch = 0, gbits = 0, rch = 0, rbits = 0;
 	if (!wav_data(ref, &gd, &gb, &gch, &gbits, &grate) || !wav_data(wav, &rd, &rb, &rch, &rbits, &rrate)) goto out;
 	if (gbits != 8 || grate != 11025 || !gch || rbits != 16 || rrate != 44100 || !rch) { logf_("music: %s not cut (formats %lu/%u, %lu/%u)", track, grate, gbits, rrate, rbits); goto out; }
@@ -4083,7 +4094,7 @@ static void resound_sample(void)
 			free(buf);
 		}
 	}
-	snprintf(path, sizeof path, "%s\\%s", g_gameDir, kLine);
+	game_wav_path(path, sizeof path, kLine);
 	PlaySoundA(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
 }static void menu_change(int i)
 {

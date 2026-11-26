@@ -132,6 +132,23 @@ TEST(settings_scroll_without_map_palette_is_not_black)
 	memset(g_frame2x, 0, sizeof g_frame2x);
 }
 
+TEST(game_wav_found_in_the_cd_layout)
+{
+	// The CD's layout (kept by a player's GOG install): the game's sounds in WAV\, as the exe looks for them
+	char p[MAX_PATH], want[MAX_PATH];
+	game_wav_path(p, sizeof p, "scroll1.wav");
+	snprintf(want, sizeof want, "%s\\scroll1.wav", g_gameDir);
+	CHECK(!strcmp(p, want));                   // nowhere: the plain name (opening it fails as before)
+	t_write("wav\\scroll1.wav", "RIFF", 4);
+	game_wav_path(p, sizeof p, "scroll1.wav");
+	snprintf(want, sizeof want, "%s\\wav\\scroll1.wav", g_gameDir);
+	CHECK(!strcmp(p, want));
+	t_write("scroll1.wav", "RIFF", 4);         // next to the exe wins
+	game_wav_path(p, sizeof p, "scroll1.wav");
+	snprintf(want, sizeof want, "%s\\scroll1.wav", g_gameDir);
+	CHECK(!strcmp(p, want));
+}
+
 TEST(map_palette_as_the_game_loaded_it)
 {
 	// A player's game ran with another working folder than the exe's: Base01.256 was not next to the exe
