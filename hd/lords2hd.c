@@ -1754,6 +1754,32 @@ static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  //
 static int g_txtW, g_txtH; // the size all of them were made for (the back buffer's then)
 static BYTE g_tilePal[768];
 
+// The county map's palette, Base01.256, as the game itself loaded it (h_load_file): the game finds its
+// files through L2.INI's CDDrive, which may be another folder than the exe's (a player's install had
+// none there: the map stayed unsharpened and the F10 scroll black). Else the file next to the exe.
+static BYTE g_base01[768];
+static volatile LONG g_base01Have;
+static BOOL base01_palette(BYTE *pal)
+{
+	if (g_base01Have) { memcpy(pal, g_base01, 768); return TRUE; }
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+	FILE *f = fopen(path, "rb");
+	BOOL ok = f && fread(pal, 1, 768, f) == 768;
+	if (f) fclose(f);
+	if (!ok) memset(pal, 0, 768);
+	return ok;
+}
+static void base01_note_load(const char *name, const void *buffer, int n, long offset)
+{
+	if (n != 768 || offset != 0 || !buffer) return;
+	const char *b = name;
+	for (const char *p = name; *p; p++) if (*p == '\\' || *p == '/' || *p == ':') b = p + 1;
+	if (lstrcmpiA(b, "base01.256")) return;
+	memcpy(g_base01, buffer, 768);
+	if (!InterlockedExchange(&g_base01Have, 1)) logf_("map palette: Base01.256 as the game loaded it");
+}
+
 static BOOL wave_is_water(DWORD p)
 {
 	int b = p & 255, g = (p >> 8) & 255, r = (p >> 16) & 255;
@@ -1918,10 +1944,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_sprShadow = calloc(MAX_W, GAME_H);
 		g_sprValid = calloc(MAX_W, GAME_H);
-		char pal[MAX_PATH];
-		snprintf(pal, sizeof pal, "%s\\Base01.256", g_gameDir);
-		FILE *p = fopen(pal, "rb");
-		if (p) { if (fread(g_tilePal, 1, 768, p) != 768) memset(g_tilePal, 0, 768); fclose(p); }
+		if (!base01_palette(g_tilePal)) logf_("HD tiles: no map palette (Base01.256 not loaded by the game, nor in %s): the map stays as drawn", g_gameDir);
 	}
 	g_layerGen++; // new art for these tiles: the next map redraw stamps again, even if it looks the same
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
@@ -2171,8 +2194,8 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 	lstrcpynA(g_spriteSets[slot].name, key, sizeof g_spriteSets[slot].name);
 	g_layerGen++;
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
-	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-	read_palette(path, g_spriteSets[slot].pal);
+	if (aexists(path)) read_palette(path, g_spriteSets[slot].pal);
+	else base01_palette(g_spriteSets[slot].pal);
 	logf_("HD sprites %s (season %d)", key, *(const int *)0x0057c934);
 }
 
@@ -3153,6 +3176,17 @@ static int __cdecl h_stream_play(DWORD n)
 // Dropped into lords2hd\music, they are turned into the WAVs above on a low-priority thread at start,
 // by Windows' own decoder (Media Foundation, loaded by hand so the DLL still loads where it's missing).
 // Each file is matched to a track by its name; files already converted are skipped.
+// One of the game's own sound files: next to the exe, or in its WAV folder, where the CD's layout
+// keeps them (the exe looks there itself; a player's GOG install had that layout).
+static void game_wav_path(char *out, size_t n, const char *file)
+{
+	snprintf(out, n, "%s\\%s", g_gameDir, file);
+	if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return;
+	char alt[MAX_PATH];
+	snprintf(alt, sizeof alt, "%s\\wav\\%s", g_gameDir, file);
+	if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) lstrcpynA(out, alt, (int)n);
+}
+
 static const char *music_track(const char *file)
 {
 	char s[MAX_PATH];
@@ -3183,8 +3217,10 @@ typedef HRESULT (WINAPI *MFCreateSourceReaderFromURL_t)(LPCWSTR, IMFAttributes *
 
 static BOOL music_decode(MFCreateSourceReaderFromURL_t open, MFCreateMediaType_t newtype, const char *src, const char *dst)
 {
-	WCHAR wsrc[MAX_PATH];
-	MultiByteToWideChar(CP_ACP, 0, src, -1, wsrc, MAX_PATH);
+	WCHAR rel[MAX_PATH], wsrc[1024];
+	MultiByteToWideChar(CP_ACP, 0, src, -1, rel, MAX_PATH);
+	DWORD full = GetFullPathNameW(rel, sizeof wsrc / sizeof wsrc[0], wsrc, NULL); // (a URL needs the whole path: g_gameDir may be ".", see game_dir)
+	if (!full || full >= sizeof wsrc / sizeof wsrc[0]) lstrcpynW(wsrc, rel, sizeof wsrc / sizeof wsrc[0]);
 	IMFSourceReader *r = NULL;
 	IMFMediaType *t = NULL, *got = NULL;
 	FILE *f = NULL;
@@ -3342,7 +3378,7 @@ static int best_offset(const float *needle, int n, const float *hay, int from, i
 static void music_trim(const char *wav, const char *track)
 {
 	char ref[MAX_PATH];
-	snprintf(ref, sizeof ref, "%s\\%s", g_gameDir, track);
+	game_wav_path(ref, sizeof ref, track);
 	BYTE *gd = NULL, *rd = NULL; DWORD gb = 0, rb = 0, grate = 0, rrate = 0; WORD gch = 0, gbits = 0, rch = 0, rbits = 0;
 	if (!wav_data(ref, &gd, &gb, &gch, &gbits, &grate) || !wav_data(wav, &rd, &rb, &rch, &rbits, &rrate)) goto out;
 	if (gbits != 8 || grate != 11025 || !gch || rbits != 16 || rrate != 44100 || !rch) { logf_("music: %s not cut (formats %lu/%u, %lu/%u)", track, grate, gbits, rrate, rbits); goto out; }
@@ -3822,24 +3858,23 @@ static SCROLL_OVL g_ovl[2]; // 0 the army scroll, 1 the settings scroll
 static DWORD g_mapLut[256];
 static BOOL map_lut(void)
 {
-	static int have;
-	if (have) return have > 0;
+	static int have, triedFile;
+	if (have > 0) return TRUE;
+	if (!g_base01Have && triedFile) return FALSE; // (the file once; the game's copy whenever it comes)
+	triedFile = 1;
 	BYTE pal[768];
-	char path[MAX_PATH];
-	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-	FILE *f = fopen(path, "rb");
-	have = f && fread(pal, 1, 768, f) == 768 ? 1 : -1;
-	if (f) fclose(f);
-	for (int i = 0; have > 0 && i < 256; i++)
+	if (!base01_palette(pal)) return FALSE;
+	have = 1;
+	for (int i = 0; i < 256; i++)
 		g_mapLut[i] = (pal[i * 3] * 255 / 63 << 16) | (pal[i * 3 + 1] * 255 / 63 << 8) | pal[i * 3 + 2] * 255 / 63;
 	return have > 0;
 }
-static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
+static BOOL ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 {
 	static int told;
-	if (!map_lut()) { if (!told++) logf_("settings scroll: no map palette (%s\\Base01.256 unreadable), drawn black", g_gameDir); return; }
+	if (!map_lut()) { if (!told++) logf_("settings scroll: no map palette (%s\\Base01.256 unreadable), drawn in the screen's colours", g_gameDir); return FALSE; }
 	int W = g_back->w;
-	if (g_txt && W != g_txtW) { if (!told++) logf_("settings scroll: text layer %d wide, frame %d: drawn black", g_txtW, W); return; } // (text layers made for another back buffer size)
+	if (g_txt && W != g_txtW) { if (!told++) logf_("settings scroll: text layer %d wide, frame %d: drawn in the screen's colours", g_txtW, W); return FALSE; } // (text layers made for another back buffer size)
 	const BYTE *tx = g_txtS ? g_txtS : g_txt, *tsh = g_txtS ? g_txtShadowS : g_txtShadow, *tv = g_txtS ? g_txtValidS : g_txtValid;
 	for (int r = 0; r < s->h; r++) {
 		int y = s->y + r;
@@ -3867,6 +3902,7 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 			o0[2 * c] = o0[2 * c + 1] = o1[2 * c] = o1[2 * c + 1] = g_mapLut[fr[c]];
 		}
 	}
+	return TRUE;
 }
 // In two steps: caught (scroll_overlays_catch) before the zoomed-out county map takes the map's field
 // (cz_field), which would hide the army scroll there, and laid on (scroll_overlays_lay) over it.
@@ -3894,8 +3930,10 @@ static void scroll_overlays_catch(int sx, int sw)
 				if (!s->cache) continue;
 				s->cacheW = s->w; s->cacheH = s->h;
 			}
-			if (s->mapPal) ovl_build_mappal(s, sx, sw, c0);
-			else for (int r = 0; r < 2 * s->h; r++)
+			// (without the map's palette, the game's own pixels as shown: right on the map, off-colour on
+			// screens with their own palette, never the empty cache, which showed as a black scroll)
+			if (!s->mapPal || !ovl_build_mappal(s, sx, sw, c0))
+				for (int r = 0; r < 2 * s->h; r++)
 				memcpy(s->cache + r * 2 * s->w, g_frame2x + (2 * s->y + r) * (2 * sw) + 2 * c0, (size_t)s->w * 8);
 			s->cached = gen + 1;
 		}
@@ -4056,7 +4094,7 @@ static void resound_sample(void)
 			free(buf);
 		}
 	}
-	snprintf(path, sizeof path, "%s\\%s", g_gameDir, kLine);
+	game_wav_path(path, sizeof path, kLine);
 	PlaySoundA(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
 }static void menu_change(int i)
 {
@@ -7674,6 +7712,7 @@ static int g_frameIndex = -1;
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
 	int n = o_load_file(name, buffer, size, offset);
+	base01_note_load(name, buffer, n, offset);
 	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
 		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
 	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
@@ -13432,11 +13471,9 @@ static void mp_session_start(char *dir, size_t size)
 	snprintf(path, sizeof path, "%s\\session.txt", dir);
 	FILE *f = fopen(path, "a"); // a second game in the same lobby session adds its own block
 	if (!f) return;
-	char me[MAX_PATH], exe[MAX_PATH], dpPath[MAX_PATH];
-	HMODULE self = NULL;
-	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)mp_session_start, &self);
-	GetModuleFileNameA(self, me, sizeof me);
-	GetModuleFileNameA(NULL, exe, sizeof exe);
+	char me[MAX_PATH], exe[MAX_PATH], dpPath[MAX_PATH]; // (ours named from g_gameDir: a narrow module name may not open, see game_dir)
+	snprintf(me, sizeof me, "%s\\ddraw.dll", g_gameDir);
+	snprintf(exe, sizeof exe, "%s\\Lords2.exe", g_gameDir);
 	GetModuleFileNameA(dp, dpPath, sizeof dpPath);
 	SYSTEMTIME t; GetLocalTime(&t);
 	fprintf(f, "Lords of the Realm II HD multiplayer game, %04d-%02d-%02d %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
@@ -13707,13 +13744,43 @@ static void install(void)
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");
 }
 
+// A wide path in the ANSI code page, only if every letter has its own byte (no "?", no best fit: "Ł" as
+// "L" names another folder).
+static BOOL ansi_exact(const WCHAR *w, char *out, int size)
+{
+	BOOL lossy = FALSE;
+	int n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w, -1, out, size, NULL, &lossy);
+	return n > 0 && !lossy;
+}
+// The game's folder, which every file the patch opens is named from (the narrow file functions). A
+// folder whose name has letters outside the Windows code page (Polish, Cyrillic, Chinese... on an
+// English Windows) has no exact narrow name: then its short 8.3 name, and failing that ".", the
+// current folder, which is the game's own (it opens its files by bare names). Returns how it was found
+// (NULL: by its own name).
+static const char *game_dir_of(const WCHAR *folder, char *dir, int size)
+{
+	WCHAR s[1024];
+	if (ansi_exact(folder, dir, size)) return NULL;
+	DWORD m = GetShortPathNameW(folder, s, sizeof s / sizeof s[0]);
+	if (m && m < sizeof s / sizeof s[0] && ansi_exact(s, dir, size)) return "its short name";
+	lstrcpynA(dir, ".", size);
+	return "the current folder";
+}
+static const char *game_dir(char *dir, int size)
+{
+	WCHAR w[1024];
+	DWORD n = GetModuleFileNameW(NULL, w, sizeof w / sizeof w[0]);
+	if (!n || n >= sizeof w / sizeof w[0]) { lstrcpynA(dir, ".", size); return "the current folder"; }
+	WCHAR *slash = wcsrchr(w, L'\\');
+	if (slash) *slash = 0;
+	return game_dir_of(w, dir, size);
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 {
 	if (reason != DLL_PROCESS_ATTACH) return TRUE;
 	DisableThreadLibraryCalls(inst);
-	GetModuleFileNameA(NULL, g_gameDir, sizeof g_gameDir);
-	char *slash = strrchr(g_gameDir, '\\');
-	if (slash) *slash = 0;
+	const char *dirHow = game_dir(g_gameDir, sizeof g_gameDir);
 	snprintf(g_iniPath, sizeof g_iniPath, "%s\\lords2hd.ini", g_gameDir);
 	snprintf(g_logPath, sizeof g_logPath, "%s\\lords2hd.log", g_gameDir);
 	DeleteFileA(g_logPath);
@@ -13725,6 +13792,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	SYSTEMTIME t;
 	GetLocalTime(&t);
 	logf_("Lords of the Realm II HD, %04d-%02d-%02d %02d:%02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	if (dirHow) logf_("game folder: its name has letters outside the Windows code page, so the patch uses %s (%s)", dirHow, g_gameDir);
 	pak_open();
 	read_settings();
 	if (!known_build()) {

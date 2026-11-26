@@ -47,6 +47,133 @@ TEST(mem_readable_protection)
 	VirtualFree(p, 0, MEM_RELEASE);
 }
 
+/* ================================ the game folder's name (game_dir: a player's black F10 scroll and no HD art) */
+
+static BOOL t_cjk_codepage(void) { UINT cp = GetACP(); return cp == 932 || cp == 936 || cp == 949 || cp == 950; }
+
+TEST(ansi_exact_only_without_loss)
+{
+	char a[MAX_PATH];
+	CHECK(ansi_exact(L"C:\\Games\\Lords of the Realm II", a, sizeof a));
+	CHECK(!strcmp(a, "C:\\Games\\Lords of the Realm II"));
+	if (!t_cjk_codepage()) CHECK(!ansi_exact(L"C:\\Games\\\x4E09", a, sizeof a));   // no byte for it: "?"
+	// best fit ("\x141ukasz" as "Lukasz") names another folder: refused unless the code page has the letter
+	WCHAR back[MAX_PATH];
+	if (ansi_exact(L"C:\\\x141ukasz", a, sizeof a)) {
+		MultiByteToWideChar(CP_ACP, 0, a, -1, back, MAX_PATH);
+		CHECK(!wcscmp(back, L"C:\\\x141ukasz"));
+	}
+	CHECK(!ansi_exact(L"C:\\Games", a, 4));    // too long for the buffer
+}
+
+TEST(game_dir_opens_files_in_any_folder)
+{
+	WCHAR root[MAX_PATH], plain[MAX_PATH], odd[MAX_PATH], file[MAX_PATH];
+	MultiByteToWideChar(CP_ACP, 0, g_gameDir, -1, root, MAX_PATH);
+	char dir[MAX_PATH], p[MAX_PATH];
+	// a plain name: itself
+	swprintf(plain, MAX_PATH, L"%ls\\Lords of the Realm II", root);
+	CreateDirectoryW(plain, NULL);
+	CHECK(game_dir_of(plain, dir, sizeof dir) == NULL);
+	snprintf(p, sizeof p, "%s\\Lords of the Realm II", g_gameDir);
+	CHECK(!strcmp(dir, p));
+	// a name no code page byte can spell (Cyrillic and Chinese; on an East Asian Windows only the Cyrillic may fail)
+	swprintf(odd, MAX_PATH, L"%ls\\\x41B\x43E\x440\x434\x44B \x4E09", root);
+	REQUIRE(CreateDirectoryW(odd, NULL));
+	swprintf(file, MAX_PATH, L"%ls\\Base01.256", odd);
+	FILE *w = _wfopen(file, L"wb");
+	REQUIRE(w);
+	fputs("palette", w);
+	fclose(w);
+	const char *how = game_dir_of(odd, dir, sizeof dir);
+	if (!how) return;                          // (this Windows spells it exactly)
+	CHECK(!strchr(dir, '?'));
+	if (!strcmp(how, "its short name")) {      // the 8.3 name: the patch's narrow fopen finds the file
+		snprintf(p, sizeof p, "%s\\Base01.256", dir);
+		FILE *f = fopen(p, "rb");
+		CHECK(f != NULL);
+		if (f) fclose(f);
+	}
+	else CHECK(!strcmp(dir, "."));             // no 8.3 names on this drive: the current folder, the game's own
+}
+
+TEST(settings_scroll_without_map_palette_is_not_black)
+{
+	// No Base01.256 in this test's game folder: map_lut fails (once for the run; no test before this reads it)
+	SCROLL_OVL *s = &g_ovl[1];
+	memset(g_ovl, 0, sizeof g_ovl);
+	enum { X = 10, Y = 20, W = 8, H = 4, SW = 640 };
+	static BYTE snap[W * H];
+	for (int r = 0; r < H; r++)
+		for (int c = 0; c < W; c++) g_frame8[(Y + r) * SW + X + c] = snap[r * W + c] = (BYTE)(1 + r * W + c);
+	for (int r = 0; r < 2 * H; r++)
+		for (int c = 0; c < 2 * W; c++) g_frame2x[(2 * Y + r) * (2 * SW) + 2 * X + c] = 0x00100000u + (DWORD)(r * 64 + c);
+	int off = g_off; g_off = 0;
+	s->x = X; s->y = Y; s->w = W; s->h = H; s->snap = snap; s->under = NULL; s->mapPal = 1; s->gen = 1; s->on = 1;
+	scroll_overlays_catch(0, SW);
+	CHECK(g_ovlShow[1]);
+	REQUIRE(s->cache);
+	int black = 0, wrong = 0;
+	for (int r = 0; r < 2 * H; r++)
+		for (int c = 0; c < 2 * W; c++) {
+			DWORD v = s->cache[r * 2 * W + c];
+			if (!v) black++;
+			if (v != 0x00100000u + (DWORD)(r * 64 + c)) wrong++;
+		}
+	CHECK_EQ(black, 0);                        // the empty cache used to be laid on: a black scroll
+	CHECK_EQ(wrong, 0);                        // the game's own pixels instead
+	for (int r = 0; r < 2 * H; r++) memset(g_frame2x + (2 * Y + r) * (2 * SW) + 2 * X, 0, 2 * W * sizeof(DWORD));
+	scroll_overlays_lay(SW);
+	CHECK_EQ(g_frame2x[(2 * Y) * (2 * SW) + 2 * X], 0x00100000u);
+	g_off = off;
+	free(s->cache);
+	memset(g_ovl, 0, sizeof g_ovl);
+	memset(g_frame8, 0, sizeof g_frame8);
+	memset(g_frame2x, 0, sizeof g_frame2x);
+}
+
+TEST(game_wav_found_in_the_cd_layout)
+{
+	// The CD's layout (kept by a player's GOG install): the game's sounds in WAV\, as the exe looks for them
+	char p[MAX_PATH], want[MAX_PATH];
+	game_wav_path(p, sizeof p, "scroll1.wav");
+	snprintf(want, sizeof want, "%s\\scroll1.wav", g_gameDir);
+	CHECK(!strcmp(p, want));                   // nowhere: the plain name (opening it fails as before)
+	t_write("wav\\scroll1.wav", "RIFF", 4);
+	game_wav_path(p, sizeof p, "scroll1.wav");
+	snprintf(want, sizeof want, "%s\\wav\\scroll1.wav", g_gameDir);
+	CHECK(!strcmp(p, want));
+	t_write("scroll1.wav", "RIFF", 4);         // next to the exe wins
+	game_wav_path(p, sizeof p, "scroll1.wav");
+	snprintf(want, sizeof want, "%s\\scroll1.wav", g_gameDir);
+	CHECK(!strcmp(p, want));
+}
+
+TEST(map_palette_as_the_game_loaded_it)
+{
+	// A player's game ran with another working folder than the exe's: Base01.256 was not next to the exe
+	BYTE pal[768], game[768];
+	for (int i = 0; i < 768; i++) game[i] = (BYTE)(i * 7 % 64);
+	InterlockedExchange(&g_base01Have, 0);
+	CHECK(!base01_palette(pal));               // nothing next to the exe, nothing from the game yet
+	base01_note_load("base01.256", game, 700, 0);
+	base01_note_load("base01.256", game, 768, 16);
+	base01_note_load("base1a.256", game, 768, 0);
+	CHECK(!g_base01Have);                      // short reads, offsets and other palettes are not it
+	base01_note_load("D:\\Data\\BASE01.256", game, 768, 0);
+	CHECK(g_base01Have);
+	REQUIRE(base01_palette(pal));
+	CHECK(!memcmp(pal, game, 768));
+	// a file next to the exe gives way to the game's own copy
+	BYTE other[768] = { 1, 2, 3 };
+	t_write("Base01.256", other, 768);
+	REQUIRE(base01_palette(pal));
+	CHECK(!memcmp(pal, game, 768));
+	InterlockedExchange(&g_base01Have, 0);
+	REQUIRE(base01_palette(pal));              // and is the fallback without it
+	CHECK(!memcmp(pal, other, 768));
+}
+
 /* ================================ the art pack (tools\l2pak.c writes it, pak_open / afopen read it) */
 
 static BYTE *t_pattern(size_t n, unsigned seed)
