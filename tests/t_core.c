@@ -132,6 +132,31 @@ TEST(settings_scroll_without_map_palette_is_not_black)
 	memset(g_frame2x, 0, sizeof g_frame2x);
 }
 
+TEST(map_palette_as_the_game_loaded_it)
+{
+	// A player's game ran with another working folder than the exe's: Base01.256 was not next to the exe
+	BYTE pal[768], game[768];
+	for (int i = 0; i < 768; i++) game[i] = (BYTE)(i * 7 % 64);
+	InterlockedExchange(&g_base01Have, 0);
+	CHECK(!base01_palette(pal));               // nothing next to the exe, nothing from the game yet
+	base01_note_load("base01.256", game, 700, 0);
+	base01_note_load("base01.256", game, 768, 16);
+	base01_note_load("base1a.256", game, 768, 0);
+	CHECK(!g_base01Have);                      // short reads, offsets and other palettes are not it
+	base01_note_load("D:\\Data\\BASE01.256", game, 768, 0);
+	CHECK(g_base01Have);
+	REQUIRE(base01_palette(pal));
+	CHECK(!memcmp(pal, game, 768));
+	// a file next to the exe gives way to the game's own copy
+	BYTE other[768] = { 1, 2, 3 };
+	t_write("Base01.256", other, 768);
+	REQUIRE(base01_palette(pal));
+	CHECK(!memcmp(pal, game, 768));
+	InterlockedExchange(&g_base01Have, 0);
+	REQUIRE(base01_palette(pal));              // and is the fallback without it
+	CHECK(!memcmp(pal, other, 768));
+}
+
 /* ================================ the art pack (tools\l2pak.c writes it, pak_open / afopen read it) */
 
 static BYTE *t_pattern(size_t n, unsigned seed)

@@ -1754,6 +1754,32 @@ static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  //
 static int g_txtW, g_txtH; // the size all of them were made for (the back buffer's then)
 static BYTE g_tilePal[768];
 
+// The county map's palette, Base01.256, as the game itself loaded it (h_load_file): the game finds its
+// files through L2.INI's CDDrive, which may be another folder than the exe's (a player's install had
+// none there: the map stayed unsharpened and the F10 scroll black). Else the file next to the exe.
+static BYTE g_base01[768];
+static volatile LONG g_base01Have;
+static BOOL base01_palette(BYTE *pal)
+{
+	if (g_base01Have) { memcpy(pal, g_base01, 768); return TRUE; }
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+	FILE *f = fopen(path, "rb");
+	BOOL ok = f && fread(pal, 1, 768, f) == 768;
+	if (f) fclose(f);
+	if (!ok) memset(pal, 0, 768);
+	return ok;
+}
+static void base01_note_load(const char *name, const void *buffer, int n, long offset)
+{
+	if (n != 768 || offset != 0 || !buffer) return;
+	const char *b = name;
+	for (const char *p = name; *p; p++) if (*p == '\\' || *p == '/' || *p == ':') b = p + 1;
+	if (lstrcmpiA(b, "base01.256")) return;
+	memcpy(g_base01, buffer, 768);
+	if (!InterlockedExchange(&g_base01Have, 1)) logf_("map palette: Base01.256 as the game loaded it");
+}
+
 static BOOL wave_is_water(DWORD p)
 {
 	int b = p & 255, g = (p >> 8) & 255, r = (p >> 16) & 255;
@@ -1918,10 +1944,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_sprShadow = calloc(MAX_W, GAME_H);
 		g_sprValid = calloc(MAX_W, GAME_H);
-		char pal[MAX_PATH];
-		snprintf(pal, sizeof pal, "%s\\Base01.256", g_gameDir);
-		FILE *p = fopen(pal, "rb");
-		if (p) { if (fread(g_tilePal, 1, 768, p) != 768) memset(g_tilePal, 0, 768); fclose(p); }
+		if (!base01_palette(g_tilePal)) logf_("HD tiles: no map palette (Base01.256 not loaded by the game, nor in %s): the map stays as drawn", g_gameDir);
 	}
 	g_layerGen++; // new art for these tiles: the next map redraw stamps again, even if it looks the same
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
@@ -2171,8 +2194,8 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 	lstrcpynA(g_spriteSets[slot].name, key, sizeof g_spriteSets[slot].name);
 	g_layerGen++;
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
-	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-	read_palette(path, g_spriteSets[slot].pal);
+	if (aexists(path)) read_palette(path, g_spriteSets[slot].pal);
+	else base01_palette(g_spriteSets[slot].pal);
 	logf_("HD sprites %s (season %d)", key, *(const int *)0x0057c934);
 }
 
@@ -3824,15 +3847,14 @@ static SCROLL_OVL g_ovl[2]; // 0 the army scroll, 1 the settings scroll
 static DWORD g_mapLut[256];
 static BOOL map_lut(void)
 {
-	static int have;
-	if (have) return have > 0;
+	static int have, triedFile;
+	if (have > 0) return TRUE;
+	if (!g_base01Have && triedFile) return FALSE; // (the file once; the game's copy whenever it comes)
+	triedFile = 1;
 	BYTE pal[768];
-	char path[MAX_PATH];
-	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-	FILE *f = fopen(path, "rb");
-	have = f && fread(pal, 1, 768, f) == 768 ? 1 : -1;
-	if (f) fclose(f);
-	for (int i = 0; have > 0 && i < 256; i++)
+	if (!base01_palette(pal)) return FALSE;
+	have = 1;
+	for (int i = 0; i < 256; i++)
 		g_mapLut[i] = (pal[i * 3] * 255 / 63 << 16) | (pal[i * 3 + 1] * 255 / 63 << 8) | pal[i * 3 + 2] * 255 / 63;
 	return have > 0;
 }
@@ -7638,6 +7660,7 @@ static int g_frameIndex = -1;
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
 	int n = o_load_file(name, buffer, size, offset);
+	base01_note_load(name, buffer, n, offset);
 	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
 		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
 	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
