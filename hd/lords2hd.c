@@ -4134,8 +4134,10 @@ static const DWORD kIconSites[2] = { 0x00465257, 0x004652b7 };
 #define ICON_1 300
 #define ICON_2 600
 // Unit stats and costs (Jen's Unit Stats and Unit Costs), each unit's in the game's tables:
+// Indexed by the unit type (melee m, auto-calc a: 0 peasants, 1 crossbowmen, 2 maces, 3 swords, 4 pikemen, 5 archers,
+// 6 knights; the battle set-up handler of type t is the dword at 0x4d9140 + 4 t), the weapons by weapon w = type - 1:
 //   melee strength  4 words at 0x4d98f8 + 8 m (Jen's: the first set, the other three scaled with it)
-//   ranged defence  the imm8 of a mov byte [0x5545f2] in each unit's set-up
+//   ranged defence  the imm8 of a mov byte [eax + 0x5545f2] in each type's set-up handler
 //   auto-calc       a dword at 0x4d4b98 + 4 a (its strength when a battle is worked out)
 //   wood, iron      the blacksmith's cost of one, dwords at 0x4d8990 + 8 w and + 4
 //   sell price      the merchant's, a dword at 0x4d8910 + 4 s, copied to 0x5532a0 + 16 s at a new game (FUN_0042847c)
@@ -4152,16 +4154,16 @@ static const char *const kUnitKey[UNITS] = { "Peasant", "Archer", "Swordsman", "
 static const char *const kStatKey[US_COUNT] = { "MeleeStrength", "RangedDefence", "AutoCalcStrength", "RangedStrength",
 	"AttackRange", "AttackSpeed", "WoodCost", "IronCost", "SellPrice", "BuyPrice" };
 static const int kStatMin[US_COUNT] = { 1, 0, 0, 0, 0, 25, 0, 0, 1, 1 }, kStatMax[US_COUNT] = { 100, 100, 100, 1000, 50, 100, 10000, 10000, 10000, 10000 };
-static const signed char kUnitMelee[UNITS] = { 0, 5, 2, 3, 4, 1, 6 }, kUnitAuto[UNITS] = { 0, 5, 3, 2, 4, 1, 6 },
+static const signed char kUnitMelee[UNITS] = { 0, 5, 3, 2, 4, 1, 6 }, kUnitAuto[UNITS] = { 0, 5, 3, 2, 4, 1, 6 },
 	kUnitCost[UNITS] = { -1, 4, 2, 1, 3, 0, 5 }, kUnitPrice[UNITS] = { -1, 10, 13, 11, 9, 12, 14 }, kUnitRanged[UNITS] = { -1, 1, -1, -1, -1, 2, -1 };
-static const DWORD kUnitRdefAt[UNITS] = { 0x00482640, 0x00482a7d, 0x004827f2, 0x004828cb, 0x004829a4, 0x00482719, 0x00482b56 };
+static const DWORD kUnitRdefAt[UNITS] = { 0x00482640, 0x00482a7d, 0x004828cb, 0x004827f2, 0x004829a4, 0x00482719, 0x00482b56 };
 static const WORD kMeleeGame[UNITS][4] = { { 5, 4, 3, 2 }, { 5, 4, 3, 2 }, { 15, 12, 10, 6 }, { 15, 12, 10, 6 }, { 10, 8, 6, 5 }, { 5, 4, 3, 2 }, { 20, 15, 11, 6 } };
 // The game's values as the panel shows them (range in cells; buy 0: the game's own price; -1: the unit has none)
 static const int kUnitGame[UNITS][US_COUNT] = {
 	{ 5, 0, 2, -1, -1, -1, -1, -1, -1, -1 },          // peasants
 	{ 5, 0, 13, 50, 15, 50, 13, 0, 16, 0 },          // archers
-	{ 15, 12, 13, -1, -1, -1, 3, 10, 23, 0 },        // swordsmen
-	{ 15, 35, 8, -1, -1, -1, 4, 4, 10, 0 },          // macemen
+	{ 15, 35, 13, -1, -1, -1, 3, 10, 23, 0 },        // swordsmen
+	{ 15, 12, 8, -1, -1, -1, 4, 4, 10, 0 },          // macemen
 	{ 10, 35, 9, -1, -1, -1, 6, 3, 13, 0 },          // pikemen
 	{ 5, 12, 16, 200, 8, 100, 6, 10, 24, 0 },        // crossbowmen
 	{ 20, 25, 22, -1, -1, -1, 4, 18, 44, 0 },        // knights
@@ -4254,6 +4256,7 @@ static void unit_read_ini(void)
 		for (int s = 0; s < US_COUNT; s++) {
 			char key[48]; snprintf(key, sizeof key, "%s%s", kUnitKey[u], kStatKey[s]);
 			int v = unit_has(u, s) ? GetPrivateProfileIntA("Units", key, -1, g_iniPath) : -1;
+			if (s == UC_BUY && v == 0) v = -1;   // (0: the game's own price, as the panel writes it)
 			if (v >= 0) v = max(kStatMin[s], min(kStatMax[s], v));
 			if (v >= 0 && s == US_SPEED) v = v < 38 ? 25 : v < 75 ? 50 : 100;   // (Jen's three)
 			if (v == unit_orig(u, s) && s != UC_BUY) v = -1;
@@ -4647,7 +4650,7 @@ static const char *menu_desc(int i, int line)
 		{ "Original: castles hold 150 to 600 men by their kind.", "Army size: as many as an army may. Single player only" },      // M_JEN_GARRISON
 	};   // (lines of up to about 57 letters fit the scroll)
 	static const char *const kDesc2[][2] = {
-		{ "On: the game speed goes past 10 (the original's most).", "Off again: back to 10. Single player games only" },       // M_JEN_SPEED
+		{ "On: the game speed goes past 10; any speed past 10 runs as", "fast as the PC can. Off again: 10. Single player games only" },       // M_JEN_SPEED
 		{ "Milder: the Black Death takes about half as many people.", "Off: it spares every county. Single player only" },     // M_JEN_PLAGUE
 		{ "Steers each county's births towards this population", "in the long run (Jen's). Single player games only" },       // M_JEN_POP
 		{ "On: an industry's output a season isn't capped at 999", "(wood, iron and stone). Single player games only" },       // M_JEN_UNCAP

@@ -52,7 +52,10 @@ tall); it too is written anew, and draws the extra map without changing the game
 
 Game fixes and mods from the In-Game Mod Manager (v1.4.1) by Jen With a B (jenwithab) are brought into this patch
 with Jen's consent: the food ration fix (`[Game] RationFix`) and the multiplayer message fix
-(`[Game] MpMessageFix`), and the Esc-twice "Exit the game?" fix now also works without widescreen.
+(`[Game] MpMessageFix`), and the Esc-twice "Exit the game?" fix now also works without widescreen;
+and Jen's mods in the Jen With a B's Mods panel (F11): field destruction, pillaging, castle doors, field
+reclaim, castle garrisons, castle designs, uncapped game speed, the Black Death, population average,
+uncapped resources, the resource multiplier, army size, scaled army icons, and unit stats and costs.
 They are written anew in `hd/lords2hd.c`, following the places in the game and the rules the Mod
 Manager uses; none of its code is included.
 

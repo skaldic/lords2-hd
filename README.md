@@ -316,11 +316,11 @@ by the original sizes. The mods (all but the Fixes tab) work in single player ga
 multiplayer game everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
 from 1 to 100000 (doors) or 10000 (reclaim).
 
-Uncapped game speed lets the game speed go past 10 (set back to 10 when turned off). The Black Death can be milder
+Uncapped game speed lets the game speed go past 10 (set back to 10 when turned off); every speed past 10 is the same, as fast as the PC runs the game. The Black Death can be milder
 (Jen's 50% Reduced: about half as deadly) or off (it spares every county; the event still comes up). Population
 average steers each county's births towards that population in the long run, by Jen's formula. Uncapped resources
 lifts the cap of 999 on a season's wood, iron and stone, and the resource multiplier multiplies them (not the
-blacksmith's weapons); 2x and more turn Uncapped resources on. Army size is the most men in an army; castle
+blacksmith's weapons); choosing 2x or more in the panel turns Uncapped resources on (in the ini, set both). Army size is the most men in an army; castle
 garrisons set to Army size follow it, and Scaled army icons moves the two- and three-man army icons to a fifth and
 two fifths of it. Unit stats and Unit costs change one unit at a time: pick it on the first row, then click a
 stat to step through half to three times its original value (attack speed: 2x or 4x faster or slower; peasants

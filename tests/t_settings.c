@@ -198,7 +198,7 @@ static void t_fix_sites(void)
 	for (int u = 0; u < UNITS; u++) {
 		memcpy((void *)unit_at(u, US_MELEE), kMeleeGame[u], 8);
 		BYTE *r = (BYTE *)kUnitRdefAt[u];
-		r[-6] = 0xC6; r[-5] = 0x05; *(DWORD *)(r - 4) = 0x005545f2; *r = (BYTE)kUnitGame[u][US_RDEF];
+		r[-6] = 0xC6; r[-5] = 0x80; *(DWORD *)(r - 4) = 0x005545f2; *r = (BYTE)kUnitGame[u][US_RDEF];
 		*(DWORD *)unit_at(u, US_AUTO) = kUnitGame[u][US_AUTO];
 		if (kUnitRanged[u] >= 0) {
 			*(DWORD *)unit_at(u, US_RANGE) = kUnitGame[u][US_RANGE] * 8; *(DWORD *)unit_at(u, US_SPEED) = kUnitGame[u][US_SPEED];
@@ -555,8 +555,10 @@ TEST(jen_econ_mods_go_in_and_out)
 	WritePrivateProfileStringA("Units", "KnightMeleeStrength", "500", g_iniPath);
 	WritePrivateProfileStringA("Units", "CrossbowmanAttackSpeed", "60", g_iniPath);
 	WritePrivateProfileStringA("Units", "PeasantSellPrice", "10", g_iniPath);
+	WritePrivateProfileStringA("Units", "ArcherBuyPrice", "0", g_iniPath);   // 0: the game's own price, not 1 crown
 	t_fix_sites(); install_game_fixes();
 	CHECK_EQ(g_unitSet[6][US_MELEE], 100); CHECK_EQ(g_unitSet[5][US_SPEED], 50); CHECK_EQ(g_unitSet[0][UC_SELL], -1);
+	CHECK_EQ(g_unitSet[1][UC_BUY], -1); CHECK_EQ(l2hd_buy_price(10), 0);
 	CHECK_EQ(*(WORD *)unit_at(6, US_MELEE), 100); CHECK_EQ(*(DWORD *)0x004d97dc, 50);
 	t_shipped_settings();                       // data that isn't the game's: the unit mods stay out, the rest work
 	*(BYTE *)0x00482b56 = 26;

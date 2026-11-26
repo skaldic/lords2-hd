@@ -140,6 +140,12 @@ TEST(hooks_jen_fixes_go_in)   // Jen With a B's Mods (on by default): the ration
 	// the other mods: every site holds what they expect in the game's exe (code and data), the hooks in
 	for (int j = 0; j < JC_COUNT; j++) CHECK(g_jcOk[j]);
 	for (int j = 0; j < JE_COUNT; j++) { if (!g_jeOk[j]) printf("    Jen mod %d not in with the game's exe\n", j); CHECK(g_jeOk[j]); }
+	for (int u = 0; u < UNITS; u++) {   // each unit's ranged defence in its own type's battle set-up handler (0x4d9140 + 4 type)
+		int type = kUnitAuto[u];
+		DWORD fn = *(const DWORD *)(0x004d9140 + 4 * type), end = type < 6 ? *(const DWORD *)(0x004d9140 + 4 * (type + 1)) : fn + 0xd9;
+		CHECK(kUnitRdefAt[u] > fn && kUnitRdefAt[u] < end); CHECK_EQ(kUnitMelee[u], type);
+		CHECK_EQ(kUnitCost[u], type - 1);   // the weapons: type - 1
+	}
 	for (int h = 0; h < JEN_HOOKS; h++) {
 		CHECK_EQ(*(BYTE *)kJenHooks[h].at, 0xE9);
 		CHECK_EQ(*(DWORD *)(kJenHooks[h].at + 1) + kJenHooks[h].at + 5, (DWORD)kJenHooks[h].stub);
