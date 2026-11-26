@@ -7663,6 +7663,17 @@ static BOOL patch_dword(DWORD addr, LONG from, LONG to)
 	VirtualProtect(p, 4, old, &old);
 	return TRUE;
 }
+static BOOL patch_bytes(DWORD addr, const BYTE *from, const BYTE *to, int n)
+{
+	BYTE *p = (BYTE *)addr;
+	if (memcmp(p, from, n) != 0) return FALSE;
+	DWORD old;
+	if (!VirtualProtect(p, n, PAGE_EXECUTE_READWRITE, &old)) return FALSE;
+	memcpy(p, to, n);
+	VirtualProtect(p, n, old, &old);
+	FlushInstructionCache(GetCurrentProcess(), p, n);
+	return TRUE;
+}
 
 // Other places where the frame's size is written out: { address of the 32-bit field, value,
 // what it becomes (0 = width, 1 = width * height) }.
@@ -9545,7 +9556,6 @@ static void install_wide(void)
 	hook_code((BYTE *)0x0047309e, kMsgPrologueA, sizeof kMsgPrologueA, h_msg_a, &o_msg_a);
 	hook_code((BYTE *)0x00475e07, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_b, &o_msg_b);
 	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
-	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
 	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
 	static const BYTE kTutorialPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00476da9, kTutorialPrologue, sizeof kTutorialPrologue, h_tutorial, &o_tutorial);
@@ -13278,6 +13288,55 @@ static int __cdecl h_wheat_scale(int county, int grain)
 	return grain;
 }
 
+// Food ration fix. Bug found and fixed by Jen With a B (Lords II Mod Manager 1.4.1); rewritten here with his
+// consent, following his patch site and rule. A county's food for the season (FUN_0044df5f) is milk first, then the rest of the
+// ration split by the food slider (0x0053fb0f, percent from cattle): cattle at DAT_00567594 (10) food each,
+// grain at DAT_0057cb30 (6) each. Each share was then cut to what is in store on its own (0x0044e4a2 ..
+// 0x0044e523: cattle 0x0053fb34 -> 0x0053fb2c, grain 0x0053fb30 -> 0x0053fb28), so with one food run out the
+// people ate less than their ration while the other food stayed in store. Now, with the slider between its
+// ends, a share that runs short is made up from the other food at those rates (rounded up), as far as it
+// lasts. At 0% or 100% the player chose one food: unchanged. Off in multiplayer unless MultiplayerFixes=1.
+static BOOL g_fixRation;
+static void ration_share(int haveCattle, int haveGrain, int needCattle, int needGrain, int cattlePct,
+	int cattleFood, int grainFood, int *cattle, int *grain)
+{
+	int c = haveCattle < needCattle ? haveCattle : needCattle;   // the game's own cut, each food on its own
+	int g = haveGrain < needGrain ? haveGrain : needGrain;
+	if (cattlePct > 0 && cattlePct < 100 && cattleFood > 0 && grainFood > 0) {
+		if (needGrain > g && haveCattle > c)
+			c = min(haveCattle, c + ((needGrain - g) * grainFood + cattleFood - 1) / cattleFood);
+		if (needCattle > c && haveGrain > g)
+			g = min(haveGrain, g + ((needCattle - c) * cattleFood + grainFood - 1) / grainFood);
+	}
+	*cattle = c; *grain = g;
+}
+// Called from ration_stub in place of the game's two cuts, with FUN_0044df5f's frame: county at +8, cattle
+// wanted at -4, grain wanted at -0x2c.
+__attribute__((used)) void __cdecl l2hd_ration_step(const BYTE *frame)
+{
+	int county = *(const int *)(frame + 8), c, g;
+	int haveCattle = *(int *)(0x0053fb34 + county * 0x300), haveGrain = *(int *)(0x0053fb30 + county * 0x300);
+	int needCattle = *(const int *)(frame - 4), needGrain = *(const int *)(frame - 0x2c);
+	int pct = fix_on(g_fixRation) ? *(BYTE *)(0x0053fb0f + county * 0x300) : 0;
+	ration_share(haveCattle, haveGrain, needCattle, needGrain, pct, *(int *)0x00567594, *(int *)0x0057cb30, &c, &g);
+	static int logged;
+	if (logged < 5 && (c != min(haveCattle, needCattle) || g != min(haveGrain, needGrain)))
+		logged++, logf_("ration fix: county %d, slider %d%%: wanted %d cattle %d grain, in store %d %d: eats %d cattle %d grain",
+			county, pct, needCattle, needGrain, haveCattle, haveGrain, c, g);
+	*(int *)(0x0053fb2c + county * 0x300) = c;
+	*(int *)(0x0053fb28 + county * 0x300) = g;
+}
+__attribute__((naked)) static void ration_stub(void)
+{
+	__asm__("pushal\n\t"
+		"pushl %ebp\n\t"
+		"call _l2hd_ration_step\n\t"
+		"addl $4, %esp\n\t"
+		"popal\n\t"
+		"pushl $0x0044e523\n\t"   // on after the game's two cuts
+		"ret");
+}
+
 // Besieged castles. The game's rule (Readme, "Besieged Castles"): no army may enter a castle or
 // strengthen its garrison until the siege is lifted. The human order checks it (FUN_004a9372 refuses
 // when the garrison army's besieger link 0x0052f24a is set), but the arrival itself, FUN_004a79a3
@@ -13531,6 +13590,28 @@ static void install_game_fixes(void)
 		g_fixWheat = FALSE;
 	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
 
+	g_fixRation = GetPrivateProfileIntA("Game", "RationFix", 1, g_iniPath) != 0;
+	static const BYTE kRationCut[] = { 0x39, 0x8C, 0x40, 0x34, 0xFB, 0x53, 0x00 };   // cmp [eax*3+0x53fb34],ecx
+	static const BYTE kRationOn[] = { 0x8B, 0x45, 0xE0 };                              // 0x0044e523: mov eax,[ebp-20h]
+	if (g_fixRation && !(memcmp((BYTE *)0x0044e4a2, kRationCut, sizeof kRationCut) == 0 &&
+		memcmp((BYTE *)0x0044e523, kRationOn, sizeof kRationOn) == 0 &&
+		redirect((BYTE *)0x0044e4a2, sizeof kRationCut, ration_stub))) {
+		logf_("not hooked: unexpected code at 0044e4a2 (ration fix)");
+		g_fixRation = FALSE;
+	}
+	logf_("ration fix %s", g_fixRation ? "on" : "off");
+
+	// Multiplayer messages. Bug found by Jen With a B (Lords II Mod Manager), with his consent. A message
+	// (FUN_00472e46) is kept up while its timer (DAT_0057c954, from 2000) counts down; in a multiplayer game
+	// (DAT_00553030) every kind but 4 and 14 was closed once the timer fell below 1601, 400 game steps after
+	// it opened (400 calls of the message step; players saw them close at once). Now only kind 4 closes on
+	// its own; in single player nothing closes before the player clicks. The jne after "kind == 4?" goes where kind 14's does.
+	// Only what this player sees changes, so it stays on in multiplayer.
+	static const BYTE kMsgClose[] = { 0x0F, 0x85, 0x17, 0x00, 0x00, 0x00 }, kMsgKeep[] = { 0x75, 0x35, 0x90, 0x90, 0x90, 0x90 };
+	if (GetPrivateProfileIntA("Game", "MpMessageFix", 1, g_iniPath))
+		logf_("multiplayer message fix %s", patch_bytes(0x00472f20, kMsgClose, kMsgKeep, sizeof kMsgClose) ? "on" : "failed: unexpected code at 00472f20");
+	else logf_("multiplayer message fix off");
+
 	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
 	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
@@ -13711,6 +13792,9 @@ static void install(void)
 		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
 		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
 	}
+	// The yes/no box opener in every mode, not only wide: its Esc-twice soft-lock fix (h_yesno_open) is for
+	// 4:3 too (the same bug Jen With a B's Double-Escape Fix covers); with g_off 0 it moves nothing.
+	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
 	install_wide();
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");

@@ -101,6 +101,7 @@ TEST(hooks_all_go_in_4_3)
 	CHECK_EQ(t_count_lines(log, "import not found"), 0);
 	CHECK(!on);
 	for (int f = 0; f < BF_COUNT; f++) CHECK(g_bfOk[f]);   // every battle fix can be switched in F10
+	CHECK(o_yesno_open != NULL);                            // the Esc-twice yes/no fix in 4:3 too
 	free(log);
 	t_unmap_game();
 }
@@ -115,6 +116,25 @@ TEST(hooks_all_go_in_widescreen)
 	CHECK_EQ(t_count_lines(log, "wide mode off"), 0);       // every pitch, frame and y*640 site as expected
 	if (t_count_lines(log, "is not wider than 4:3")) printf("    (this PC's monitor is 4:3: the wide hooks weren't tried)\n");
 	else CHECK(on);
+	free(log);
+	t_unmap_game();
+}
+
+TEST(hooks_jen_fixes_go_in)   // the fixes found by Jen With a B: ration and multiplayer messages
+{
+	BOOL on;
+	char *log = t_install(0, &on);
+	if (!log) return;
+	CHECK_EQ(t_count_lines(log, "ration fix on"), 1);
+	CHECK_EQ(t_count_lines(log, "multiplayer message fix on"), 1);
+	CHECK_EQ(*(BYTE *)0x0044e4a2, 0xE9);                   // jumps to ration_stub
+	CHECK_EQ(*(DWORD *)0x0044e4a3 + 0x0044e4a7, (DWORD)ration_stub);
+	CHECK_EQ(*(BYTE *)0x0044e4a7, 0x90); CHECK_EQ(*(BYTE *)0x0044e4a8, 0x90);
+	static const BYTE keep[] = { 0x75, 0x35, 0x90, 0x90, 0x90, 0x90 };
+	CHECK(memcmp((BYTE *)0x00472f20, keep, sizeof keep) == 0);
+	CHECK_EQ(0x00472f22 + 0x35, 0x00472f13 + 6 + 0x3e);    // where kind 14's je goes (0x472f13: je +3Eh)
+	CHECK_EQ(*(WORD *)0x00472f13, 0x840F);
+	CHECK_EQ(*(DWORD *)0x00472f15, 0x3e);
 	free(log);
 	t_unmap_game();
 }

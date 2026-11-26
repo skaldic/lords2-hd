@@ -34,6 +34,52 @@ TEST(wheat_lost_field_charged_once)
 	CHECK_EQ(h_wheat_scale(5, 1100), 900);
 }
 
+/* ================================ ration fix (Jen With a B's Food Ration Fix, our code) */
+
+TEST(ration_share_makes_up_a_short_food)
+{
+	int c, g;
+	ration_share(100, 1000, 50, 500, 50, 10, 6, &c, &g);    // both in store: as wanted
+	CHECK_EQ(c, 50); CHECK_EQ(g, 500);
+	ration_share(100, 0, 50, 500, 50, 10, 6, &c, &g);       // no grain: 500 grain = 3000 food = 300 cattle, 50 more left
+	CHECK_EQ(c, 100); CHECK_EQ(g, 0);
+	ration_share(1000, 0, 50, 7, 50, 10, 6, &c, &g);        // 7 grain = 42 food: 5 cattle (rounded up)
+	CHECK_EQ(c, 55); CHECK_EQ(g, 0);
+	ration_share(0, 1000, 5, 100, 50, 10, 6, &c, &g);       // no cattle: 5 cattle = 50 food: 9 grain (rounded up)
+	CHECK_EQ(c, 0); CHECK_EQ(g, 109);
+	ration_share(0, 1000, 5, 100, 100, 10, 6, &c, &g);      // slider at an end: the player chose one food
+	CHECK_EQ(c, 0); CHECK_EQ(g, 100);
+	ration_share(0, 1000, 5, 100, 0, 10, 6, &c, &g);
+	CHECK_EQ(c, 0); CHECK_EQ(g, 100);
+	ration_share(0, 0, 5, 100, 50, 10, 6, &c, &g);          // nothing in store
+	CHECK_EQ(c, 0); CHECK_EQ(g, 0);
+}
+TEST(ration_step_writes_the_county)
+{
+	int frame[16] = { 0 };
+	BYTE *ebp = (BYTE *)&frame[12];
+	*(int *)(ebp + 8) = 3;                      // county
+	*(int *)(ebp - 4) = 40;                     // cattle wanted
+	*(int *)(ebp - 0x2c) = 300;                 // grain wanted
+	*(int *)0x00567594 = 10; *(int *)0x0057cb30 = 6;
+	*(int *)(0x0053fb34 + 3 * 0x300) = 500;     // cattle in store
+	*(int *)(0x0053fb30 + 3 * 0x300) = 100;     // grain in store: 200 short = 1200 food = 120 cattle
+	COUNTY_B(3, 0x0053fb0f) = 40;
+	MP_SESSION = 0;
+	l2hd_ration_step(ebp);
+	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 160);
+	CHECK_EQ(*(int *)(0x0053fb28 + 3 * 0x300), 100);
+	g_fixRation = FALSE;                        // off: the game's own cut
+	l2hd_ration_step(ebp);
+	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 40);
+	CHECK_EQ(*(int *)(0x0053fb28 + 3 * 0x300), 100);
+	g_fixRation = TRUE;
+	MP_SESSION = 1;                             // multiplayer without MultiplayerFixes: the game's own
+	l2hd_ration_step(ebp);
+	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 40);
+	MP_SESSION = 0;
+}
+
 /* ================================ castle cap fix */
 
 static int t_starts;

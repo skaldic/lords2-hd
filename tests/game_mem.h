@@ -77,7 +77,7 @@ static void t_battle_reset(void)
 	g_dmMaxDepth = 0x7fff; g_dmFullThisStep = 0;
 	g_grSolo = FALSE; g_grAvoid = -1; g_grOut = NULL; g_grLeaderSet = FALSE; g_grLeadN = 0;
 	memset(g_grCong, 0, sizeof g_grCong); memset(g_grCorr, 0, sizeof g_grCorr);
-	g_fixWheat = g_fixCastleCap = g_fixSiegeGarrison = TRUE;
+	g_fixWheat = g_fixCastleCap = g_fixSiegeGarrison = g_fixRation = TRUE;
 	g_aiBuilding = 0; g_inUpgrade = 0;
 	t_calls = 0; t_stub_ret = 0;
 	o_chase = t_stub_void; o_idle = t_stub_void; o_melee = t_stub_void; o_target = t_stub_int;
