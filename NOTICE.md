@@ -50,7 +50,7 @@ tall); it too is written anew, and draws the extra map without changing the game
 
 ## Jen With a B's Lords II Mod Manager
 
-Game fixes and mods from Jen With a B's In-Game Mod Manager (v1.4.1) are brought into this patch
+Game fixes and mods from the In-Game Mod Manager (v1.4.1) by Jen With a B (jenwithab) are brought into this patch
 with Jen's consent: the food ration fix (`[Game] RationFix`) and the multiplayer message fix
 (`[Game] MpMessageFix`), and the Esc-twice "Exit the game?" fix now also works without widescreen.
 They are written anew in `hd/lords2hd.c`, following the places in the game and the rules the Mod

@@ -3967,7 +3967,7 @@ static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
 static int g_aiLevelSet;
 static BOOL g_aiOk;
 static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
-// JenB's Mods ([Game] JenMods, on by default): the fixes and mods from Jen With a B's Lords II Mod Manager,
+// Jen With a B's Mods ([Game] JenMods, on by default): the fixes and mods from Jen With a B's Lords II Mod Manager,
 // rewritten here. On, they work (each by its own switch) and their own F10 tab shows; off, the game is as
 // without them. Every one of them takes effect at once.
 static BOOL g_jenMods;
@@ -3992,7 +3992,7 @@ static BOOL mpmsg_apply(BOOL on)
 	FlushInstructionCache(GetCurrentProcess(), (void *)q, 8);
 	return memcmp((const void *)q, want, 8) == 0;
 }
-// The castle and field mods from Jen's Mod Manager (his patch sites and values), single player only: in a
+// The castle and field mods from Jen With a B's Mod Manager (Jen's patch sites and values), single player only: in a
 // multiplayer game (DAT_00553030) the game's own code is back, as each player's settings could differ. They
 // are changes to the game's code, put in or taken out by jen_sync on the game's thread (window_proc, the F10
 // panel, start-up); each site is checked to hold what was last put there before it is written.
@@ -4099,7 +4099,7 @@ static void jen_castle_check(void)
 		"0044c15a (field reclaim)", "004d8a10 (castle garrisons)" };
 	for (int j = 0; j < JC_COUNT; j++) if (!g_jcOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
 }
-// Puts in what the switches ask for now (the game's own in a multiplayer game or with JenB's Mods off). Cheap
+// Puts in what the switches ask for now (the game's own in a multiplayer game or with Jen With a B's Mods off). Cheap
 // when nothing changed: called for every window message.
 static void jen_sync(void)
 {
@@ -4164,12 +4164,12 @@ enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WA
 	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG,
 	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-// Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the JenB's Mods panel (F11, or
-// the link on Quality of life while JenB's Mods is on), with a tab for each group of Jen's mods (MODS_TAB0 on).
+// Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the Jen With a B's Mods panel (F11, or
+// the link on Quality of life while Jen With a B's Mods is on), with a tab for each group of Jen's mods (MODS_TAB0 on).
 #define MODS_TAB0 4
 #define TAB_FIXES 4
 #define TAB_CASTLES 5
-static BOOL g_menuMods;   // the open panel is the JenB's Mods one
+static BOOL g_menuMods;   // the open panel is the Jen With a B's Mods one
 static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles", "Fixes", "Castles" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
@@ -4240,7 +4240,7 @@ static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
 	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics",
-	"JenB's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
+	"Jen With a B's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
 	"Outer castle door", "Field reclaim work", "Reclaim work a season", "Castle garrisons" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
@@ -4380,7 +4380,7 @@ static BOOL menu_key(int vk)
 		InterlockedExchange(&g_forcePresent, 1); mark_dirty();
 		return TRUE;
 	}
-	// F10: the patch's settings; F11: JenB's Mods (while on). The other panel's key switches to it; its own closes it.
+	// F10: the patch's settings; F11: Jen With a B's Mods (while on). The other panel's key switches to it; its own closes it.
 	if (vk == VK_F10) { if (g_menuOpen && !g_menuMods) menu_toggle(); else menu_show_panel(FALSE); return TRUE; }
 	if (vk == VK_F11 && (g_jenMods || (g_menuOpen && g_menuMods))) { if (g_menuOpen && g_menuMods) menu_toggle(); else menu_show_panel(TRUE); return TRUE; }
 	if (!g_menuOpen) return FALSE;
@@ -4400,9 +4400,9 @@ static BOOL menu_key(int vk)
 static BOOL menu_as_scroll(void) { return TRUE; }
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
 static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW, g_menuLinkW; // the plain panel's, in window coordinates
-// The line under Quality of life's rows that opens the JenB's Mods panel (while JenB's Mods is on).
+// The line under Quality of life's rows that opens the Jen With a B's Mods panel (while Jen With a B's Mods is on).
 static BOOL menu_link_shown(void) { return !g_menuMods && g_menuTab == 2 && g_jenMods; }
-static const char kModsLink[] = "JenB's Mods: press F11 or click here";
+static const char kModsLink[] = "Jen With a B's Mods: press F11 or click here";
 // A click while the panel is open: window and game coordinates.
 static void menu_click(int wx, int wy, int gx, int gy)
 {
@@ -4449,7 +4449,7 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	SetBkMode(dc, TRANSPARENT);
 	SetTextColor(dc, RGB(120, 20, 10));
 	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
-	DrawTextA(dc, g_menuMods ? "JenB's Mods" : "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, g_menuMods ? "Jen With a B's Mods" : "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	// the tabs, on a line across the panel; the open one joins the paper below it
 	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 8, gap = fh / 2, tx0 = bx + (bw - tabs * tw - (tabs - 1) * gap) / 2, lw = max(1, fh / 12);
 	RECT ln = { bx + pad / 2, ty + th - lw, bx + bw - pad / 2, ty + th };
@@ -7326,7 +7326,7 @@ static BOOL keep_running(void)
 
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-	jen_sync();   // JenB's castle and field mods: out as a multiplayer game starts, back after it (the game's thread)
+	jen_sync();   // Jen With a B's castle and field mods: out as a multiplayer game starts, back after it (the game's thread)
 	if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || (msg == WM_KEYDOWN && !(lp & 0x40000000))) perf_input(); // latency (perf_end)
 	if (g_clickLog && (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_KEYDOWN ||
 		msg == WM_ACTIVATEAPP || msg == WM_ACTIVATE || msg == WM_SETFOCUS || msg == WM_KILLFOCUS ||
@@ -8721,10 +8721,10 @@ static void menu_scroll_draw(void)
 	BYTE savedScreen = *(BYTE *)0x004eac50;
 	if (savedScreen == 0x1c || savedScreen == 0x1f) *(BYTE *)0x004eac50 = 0;
 	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
-	ctext(g_menuMods ? "JenB's Mods" : "Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
+	ctext(g_menuMods ? "Jen With a B's Mods" : "Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
 	if (!menu_tab_shown(g_menuTab)) menu_set_tab(0);
 	{ // the tabs side by side, spaced by their own widths; the open one red and underlined. With the
-	  // fifth (JenB's Mods) they may not fit: the gaps shrink, then the small lettering is used.
+	  // fifth (Jen With a B's Mods) they may not fit: the gaps shrink, then the small lettering is used.
 		int tw[MENU_TABS], total = 0, sum = 0, gap = 18, shown = menu_tabs_shown(), room = MS_W - 40;
 		void *tf = body;
 		for (int pass = 0; pass < 2; pass++) {
@@ -8773,7 +8773,7 @@ static void menu_scroll_draw(void)
 		ctext("The fixes stay off in multiplayer games", x0, y0 + 214, MS_W, small, ink);
 	}
 	SetRectEmpty(&g_menuLink);
-	if (menu_link_shown()) { // under Quality of life's 8 rows: the way to the JenB's Mods panel
+	if (menu_link_shown()) { // under Quality of life's 8 rows: the way to the Jen With a B's Mods panel
 		ctext(kModsLink, x0, y0 + 207, MS_W, small, red);
 		SetRect(&g_menuLink, x0 + 40, y0 + 203, x0 + MS_W - 40, y0 + 220);
 	}
@@ -13568,8 +13568,8 @@ static int __cdecl h_wheat_scale(int county, int grain)
 	return grain;
 }
 
-// Food ration fix. Bug found and fixed by Jen With a B (Lords II Mod Manager 1.4.1); rewritten here with his
-// consent, following his patch site and rule. A county's food for the season (FUN_0044df5f) is milk first, then the rest of the
+// Food ration fix. Bug found and fixed by Jen With a B (Lords II Mod Manager 1.4.1); rewritten here with Jen's
+// consent, following Jen's patch site and rule. A county's food for the season (FUN_0044df5f) is milk first, then the rest of the
 // ration split by the food slider (0x0053fb0f, percent from cattle): cattle at DAT_00567594 (10) food each,
 // grain at DAT_0057cb30 (6) each. Each share was then cut to what is in store on its own (0x0044e4a2 ..
 // 0x0044e523: cattle 0x0053fb34 -> 0x0053fb2c, grain 0x0053fb30 -> 0x0053fb28), so with one food run out the
@@ -13578,7 +13578,7 @@ static int __cdecl h_wheat_scale(int county, int grain)
 // ends, a share that runs short is made up from the other food at those rates (rounded up), as far as it
 // lasts, so the county eats its ration. At 0% or 100% the player chose one food: unchanged. As in Jen's
 // DLL only this second cut is changed; the first (before the game lowers the ration to what the shares
-// allow) is left as it is. Part of JenB's Mods; off in multiplayer unless MultiplayerFixes=1.
+// allow) is left as it is. Part of Jen With a B's Mods; off in multiplayer unless MultiplayerFixes=1.
 static void ration_share(int haveCattle, int haveGrain, int needCattle, int needGrain, int cattlePct,
 	int cattleFood, int grainFood, int *cattle, int *grain)
 {
@@ -13872,7 +13872,7 @@ static void install_game_fixes(void)
 		g_fixWheat = FALSE;
 	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
 
-	// JenB's Mods: their code goes in whatever the switches say (it does the game's own while off), so the
+	// Jen With a B's Mods: their code goes in whatever the switches say (it does the game's own while off), so the
 	// F10 switches work at once.
 	g_jenMods = GetPrivateProfileIntA("Game", "JenMods", 1, g_iniPath) != 0;
 	g_fixRation = GetPrivateProfileIntA("Game", "RationFix", 1, g_iniPath) != 0;
@@ -13883,18 +13883,18 @@ static void install_game_fixes(void)
 		(memcmp((BYTE *)0x0044e4a2, kRationCut, sizeof kRationCut) == 0 && memcmp((BYTE *)0x0044e523, kRationOn, sizeof kRationOn) == 0 &&
 		redirect((BYTE *)0x0044e4a2, sizeof kRationCut, ration_stub));
 	if (!g_rationHooked) logf_("not hooked: unexpected code at 0044e4a2 (ration fix)");
-	logf_("JenB's Mods %s; ration fix %s%s", g_jenMods ? "on" : "off", g_fixRation ? "on" : "off", g_rationHooked ? "" : " (unavailable)");
+	logf_("Jen With a B's Mods %s; ration fix %s%s", g_jenMods ? "on" : "off", g_fixRation ? "on" : "off", g_rationHooked ? "" : " (unavailable)");
 
-	// Multiplayer messages. Bug found by Jen With a B (Lords II Mod Manager), with his consent. A message
+	// Multiplayer messages. Bug found by Jen With a B (Lords II Mod Manager), with Jen's consent. A message
 	// (FUN_00472e46) is kept up while its timer (DAT_0057c954, from 2000) counts down; in a multiplayer game
 	// (DAT_00553030) every kind but 4 and 14 was closed once the timer fell below 1601, 400 game steps after
 	// it opened (400 calls of the message step; players saw them close at once). Now only kind 4 closes on
 	// its own; in single player nothing closes before the player clicks. The jne after "kind == 4?" goes where kind 14's does.
-	// Only what this player sees changes, so it stays on in multiplayer. Part of JenB's Mods (mpmsg_apply).
+	// Only what this player sees changes, so it stays on in multiplayer. Part of Jen With a B's Mods (mpmsg_apply).
 	BOOL msgOn = g_jenMods && g_mpMsgFix;
 	logf_("multiplayer message fix %s", mpmsg_apply(msgOn) ? (msgOn ? "on" : "off") : "failed: unexpected code at 00472f20");
 
-	// JenB's castle and field mods (jen_sync): single player only; each as the game's own unless its switch says
+	// Jen With a B's castle and field mods (jen_sync): single player only; each as the game's own unless its switch says
 	// otherwise.
 	g_jenFieldLoss = GetPrivateProfileIntA("Game", "FieldDestruction", 1, g_iniPath) != 0;
 	g_jenPillage = GetPrivateProfileIntA("Game", "Pillaging", 1, g_iniPath) != 0;

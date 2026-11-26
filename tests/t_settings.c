@@ -170,10 +170,10 @@ static void t_fix_sites(void)
 	memset((void *)0x00436000, 0, 0x004b0000 - 0x00436000);
 	for (int i = 0; i < (int)(sizeof kFixSites / sizeof *kFixSites); i++) memcpy((void *)kFixSites[i].at, kFixSites[i].code, 6);
 	static const BYTE ration[] = { 0x39, 0x8C, 0x40, 0x34, 0xFB, 0x53, 0x00 }, rationOn[] = { 0x8B, 0x45, 0xE0 },
-		msg[] = { 0x0F, 0x85, 0x17, 0x00, 0x00, 0x00 };   // JenB's Mods: the ration cut and the message close, as in the exe
+		msg[] = { 0x0F, 0x85, 0x17, 0x00, 0x00, 0x00 };   // Jen With a B's Mods: the ration cut and the message close, as in the exe
 	memcpy((void *)0x0044e4a2, ration, sizeof ration); memcpy((void *)0x0044e523, rationOn, sizeof rationOn);
 	memcpy((void *)0x00472f20, msg, sizeof msg);
-	for (int i = 0; i < 2; i++) {               // JenB's castle and field mods: the game's code at their sites
+	for (int i = 0; i < 2; i++) {               // Jen With a B's castle and field mods: the game's code at their sites
 		memcpy((void *)kFieldLossSites[i].at, kFieldLossSites[i].game, kFieldLossSites[i].n);
 		memcpy((void *)kPillageSites[i].at, kPillageSites[i].game, kPillageSites[i].n);
 		*(DWORD *)kDoorInSites[i] = DOOR_IN; *(DWORD *)kDoorOutSites[i] = DOOR_OUT;
@@ -323,7 +323,7 @@ TEST(f11_jen_panel_only_with_its_switch)
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);
 	CHECK(g_rationHooked);
 	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k < MODS_TAB0);   // F10: the patch's 4 tabs
-	CHECK(menu_key(VK_F11));                    // F11: the JenB's Mods panel, its own tabs only
+	CHECK(menu_key(VK_F11));                    // F11: the Jen With a B's Mods panel, its own tabs only
 	CHECK(g_menuOpen && g_menuMods);
 	CHECK_EQ(g_menuTab, TAB_FIXES);
 	for (int k = 0; k < MENU_TABS; k++) CHECK_EQ(menu_tab_shown(k), k >= MODS_TAB0);
@@ -333,7 +333,7 @@ TEST(f11_jen_panel_only_with_its_switch)
 	CHECK(menu_key(VK_F10));                    // F10 from it: the HD settings, at their last tab
 	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 0);
 	g_menuTab = 2;
-	CHECK(menu_link_shown());                   // Quality of life: the line to the JenB's Mods panel
+	CHECK(menu_link_shown());                   // Quality of life: the line to the Jen With a B's Mods panel
 	CHECK(menu_key(VK_F11));
 	CHECK(g_menuMods); CHECK_EQ(g_menuTab, TAB_CASTLES);           // back at its last tab
 	CHECK(menu_key(VK_F11));                    // its own key closes it
@@ -402,7 +402,7 @@ TEST(jen_castle_mods_go_in_and_out)
 	jen_sync();
 	CHECK_EQ(*(BYTE *)0x00449c79, 0xE9); CHECK_EQ(*(DWORD *)0x00483aeb, 10000); CHECK_EQ(*(DWORD *)0x0044c1e3, 1200);
 	CHECK_EQ(CASTLE_CAP[1], 1500);
-	menu_change(M_JEN);                         // JenB's Mods off: all the game's own
+	menu_change(M_JEN);                         // Jen With a B's Mods off: all the game's own
 	CHECK_EQ(*(BYTE *)0x00449cd9, 0x0F); CHECK_EQ(*(DWORD *)0x00484a5c, DOOR_IN); CHECK_EQ(*(DWORD *)0x0044c502, RECLAIM_MEN);
 	CHECK(memcmp(CASTLE_CAP, kCastleCap, sizeof kCastleCap) == 0); CHECK_EQ(*(DWORD *)(AI_CAP_READ + 3), 0x004d8a10);
 	for (int j = 0; j < JC_COUNT; j++) CHECK(g_jcOk[j]);

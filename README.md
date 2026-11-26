@@ -249,7 +249,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
-| Quality of life | JenB's Mods | On (F11: its panel), Off | On | `JenMods` |
+| Quality of life | Jen With a B's Mods | On (F11: its panel), Off | On | `JenMods` |
 | Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
@@ -271,8 +271,8 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
 `MultiplayerFixes=1`.
 
-The Fixes and Castles tabs are on a panel of their own, JenB's Mods: F11 opens it while Quality of
-life → JenB's Mods is On (or click the line under that tab's rows); F10 goes back to the HD settings.
+The Fixes and Castles tabs are on a panel of their own, Jen With a B's Mods: F11 opens it while Quality of
+life → Jen With a B's Mods is On (or click the line under that tab's rows); F10 goes back to the HD settings.
 It holds the fixes and mods from Jen With a B's Lords II Mod Manager, rewritten for this patch with
 Jen's consent; with the switch Off the game is as without them. Its switches work at once. Weather
 wrecks fields: droughts and storms destroy fields. Pillaging: armies in an enemy county destroy its
@@ -335,6 +335,8 @@ Better versions are welcome on the Discord.
 - **Wolfe** and **Socius**, for the LotR2 Fix multiplayer layer included as `dplayx.dll` (built from
   `multiplayer/`, see its `CREDITS.md`); Wolfe also for the ideas behind the battle wheel zoom and the
   county map zoom-out (his ZoomUI).
+- **Jen With a B** (jenwithab), for the fixes and mods of the Lords II Mod Manager behind Jen With a B's Mods,
+  brought in with Jen's consent.
 - **AllYourBases** and **CaptainRoberts**, for the seasonal Town Center art; CaptainRoberts also for
   the new idle serfs.
 - The Discord community, for the bug reports and ideas behind this release (the minimap outlines
