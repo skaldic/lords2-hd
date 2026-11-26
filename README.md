@@ -249,7 +249,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
-| Quality of life | JenB's Mods | On (its own tab), Off | Off | `JenMods` |
+| Quality of life | JenB's Mods | On (its own tab), Off | On | `JenMods` |
 | Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |

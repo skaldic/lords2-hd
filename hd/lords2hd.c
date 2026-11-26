@@ -3967,7 +3967,7 @@ static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
 static int g_aiLevelSet;
 static BOOL g_aiOk;
 static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
-// JenB's Mods ([Game] JenMods, off by default): the fixes and mods from Jen With a B's Lords II Mod Manager,
+// JenB's Mods ([Game] JenMods, on by default): the fixes and mods from Jen With a B's Lords II Mod Manager,
 // rewritten here. On, they work (each by its own switch) and their own F10 tab shows; off, the game is as
 // without them. Every one of them takes effect at once.
 static BOOL g_jenMods;
@@ -13646,7 +13646,7 @@ static void install_game_fixes(void)
 
 	// JenB's Mods: their code goes in whatever the switches say (it does the game's own while off), so the
 	// F10 switches work at once.
-	g_jenMods = GetPrivateProfileIntA("Game", "JenMods", 0, g_iniPath) != 0;
+	g_jenMods = GetPrivateProfileIntA("Game", "JenMods", 1, g_iniPath) != 0;
 	g_fixRation = GetPrivateProfileIntA("Game", "RationFix", 1, g_iniPath) != 0;
 	g_mpMsgFix = GetPrivateProfileIntA("Game", "MpMessageFix", 1, g_iniPath) != 0;
 	static const BYTE kRationCut[] = { 0x39, 0x8C, 0x40, 0x34, 0xFB, 0x53, 0x00 };   // cmp [eax*3+0x53fb34],ecx

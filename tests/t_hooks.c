@@ -102,8 +102,8 @@ TEST(hooks_all_go_in_4_3)
 	CHECK(!on);
 	for (int f = 0; f < BF_COUNT; f++) CHECK(g_bfOk[f]);   // every battle fix can be switched in F10
 	CHECK(o_yesno_open != NULL);                            // the Esc-twice yes/no fix in 4:3 too
-	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);                    // JenB's Mods off by default: the game's message code
-	CHECK(g_rationHooked && !g_jenMods);                    // (the ration step in, doing the game's own cut)
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);                    // JenB's Mods on by default: messages kept up
+	CHECK(g_rationHooked && g_jenMods);
 	free(log);
 	t_unmap_game();
 }
@@ -122,10 +122,10 @@ TEST(hooks_all_go_in_widescreen)
 	t_unmap_game();
 }
 
-TEST(hooks_jen_fixes_go_in)   // JenB's Mods on: the ration and multiplayer message fixes
+TEST(hooks_jen_fixes_go_in)   // JenB's Mods (on by default): the ration and multiplayer message fixes
 {
 	BOOL on;
-	char *log = t_install_with(0, "[Game]\r\nJenMods=1\r\n", &on);
+	char *log = t_install(0, &on);
 	if (!log) return;
 	CHECK_EQ(t_count_lines(log, "JenB's Mods on; ration fix on"), 1);
 	CHECK_EQ(t_count_lines(log, "multiplayer message fix on"), 1);

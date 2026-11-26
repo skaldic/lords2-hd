@@ -301,11 +301,16 @@ TEST(f10_readme_table_matches_the_panel)
 TEST(f10_jen_tab_only_with_its_switch)
 {
 	t_shipped_settings();
-	CHECK(!g_jenMods);                          // off as shipped: no tab, the game's own code
+	CHECK(g_jenMods);                           // on as shipped: its tab, the message fix in
+	CHECK(menu_tab_shown(TAB_JEN));
+	CHECK_EQ(menu_tabs_shown(), MENU_TABS);
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);
+	CHECK(g_rationHooked);
+	menu_change(M_JEN);                         // off: no tab, the game's own code
+	CHECK(!g_jenMods);
 	CHECK(!menu_tab_shown(TAB_JEN));
 	CHECK_EQ(menu_tabs_shown(), MENU_TABS - 1);
 	CHECK_EQ(*(BYTE *)0x00472f20, 0x0F);
-	CHECK(g_rationHooked);
 	g_menuTab = 3; menu_set_tab(4);             // Tab from Battles steps over the hidden tab
 	CHECK_EQ(g_menuTab, 0);
 	g_menuTab = 0; menu_set_tab(-1);            // and Shift+Tab from Display
