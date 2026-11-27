@@ -574,6 +574,41 @@ TEST(jen_econ_mods_go_in_and_out)
 	menu_value(M_JEN_STAT + US_MELEE, v, sizeof v, &rs); CHECK(strstr(v, "unavailable") != NULL);
 	t_shipped_settings();
 }
+TEST(jen_unit_values_and_reclaim_steps)
+{
+	WORD w[4];
+	for (int u = 0; u < UNITS; u++) {           // a unit's original melee strength gives back the game's own four words
+		melee_words(u, kMeleeGame[u][0], w);
+		CHECK(memcmp(w, kMeleeGame[u], sizeof w) == 0);
+	}
+	melee_words(6, 40, w);                      // knights doubled: 20 15 11 6 -> 40 30 22 12
+	CHECK_EQ(w[0], 40); CHECK_EQ(w[1], 30); CHECK_EQ(w[2], 22); CHECK_EQ(w[3], 12);
+	melee_words(2, 1, w);                       // the least: 1 and the rest in proportion, rounded
+	CHECK_EQ(w[0], 1); CHECK_EQ(w[1], 1); CHECK_EQ(w[2], 1); CHECK_EQ(w[3], 0);
+	// a reclaimed field's picture steps at a quarter, half and three quarters of the work, rounded up
+	CHECK_EQ(reclaim_stage(1, 800), 200); CHECK_EQ(reclaim_stage(2, 800), 400); CHECK_EQ(reclaim_stage(3, 800), 600);
+	CHECK_EQ(reclaim_stage(1, 1), 1); CHECK_EQ(reclaim_stage(3, 1), 1); CHECK_EQ(reclaim_stage(3, 10000), 7500);
+	CHECK_EQ(reclaim_stage(1, 2), 1); CHECK_EQ(reclaim_stage(2, 2), 1); CHECK_EQ(reclaim_stage(3, 2), 2);
+	// [Units]: attack speed snaps to Jen's 25, 50 or 100; the original value is the game's own (-1); out of range clamped
+	static const struct { const char *val; int want; } kSpeed[] = { { "1", 25 }, { "37", 25 }, { "38", 50 }, { "74", 50 }, { "75", -1 }, { "500", -1 } };
+	t_shipped_settings();
+	for (int i = 0; i < (int)(sizeof kSpeed / sizeof kSpeed[0]); i++) {
+		WritePrivateProfileStringA("Units", "CrossbowmanAttackSpeed", kSpeed[i].val, g_iniPath);   // (crossbowmen: 100)
+		unit_read_ini();
+		CHECK_EQ(g_unitSet[5][US_SPEED], kSpeed[i].want);
+	}
+	WritePrivateProfileStringA("Units", "ArcherMeleeStrength", "5", g_iniPath);      // the original
+	WritePrivateProfileStringA("Units", "SwordsmanMeleeStrength", "0", g_iniPath);   // below the least (1)
+	WritePrivateProfileStringA("Units", "KnightBuyPrice", "99999", g_iniPath);       // above the most (10000)
+	WritePrivateProfileStringA("Units", "KnightSellPrice", "44", g_iniPath);         // the original
+	WritePrivateProfileStringA("Units", "PeasantAttackRange", "20", g_iniPath);      // peasants have none: ignored
+	WritePrivateProfileStringA("Units", "MacemanRangedDefence", "-5", g_iniPath);    // negative: not set
+	unit_read_ini();
+	CHECK_EQ(g_unitSet[1][US_MELEE], -1); CHECK_EQ(g_unitSet[2][US_MELEE], 1);
+	CHECK_EQ(g_unitSet[6][UC_BUY], 10000); CHECK_EQ(g_unitSet[6][UC_SELL], -1);
+	CHECK_EQ(g_unitSet[0][US_RANGE], -1); CHECK_EQ(g_unitSet[3][US_RDEF], -1);
+	t_shipped_settings();
+}
 
 /* Castle design: a STNFIEL2.PL8 shaped as the game's (30 records at their offsets, record r all r + 1, Expanded Keep's
  * cells as in the game's), the free-cell search played by t_free_spot: (45,26) for (44,27), (43,24) when it is free. */

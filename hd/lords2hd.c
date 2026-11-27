@@ -4303,7 +4303,7 @@ static void unit_read_ini(void)
 		for (int s = 0; s < US_COUNT; s++) {
 			char key[48]; snprintf(key, sizeof key, "%s%s", kUnitKey[u], kStatKey[s]);
 			int v = unit_has(u, s) ? GetPrivateProfileIntA("Units", key, -1, g_iniPath) : -1;
-			if (s == UC_BUY && v == 0) v = -1;   // (0: the game's own price, as the panel writes it)
+			if (v < 0 || (s == UC_BUY && v == 0)) v = -1;   // (negative: not set; buy 0: the game's own price, as the panel writes it)
 			if (v >= 0) v = max(kStatMin[s], min(kStatMax[s], v));
 			if (v >= 0 && s == US_SPEED) v = v < 38 ? 25 : v < 75 ? 50 : 100;   // (Jen's three)
 			if (v == unit_orig(u, s) && s != UC_BUY) v = -1;
