@@ -1012,7 +1012,7 @@ static void t_install_fixes(DWORD missing, const char *ini)
 	for (int i = 0; i < (int)(sizeof kFixSites / sizeof *kFixSites); i++)
 		if (kFixSites[i].at != missing) memcpy((void *)kFixSites[i].at, kFixSites[i].code, 6);
 	char text[256];
-	snprintf(text, sizeof text, "[Debug]\r\nMpLogs=0\r\n[Game]\r\n%s\r\n", ini ? ini : "");
+	snprintf(text, sizeof text, "[Multiplayer]\r\nMpLogs=0\r\n[Game]\r\n%s\r\n", ini ? ini : "");
 	t_write("lords2hd.ini", text, strlen(text));
 	g_chaseHookFailed = FALSE; g_dmapOn = FALSE;
 	install_game_fixes();

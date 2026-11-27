@@ -301,8 +301,8 @@ TEST(county_zoom_only_on_the_bare_county_map)
 }
 
 /* A message from the game's queue (an envoy's letter, an event) shows on the map's own screen 0: the wheel stays the
- * game's while it is up, and a map already zoomed out draws no zoomed-out picture over it; the picture from before
- * it is not shown again after it closes. */
+ * game's while it is up, and a map already zoomed out stays zoomed out under it (its scroll laid over the zoomed-out
+ * picture, county_zoom_message_scroll_found_by_its_draw): the picture is not dropped. */
 TEST(county_zoom_not_over_a_message)
 {
 	t_county_map();
@@ -318,8 +318,8 @@ TEST(county_zoom_not_over_a_message)
 	CHECK(!cz_wheel(MAKEWPARAM(0, WHEEL_DELTA), 0));   // the wheel is the game's, the zoom stays for after it
 	CHECK_EQ(g_czOut, 1);
 	LONG gen = g_czGen;
-	cz_draw();                           // the game's redraw under the letter: no picture, the old one dropped
-	CHECK(g_czGen != gen);
+	cz_draw();                           // the game's redraw under the letter: the zoomed-out picture kept
+	CHECK_EQ(g_czGen, gen);
 	*(int *)0x0053e910 = 0;
 	t_county_map_end();
 }
@@ -684,6 +684,29 @@ TEST(county_zoom_window_keeps_the_zoomed_map_round_it)
 	free(v.pix);
 	g_back = back; g_lut[7] = lut7; g_showTiles = tiles;
 	g_off = off; g_snapW = snap; g_winLockS = 0; g_winLeftT = 0;
+}
+
+/* A message from the game's queue over the zoomed-out county map: what the scroll's draw changed is the scroll, each
+ * row's span of it left to the game's drawing (cz_field), the zoomed-out map round it instead of the normal view. */
+TEST(county_zoom_message_scroll_found_by_its_draw)
+{
+	int off = g_off, extra = g_extra, msg = *(int *)0x0053e910; LONG out = g_czOut; Surface *back = g_back;
+	static Surface sb; static BYTE bits[1000 * GAME_H];
+	sb.pitch = 1000; sb.w = 1000; sb.h = GAME_H; sb.bits = bits; g_back = &sb;
+	g_extra = 200; g_off = 300; InterlockedExchange(&g_czOut, 1); *(int *)0x0053e910 = 174;
+	memset(bits, 3, sizeof bits);
+	REQUIRE(msg_spans_begin());
+	for (int y = 128; y < 384; y++)   // the scroll: a ragged left edge, and inside it one pixel the same as the map
+		for (int x = 120 + (y & 3); x < 568; x++) bits[y * 1000 + 100 + x] = (BYTE)(x == 300 ? 3 : 9);
+	msg_spans_end();
+	CHECK(g_msgOk); CHECK_EQ(g_msgId, 174); CHECK_EQ(g_msgSx, 100); CHECK_EQ(g_msgSw, 840);
+	CHECK_EQ(g_msgA[201], 121); CHECK_EQ(g_msgB[201], 568);
+	CHECK(g_msgA[100] >= g_msgB[100]); CHECK(g_msgA[400] >= g_msgB[400]);   // rows above and below it
+	REQUIRE(msg_spans_begin()); msg_spans_end();
+	CHECK(!g_msgOk);                                     // nothing drawn: not found (the normal view: it always shows)
+	InterlockedExchange(&g_czOut, 0);
+	CHECK(!msg_spans_begin());                           // not zoomed out: nothing to find
+	g_back = back; g_off = off; g_extra = extra; InterlockedExchange(&g_czOut, out); *(int *)0x0053e910 = msg; g_msgOk = FALSE;
 }
 
 /* An army selected (screen 16) is the county map too: the wheel zooms out, and the army scroll stays over the

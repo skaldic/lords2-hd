@@ -134,7 +134,7 @@ try {
     foreach ($m in $Maps) { foreach ($r in $Roles) { foreach ($p in $Players) { foreach ($o in $Odds) {
         Copy-IntoGame $snap "$Game\ddraw.dll"
         Copy-IntoGame "$keep\lords2hd.ini" $iniPath
-        $set = @('Debug.Remote=1', 'Debug.RemoteVisible=0', 'Debug.BattleSeed=1', 'Debug.BattleLog=1', 'Debug.Timing=0', 'Debug.MpLogs=0') + $Ini
+        $set = @('Debug.Remote=1', 'Debug.RemoteVisible=0', 'Debug.BattleSeed=1', 'Debug.BattleLog=1', 'Debug.Timing=0', 'Multiplayer.MpLogs=0') + $Ini
         foreach ($s in $set) { $k, $v = $s -split '=', 2; $sec, $key = $k -split '\.', 2; [void][L2T.AiIni]::WritePrivateProfileString($sec, $key, $v, $iniPath) }
         Remove-Item "$Game\lords2hd-battle.txt", "$Game\lords2hd.log" -ErrorAction SilentlyContinue
         $d = $mapDefs[$m]

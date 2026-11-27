@@ -14,7 +14,7 @@
  * skip 4 (the game's groups slot is forced to 1, so groups are left out here too).
  * v11: battle region 18 = ai-rally (0x56d89c, 0x522f70, 0x522f74), only when the rally-clear hook is in (g_rally_ok).
  * Key = (kind, turn 0x553240, tick, battle armies 0x568210/0x568218 for kind 2). A record is compared when both sides
- * of a key exist. Kind 1/2 mismatch = "DESYNC" (logged, written to desync.txt, shown in the game window title);
+ * of a key exist. Kind 1/2 mismatch = "DESYNC" (logged, the first one named in the session summary, shown in the game window title);
  * kind 3 mismatch = "DIFF" (log only: a late command can differ for a few ticks and converge).
  * Only active on the known 5 Jun 1997 exe (g_exe_ok). Our own code. ASCII only.
  * v7 (2026-10-07): the header is 32 bytes (d[7] = EPOCH: how many rollbacks this session has run, so a replayed turn
@@ -53,7 +53,8 @@ typedef struct {
 static SyncRec sy_own[SYNC_RING], sy_peer[SYNC_RING];
 static int sy_own_i, sy_peer_i;
 static DWORD sy_last_kind, sy_last_turn, sy_last_tick, sy_last_epoch;
-static int sy_desyncs, sy_oks, sy_diffs, sy_titled, sy_lines;
+static int sy_desyncs, sy_oks, sy_diffs, sy_titled;
+static char sy_first[200];   /* the session's first desync, for its summary (sesslog.c) */
 static DWORD sy_diff_turn = 0xffffffffu, sy_bt = 0xffffffffu, sy_bba, sy_bbb;
 static int sy_diff_in_turn, sy_in_b;
 /* battle figure bytes per battle check (figures 0x554480 + 81 x 0x1b0, records 0x57a100 + 101 x 0x4c), written to
@@ -66,7 +67,6 @@ typedef struct { DWORD turn, tick, ba, bb, epoch, used; BYTE b[FD_FIG + FD_REC];
 static FigDump fd_ring[FD_N];
 static int fd_i;
 static DWORD sy_skew_turn = 0xffffffffu;   /* last turn reported as ended at a different tick */
-#define SY_MAXLINES 200   /* desync.txt lines per game: a split game stays split, a replaying peer must not fill the disk */
 
 /* compare an own record with this peer player at most once; 8 players at most (the player field is the sender's word) */
 static int sy_mark(SyncRec *own, DWORD player)
@@ -273,20 +273,9 @@ static void sy_compare(const SyncRec *mine, const SyncRec *peer)
     SLOG("DESYNC kind=%s turn=%lu tick=%lu epoch=%lu me=player %lu peer=player %lu regions=%d first: %s (mid-turn diffs so far %d)",
           mine->kind == SY_TURN ? "turn-end" : "battle", mine->turn, mine->tick, mine->epoch, mine->player & 0xff,
           peer->player & 0xff, nd, list, sy_diffs);
-    {
-        char p[MAX_PATH + 16], line[512];
-        FILE *f;
-        lstrcpynA(p, exedir, MAX_PATH);
-        lstrcatA(p, "desync.txt");
-        if (sy_lines <= SY_MAXLINES && (f = fopen(p, "a")) != NULL) {
-            snprintf(line, sizeof line, "%s desync, turn %lu, tick %lu, with player %lu: %s%s\n",
-                     mine->kind == SY_TURN ? "End-of-turn" : "Battle", mine->turn, mine->tick, peer->player & 0xff, list,
-                     nd > 6 ? ", ..." : "");
-            if (sy_lines++ == SY_MAXLINES) snprintf(line, sizeof line, "More desyncs this game: see dplayx.log\n");
-            fputs(line, f);
-            fclose(f);
-        }
-    }
+    if (!sy_first[0])   /* v13: the session summary (sesslog.c) names it; desync.txt is gone */
+        snprintf(sy_first, sizeof sy_first, "%s, turn %lu, tick %lu, with player %lu: %s%s",
+                 mine->kind == SY_TURN ? "end of turn" : "battle", mine->turn, mine->tick, peer->player & 0xff, list, nd > 6 ? ", ..." : "");
     if (!sy_titled) {
         char w[96];
         snprintf(w, sizeof w, "turn %lu, %s", mine->turn, list);
@@ -305,6 +294,8 @@ static void sy_skew(const SyncRec *mine, const SyncRec *peer)
     sy_desyncs++;
     SLOG("DESYNC kind=turn-end turn=%lu epoch=%lu: ended at tick %lu here, tick %lu at player %lu", mine->turn, mine->epoch,
           mine->tick, peer->tick, peer->player & 0xff);
+    if (!sy_first[0])
+        snprintf(sy_first, sizeof sy_first, "end of turn %lu: ended at tick %lu here, tick %lu at player %lu", mine->turn, mine->tick, peer->tick, peer->player & 0xff);
     rs_on_turn_desync(mine->turn, mine->epoch, peer->player);
     if (!sy_titled) {
         snprintf(w, sizeof w, "turn %lu ended at a different time", mine->turn);
@@ -410,6 +401,7 @@ static void sy_reset(void)
     sy_own_i = sy_peer_i = 0;
     sy_last_kind = sy_last_turn = sy_last_tick = sy_last_epoch = 0;
     sy_epoch = 0; sy_end_turn = 0xffffffffu;
-    sy_desyncs = sy_oks = sy_diffs = sy_titled = sy_lines = 0;
+    sy_desyncs = sy_oks = sy_diffs = sy_titled = 0;
+    sy_first[0] = 0;
     sy_diff_turn = sy_bt = sy_skew_turn = 0xffffffffu; sy_bba = sy_bbb = 0; sy_diff_in_turn = sy_in_b = 0;
 }

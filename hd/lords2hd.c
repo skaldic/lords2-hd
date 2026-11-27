@@ -173,6 +173,9 @@ static BOOL menu_key(int vk);
 static void menu_click(int wx, int wy, int gx, int gy);
 
 // The log stays open and is flushed per line, so it is complete if the game crashes.
+// [S 123.456] = the multiplayer session clock: the host's time since it opened the session, the same on every
+// player's PC and in dplayx.log (dplayx.dll's LF_NetClock), so all logs of a game line up. Else ms since the
+// patch started, as before.
 static void logf_(const char *fmt, ...)
 {
 	static FILE *f;
@@ -180,7 +183,11 @@ static void logf_(const char *fmt, ...)
 	if (!f) return;
 	static DWORD t0;
 	if (!t0) t0 = GetTickCount();
-	fprintf(f, "%6lu  ", GetTickCount() - t0); // ms since the patch started
+	static int (WINAPI *netClock)(DWORD *);
+	if (!netClock) { HMODULE dp = GetModuleHandleA("dplayx.dll"); if (dp) netClock = (int (WINAPI *)(DWORD *))GetProcAddress(dp, "LF_NetClock"); }
+	DWORD ms;
+	if (netClock && netClock(&ms)) fprintf(f, "[S %6lu.%03lu] ", ms / 1000, ms % 1000);
+	else fprintf(f, "%6lu  ", GetTickCount() - t0); // ms since the patch started
 	va_list ap;
 	va_start(ap, fmt);
 	vfprintf(f, fmt, ap);
@@ -1748,6 +1755,32 @@ static BYTE *volatile g_txtS, *volatile g_txtShadowS, *volatile g_txtValidS;  //
 static int g_txtW, g_txtH; // the size all of them were made for (the back buffer's then)
 static BYTE g_tilePal[768];
 
+// The county map's palette, Base01.256, as the game itself loaded it (h_load_file): the game finds its
+// files through L2.INI's CDDrive, which may be another folder than the exe's (a player's install had
+// none there: the map stayed unsharpened and the F10 scroll black). Else the file next to the exe.
+static BYTE g_base01[768];
+static volatile LONG g_base01Have;
+static BOOL base01_palette(BYTE *pal)
+{
+	if (g_base01Have) { memcpy(pal, g_base01, 768); return TRUE; }
+	char path[MAX_PATH];
+	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
+	FILE *f = fopen(path, "rb");
+	BOOL ok = f && fread(pal, 1, 768, f) == 768;
+	if (f) fclose(f);
+	if (!ok) memset(pal, 0, 768);
+	return ok;
+}
+static void base01_note_load(const char *name, const void *buffer, int n, long offset)
+{
+	if (n != 768 || offset != 0 || !buffer) return;
+	const char *b = name;
+	for (const char *p = name; *p; p++) if (*p == '\\' || *p == '/' || *p == ':') b = p + 1;
+	if (lstrcmpiA(b, "base01.256")) return;
+	memcpy(g_base01, buffer, 768);
+	if (!InterlockedExchange(&g_base01Have, 1)) logf_("map palette: Base01.256 as the game loaded it");
+}
+
 static BOOL wave_is_water(DWORD p)
 {
 	int b = p & 255, g = (p >> 8) & 255, r = (p >> 16) & 255;
@@ -1912,10 +1945,7 @@ static void tiles_loaded(const char *name, void *buffer, int size)
 		g_sprLayer = malloc(MAX_W * 2 * GAME_H * 2 * 4);
 		g_sprShadow = calloc(MAX_W, GAME_H);
 		g_sprValid = calloc(MAX_W, GAME_H);
-		char pal[MAX_PATH];
-		snprintf(pal, sizeof pal, "%s\\Base01.256", g_gameDir);
-		FILE *p = fopen(pal, "rb");
-		if (p) { if (fread(g_tilePal, 1, 768, p) != 768) memset(g_tilePal, 0, 768); fclose(p); }
+		if (!base01_palette(g_tilePal)) logf_("HD tiles: no map palette (Base01.256 not loaded by the game, nor in %s): the map stays as drawn", g_gameDir);
 	}
 	g_layerGen++; // new art for these tiles: the next map redraw stamps again, even if it looks the same
 	logf_("HD tiles %s: %d frames", base, g_tileSets[slot].frames);
@@ -2165,8 +2195,8 @@ static void sprite_set_bind(const char *name, int frame, const void *buffer)
 	lstrcpynA(g_spriteSets[slot].name, key, sizeof g_spriteSets[slot].name);
 	g_layerGen++;
 	snprintf(path, sizeof path, "%s\\lords2hd\\sprites\\%s.pal", g_gameDir, base);
-	if (!aexists(path)) snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-	read_palette(path, g_spriteSets[slot].pal);
+	if (aexists(path)) read_palette(path, g_spriteSets[slot].pal);
+	else base01_palette(g_spriteSets[slot].pal);
 	logf_("HD sprites %s (season %d)", key, *(const int *)0x0057c934);
 }
 
@@ -3147,6 +3177,17 @@ static int __cdecl h_stream_play(DWORD n)
 // Dropped into lords2hd\music, they are turned into the WAVs above on a low-priority thread at start,
 // by Windows' own decoder (Media Foundation, loaded by hand so the DLL still loads where it's missing).
 // Each file is matched to a track by its name; files already converted are skipped.
+// One of the game's own sound files: next to the exe, or in its WAV folder, where the CD's layout
+// keeps them (the exe looks there itself; a player's GOG install had that layout).
+static void game_wav_path(char *out, size_t n, const char *file)
+{
+	snprintf(out, n, "%s\\%s", g_gameDir, file);
+	if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return;
+	char alt[MAX_PATH];
+	snprintf(alt, sizeof alt, "%s\\wav\\%s", g_gameDir, file);
+	if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) lstrcpynA(out, alt, (int)n);
+}
+
 static const char *music_track(const char *file)
 {
 	char s[MAX_PATH];
@@ -3177,8 +3218,10 @@ typedef HRESULT (WINAPI *MFCreateSourceReaderFromURL_t)(LPCWSTR, IMFAttributes *
 
 static BOOL music_decode(MFCreateSourceReaderFromURL_t open, MFCreateMediaType_t newtype, const char *src, const char *dst)
 {
-	WCHAR wsrc[MAX_PATH];
-	MultiByteToWideChar(CP_ACP, 0, src, -1, wsrc, MAX_PATH);
+	WCHAR rel[MAX_PATH], wsrc[1024];
+	MultiByteToWideChar(CP_ACP, 0, src, -1, rel, MAX_PATH);
+	DWORD full = GetFullPathNameW(rel, sizeof wsrc / sizeof wsrc[0], wsrc, NULL); // (a URL needs the whole path: g_gameDir may be ".", see game_dir)
+	if (!full || full >= sizeof wsrc / sizeof wsrc[0]) lstrcpynW(wsrc, rel, sizeof wsrc / sizeof wsrc[0]);
 	IMFSourceReader *r = NULL;
 	IMFMediaType *t = NULL, *got = NULL;
 	FILE *f = NULL;
@@ -3336,7 +3379,7 @@ static int best_offset(const float *needle, int n, const float *hay, int from, i
 static void music_trim(const char *wav, const char *track)
 {
 	char ref[MAX_PATH];
-	snprintf(ref, sizeof ref, "%s\\%s", g_gameDir, track);
+	game_wav_path(ref, sizeof ref, track);
 	BYTE *gd = NULL, *rd = NULL; DWORD gb = 0, rb = 0, grate = 0, rrate = 0; WORD gch = 0, gbits = 0, rch = 0, rbits = 0;
 	if (!wav_data(ref, &gd, &gb, &gch, &gbits, &grate) || !wav_data(wav, &rd, &rb, &rch, &rbits, &rrate)) goto out;
 	if (gbits != 8 || grate != 11025 || !gch || rbits != 16 || rrate != 44100 || !rch) { logf_("music: %s not cut (formats %lu/%u, %lu/%u)", track, grate, gbits, rrate, rbits); goto out; }
@@ -3816,24 +3859,23 @@ static SCROLL_OVL g_ovl[2]; // 0 the army scroll, 1 the settings scroll
 static DWORD g_mapLut[256];
 static BOOL map_lut(void)
 {
-	static int have;
-	if (have) return have > 0;
+	static int have, triedFile;
+	if (have > 0) return TRUE;
+	if (!g_base01Have && triedFile) return FALSE; // (the file once; the game's copy whenever it comes)
+	triedFile = 1;
 	BYTE pal[768];
-	char path[MAX_PATH];
-	snprintf(path, sizeof path, "%s\\Base01.256", g_gameDir);
-	FILE *f = fopen(path, "rb");
-	have = f && fread(pal, 1, 768, f) == 768 ? 1 : -1;
-	if (f) fclose(f);
-	for (int i = 0; have > 0 && i < 256; i++)
+	if (!base01_palette(pal)) return FALSE;
+	have = 1;
+	for (int i = 0; i < 256; i++)
 		g_mapLut[i] = (pal[i * 3] * 255 / 63 << 16) | (pal[i * 3 + 1] * 255 / 63 << 8) | pal[i * 3 + 2] * 255 / 63;
 	return have > 0;
 }
-static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
+static BOOL ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 {
 	static int told;
-	if (!map_lut()) { if (!told++) logf_("settings scroll: no map palette (%s\\Base01.256 unreadable), drawn black", g_gameDir); return; }
+	if (!map_lut()) { if (!told++) logf_("settings scroll: no map palette (%s\\Base01.256 unreadable), drawn in the screen's colours", g_gameDir); return FALSE; }
 	int W = g_back->w;
-	if (g_txt && W != g_txtW) { if (!told++) logf_("settings scroll: text layer %d wide, frame %d: drawn black", g_txtW, W); return; } // (text layers made for another back buffer size)
+	if (g_txt && W != g_txtW) { if (!told++) logf_("settings scroll: text layer %d wide, frame %d: drawn in the screen's colours", g_txtW, W); return FALSE; } // (text layers made for another back buffer size)
 	const BYTE *tx = g_txtS ? g_txtS : g_txt, *tsh = g_txtS ? g_txtShadowS : g_txtShadow, *tv = g_txtS ? g_txtValidS : g_txtValid;
 	for (int r = 0; r < s->h; r++) {
 		int y = s->y + r;
@@ -3861,6 +3903,7 @@ static void ovl_build_mappal(SCROLL_OVL *s, int sx, int sw, int c0)
 			o0[2 * c] = o0[2 * c + 1] = o1[2 * c] = o1[2 * c + 1] = g_mapLut[fr[c]];
 		}
 	}
+	return TRUE;
 }
 // In two steps: caught (scroll_overlays_catch) before the zoomed-out county map takes the map's field
 // (cz_field), which would hide the army scroll there, and laid on (scroll_overlays_lay) over it.
@@ -3888,8 +3931,10 @@ static void scroll_overlays_catch(int sx, int sw)
 				if (!s->cache) continue;
 				s->cacheW = s->w; s->cacheH = s->h;
 			}
-			if (s->mapPal) ovl_build_mappal(s, sx, sw, c0);
-			else for (int r = 0; r < 2 * s->h; r++)
+			// (without the map's palette, the game's own pixels as shown: right on the map, off-colour on
+			// screens with their own palette, never the empty cache, which showed as a black scroll)
+			if (!s->mapPal || !ovl_build_mappal(s, sx, sw, c0))
+				for (int r = 0; r < 2 * s->h; r++)
 				memcpy(s->cache + r * 2 * s->w, g_frame2x + (2 * s->y + r) * (2 * sw) + 2 * c0, (size_t)s->w * 8);
 			s->cached = gen + 1;
 		}
@@ -4793,7 +4838,7 @@ static void resound_sample(void)
 			free(buf);
 		}
 	}
-	snprintf(path, sizeof path, "%s\\%s", g_gameDir, kLine);
+	game_wav_path(path, sizeof path, kLine);
 	PlaySoundA(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
 }static void menu_change(int i)
 {
@@ -6590,6 +6635,43 @@ static BOOL cz_win_spans(int sx, int sw)
 	}
 	return TRUE;
 }
+// A message from the game's queue over the zoomed-out county map (an envoy's letter, an event, a report): every
+// frame the game redraws the map under it, then the scroll (h_redraw_map, then draw_msg). What the scroll's draw
+// changes is the scroll, so each row's span of that change (frame columns g_msgA[y] .. g_msgB[y] of the wide map,
+// show window g_msgSx, g_msgSw) is left as the game drew it by cz_field, the zoomed-out map round it - instead of
+// the normal view coming back for as long as the message is up, and the zoom after. g_msgId: the message the
+// spans are of (DAT_0053e910); g_msgOk: the scroll was found (else the normal view, so it always shows).
+static int g_msgA[GAME_H], g_msgB[GAME_H], g_msgSx, g_msgSw, g_msgId;
+static BOOL g_msgOk;
+static BYTE g_msgBefore[MAX_W * GAME_H];
+static BOOL msg_spans_begin(void)
+{
+	int sx = g_off - g_extra, sw = GAME_W + g_extra;
+	if (!g_czOut || !g_back || sx < 0 || sx + sw > g_back->w || sw > MAX_W) return FALSE;
+	for (int y = 24; y < GAME_H; y++) memcpy(g_msgBefore + y * sw, g_back->bits + y * g_back->pitch + sx, sw);
+	return TRUE;
+}
+static void msg_spans_end(void)
+{
+	static int a[GAME_H], b[GAME_H];
+	int sx = g_off - g_extra, sw = GAME_W + g_extra, x1g = g_extra + PANEL_X, rows = 0;   // (the map's field: frame columns 0 .. x1g)
+	for (int y = 0; y < GAME_H; y++) {
+		int x0 = 0, x1 = 0;
+		if (y >= 24) {
+			const BYTE *now = g_back->bits + y * g_back->pitch + sx, *was = g_msgBefore + y * sw;
+			x1 = x1g;
+			while (x0 < x1 && now[x0] == was[x0]) x0++;
+			while (x1 > x0 && now[x1 - 1] == was[x1 - 1]) x1--;
+		}
+		a[y] = x0; b[y] = x1;
+		rows += x1 > x0;
+	}
+	EnterCriticalSection(&g_lock);
+	memcpy(g_msgA, a, sizeof a); memcpy(g_msgB, b, sizeof b);
+	g_msgSx = sx; g_msgSw = sw; g_msgId = *(int *)0x0053e910;
+	g_msgOk = rows >= 16;
+	LeaveCriticalSection(&g_lock);
+}
 static void cz_span(const cz_buf *cz, int sw, int Y, int x0, int x1);
 // cz: the county map zoomed out shows where the window was (else the kept map at the normal size).
 static void window_shift(int screen, int sx, int sw, const cz_buf *cz)
@@ -6743,13 +6825,17 @@ static BOOL present(void)
 	BOOL czTake = InterlockedExchange(&g_czReadyNew, 0) != 0;
 	BOOL czNew = czTake && InterlockedExchange(&g_czReadyChanged, 0) != 0;   // (a picture like the last forces nothing)
 	if (czTake) { cz_buf *t = g_czShown; g_czShown = g_czReady; g_czReady = t; }
+	// A message over the map: where its scroll is (msg_spans_end), for cz_field to leave it.
+	BOOL msgUp = map_message_up(), msgSpans = msgUp && g_msgOk && g_msgId == *(int *)0x0053e910 && g_msgSx == sx && g_msgSw == sw;
+	if (msgSpans) { memcpy(g_czWinA, g_msgA, sizeof g_czWinA); memcpy(g_czWinB, g_msgB, sizeof g_czWinB); }
 	LeaveCriticalSection(&g_lock);
 	// The county map zoomed out: its own picture takes the map's field (cz_field).
 	const cz_buf *cz = g_czShown;
 	// (Under a window over the map - the Town Center, the boxes a click on the map opens - too: the window
 	// stays as the game drew it, moved to the middle as ever, the zoomed-out map round it. czWin below.)
-	// (A message from the game's queue over the map: the normal view while it is up, so the scroll shows.)
-	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && !map_message_up() && (map_screen(screen) || (window_screen(screen) && g_snapW == sw)) &&
+	// (A message from the game's queue over the map: its scroll as the game drew it, the zoomed-out map round it;
+	// the normal view while it is up when the scroll wasn't found, so it always shows.)
+	BOOL czOn = g_czOut && cz->pix && cz->gen == g_czGen && (!msgUp || msgSpans) && (map_screen(screen) || msgSpans || (window_screen(screen) && g_snapW == sw)) &&
 		g_wideScreen && MAP_ZOOM_NOW() == 0 && cz->sw == sw && cz->w <= 2 * sw && g_scale == SCALE_SMOOTH;
 	InterlockedExchange(&g_czShowing, czOn);
 	static BOOL czWas;
@@ -6828,8 +6914,8 @@ static BOOL present(void)
 		text_overlay(sx, sw); ct_add(3, &ct);
 		// A window over the zoomed-out map: where it is (no window found there - the map behind it moved: the
 		// normal view, as without the zoom).
-		BOOL czWin = czOn && !map_screen(screen);
-		if (czWin && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
+		BOOL czWin = czOn && (msgSpans || !map_screen(screen));
+		if (czWin && !msgSpans && !cz_win_spans(sx, sw)) { czOn = czWin = FALSE; InterlockedExchange(&g_czShowing, 0); }
 		scroll_overlays_catch(sx, sw);
 		if (czOn) cz_field(cz, sw, czWin);
 		scroll_overlays_lay(sw);
@@ -6838,7 +6924,7 @@ static BOOL present(void)
 		video_overlay(pal, sx, sw);
 		hv_overlay(pal, sx, sw);
 		// (Zoomed out with the window closed, the map covers what the frame still holds of it: nothing to move.)
-		if (g_wideScreen && !(czOn && map_screen(screen))) window_shift(screen, sx, sw, czOn ? cz : NULL);
+		if (g_wideScreen && !(czOn && (map_screen(screen) || msgSpans))) window_shift(screen, sx, sw, czOn ? cz : NULL);
 		else InterlockedExchange(&g_winShift, 0);
 		room = room && g_room.on && g_hdPic.on && !g_hdPic.gone && g_showScreens;
 		if (room) room_compose(pal, roomW);
@@ -7909,9 +7995,9 @@ static BOOL keep_running(void)
 	if (g_runBackground == 1) return TRUE;
 	if (g_runBackground != 2) return FALSE;
 	if (*(int *)0x00553030) return TRUE;
-	// A replacement multiplayer layer (Wolfe's dplayx.dll) knows about its lobby too.
-	static BOOL (__cdecl *sessionOpen)(void); static BOOL looked;
-	if (!looked) { HMODULE m = GetModuleHandleA("dplayx.dll"); if (m) sessionOpen = (BOOL (__cdecl *)(void))GetProcAddress(m, "LF_NetSessionOpen"); looked = TRUE; }
+	// Our dplayx.dll (multiplayer/) knows about its lobby too.
+	static int (WINAPI *sessionOpen)(void); static BOOL looked;
+	if (!looked) { HMODULE m = GetModuleHandleA("dplayx.dll"); if (m) sessionOpen = (int (WINAPI *)(void))GetProcAddress(m, "LF_NetSessionOpen"); looked = TRUE; }
 	return sessionOpen && sessionOpen();
 }
 
@@ -8488,6 +8574,7 @@ static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, lo
 {
 	int n = castle_design_read(__builtin_return_address(0), name, buffer, size); // (a siege's map: Jen's castle design)
 	if (n < 0) n = o_load_file(name, buffer, size, offset);
+	base01_note_load(name, buffer, n, offset);
 	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
 		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
 	if (n > 0 && offset == 0) sprites_loaded(name, buffer);
@@ -9025,7 +9112,9 @@ static void draw_msg(draw_msg_t orig)
 	scroll_shift(wide ? g_extra / 2 : 0);
 	video_scroll_shift(wide ? g_extra / 2 : 0);
 	g_drawingLeft = wide;
+	BOOL spans = wide && msg_spans_begin();
 	orig();
+	if (spans) msg_spans_end();
 	g_drawingLeft = FALSE;
 }
 static void __cdecl h_msg_a(void) { draw_msg(o_msg_a); }
@@ -10303,11 +10392,10 @@ static void cz_hd(cz_buf *b, int pitch)
 // Draws the zoomed-out county map into g_czDraw (the game thread, after the normal redraw).
 static void cz_draw(void)
 {
-	// A message over the map: no zoomed-out picture while it is up, and the one from before it is not shown
-	// after it closes (the turn may have changed the map): the normal view until the next redraw makes a new one.
-	if (g_czOut && map_message_up()) { InterlockedIncrement(&g_czGen); return; }
+	// (Under a window, or a message from the game's queue: the map as the game redraws it there, every frame -
+	// the scroll is laid over it by the presenter, msg_spans_end.)
 	if (!g_countyZoom || !g_czOut || !g_battleZoom || !g_back || !g_off || !o_redraw_map || IN_BATTLE || MAP_ZOOM != 0 ||
-		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID)) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;   // (under a window: the map as the game redraws it there)
+		(!map_screen(SCREEN_ID) && !window_screen(SCREEN_ID) && !map_message_up()) || GAME_MODE != 3 || MAP_STEP != 60 || *(int *)0x0053f65c != 15) return;
 	int pitch = g_back->pitch, mapW = g_extra + PANEL_X, W = 2 * mapW, H = 2 * (GAME_H - 24);
 	int rowsAll = CZ_M + 24 + H + CZ_BELOW;
 	if (pitch - W < 2 * CZ_M + 64) return;   // (the frame is as wide as the zoomed-out battlefield: not without BattleZoom)
@@ -14552,22 +14640,21 @@ static void __cdecl h_castle_enter(unsigned army, int county)
 	o_castle_enter(army, county);
 }
 
-// Multiplayer checks ([Debug] SyncLog=1): three seconds after each change of season (DAT_0057c92c,
-// DAT_0057c934) the log gets a checksum of the county records, the army table and the player records,
-// so two players' logs can be compared line by line; the first line that differs is where they
-// drifted apart.
+// CRC-32 for the checksums of session.txt (crc_file) and the lords2hd-sync.req test hook below.
 static DWORD crc_block(DWORD h, const BYTE *p, size_t n)
 {
 	for (size_t i = 0; i < n; i++) { h ^= p[i]; for (int k = 0; k < 8; k++) h = (h >> 1) ^ (0xEDB88320u & (0u - (h & 1))); }
 	return h;
 }
-// Multiplayer session logs ([Debug] MpLogs=1, the default): each multiplayer game (DAT_00553030 set)
-// gets a folder lords2hd-mp\<date and time>\ that a player can zip and post when something goes wrong:
-//   session.txt  versions (this DLL, the exe, a replacement dplayx.dll) and the settings that matter
-//   sync.txt     per-season checksums of the county, army and player records (compare two players')
-//   copies of lords2hd.log and, if present, dplayx.log and desync.txt, refreshed each season and at the end
-// Only the ten newest folders are kept.
-static BOOL g_mpLogs = TRUE, g_syncLog;
+// Multiplayer session logs ([Multiplayer] MpLogs=1, the default): each multiplayer game has one folder
+// lords2hd-mp\<date and time>\ that a player can zip and post when something goes wrong. dplayx.dll owns it
+// (multiplayer/dplayx/sesslog.c): it makes it once a second player is in the lobby, writes dplayx.log there,
+// copies lords2hd.log and status.txt in, and keeps the ten newest. When the game starts (DAT_00553030 set) this
+// DLL asks for it (LF_NetLogSession, which also makes it for a host with no joiner) and starts session.txt with the
+// versions (this DLL, the exe, dplayx.dll), the connection and the settings that matter, one block per game; at
+// the session's end dplayx appends its summary (players, round trips, sync checks, desyncs). The per-turn sync
+// check is dplayx's (sync.c); this DLL's per-season checksums (sync.txt, [Debug] SyncLog) went with dplayx v13.
+static BOOL g_mpLogs = TRUE;
 static DWORD crc_file(const char *path)
 {
 	FILE *f = fopen(path, "rb");
@@ -14577,85 +14664,50 @@ static DWORD crc_file(const char *path)
 	fclose(f);
 	return ~h;
 }
-static void mp_copy_logs(const char *dir)
-{
-	static const char *names[] = { "lords2hd.log", "dplayx.log", "desync.txt" };
-	char from[MAX_PATH], to[MAX_PATH];
-	for (int i = 0; i < 3; i++) {
-		snprintf(from, sizeof from, "%s\\%s", g_gameDir, names[i]);
-		snprintf(to, sizeof to, "%s\\%s", dir, names[i]);
-		if (GetFileAttributesA(from) != INVALID_FILE_ATTRIBUTES) CopyFileA(from, to, FALSE);
-	}
-}
-static void mp_prune(const char *root)
-{
-	char pat[MAX_PATH], names[64][MAX_PATH]; int n = 0;
-	snprintf(pat, sizeof pat, "%s\\*", root);
-	WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(pat, &fd);
-	if (h == INVALID_HANDLE_VALUE) return;
-	do { if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.' && n < 64) lstrcpynA(names[n++], fd.cFileName, MAX_PATH); } while (FindNextFileA(h, &fd));
-	FindClose(h);
-	while (n > 10) { // names are dates: the smallest is the oldest
-		int old = 0;
-		for (int i = 1; i < n; i++) if (strcmp(names[i], names[old]) < 0) old = i;
-		char dir[MAX_PATH], file[MAX_PATH];
-		snprintf(dir, sizeof dir, "%s\\%s", root, names[old]);
-		snprintf(pat, sizeof pat, "%s\\*", dir);
-		h = FindFirstFileA(pat, &fd);
-		if (h != INVALID_HANDLE_VALUE) {
-			do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) { snprintf(file, sizeof file, "%s\\%s", dir, fd.cFileName); DeleteFileA(file); } } while (FindNextFileA(h, &fd));
-			FindClose(h);
-		}
-		RemoveDirectoryA(dir);
-		lstrcpynA(names[old], names[--n], MAX_PATH);
-	}
-}
+// dir = the session's folder, no trailing backslash; "" = none (MpLogs=0, or no dplayx.dll of ours)
 static void mp_session_start(char *dir, size_t size)
 {
-	char root[MAX_PATH], path[MAX_PATH];
-	snprintf(root, sizeof root, "%s\\lords2hd-mp", g_gameDir);
-	CreateDirectoryA(root, NULL);
-	SYSTEMTIME t; GetLocalTime(&t);
-	snprintf(dir, size, "%s\\%04d-%02d-%02d_%02d-%02d-%02d", root, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-	CreateDirectoryA(dir, NULL);
-	mp_prune(root);
+	char path[MAX_PATH];
+	typedef int (WINAPI *LogSessionFn)(char *, int);
+	HMODULE dp = GetModuleHandleA("dplayx.dll");
+	LogSessionFn logSession = dp ? (LogSessionFn)GetProcAddress(dp, "LF_NetLogSession") : NULL;
+	int n = logSession ? logSession(dir, (int)size) : 0;
+	if (n <= 0) { dir[0] = 0; logf_("multiplayer session log: none (dplayx.dll %s)", logSession ? "made no folder" : "has no LF_NetLogSession"); return; }
+	if (dir[n - 1] == '\\') dir[n - 1] = 0;
 	snprintf(path, sizeof path, "%s\\session.txt", dir);
-	FILE *f = fopen(path, "w");
+	FILE *f = fopen(path, "a"); // a second game in the same lobby session adds its own block
 	if (!f) return;
-	char me[MAX_PATH], exe[MAX_PATH];
-	HMODULE self = NULL;
-	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)mp_session_start, &self);
-	GetModuleFileNameA(self, me, sizeof me);
-	GetModuleFileNameA(NULL, exe, sizeof exe);
-	fprintf(f, "Lords of the Realm II HD multiplayer session, %04d-%02d-%02d %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	char me[MAX_PATH], exe[MAX_PATH], dpPath[MAX_PATH]; // (ours named from g_gameDir: a narrow module name may not open, see game_dir)
+	snprintf(me, sizeof me, "%s\\ddraw.dll", g_gameDir);
+	snprintf(exe, sizeof exe, "%s\\Lords2.exe", g_gameDir);
+	GetModuleFileNameA(dp, dpPath, sizeof dpPath);
+	SYSTEMTIME t; GetLocalTime(&t);
+	fprintf(f, "Lords of the Realm II HD multiplayer game, %04d-%02d-%02d %02d:%02d:%02d\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
 	fprintf(f, "ddraw.dll (HD): built %s %s, crc %08lx\n", __DATE__, __TIME__, (unsigned long)crc_file(me));
 	fprintf(f, "Lords2.exe: crc %08lx\n", (unsigned long)crc_file(exe));
-	HMODULE dp = GetModuleHandleA("dplayx.dll");
-	if (dp) {
-		char dpPath[MAX_PATH]; GetModuleFileNameA(dp, dpPath, sizeof dpPath);
-		BOOL repl = GetProcAddress(dp, "LF_NetSessionOpen") != NULL;
-		fprintf(f, "dplayx.dll: %s, crc %08lx (%s)\n", dpPath, (unsigned long)crc_file(dpPath), repl ? "replacement multiplayer layer" : "Windows DirectPlay");
-	}
+	fprintf(f, "dplayx.dll: %s, crc %08lx\n", dpPath, (unsigned long)crc_file(dpPath));
+	// GameRanger always injects its GameRanger.dll into the game it launches (dplayx's gr_mode checks the same)
+	const char *conn = GetModuleHandleA("GameRanger.dll") ? "GameRanger" : "direct";
+	fprintf(f, "connection: %s\n", conn);
 	fprintf(f, "game fixes in this game: %s (MultiplayerFixes=%d)\n", g_mpFixes ? "on" : "off (multiplayer safe mode)", g_mpFixes);
 	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
 		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
-	fprintf(f, "this player: %d; game speed %d\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
+	fprintf(f, "this player: %d; game speed %d\n\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
 	fclose(f);
-	logf_("multiplayer session log: %s", dir);
+	logf_("multiplayer session log: %s (connection: %s)", dir, conn);
 }
 
 static DWORD WINAPI sync_log_thread(LPVOID unused)
 {
 	(void)unused;
-	int lastSeason = -1; DWORD changed = 0; int pending = 0, n = 0;
 	char req[MAX_PATH], mpDir[MAX_PATH] = "";
 	BOOL inSession = FALSE;
 	snprintf(req, sizeof req, "%s\\lords2hd-sync.req", g_gameDir);
 	for (;;) {
 		Sleep(250);
 		BOOL mp = *(int *)0x00553030 != 0;
-		if (g_mpLogs && mp && !inSession) { mp_session_start(mpDir, sizeof mpDir); n = 0; lastSeason = -1; }
-		if (inSession && !mp && mpDir[0]) { mp_copy_logs(mpDir); logf_("multiplayer session ended"); }
+		if (g_mpLogs && mp && !inSession) mp_session_start(mpDir, sizeof mpDir);
+		if (inSession && !mp && mpDir[0]) logf_("multiplayer session ended");
 		inSession = mp;
 		// On request (a test drops lords2hd-sync.req, holding a name): every record's checksum to lords2hd-sync-<name>.txt
 		FILE *rq = fopen(req, "r");
@@ -14686,38 +14738,14 @@ static DWORD WINAPI sync_log_thread(LPVOID unused)
 				fclose(f);
 			}
 		}
-		int season =*(int *)0x0057c92c * 16 + *(int *)0x0057c934;
-		if (season != lastSeason) { lastSeason = season; changed = GetTickCount(); pending = 1; }
-		if (!pending || GetTickCount() - changed < 3000) continue;
-		pending = 0;
-		int counties = *(int *)0x0056d5dc;
-		if (counties < 1 || counties > 60) continue;
-		DWORD c = crc_block(~0u, (const BYTE *)(0x0053f9b0 + 0x300), (size_t)counties * 0x300);
-		DWORD a = crc_block(~0u, (const BYTE *)(0x0052f0b0 + 0x1a4), (size_t)0x96 * 0x1a4);
-		DWORD p = crc_block(~0u, (const BYTE *)(0x0057bf00 + 0x160), (size_t)5 * 0x160);
-		++n;
-		if (g_syncLog) logf_("sync %d: season %d/%d, counties %08lx, armies %08lx, players %08lx, multiplayer %d", n,
-			*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p, *(int *)0x00553030);
-		if (inSession && mpDir[0]) {
-			char path[MAX_PATH]; snprintf(path, sizeof path, "%s\\sync.txt", mpDir);
-			FILE *f = fopen(path, "a");
-			if (f) {
-				SYSTEMTIME t; GetLocalTime(&t);
-				fprintf(f, "%02d:%02d:%02d  check %d  season %d/%d  counties %08lx  armies %08lx  players %08lx\n", t.wHour, t.wMinute, t.wSecond, n,
-					*(int *)0x0057c92c, *(int *)0x0057c934, (unsigned long)c, (unsigned long)a, (unsigned long)p);
-				fclose(f);
-			}
-			mp_copy_logs(mpDir);
-		}
 	}
 	return 0;
 }
 
 static void install_game_fixes(void)
 {
-	g_syncLog = GetPrivateProfileIntA("Debug", "SyncLog", 0, g_iniPath) != 0;
-	g_mpLogs = GetPrivateProfileIntA("Debug", "MpLogs", 1, g_iniPath) != 0;
-	if (g_syncLog || g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
+	g_mpLogs = GetPrivateProfileIntA("Multiplayer", "MpLogs", 1, g_iniPath) != 0;
+	if (g_mpLogs) CloseHandle(CreateThread(NULL, 0, sync_log_thread, NULL, 0, NULL));
 	g_fixSiegeGarrison = GetPrivateProfileIntA("Game", "SiegeGarrisonFix", 1, g_iniPath) != 0;
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
 	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
@@ -14978,13 +15006,43 @@ static void install(void)
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");
 }
 
+// A wide path in the ANSI code page, only if every letter has its own byte (no "?", no best fit: "Ł" as
+// "L" names another folder).
+static BOOL ansi_exact(const WCHAR *w, char *out, int size)
+{
+	BOOL lossy = FALSE;
+	int n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w, -1, out, size, NULL, &lossy);
+	return n > 0 && !lossy;
+}
+// The game's folder, which every file the patch opens is named from (the narrow file functions). A
+// folder whose name has letters outside the Windows code page (Polish, Cyrillic, Chinese... on an
+// English Windows) has no exact narrow name: then its short 8.3 name, and failing that ".", the
+// current folder, which is the game's own (it opens its files by bare names). Returns how it was found
+// (NULL: by its own name).
+static const char *game_dir_of(const WCHAR *folder, char *dir, int size)
+{
+	WCHAR s[1024];
+	if (ansi_exact(folder, dir, size)) return NULL;
+	DWORD m = GetShortPathNameW(folder, s, sizeof s / sizeof s[0]);
+	if (m && m < sizeof s / sizeof s[0] && ansi_exact(s, dir, size)) return "its short name";
+	lstrcpynA(dir, ".", size);
+	return "the current folder";
+}
+static const char *game_dir(char *dir, int size)
+{
+	WCHAR w[1024];
+	DWORD n = GetModuleFileNameW(NULL, w, sizeof w / sizeof w[0]);
+	if (!n || n >= sizeof w / sizeof w[0]) { lstrcpynA(dir, ".", size); return "the current folder"; }
+	WCHAR *slash = wcsrchr(w, L'\\');
+	if (slash) *slash = 0;
+	return game_dir_of(w, dir, size);
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 {
 	if (reason != DLL_PROCESS_ATTACH) return TRUE;
 	DisableThreadLibraryCalls(inst);
-	GetModuleFileNameA(NULL, g_gameDir, sizeof g_gameDir);
-	char *slash = strrchr(g_gameDir, '\\');
-	if (slash) *slash = 0;
+	const char *dirHow = game_dir(g_gameDir, sizeof g_gameDir);
 	snprintf(g_iniPath, sizeof g_iniPath, "%s\\lords2hd.ini", g_gameDir);
 	snprintf(g_logPath, sizeof g_logPath, "%s\\lords2hd.log", g_gameDir);
 	DeleteFileA(g_logPath);
@@ -14996,6 +15054,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 	SYSTEMTIME t;
 	GetLocalTime(&t);
 	logf_("Lords of the Realm II HD, %04d-%02d-%02d %02d:%02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+	if (dirHow) logf_("game folder: its name has letters outside the Windows code page, so the patch uses %s (%s)", dirHow, g_gameDir);
 	pak_open();
 	read_settings();
 	if (!known_build()) {

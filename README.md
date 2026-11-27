@@ -162,14 +162,20 @@ Lords of the Realm II community. It replaces Windows' DirectPlay with its own ne
 port 47700, checks every turn that all players' games agree and repairs them if not, and fixes the
 game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 
-- The host allows the Windows Firewall prompt; the others must reach the host's TCP port 47700 (same
-  network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin). To join, choose Connect
-  to a game and type the host's address.
+- Multiplayer offers four ways in: **Host an internet game**, **Host a private game**, **Join an
+  internet game** and **Join by address**.
+- **Internet games** are listed on the mod's lobby server: no address and no port forward, and nobody
+  sees anyone's IP address. Anyone can join a listed game; it can also be joined by address.
+  `relay_host=0` in `lords2hd.ini` `[Multiplayer]` removes "Host an internet game".
+- **Private games and joining by address:** the host allows the Windows Firewall prompt; the others
+  must reach the host's TCP port 47700 (same network, a port forward, or a VPN such as ZeroTier,
+  Tailscale or Radmin) and type the host's address. GameRanger works as before.
 - The game keeps running when you switch windows, so nobody waits for you.
 - **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
-  game's folder, with what's needed to debug the session. If a game desyncs or crashes, **every
-  player** zips their folder for that game and posts it on the
-  [community Discord](https://discord.gg/uBzaMGjUR) or in an issue. The ten newest games are kept.
+  game's folder from the moment a second player joins the lobby, with what's needed to debug the
+  session: the logs (stamped with one session clock, so all players' logs line up) and a summary of the
+  session. If a game desyncs or crashes, **every player** zips their folder for that game and posts it
+  on the [community Discord](https://discord.gg/uBzaMGjUR) or in an issue. The ten newest games are kept.
 
 ## Install
 

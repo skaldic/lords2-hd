@@ -64,7 +64,7 @@ static char *t_install_with(int wide, const char *debug, BOOL *wideOn)
 {
 	if (!t_map_game()) return NULL;
 	char ini[256];
-	snprintf(ini, sizeof ini, "[Display]\r\nWide=%d\r\nBattleZoom=1\r\n[Debug]\r\nMpLogs=0\r\nRemote=0\r\n%s", wide, debug);
+	snprintf(ini, sizeof ini, "[Display]\r\nWide=%d\r\nBattleZoom=1\r\n[Multiplayer]\r\nMpLogs=0\r\n[Debug]\r\nRemote=0\r\n%s", wide, debug);
 	t_write("lords2hd.ini", ini, strlen(ini));
 	read_settings();
 	for (int i = 0; i < (int)(sizeof t_tramps / sizeof *t_tramps); i++)
