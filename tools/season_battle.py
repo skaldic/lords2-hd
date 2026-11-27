@@ -134,6 +134,7 @@ def season_rgb(rgb, season):
 #  - the open field's dark wet patches (t32_bat1 16-31 and 249-251: marsh or rough ground, dark with glints
 #    of water), whose edges are plain grass, so whatever is done inside them joins the tiles around.
 MARSH = {'t32_bat1': set(range(16, 32)) | {249, 250, 251}}
+BRIDGE = {'t32_bat1': set(range(144, 156))}  # the bridge's tiles (wood over water)
 
 def wet_maps(rgb, sheet, frame):
     from scipy import ndimage
@@ -142,7 +143,9 @@ def wet_maps(rgb, sheet, frame):
     bank = np.zeros(rgb.shape[:2], np.float32); rim = np.zeros_like(bank); marsh = np.zeros_like(bank)
     if wm.any() and not wm.all():
         dl = ndimage.distance_transform_edt(~wm)           # land: 2x pixels to the nearest water
-        dw = ndimage.distance_transform_edt(wm)            # water: 2x pixels to the nearest land
+        # water: 2x pixels to the nearest land; beside the bridge only grass counts as shore, so its timbers
+        # and their shadow on the water get no rim of ice
+        dw = ndimage.distance_transform_edt(~(green > 0.3) if frame in BRIDGE.get(sheet, ()) else wm)
         bank = (1 - smooth(3.0, 14.0, dl)) * ~wm * green * (1 - leaf)
         rim = (1 - smooth(1.0, 4.5, dw)) * wm                # narrow: water still blocks, so no stream may look frozen over
     if frame in MARSH.get(sheet, ()):
