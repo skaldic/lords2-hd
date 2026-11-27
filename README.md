@@ -312,6 +312,8 @@ player has the same version of the patch; the host's settings decide, and a join
 player has another version, the original game or another multiplayer DLL, everyone plays the original rules.
 `HostOffersFixes=0` in the host's `lords2hd.ini` plays the original rules in its games. It replaces 1.6.0's
 `MultiplayerFixes`, which is ignored now (an update keeps the old line in your `lords2hd.ini`; it does nothing).
+So one game can play the fixes and the next the original rules, with the same versions: that is the host's choice
+(each player's `lords2hd-mp` folder notes it in `session.txt`), not a desync. Once the game starts, no one can join.
 
 The Game, Economy, Buildings, Units, Unit stats, Unit costs and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
 as on Jen's Mod Menu: F11 or the Mods title opens it while Quality of life → Jen With a B's Mods is On (or

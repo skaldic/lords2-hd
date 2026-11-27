@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DLL_VERSION 14  /* 14: the lords2-relay internet lobby (relay.c): a host lists its game, the address box's "Internet games" lists the rooms in the game's own session list, Open(join) of a room pairs through the relay; game wire unchanged, bumped so v13 and v14 never share a game; 13: session clock - the host's T_PONG carries its session time, every log line is stamped [S <s>] in it, on every PC (diag.c; a v12 peer would send 16-byte pings, so v12 is refused), a summary per session in session.txt, desync.txt gone (the summary and dplayx.log have it), settings in lords2hd.ini; 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
+#define DLL_VERSION 14  /* 14: the lords2-relay internet lobby (relay.c): a host lists its game, the address box's "Internet games" lists the rooms in the game's own session list, Open(join) of a room pairs through the relay; game wire unchanged, bumped so v13 and v14 never share a game; later in 14, no bump (Lords2 HD's rules.c, an older v14 ignores it): T_INFO 100 bytes with the "L2RU" marker, T_CAPS 15, T_RULES 16 - the host decides the game's fixes, so one game runs the host's rules and another the original ones, never mixed within a game; 13: session clock - the host's T_PONG carries its session time, every log line is stamped [S <s>] in it, on every PC (diag.c; a v12 peer would send 16-byte pings, so v12 is refused), a summary per session in session.txt, desync.txt gone (the summary and dplayx.log have it), settings in lords2hd.ini; 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
 /* PROTO digits: thousands = DLL_VERSION, hundreds = pace patch applied (0/1), tens = 2*exe_ok + slowlink (0..3),
  * units = mpfix (0/1). g_exe_ok / g_pace_ok / g_mpfix are set in exepatch.c, g_slowlink once at load from
  * LOTR2NET_SLOWLINK. DLL_VERSION 7 carries resync wire version RS_VER 1 (a peer of another DLL version is refused). */
@@ -1063,7 +1063,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
         return 0;
     }
     if (mode == MODE_ENUM) {
-        int locked = G.locked;
+        int locked = G.locked || ru_frozen;
         fill_info(info);
         LeaveCriticalSection(&cs);
         if (locked) reject(s, DPERR_NOSESSIONS); else sendf(s, T_INFO, info, 92);   /* direct: an enum conn has no writer */
@@ -1071,9 +1071,10 @@ static DWORD WINAPI conn_thread(LPVOID a)
         closesocket(s);
         return 0;
     }
-    if (G.locked || (DWORD)(pl_count() + conns_pending()) >= G.maxpl || conns_pending_ip(ip) >= MAXPEND_IP) {
+    if (G.locked || ru_frozen || (DWORD)(pl_count() + conns_pending()) >= G.maxpl || conns_pending_ip(ip) >= MAXPEND_IP) {
         LeaveCriticalSection(&cs);
-        logf_("join refused: locked=%d players=%d pending from this address=%d", G.locked, pl_count(), conns_pending_ip(ip));
+        /* rules.c: once the rules are frozen (the game's start message went out) the game has started: no new player */
+        logf_("join refused: locked=%d rules frozen=%d players=%d pending from this address=%d", G.locked, ru_frozen, pl_count(), conns_pending_ip(ip));
         reject(s, DPERR_ACTIVEPLAYERS);
         closesocket(s);
         return 0;
@@ -1136,9 +1137,9 @@ static DWORD WINAPI conn_thread(LPVOID a)
         if (type == T_CREATEPL && n >= 32) {
             DPID id = 0;
             Player *p = NULL;
-            if (G.locked || G.conns[ci].haveplayer || G.conns[ci].ncreate >= MAXCREATE || !sys_room()) {
-                logf_("CREATEPL refused on conn %d (locked=%d, already has player=%d, created=%d, queue=%d)", ci,
-                      G.locked, G.conns[ci].haveplayer, G.conns[ci].ncreate, G.qcount);
+            if (G.locked || ru_frozen || G.conns[ci].haveplayer || G.conns[ci].ncreate >= MAXCREATE || !sys_room()) {
+                logf_("CREATEPL refused on conn %d (locked=%d, rules frozen=%d, already has player=%d, created=%d, queue=%d)", ci,
+                      G.locked, ru_frozen, G.conns[ci].haveplayer, G.conns[ci].ncreate, G.qcount);
                 osend(o, T_PLAYERID, &id, 4);
             } else if ((DWORD)pl_count() < G.maxpl && (p = pl_add(G.nextid, (char *)f, ci)) != NULL &&
                        queue_sys(DPSYS_CREATEPLAYERORGROUP, G.nextid)) {
@@ -2705,7 +2706,7 @@ static DPHR WINAPI dp2_Send(Obj *t, DPID from, DPID to, DWORD flags, BYTE *buf, 
     logmsg("SEND", from, to, buf, size);
     if (!G.open) r = DPERR_INVALIDOBJECT;
     else if (G.host) {
-        ru_on_send(buf, size);   /* rules.c: the start message freezes the rules, sent ahead of it */
+        ru_on_send(to, buf, size);   /* rules.c: the start message freezes the rules, sent ahead of it */
         if (to == 0) bcast(-1, T_DATA, m, 8 + size);   /* only queued: a stalled peer never blocks the game thread */
         else {
             Player *p = pl_find(to);

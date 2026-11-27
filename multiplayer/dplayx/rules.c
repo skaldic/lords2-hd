@@ -71,7 +71,7 @@ static void ru_recompute(const char *why)
 static void ru_on_caps(int ci, const BYTE *f, DWORD n)
 {
     char id[RU_ID + 1];
-    if (n < RU_ID + 4 || G.conns[ci].haveplayer || G.locked) return;   /* only before its player: the rules are settled by the start */
+    if (n < RU_ID + 4 || G.conns[ci].haveplayer || G.locked || ru_frozen) return;   /* only before its player: the rules are settled by the start */
     memcpy(G.conns[ci].ru_id, f, RU_ID);
     G.conns[ci].ru_can = *(const DWORD *)(f + RU_ID);
     G.conns[ci].ru_has = 1;
@@ -94,11 +94,13 @@ static void ru_lock(const char *why)
     for (i = 0; i < MAXCONN; i++) if (G.conns[i].used && G.conns[i].ru_has) osend(G.conns[i].o, T_RULES, frame, 8);
 }
 
-/* host, cs held, before the game's message is queued: the game's start message (type 0x04, 12 bytes; FUN_004329ec
- * sends it just before it locks the session) freezes the rules */
-static void ru_on_send(const BYTE *buf, DWORD size)
+/* host, cs held, before the game's message is queued: the game's start message freezes the rules. It is message type
+ * 0x04, 12 bytes, to everyone: FUN_004329ec sends it (FUN_0043eda0(4, 0), the game's only sender of type 4) just
+ * before it locks the session; the lobby's own messages are other types (0x09, 0x0e, 0x54). From the freeze on the
+ * host takes no new player (conn_thread), so every player in the game has the rules. */
+static void ru_on_send(DPID to, const BYTE *buf, DWORD size)
 {
-    if (size == 12 && buf[0] == 0x04 && !G.locked) ru_lock("the game starts");
+    if (to == 0 && size == 12 && buf[0] == 0x04 && !G.locked) ru_lock("the game starts");
 }
 
 /* host: T_INFO for a joiner, with the marker */
