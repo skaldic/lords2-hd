@@ -11172,7 +11172,7 @@ static int __cdecl h_logic_steps(void)
 // ---------------------------------------------------------------------------------------------
 // Multiplayer rules: the game fixes below change what happens in the game, and every PC works out the whole game
 // itself, so in a multiplayer game (DAT_00553030) a fix runs only when every player runs it. The host decides
-// (our dplayx.dll, multiplayer/dplayx/rules.c): with [Game] MultiplayerFixes=1 (the default) the host offers its
+// (our dplayx.dll, multiplayer/dplayx/rules.c): with [Game] HostOffersFixes=1 (the default) the host offers its
 // campaign fixes (RU_*), and they run when every player has this same ddraw.dll (its CRC) with their code in;
 // otherwise, or with the Windows DirectPlay or an older dplayx.dll, every player plays the original rules.
 // mp_rules_sync tells dplayx who we are; rule_on reads the game's rules. The battle fixes and Enemy tactics
@@ -11181,7 +11181,7 @@ enum { RU_RATION, RU_WHEAT, RU_CASTLECAP, RU_SIEGE, RU_COUNT };
 static const char *const kRuleName[RU_COUNT] = { "ration fix", "wheat fix", "castle cap fix", "siege garrison fix" };
 typedef int (WINAPI *RulesGetFn)(DWORD *);
 static RulesGetFn g_rulesGet;   // dplayx's LF_NetRulesGet (NULL: not our dplayx)
-static BOOL g_mpOffer = TRUE;   // [Game] MultiplayerFixes: when hosting, offer the campaign fixes
+static BOOL g_mpOffer = TRUE;   // [Game] HostOffersFixes: when hosting, offer the campaign fixes
 static BOOL g_canWheat, g_canCastleCap, g_canSiege;   // their code went in (the ration fix's: g_rationHooked)
 static BOOL rule_on(int r, BOOL local)
 {
@@ -14697,10 +14697,15 @@ static void mp_rules_sync(void)
 		set = dp ? (RulesSetFn)GetProcAddress(dp, "LF_NetRulesSet") : NULL;
 		g_rulesGet = dp ? (RulesGetFn)GetProcAddress(dp, "LF_NetRulesGet") : NULL;
 		if (!set || !g_rulesGet) set = NULL, g_rulesGet = NULL;
-		char me[MAX_PATH];
-		snprintf(me, sizeof me, "%s\\ddraw.dll", g_gameDir);
-		snprintf(id, sizeof id, "Lords2 HD %08lx", (unsigned long)crc_file(me));
-		logf_("multiplayer rules: %s (id %s)", set ? "the host decides" : "dplayx.dll can't tell (not ours): the original rules in a multiplayer game", id);
+		// the id: this DLL's own file (wherever it was loaded from); none if it can't be read, and dplayx then
+		// plays the original rules (no id = not this patch)
+		char me[MAX_PATH] = "";
+		HMODULE self = NULL;
+		GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&mp_rules_sync, &self);
+		DWORD crc = self && GetModuleFileNameA(self, me, sizeof me) ? crc_file(me) : 0;
+		if (crc) snprintf(id, sizeof id, "Lords2 HD %08lx", (unsigned long)crc);
+		if (!crc) set = NULL, logf_("multiplayer rules: can't read %s - the original rules in a multiplayer game", me[0] ? me : "ddraw.dll");
+		else logf_("multiplayer rules: %s (id %s)", set ? "the host decides" : "dplayx.dll can't tell (not ours): the original rules in a multiplayer game", id);
 	}
 	if (set) {
 		DWORD can = (g_rationHooked ? 1u << RU_RATION : 0) | (g_canWheat ? 1u << RU_WHEAT : 0) |
@@ -14709,12 +14714,15 @@ static void mp_rules_sync(void)
 			(g_fixCastleCap ? 1u << RU_CASTLECAP : 0) | (g_fixSiegeGarrison ? 1u << RU_SIEGE : 0);
 		if (can != lastCan || want != lastWant) set(id, can, want), lastCan = can, lastWant = want;
 	}
+	// in a multiplayer session (the lobby included, so they may change until the game starts): what it runs, each time
+	// that changes; the last line before the game is what it plays
 	int game = *(int *)0x00553030 != 0;
-	if (game != loggedGame) {   // once as a multiplayer game starts: what it runs
-		loggedGame = game;
+	DWORD v = 0;
+	BOOL known = game && g_rulesGet && g_rulesGet(&v);
+	int now = !game ? -1 : !known ? -2 : (int)v;
+	if (now != loggedGame) {
+		loggedGame = now;
 		if (game) {
-			DWORD v = 0;
-			BOOL known = g_rulesGet && g_rulesGet(&v);
 			char s[160] = "";
 			for (int r = 0; r < RU_COUNT; r++) if (v >> r & 1) snprintf(s + strlen(s), sizeof s - strlen(s), "%s%s", s[0] ? ", " : "", kRuleName[r]);
 			logf_("multiplayer game: %s", !known ? "no rules from the host: the original rules" : v ? s : "the original rules (the host's choice, or a player without this patch)");
@@ -14751,7 +14759,7 @@ static void mp_session_start(char *dir, size_t size)
 	BOOL known = g_rulesGet && g_rulesGet(&rules);
 	fprintf(f, "game fixes in this game (the host decides): %s", !g_rulesGet ? "none (not our dplayx.dll: the original rules)" : !known ? "none (no rules from the host: the original rules)" : rules ? "" : "none (the original rules)");
 	for (int r = 0; known && r < RU_COUNT; r++) if (rules >> r & 1) fprintf(f, "%s%s", rules & ((1u << r) - 1) ? ", " : "", kRuleName[r]);
-	fprintf(f, " (MultiplayerFixes=%d)\n", g_mpOffer);
+	fprintf(f, " (HostOffersFixes=%d)\n", g_mpOffer);
 	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
 		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
 	fprintf(f, "this player: %d; game speed %d\n\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
@@ -14820,7 +14828,8 @@ static void install_game_fixes(void)
 	if (!g_canSiege) g_fixSiegeGarrison = FALSE;
 	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
 	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
-	g_mpOffer = GetPrivateProfileIntA("Game", "MultiplayerFixes", 1, g_iniPath) != 0;
+	// a new key: 1.6.0's ini had MultiplayerFixes=0 (off in multiplayer), and an update keeps the player's ini
+	g_mpOffer = GetPrivateProfileIntA("Game", "HostOffersFixes", 1, g_iniPath) != 0;
 	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
 	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	g_canWheat = hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale);

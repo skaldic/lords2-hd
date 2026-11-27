@@ -2705,6 +2705,7 @@ static DPHR WINAPI dp2_Send(Obj *t, DPID from, DPID to, DWORD flags, BYTE *buf, 
     logmsg("SEND", from, to, buf, size);
     if (!G.open) r = DPERR_INVALIDOBJECT;
     else if (G.host) {
+        ru_on_send(buf, size);   /* rules.c: the start message freezes the rules, sent ahead of it */
         if (to == 0) bcast(-1, T_DATA, m, 8 + size);   /* only queued: a stalled peer never blocks the game thread */
         else {
             Player *p = pl_find(to);
@@ -2750,7 +2751,7 @@ static DPHR WINAPI dp2_SetSessionDesc(Obj *t, DPSD2 *d, DWORD flags)
 {
     logf_("SetSessionDesc flags=%lu -> session locked", flags);
     EnterCriticalSection(&cs);
-    if (G.open && G.host) { G.locked = 1; ru_lock(); }   /* rules.c: the rules stay as they are */
+    if (G.open && G.host) { ru_lock("session locked"); G.locked = 1; }   /* rules.c: normally frozen already at the start message */
     LeaveCriticalSection(&cs);
     return DP_OK;
 }

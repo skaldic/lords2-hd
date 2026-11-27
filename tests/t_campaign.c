@@ -30,7 +30,7 @@ TEST(wheat_lost_field_charged_once)
 	g_fixWheat = TRUE;
 	COUNTY_B(5, 0x0053fbb1) = 9;                // a field gone without its share: counted
 	CHECK_EQ(h_wheat_scale(5, 1100), 990);
-	MP_SESSION = 1;                             // multiplayer without MultiplayerFixes: the game's own
+	MP_SESSION = 1;                             // multiplayer with no rules from the host: the game's own
 	CHECK_EQ(h_wheat_scale(5, 1100), 900);
 }
 
@@ -78,7 +78,7 @@ TEST(ration_step_writes_the_county)
 	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 40);
 	CHECK_EQ(*(int *)(0x0053fb28 + 3 * 0x300), 100);
 	g_fixRation = TRUE;
-	MP_SESSION = 1;                             // multiplayer without MultiplayerFixes: the game's own
+	MP_SESSION = 1;                             // multiplayer with no rules from the host: the game's own
 	l2hd_ration_step(ebp);
 	CHECK_EQ(*(int *)(0x0053fb2c + 3 * 0x300), 40);
 	MP_SESSION = 0;

@@ -9,8 +9,10 @@
  * (LF_NetRulesGet) and runs exactly those fixes.
  *
  *   rules = host's want & host's can & every joiner's can, when every player in the session has the host's id;
- *           0 (the original game) when any player has another id or never said (an older dplayx, Windows DirectPlay,
- *           another ddraw: it ignores all of this and plays the original rules, so the others must too).
+ *           0 (the original game) when any player has another id or never said: an older dplayx or Windows DirectPlay
+ *           (it sends no T_CAPS), or another HD ddraw build (another id). Such a PC runs whatever its own ddraw does
+ *           with no rules (an older HD ddraw: its fixes off in multiplayer; this one: LF_NetRulesGet says 0, so off),
+ *           which is the original game, so the others must play it too.
  *
  * Wire, compatible both ways with a dplayx that has none of this (no PROTO change):
  *   T_INFO   host -> joiner at the join: 92 bytes as before, then "L2RU" + u32 RU_VER (8 bytes). An older joiner reads
@@ -21,10 +23,11 @@
  *            game starts (a player made, a player gone, the host's settings) - each one before any game message that
  *            follows it on that conn, so a joiner always has the rules the host has when the game's start message
  *            comes. An older dplayx ignores the frame type.
- * The game sends its start message just BEFORE it locks the session (FUN_004329ec, then FUN_004b7514 ->
- * SetSessionDesc), so the rules are never decided at the lock: they are settled by then and only frozen there. From
- * the lock on they never change (a player leaving, a host hand-over, a resync rollback): every PC keeps what it had.
- * A new session (Open, Close) starts over with no rules. */
+ * The game sends its start message (type 0x04, 12 bytes) just BEFORE it locks the session (FUN_004329ec, then
+ * FUN_004b7514 -> SetSessionDesc). The host freezes the rules as that message goes out and sends them once more with
+ * locked = 1 ahead of it; a joiner keeps them from then on. After that they never change (a player leaving, a host
+ * hand-over, a resync rollback): every PC keeps what it had. The lock freezes them too, should the start message not
+ * have been seen. A new session (Open, Close) starts over with no rules. */
 #define RU_VER 1
 #define RU_INFO 100   /* T_INFO bytes with the marker */
 
@@ -48,7 +51,7 @@ static void ru_recompute(const char *why)
 {
     DWORD v, frame[2];
     int i, who = 0, other = 0;
-    if (!G.open || !G.host || G.ghost || ru_frozen) return;
+    if (!G.open || !G.host || G.ghost || ru_frozen || G.locked) return;
     v = ru_set ? ru_want & ru_can : 0;
     for (i = 0; i < MAXCONN; i++) if (G.conns[i].used && G.conns[i].haveplayer) {
         who++;
@@ -77,12 +80,25 @@ static void ru_on_caps(int ci, const BYTE *f, DWORD n)
          memcmp(f, ru_id, RU_ID) ? " - not this patch: the original rules" : "");
 }
 
-/* host, cs held: the session locked (the game started): the rules stay */
-static void ru_lock(void)
+/* host, cs held: the game starts (its start message, or the lock if that never came): the rules stay as they are, and
+ * every joiner that said who it is gets them once more with locked = 1, before the start message on its conn, so it
+ * keeps them too (a host hand-over or a late frame can't change them afterwards). */
+static void ru_lock(const char *why)
 {
-    if (!G.host || ru_frozen) return;
+    DWORD frame[2];
+    int i;
+    if (!G.open || !G.host || G.ghost || ru_frozen) return;
     ru_frozen = 1;
-    SLOG("rules: %08lx for this game (session locked)", (unsigned long)ru_rules);
+    SLOG("rules: %08lx for this game (%s)", (unsigned long)ru_rules, why);
+    frame[0] = (DWORD)ru_rules; frame[1] = 1;
+    for (i = 0; i < MAXCONN; i++) if (G.conns[i].used && G.conns[i].ru_has) osend(G.conns[i].o, T_RULES, frame, 8);
+}
+
+/* host, cs held, before the game's message is queued: the game's start message (type 0x04, 12 bytes; FUN_004329ec
+ * sends it just before it locks the session) freezes the rules */
+static void ru_on_send(const BYTE *buf, DWORD size)
+{
+    if (size == 12 && buf[0] == 0x04 && !G.locked) ru_lock("the game starts");
 }
 
 /* host: T_INFO for a joiner, with the marker */
@@ -109,10 +125,14 @@ static void ru_join(const BYTE *info, DWORD n)
 /* joiner, cs held: the host's T_RULES */
 static void ru_on_rules(const BYTE *f, DWORD n)
 {
+    DWORD v, locked;
     if (n < 8 || !ru_host_aware || ru_frozen) return;
-    if ((DWORD)ru_rules != *(const DWORD *)f || !ru_have) SLOG("rules: %08lx from the host", (unsigned long)*(const DWORD *)f);
-    InterlockedExchange(&ru_rules, (LONG)*(const DWORD *)f);
+    v = *(const DWORD *)f; locked = *(const DWORD *)(f + 4);
+    if ((DWORD)ru_rules != v || !ru_have || locked)
+        SLOG("rules: %08lx from the host%s", (unsigned long)v, locked ? " for this game" : "");
+    InterlockedExchange(&ru_rules, (LONG)v);
     InterlockedExchange(&ru_have, 1);
+    if (locked) ru_frozen = 1;
 }
 
 /* ddraw: who we are, what we can run, what we want (the host's want decides). Before a session and whenever it changes;
