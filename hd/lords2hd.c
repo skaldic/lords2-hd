@@ -4687,7 +4687,7 @@ static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 static const char *menu_desc(int i, int line)
 {
 	static const char *const kDesc[][2] = {
-		{ "A food that runs out is made up from the other one (the", "original fed the full ration). Off in multiplayer games" }, // M_JEN_RATION
+		{ "A food that runs out is made up from the other (the", "original fed the full ration). Multiplayer: the host decides" }, // M_JEN_RATION
 		{ "In a multiplayer game, messages stay up until you close", "them (the original closed most of them at once)" },          // M_JEN_MPMSG
 		{ "On: droughts and storms destroy fields (the original).", "Off: they don't. Single player games only" },                  // M_JEN_FIELDS
 		{ "On: armies in an enemy county destroy its fields (the", "original). Off: they don't. Single player games only" },       // M_JEN_PILLAGE
