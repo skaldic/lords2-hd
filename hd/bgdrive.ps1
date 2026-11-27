@@ -11,7 +11,7 @@ param(
     [switch]$Stop,
     [string]$Game = ""   # another copy of the game (e.g. a test install from the release zip)
 )
-$game = if ($Game) { $Game } else { Split-Path (Split-Path $PSScriptRoot -Parent) -Parent }
+. "$PSScriptRoot\..\tools\game_folder.ps1"; $game = Get-GameFolder $Game
 $shots = Join-Path $PSScriptRoot "shots"
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace BG -Name M -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);'
@@ -29,7 +29,7 @@ $view = [IntPtr][long]((Get-Content $info -ErrorAction Stop) -split ' ')[0]
 $base = 0x8100   # WM_REMOTE in lords2hd.c
 function Post([int]$n, [long]$w, [long]$l) { [void][BG.M]::PostMessage($view, $base + $n, [IntPtr]$w, [IntPtr]$l) }
 function XY([string]$a) { $x, $y = $a -split ','; return ([long][int]$y -shl 16) -bor ([int]$x -band 0xffff) }
-$keys = @{ '{ESC}' = 0x1b; '{ENTER}' = 0x0d; '{LEFT}' = 0x25; '{UP}' = 0x26; '{RIGHT}' = 0x27; '{DOWN}' = 0x28; '{TAB}' = 0x09; '{BACKSPACE}' = 0x08; '{SPACE}' = 0x20; '{F8}' = 0x77; '{F10}' = 0x79; '{COMMA}' = 0xBC; '{PERIOD}' = 0xBE }
+$keys = @{ '{ESC}' = 0x1b; '{ENTER}' = 0x0d; '{LEFT}' = 0x25; '{UP}' = 0x26; '{RIGHT}' = 0x27; '{DOWN}' = 0x28; '{TAB}' = 0x09; '{BACKSPACE}' = 0x08; '{SPACE}' = 0x20; '{F8}' = 0x77; '{F10}' = 0x79; '{F11}' = 0x7a; '{COMMA}' = 0xBC; '{PERIOD}' = 0xBE }
 New-Item -ItemType Directory -Force $shots | Out-Null
 foreach ($step in $Steps) {
     if (-not [BG.M]::IsWindow($view)) { "the game's window is gone (step '$step')"; break }

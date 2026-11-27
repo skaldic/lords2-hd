@@ -112,6 +112,7 @@ static void draw_timed(int which, LARGE_INTEGER t0)
 // 1 move, 2/3 left down/up, 5/6 right down/up (lParam = game x, y), 4 key (wParam = virtual key),
 // 0x10 screenshot (the 2x picture as lords2hd-shot.bmp next to the game).
 static BOOL g_remote;
+static BOOL g_lbDown; // the left button, as the driver last sent it (left_button_down)
 // An open drop-down menu in the zoomed-out battle (screen 50): the game draws it at battlefield
 // scale at g_menuX, g_menuY (h_menu_open); it is shown doubled from that corner, like the top bar
 // its title is in, 13 x 12 cells of 16 (the panel FUN_0040c725 draws and refreshes).
@@ -3997,8 +3998,8 @@ static BYTE g_shown8[MAX_W * GAME_H];
 // the conveniences the patch adds to the game. (F8 is the game's own: it goes back to the last turn.)
 static int g_menuSel, g_menuTab;
 static BOOL g_showScreens = TRUE, g_showTiles = TRUE; // the AI art shown (loaded only if on at start)
-#define MENU_TABS 4
-static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox; // in game coordinates, as last drawn
+#define MENU_TABS 11
+static RECT g_menuRow[16], g_menuTabRect[MENU_TABS], g_menuBox, g_menuLink; // in game coordinates, as last drawn
 static int g_menuRows;
 static BOOL g_wantWideSet, g_battleZoomSet;
 // The Battles tab's fixes: g_bfSet[] is the panel's choice, taken at the next battle's start (battle_reset),
@@ -4012,21 +4013,728 @@ static BOOL g_bfSet[BF_COUNT], g_bfOk[BF_COUNT];
 static int g_aiLevelSet;
 static BOOL g_aiOk;
 static const char *const kAiLevel[AI_LEVELS] = { "Normal", "Hard", "Legendary" };
+// Jen With a B's Mods ([Game] JenMods, on by default): the fixes and mods from Jen With a B's Lords II Mod Manager,
+// rewritten here. On, they work (each by its own switch) and their own F10 tab shows; off, the game is as
+// without them. Every one of them takes effect at once.
+static BOOL g_jenMods;
+static BOOL g_fixRation, g_rationHooked;   // the food ration fix: its switch; its code went in (ration_stub)
+static BOOL g_mpMsgFix;                    // multiplayer messages: its switch (mpmsg_apply puts it in or out)
+// Multiplayer messages (see install_game_fixes): the 6 bytes at 0x00472f20 changed or put back, in one
+// 8-byte write (the site is 8-aligned), so the game never runs half of each.
+static BOOL mpmsg_apply(BOOL on)
+{
+	static const BYTE kClose[6] = { 0x0F, 0x85, 0x17, 0x00, 0x00, 0x00 }, kKeep[6] = { 0x75, 0x35, 0x90, 0x90, 0x90, 0x90 };
+	volatile LONGLONG *q = (volatile LONGLONG *)0x00472f20;
+	BYTE now[8], want[8];
+	memcpy(now, (const void *)q, 8);
+	if (memcmp(now, on ? kKeep : kClose, 6) == 0) return TRUE;   // already so
+	if (memcmp(now, on ? kClose : kKeep, 6) != 0) return FALSE;  // not the code we know
+	memcpy(want, now, 8); memcpy(want, on ? kKeep : kClose, 6);
+	DWORD old;
+	if (!VirtualProtect((void *)q, 8, PAGE_EXECUTE_READWRITE, &old)) return FALSE;
+	LONGLONG w, n; memcpy(&w, want, 8); memcpy(&n, now, 8);
+	InterlockedCompareExchange64((volatile LONGLONG *)q, w, n);
+	VirtualProtect((void *)q, 8, old, &old);
+	FlushInstructionCache(GetCurrentProcess(), (void *)q, 8);
+	return memcmp((const void *)q, want, 8) == 0;
+}
+// The castle and field mods from Jen With a B's Mod Manager (Jen's patch sites and values), single player only: in a
+// multiplayer game (DAT_00553030) the game's own code is back, as each player's settings could differ. They
+// are changes to the game's code, put in or taken out by jen_sync on the game's thread (window_proc, the F10
+// panel, start-up); each site is checked to hold what was last put there before it is written.
+typedef struct { DWORD at; BYTE n; BYTE game[6], mod[6]; } JenSite;
+// Weather wrecking fields (FUN_00449889, each county at the season's weather): a drought (weather 1) or storms
+// (5) destroy fields (FUN_00469a9c 0x18 / 0x17, message 0x8f / 0x90 to the owner). Off: the two "weather 1 / 5?"
+// jne become jmp to the same place, so neither happens.
+static const JenSite kFieldLossSites[] = {
+	{ 0x00449c79, 6, { 0x0F, 0x85, 0x48, 0x00, 0x00, 0x00 }, { 0xE9, 0x49, 0x00, 0x00, 0x00, 0x90 } },
+	{ 0x00449cd9, 6, { 0x0F, 0x85, 0x48, 0x00, 0x00, 0x00 }, { 0xE9, 0x49, 0x00, 0x00, 0x00, 0x90 } },
+};
+// Pillaging: an army in a county its lord doesn't own destroys a field each step (FUN_0046673c: FUN_00469e5b,
+// the two lords' relations FUN_004a1ee1, sound 3). Off: that "owner differs?" jne becomes a jmp to the end (the
+// army's counter before it still counts). And, as Jen's, the AI's step for its threatened counties without a
+// castle (FUN_0049f431, called from FUN_0049f93d: an army raised from the people, the food moved out) is not
+// called: its call is nopped (the caller's add esp,4 after it stays).
+static const JenSite kPillageSites[] = {
+	{ 0x00466814, 6, { 0x0F, 0x85, 0x05, 0x00, 0x00, 0x00 }, { 0xE9, 0x75, 0x00, 0x00, 0x00, 0x90 } },
+	{ 0x0049f95f, 5, { 0xE8, 0xCD, 0xFA, 0xFF, 0xFF }, { 0x90, 0x90, 0x90, 0x90, 0x90 } },
+};
+// Castle doors in a siege (FUN_00483a88 and FUN_00484a0c, a blow on a door): the inner door gives way after
+// 5000 points of blows, the outer one after 20000 (cmp immediates).
+#define DOOR_IN 5000
+#define DOOR_OUT 20000
+#define DOOR_MAX 100000
+static const DWORD kDoorInSites[] = { 0x00483aeb, 0x00484a5c }, kDoorOutSites[] = { 0x00483b41, 0x00484ac7 };
+// Reclaiming a destroyed field (FUN_0044c093 a season's work, FUN_0044c278 the forecast): 800 work in all, at most
+// 200 a season on one field; the field's picture steps at a quarter, half and three quarters of the work.
+#define RECLAIM_WORK 800
+#define RECLAIM_MEN 200
+#define RECLAIM_MAX 10000   // (the work done is kept in a short)
+static const DWORD kReclaimWorkSites[] = { 0x0044c187, 0x0044c195, 0x0044c205, 0x0044c2f2, 0x0044c45b, 0x0044c469, 0x0044c4c6 };
+static const DWORD kReclaimMenSites[] = { 0x0044c15a, 0x0044c167, 0x0044c16e, 0x0044c312, 0x0044c31f, 0x0044c42e, 0x0044c43b,
+	0x0044c442, 0x0044c4f5, 0x0044c502 };
+static const DWORD kReclaimStageSites[3] = { 0x0044c19f, 0x0044c1c1, 0x0044c1e3 };
+static DWORD reclaim_stage(int k, int work) { return (DWORD)((k * work + 3) / 4); } // as Jen's: 200, 400, 600 for 800
+// The F10 choices (the ini takes any value from 1 to the most)
+static const int kDoorInSteps[] = { 1000, 2500, 5000, 10000, 20000, 50000, 100000 };
+static const int kDoorOutSteps[] = { 5000, 10000, 20000, 40000, 80000, 100000 };
+static const int kReclaimWorkSteps[] = { 200, 400, 800, 1600, 3200 };
+static const int kReclaimMenSteps[] = { 100, 200, 400, 800 };
+static const int kPopSteps[] = { 0, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000 };   // (0: the game's own)
+static const int kArmySteps[] = { 500, 1000, 1500, 2000, 3000, 5000, 10000 };
+static int step_next(int v, const int *s, int n) { for (int i = 0; i < n; i++) if (s[i] > v) return s[i]; return s[0]; }
+// Castle garrisons (Jen's Castle Garrison Limits): how many men each kind of castle holds, DAT_004d8a10 (150, 200,
+// 200, 400, 600), read wherever a castle's room counts (an army going in, the castle screen, the AI). On: every
+// castle holds as many as an army may (the game's army limit, the cmp at 0x4a97c1: 1500). The AI's garrison
+// planning (FUN_0049f12f: mov eax,[eax*4+004d8a10] at 0x49f28f) reads the original sizes from a copy, capped by the
+// army limit, as Jen's: else computer lords would empty their counties into their castles.
+static const DWORD kCastleCap[5] = { 150, 200, 200, 400, 600 };
+#define CASTLE_CAP ((DWORD *)0x004d8a10)
+#define AI_CAP_READ 0x0049f28f
+static DWORD g_aiCap[5];
+static DWORD army_limit(void) { return *(const DWORD *)0x004a97c4; } // (the army size limit, 1500 in the game)
+static BOOL g_jenFieldLoss = TRUE, g_jenPillage = TRUE, g_jenGarrison;   // the switches: on / off are the game's own
+static int g_jenDoorIn = DOOR_IN, g_jenDoorOut = DOOR_OUT, g_jenWork = RECLAIM_WORK, g_jenMen = RECLAIM_MEN;
+enum { JC_FIELD, JC_PILLAGE, JC_DOOR, JC_RECLAIM, JC_GARRISON, JC_COUNT };
+static BOOL g_jcOk[JC_COUNT];   // its sites held the game's code at start-up
+static struct { BOOL fieldOff, pillageOff; int garrison, doorIn, doorOut, work, men; } g_jcNow; // what is in the code now (garrison: each castle's, 0 = the game's)
+static BOOL code_put(DWORD at, const void *b, int n)
+{
+	DWORD old;
+	if (!VirtualProtect((void *)at, n, PAGE_EXECUTE_READWRITE, &old)) return FALSE;
+	memcpy((void *)at, b, n);
+	VirtualProtect((void *)at, n, old, &old);
+	FlushInstructionCache(GetCurrentProcess(), (void *)at, n);
+	return TRUE;
+}
+static BOOL sites_hold(const JenSite *s, int n, BOOL mod)
+{
+	for (int i = 0; i < n; i++) if (memcmp((const void *)s[i].at, mod ? s[i].mod : s[i].game, s[i].n)) return FALSE;
+	return TRUE;
+}
+static BOOL sites_put(const JenSite *s, int n, BOOL mod)
+{
+	if (!sites_hold(s, n, !mod)) return sites_hold(s, n, mod);
+	BOOL ok = TRUE;
+	for (int i = 0; i < n; i++) ok &= code_put(s[i].at, mod ? s[i].mod : s[i].game, s[i].n);
+	return ok && sites_hold(s, n, mod);
+}
+static BOOL dwords_hold(const DWORD *at, int n, DWORD v) { for (int i = 0; i < n; i++) if (*(const DWORD *)at[i] != v) return FALSE; return TRUE; }
+static BOOL dwords_put(const DWORD *at, int n, DWORD from, DWORD to)
+{
+	if (!dwords_hold(at, n, from)) return FALSE;
+	for (int i = 0; i < n; i++) if (!code_put(at[i], &to, 4)) return FALSE;
+	return TRUE;
+}
+static BOOL reclaim_hold(int work, int men)
+{
+	if (!dwords_hold(kReclaimWorkSites, 7, work) || !dwords_hold(kReclaimMenSites, 10, men)) return FALSE;
+	for (int k = 0; k < 3; k++) if (*(const DWORD *)kReclaimStageSites[k] != reclaim_stage(k + 1, work)) return FALSE;
+	return TRUE;
+}
+// Jen With a B's game, economy and unit mods (Jen's patch sites and values, read from Mod Manager 1.4.1), single
+// player only like the castle mods: jen_sync puts the game's own back in a multiplayer game. The four that run code of
+// ours (game speed, resource multiplier, population average, merchant prices) are hooked once at start-up and do
+// what the game does while the g_live* values jen_sync sets say so.
+//
+// Uncapped game speed: the game speed slider's "+" (FUN_00434e9e, shared with the slider at 0x53f234) adds 10 while
+// below 100 (speed 10): its jge at 0x434eb1. On: no limit for the game speed (the other slider keeps its own). Off
+// again: a speed above 10 is set back to 10 (as Jen's).
+#define SPEED_AT 0x00434eb1
+#define GAME_SPEED ((int *)0x0053f230)
+// Black Death (FUN_00448f6f, the plague in a county): a county under 100 people is spared it. Off (Jen's Disabled):
+// every county is (the jge after "under 100?" nopped; the event still comes up, as Jen's). Milder (Jen's 50% Reduced):
+// the people it takes (40, 30, 20 or 30 in a hundred by difficulty, DAT_0053fbab) halved, and the county's DAT_0053f9bb
+// loses 10 instead of 20, capped at 63 instead of 25.
+static const JenSite kPlagueOff[] = { { 0x00448f83, 6, { 0x0F, 0x8D, 0x23, 0x00, 0x00, 0x00 }, { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } } };
+static const JenSite kPlagueMild[] = {
+	{ 0x00448fc6, 1, { 0xD8 }, { 0xEC } }, { 0x00448fe6, 1, { 0xE2 }, { 0xF1 } }, { 0x00449006, 1, { 0xEC }, { 0xF6 } },
+	{ 0x00449026, 1, { 0xE2 }, { 0xF1 } }, { 0x00449037, 1, { 0x14 }, { 0x0A } }, { 0x00449055, 1, { 0x19 }, { 0x3F } },
+	{ 0x00449069, 1, { 0x19 }, { 0x3F } },
+};
+// Uncapped resources: an industry's output in a season is at most 999 (FUN_0044ef4e, the mov at 0x44f00d, for wood,
+// iron and stone). On: 99,999,999.
+#define RES_CAP_AT 0x0044f010
+#define RES_CAP 999
+#define RES_UNCAPPED 99999999
+// Resource multiplier (1x to 10x): a season's wood, iron and stone (FUN_0044ea92 at 0x44ec79, industry 0, 1 and 3;
+// not the blacksmith's weapons, 2) and the forecast of it (FUN_0044f318 at 0x44f5eb) times the multiplier; the output
+// still capped at 999 unless Uncapped resources is on.
+#define RESMUL_PROD 0x0044ec79
+#define RESMUL_UI 0x0044f5eb
+#define RESMUL_MAX 10
+// Population average (Jen's): each county's births at its season's growth (FUN_00449ef3, at 0x44a290 before
+// population += births - deaths) steered towards a long-run average (pop_births). 0 = the game's own.
+#define POP_AT 0x0044a290
+#define POP_MIN 500
+#define POP_MAX 5000
+// Army size: the most men in an army (two cmp immediates; the game's 1500). Castle garrisons follow it.
+static const DWORD kArmySites[2] = { 0x004a97c4, 0x004aa1b5 };
+#define ARMY_SIZE 1500
+#define ARMY_MIN 50
+#define ARMY_MAX 10000
+// Scaled army icons: an army shows one man up to 300, two up to 600, three above (cmp immediates at 0x465250 and
+// 0x4652b0). On: a fifth and two fifths of the army size.
+static const DWORD kIconSites[2] = { 0x00465257, 0x004652b7 };
+#define ICON_1 300
+#define ICON_2 600
+// Unit stats and costs (Jen's Unit Stats and Unit Costs), each unit's in the game's tables:
+// Indexed by the unit type (melee m, auto-calc a: 0 peasants, 1 crossbowmen, 2 maces, 3 swords, 4 pikemen, 5 archers,
+// 6 knights; the battle set-up handler of type t is the dword at 0x4d9140 + 4 t), the weapons by weapon w = type - 1:
+//   melee strength  4 words at 0x4d98f8 + 8 m (Jen's: the first set, the other three scaled with it)
+//   ranged defence  the imm8 of a mov byte [eax + 0x5545f2] in each type's set-up handler
+//   auto-calc       a dword at 0x4d4b98 + 4 a (its strength when a battle is worked out)
+//   wood, iron      the blacksmith's cost of one, dwords at 0x4d8990 + 8 w and + 4
+//   sell price      the merchant's, a dword at 0x4d8910 + 4 s, copied to 0x5532a0 + 16 s at a new game (FUN_0042847c)
+//   buy price       the game's is the sell price + the merchant's share (FUN_0041608b, FUN_00428xxx and the AI's
+//                   FUN_004a4xxx); a set price replaces it there, by four hooks (merchant stubs), held at or above
+//                   the live sell price
+//   ranged          archers' and crossbowmen's at 0x4d97b0 + 20 k: range in cells x 8, attack speed (25, 50 or 100:
+//                   the time between shots), ranged strength at + 12
+#define UNITS 7
+enum { US_MELEE, US_RDEF, US_AUTO, US_RSTR, US_RANGE, US_SPEED, UC_WOOD, UC_IRON, UC_SELL, UC_BUY, US_COUNT };
+#define UNIT_STATS 6   // the Unit stats tab's (US_*), then the Unit costs tab's 4 (UC_*)
+#define UNIT_COSTS 4
+static const char *const kUnitName[UNITS] = { "Peasants", "Archers", "Swordsmen", "Macemen", "Pikemen", "Crossbowmen", "Knights" };
+static const char *const kUnitKey[UNITS] = { "Peasant", "Archer", "Swordsman", "Maceman", "Pikeman", "Crossbowman", "Knight" };
+static const char *const kStatKey[US_COUNT] = { "MeleeStrength", "RangedDefence", "AutoCalcStrength", "RangedStrength",
+	"AttackRange", "AttackSpeed", "WoodCost", "IronCost", "SellPrice", "BuyPrice" };
+static const int kStatMin[US_COUNT] = { 1, 0, 0, 0, 0, 25, 0, 0, 1, 1 }, kStatMax[US_COUNT] = { 100, 100, 100, 1000, 50, 100, 10000, 10000, 10000, 10000 };
+static const signed char kUnitMelee[UNITS] = { 0, 5, 3, 2, 4, 1, 6 }, kUnitAuto[UNITS] = { 0, 5, 3, 2, 4, 1, 6 },
+	kUnitCost[UNITS] = { -1, 4, 2, 1, 3, 0, 5 }, kUnitPrice[UNITS] = { -1, 10, 13, 11, 9, 12, 14 }, kUnitRanged[UNITS] = { -1, 1, -1, -1, -1, 2, -1 };
+static const DWORD kUnitRdefAt[UNITS] = { 0x00482640, 0x00482a7d, 0x004828cb, 0x004827f2, 0x004829a4, 0x00482719, 0x00482b56 };
+static const WORD kMeleeGame[UNITS][4] = { { 5, 4, 3, 2 }, { 5, 4, 3, 2 }, { 15, 12, 10, 6 }, { 15, 12, 10, 6 }, { 10, 8, 6, 5 }, { 5, 4, 3, 2 }, { 20, 15, 11, 6 } };
+// The game's values as the panel shows them (range in cells; buy 0: the game's own price; -1: the unit has none)
+static const int kUnitGame[UNITS][US_COUNT] = {
+	{ 5, 0, 2, -1, -1, -1, -1, -1, -1, -1 },          // peasants
+	{ 5, 0, 13, 50, 15, 50, 13, 0, 16, 0 },          // archers
+	{ 15, 35, 13, -1, -1, -1, 3, 10, 23, 0 },        // swordsmen
+	{ 15, 12, 8, -1, -1, -1, 4, 4, 10, 0 },          // macemen
+	{ 10, 35, 9, -1, -1, -1, 6, 3, 13, 0 },          // pikemen
+	{ 5, 12, 16, 200, 8, 100, 6, 10, 24, 0 },        // crossbowmen
+	{ 20, 25, 22, -1, -1, -1, 4, 18, 44, 0 },        // knights
+};
+static const DWORD kRangedRest[UNITS] = { 0, 4, 0, 0, 0, 4, 0 }; // (+8 of the ranged record, not changed; checked)
+static BOOL unit_has(int u, int s) { return kUnitGame[u][s] >= 0; }
+static DWORD unit_at(int u, int s) // where it is kept
+{
+	switch (s) {
+	case US_MELEE: return 0x004d98f8 + 8 * kUnitMelee[u];
+	case US_RDEF: return kUnitRdefAt[u];
+	case US_AUTO: return 0x004d4b98 + 4 * kUnitAuto[u];
+	case US_RSTR: return 0x004d97b0 + 20 * kUnitRanged[u] + 12;
+	case US_RANGE: return 0x004d97b0 + 20 * kUnitRanged[u];
+	case US_SPEED: return 0x004d97b0 + 20 * kUnitRanged[u] + 4;
+	case UC_WOOD: return 0x004d8990 + 8 * kUnitCost[u];
+	case UC_IRON: return 0x004d8994 + 8 * kUnitCost[u];
+	case UC_SELL: return 0x004d8910 + 4 * kUnitPrice[u];
+	}
+	return 0;
+}
+static void melee_words(int u, int v, WORD w[4]) // Jen's: the first v, the others in proportion
+{
+	int b0 = kMeleeGame[u][0];
+	for (int k = 0; k < 4; k++) { int x = (kMeleeGame[u][k] * v + b0 / 2) / b0; w[k] = (WORD)min(x, 0xffff); }
+	w[0] = (WORD)v;
+}
+static BOOL unit_holds(int u, int s, int v)
+{
+	DWORD at = unit_at(u, s);
+	if (s == US_MELEE) { WORD w[4]; melee_words(u, v, w); return memcmp((const void *)at, w, 8) == 0; }
+	if (s == US_RDEF) return *(const BYTE *)at == v;
+	if (s == US_RANGE) return *(const DWORD *)at == (DWORD)v * 8;
+	return *(const DWORD *)at == (DWORD)v;
+}
+static BOOL unit_put(int u, int s, int v)
+{
+	DWORD at = unit_at(u, s);
+	if (s == US_MELEE) { WORD w[4]; melee_words(u, v, w); return code_put(at, w, 8); }
+	if (s == US_RDEF) { BYTE b = (BYTE)v; return code_put(at, &b, 1); }
+	DWORD d = s == US_RANGE ? (DWORD)v * 8 : (DWORD)v;
+	return code_put(at, &d, 4);
+}
+static int g_jenSpeed, g_jenPlague, g_jenPop, g_jenUncap, g_jenResMul = 1, g_jenArmy = ARMY_SIZE, g_jenIcons; // the switches
+static int g_unitSet[UNITS][US_COUNT];   // the units' settings: -1 = the game's own
+static int g_unitSel = 1;                // the unit the Unit stats and Unit costs tabs show (archers: they have every one)
+enum { JE_SPEED, JE_PLAGUE, JE_RESCAP, JE_RESMUL, JE_POP, JE_ARMY, JE_ICONS, JE_UNITS, JE_BUY, JE_COUNT };
+static BOOL g_jeOk[JE_COUNT];            // its sites held the game's code or data at start-up (the hooks: they went in)
+static BOOL g_jeHooked[JE_COUNT];        // (the hooks: put in once, by install_game_fixes)
+static struct { int plague, uncap, army, icon1, icon2, unit[UNITS][US_COUNT], sellLive[UNITS]; } g_jeNow; // in the game now
+// What the hooks do now (jen_sync): 0 / 1x = the game's own
+static volatile LONG g_liveSpeed, g_liveResMul = 1, g_liveUncap, g_livePop, g_liveBuy[16];
+static int unit_orig(int u, int s) { return kUnitGame[u][s]; }
+static int unit_value(int u, int s) { return g_unitSet[u][s] >= 0 ? g_unitSet[u][s] : unit_orig(u, s); }
+// The panel's choices for a unit's stat, ascending, its original among them: half to three times it (for an original
+// 0, a few small ones); attack speed 25, 50 or 100 (Jen's); the buy price the game's own (0), then from the sell price (as
+// set now) up to six times it, round twice it (never below it: l2hd_buy_price holds it there).
+static int unit_steps(int u, int s, int *out)
+{
+	static const int kPct[] = { 50, 75, 100, 125, 150, 200, 300 }, kFromZero[] = { 0, 5, 10, 25, 50 };
+	static const int kSpeed[] = { 25, 50, 100 };
+	int n = 0, o = unit_orig(u, s);
+	if (!unit_has(u, s)) return 0;
+	if (s == US_SPEED) { for (int i = 0; i < 3; i++) out[n++] = kSpeed[i]; return n; }
+	if (s == UC_BUY) { out[n++] = 0; o = 2 * unit_value(u, UC_SELL); }
+	for (int i = 0; i < (o ? 7 : 5); i++) {
+		int v = o ? (o * kPct[i] + 50) / 100 : kFromZero[i];
+		v = max(kStatMin[s], min(kStatMax[s], v));
+		if (n && out[n - 1] >= v) continue;
+		out[n++] = v;
+	}
+	return n;
+}
+static void unit_write_ini(int u, int s)
+{
+	char key[48], v[16]; snprintf(key, sizeof key, "%s%s", kUnitKey[u], kStatKey[s]); snprintf(v, sizeof v, "%d", g_unitSet[u][s]);
+	WritePrivateProfileStringA("Units", key, g_unitSet[u][s] < 0 ? NULL : v, g_iniPath);
+}
+static void unit_step(int u, int s) // the next choice up, round to the first
+{
+	int st[8], n = unit_steps(u, s, st), cur = s == UC_BUY ? max(g_unitSet[u][s], 0) : unit_value(u, s), v;
+	if (!n) return;
+	v = st[0];
+	for (int i = 0; i < n; i++) if (st[i] > cur) { v = st[i]; break; }
+	g_unitSet[u][s] = s == UC_BUY ? (v > 0 ? v : -1) : v == unit_orig(u, s) ? -1 : v;
+	unit_write_ini(u, s);
+}
+static void unit_read_ini(void)
+{
+	for (int u = 0; u < UNITS; u++)
+		for (int s = 0; s < US_COUNT; s++) {
+			char key[48]; snprintf(key, sizeof key, "%s%s", kUnitKey[u], kStatKey[s]);
+			int v = unit_has(u, s) ? GetPrivateProfileIntA("Units", key, -1, g_iniPath) : -1;
+			if (v < 0 || (s == UC_BUY && v == 0)) v = -1;   // (negative: not set; buy 0: the game's own price, as the panel writes it)
+			if (v >= 0) v = max(kStatMin[s], min(kStatMax[s], v));
+			if (v >= 0 && s == US_SPEED) v = v < 38 ? 25 : v < 75 ? 50 : 100;   // (Jen's three)
+			if (v == unit_orig(u, s) && s != UC_BUY) v = -1;
+			g_unitSet[u][s] = v;
+		}
+}
+static void unit_text(int u, int s, char *v, int n)
+{
+	int x = unit_value(u, s), o = unit_orig(u, s);
+	if (!unit_has(u, s)) { snprintf(v, n, "-"); return; }   // (peasants have no ranged stats, nor a price)
+	if (s == US_SPEED) {
+		if (x == o) snprintf(v, n, "Original (%d)", x);
+		else snprintf(v, n, "%dx %s", x < o ? o / x : x / o, x < o ? "faster" : "slower");
+	}
+	else if (s == UC_BUY) {
+		if (g_unitSet[u][s] <= 0) snprintf(v, n, "Original (sell price + share)");
+		else if (x < unit_value(u, UC_SELL)) snprintf(v, n, "%d (the sell price)", unit_value(u, UC_SELL));   // (held there)
+		else snprintf(v, n, "%d", x);
+	}
+	else if (x == o) snprintf(v, n, "Original (%d%s)", x, s == US_RANGE ? " cells" : "");
+	else snprintf(v, n, "%d%s", x, s == US_RANGE ? " cells" : "");
+	int l = (int)strlen(v);
+	if (!g_jeOk[s == UC_BUY ? JE_BUY : JE_UNITS] && l < n) snprintf(v + l, n - l, " (unavailable)");
+}
+// Jen's Population Average for one county at its growth: the births pushed towards a long-run population near the
+// target (64-bit, as Jen's). Below 2000 (500 to 1900, in hundreds) the births are scaled by (50 T - 15 pop) / (1000
+// (rate pop / 100 + 1)), the rate falling from 100 to 1 as the county grows, up 250 a season at most; from 2000 on,
+// the births only gain (40 T - 15 pop) / 1000, at most 250. Either way the population stays under 6000.
+static int pop_births(int target, int pop, int births, int deaths, int emig, int immig)
+{
+	static const int kRate[20][2] = { { 40, 100 }, { 80, 70 }, { 100, 50 }, { 250, 30 }, { 500, 20 }, { 700, 15 }, { 800, 14 },
+		{ 900, 13 }, { 1000, 12 }, { 1100, 11 }, { 1200, 10 }, { 1300, 9 }, { 1400, 8 }, { 1500, 7 }, { 1600, 6 }, { 1700, 5 },
+		{ 1800, 4 }, { 1900, 3 }, { 2000, 2 }, { 3000, 1 } };
+	if (target <= 0 || pop < 1 || pop > 5999 || births < 0 || deaths < 0 || emig < 0 || immig < 0) return births;
+	long long room = 6000LL - pop - births + deaths + emig - immig;
+	if (target >= 2000) {
+		long long t = 40LL * target - 15LL * pop;
+		if (t <= 0 || room <= 0) return births;
+		long long bonus = (t + 500) / 1000;
+		if (bonus > room) bonus = room;
+		if (bonus < 1 || bonus > 250) return births;
+		return births + (int)bonus;
+	}
+	if (target < 500 || target % 100) return births;
+	long long num = 50LL * target - 15LL * pop, rate = 1;
+	if (num < 0) num = 0;
+	for (int i = 0; i < 20; i++) if (pop < kRate[i][0]) { rate = kRate[i][1]; break; }
+	long long a = rate * pop / 100;
+	if (a < 1) a = 1;
+	long long k = a * 1000 + 1000, r = (births * num + k / 2) / k;
+	if (r > births) {
+		long long up = r - births, cap = room > 0 ? room : 0;
+		if (up > 250) up = 250;
+		if (up > cap) up = cap;
+		r = births + up;
+	}
+	return r > 0x7fffffff ? births : (int)r;
+}
+// What jen_sync puts in now for these (on: Jen With a B's Mods on, a single player game). Army size before the army icons
+// and the castle garrisons, which follow it.
+static void jen_econ_sync(BOOL on)
+{
+	InterlockedExchange(&g_liveSpeed, on && g_jenSpeed && g_jeOk[JE_SPEED]);
+	if (!g_liveSpeed && g_jeOk[JE_SPEED] && *GAME_SPEED > 100) *GAME_SPEED = 100;   // (Jen's: back to speed 10)
+	int plague = on ? g_jenPlague : 0;
+	if (g_jeOk[JE_PLAGUE] && plague != g_jeNow.plague) {
+		BOOL ok = sites_put(kPlagueMild, 7, plague == 1) && sites_put(kPlagueOff, 1, plague == 2);
+		g_jeOk[JE_PLAGUE] = ok;
+		if (ok) g_jeNow.plague = plague;
+		logf_("black death: %s", !ok ? "failed: unexpected code" : plague == 2 ? "off" : plague ? "milder" : "the game's own");
+	}
+	int uncap = on && g_jenUncap ? RES_UNCAPPED : RES_CAP;
+	if (g_jeOk[JE_RESCAP] && uncap != g_jeNow.uncap) {
+		static const DWORD kAt[1] = { RES_CAP_AT };
+		BOOL ok = dwords_put(kAt, 1, g_jeNow.uncap, uncap);
+		g_jeOk[JE_RESCAP] = ok;
+		if (ok) g_jeNow.uncap = uncap;
+		logf_("uncapped resources: %s", !ok ? "failed: unexpected code" : uncap != RES_CAP ? "on" : "off (999 a season)");
+	}
+	InterlockedExchange(&g_liveUncap, g_jeNow.uncap != RES_CAP);
+	InterlockedExchange(&g_liveResMul, on && g_jeOk[JE_RESMUL] ? g_jenResMul : 1);
+	InterlockedExchange(&g_livePop, on && g_jeOk[JE_POP] ? g_jenPop : 0);
+	int army = on ? g_jenArmy : ARMY_SIZE;
+	if (g_jeOk[JE_ARMY] && army != g_jeNow.army) {
+		BOOL ok = dwords_put(kArmySites, 2, g_jeNow.army, army);
+		g_jeOk[JE_ARMY] = ok;
+		if (ok) g_jeNow.army = army;
+		logf_("army size: %s%d", ok ? "" : "failed: unexpected code; ", army);
+	}
+	int lim = g_jeNow.army, icon1 = on && g_jenIcons ? lim / 5 : ICON_1, icon2 = on && g_jenIcons ? lim * 2 / 5 : ICON_2;
+	if (g_jeOk[JE_ICONS] && (icon1 != g_jeNow.icon1 || icon2 != g_jeNow.icon2)) {
+		BOOL ok = dwords_put(&kIconSites[0], 1, g_jeNow.icon1, icon1) && dwords_put(&kIconSites[1], 1, g_jeNow.icon2, icon2);
+		g_jeOk[JE_ICONS] = ok;
+		if (ok) g_jeNow.icon1 = icon1, g_jeNow.icon2 = icon2;
+		logf_("army icons: %s%d and %d men", ok ? "" : "failed: unexpected code; ", icon1, icon2);
+	}
+	for (int u = 0; u < UNITS && g_jeOk[JE_UNITS]; u++)
+		for (int s = 0; s < UC_BUY; s++) {
+			if (!unit_has(u, s)) continue;
+			int want = on && g_unitSet[u][s] >= 0 ? g_unitSet[u][s] : unit_orig(u, s);
+			if (want == g_jeNow.unit[u][s]) continue;
+			if (!unit_holds(u, s, g_jeNow.unit[u][s]) || !unit_put(u, s, want)) {
+				g_jeOk[JE_UNITS] = FALSE;
+				logf_("unit stats: failed: unexpected data at %08lx", (unsigned long)unit_at(u, s));
+				break;
+			}
+			g_jeNow.unit[u][s] = want;
+			logf_("unit stats: %s %s %d", kUnitKey[u], kStatKey[s], want);
+		}
+	for (int u = 0; u < UNITS && g_jeOk[JE_UNITS]; u++) { // the sell price in the game being played (the copy a new game makes)
+		if (!unit_has(u, UC_SELL)) continue;
+		int *live = (int *)(0x005532a0 + 16 * kUnitPrice[u]), want = g_jeNow.unit[u][UC_SELL];
+		if (*live != want && (*live == unit_orig(u, UC_SELL) || *live == g_jeNow.sellLive[u])) *live = want;
+		g_jeNow.sellLive[u] = want;
+	}
+	for (int u = 0; u < UNITS; u++)
+		if (unit_has(u, UC_BUY)) InterlockedExchange(&g_liveBuy[kUnitPrice[u]], on && g_jeOk[JE_BUY] && g_unitSet[u][UC_BUY] > 0 ? g_unitSet[u][UC_BUY] : 0);
+}
+static void jen_econ_check(void)
+{
+	g_jeOk[JE_SPEED] = g_jeHooked[JE_SPEED];
+	g_jeOk[JE_PLAGUE] = sites_hold(kPlagueOff, 1, FALSE) && sites_hold(kPlagueMild, 7, FALSE);
+	static const DWORD kCapAt[1] = { RES_CAP_AT };
+	g_jeOk[JE_RESCAP] = *(const BYTE *)(RES_CAP_AT - 3) == 0xC7 && dwords_hold(kCapAt, 1, RES_CAP);
+	g_jeOk[JE_RESMUL] = g_jeHooked[JE_RESMUL];
+	g_jeOk[JE_POP] = g_jeHooked[JE_POP];
+	g_jeOk[JE_ARMY] = dwords_hold(kArmySites, 2, ARMY_SIZE);
+	g_jeOk[JE_ICONS] = *(const DWORD *)kIconSites[0] == ICON_1 && *(const DWORD *)kIconSites[1] == ICON_2;
+	BOOL units = TRUE;
+	for (int u = 0; u < UNITS; u++) {
+		for (int s = 0; s < UC_BUY; s++) if (unit_has(u, s) && !unit_holds(u, s, unit_orig(u, s))) units = FALSE;
+		if (kUnitRanged[u] >= 0 && *(const DWORD *)(0x004d97b0 + 20 * kUnitRanged[u] + 8) != kRangedRest[u]) units = FALSE;
+		if (*(const BYTE *)(kUnitRdefAt[u] - 6) != 0xC6 || *(const DWORD *)(kUnitRdefAt[u] - 4) != 0x005545f2) units = FALSE;
+	}
+	g_jeOk[JE_UNITS] = units;
+	g_jeOk[JE_BUY] = g_jeHooked[JE_BUY];
+	g_jeNow.plague = 0; g_jeNow.uncap = RES_CAP; g_jeNow.army = ARMY_SIZE; g_jeNow.icon1 = ICON_1; g_jeNow.icon2 = ICON_2;
+	for (int u = 0; u < UNITS; u++) {
+		for (int s = 0; s < US_COUNT; s++) g_jeNow.unit[u][s] = unit_orig(u, s);
+		g_jeNow.sellLive[u] = unit_orig(u, UC_SELL);
+	}
+	static const char *const kWhat[JE_COUNT] = { "00434eb1 (game speed)", "00448f83 (black death)", "0044f010 (uncapped resources)",
+		"0044ec79 (resource multiplier)", "0044a290 (population average)", "004a97c4 (army size)", "00465257 (army icons)",
+		"004d98f8 (unit stats)", "004162b1 (merchant prices)" };
+	for (int j = 0; j < JE_COUNT; j++) if (!g_jeOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
+}
+// At start-up: which of them can go in (the game's code at every site), all as the game's own for now.
+static void jen_castle_check(void)
+{
+	g_jcOk[JC_FIELD] = sites_hold(kFieldLossSites, 2, FALSE) && memcmp((const void *)0x00449c5e, "\x50\xE8\xC8\xF7\x01\x00", 6) == 0;
+	g_jcOk[JC_PILLAGE] = sites_hold(kPillageSites, 2, FALSE);
+	g_jcOk[JC_DOOR] = dwords_hold(kDoorInSites, 2, DOOR_IN) && dwords_hold(kDoorOutSites, 2, DOOR_OUT);
+	g_jcOk[JC_RECLAIM] = reclaim_hold(RECLAIM_WORK, RECLAIM_MEN);
+	g_jcOk[JC_GARRISON] = memcmp(CASTLE_CAP, kCastleCap, sizeof kCastleCap) == 0 && memcmp((const void *)AI_CAP_READ, "\x8B\x04\x85", 3) == 0 &&
+		*(const DWORD *)(AI_CAP_READ + 3) == (DWORD)CASTLE_CAP && *(const BYTE *)0x004a97c1 == 0x81 && army_limit() >= 50;
+	g_jcNow.fieldOff = g_jcNow.pillageOff = FALSE; g_jcNow.garrison = 0;
+	g_jcNow.doorIn = DOOR_IN; g_jcNow.doorOut = DOOR_OUT; g_jcNow.work = RECLAIM_WORK; g_jcNow.men = RECLAIM_MEN;
+	static const char *const kWhat[JC_COUNT] = { "00449c79 (weather and fields)", "00466814 (pillaging)", "00483aeb (castle doors)",
+		"0044c15a (field reclaim)", "004d8a10 (castle garrisons)" };
+	for (int j = 0; j < JC_COUNT; j++) if (!g_jcOk[j]) logf_("not hooked: unexpected code at %s", kWhat[j]);
+	jen_econ_check();
+}
+// Puts in what the switches ask for now (the game's own in a multiplayer game or with Jen With a B's Mods off). Cheap
+// when nothing changed: called for every window message.
+static void jen_sync(void)
+{
+	BOOL on = g_jenMods && !*(int *)0x00553030;
+	BOOL fieldOff = on && !g_jenFieldLoss, pillageOff = on && !g_jenPillage;
+	int doorIn = on ? g_jenDoorIn : DOOR_IN, doorOut = on ? g_jenDoorOut : DOOR_OUT;
+	int work = on ? g_jenWork : RECLAIM_WORK, men = on ? g_jenMen : RECLAIM_MEN;
+	jen_econ_sync(on);   // (the army size first: the garrisons follow it)
+	if (g_jcOk[JC_FIELD] && fieldOff != g_jcNow.fieldOff) {
+		g_jcOk[JC_FIELD] = sites_put(kFieldLossSites, 2, fieldOff);
+		if (g_jcOk[JC_FIELD]) g_jcNow.fieldOff = fieldOff;
+		logf_("weather wrecks fields: %s", !g_jcOk[JC_FIELD] ? "failed: unexpected code" : fieldOff ? "off" : "on (the game's own)");
+	}
+	if (g_jcOk[JC_PILLAGE] && pillageOff != g_jcNow.pillageOff) {
+		g_jcOk[JC_PILLAGE] = sites_put(kPillageSites, 2, pillageOff);
+		if (g_jcOk[JC_PILLAGE]) g_jcNow.pillageOff = pillageOff;
+		logf_("pillaging: %s", !g_jcOk[JC_PILLAGE] ? "failed: unexpected code" : pillageOff ? "off" : "on (the game's own)");
+	}
+	if (g_jcOk[JC_DOOR] && (doorIn != g_jcNow.doorIn || doorOut != g_jcNow.doorOut)) {
+		g_jcOk[JC_DOOR] = dwords_put(kDoorInSites, 2, g_jcNow.doorIn, doorIn) && dwords_put(kDoorOutSites, 2, g_jcNow.doorOut, doorOut);
+		if (g_jcOk[JC_DOOR]) g_jcNow.doorIn = doorIn, g_jcNow.doorOut = doorOut;
+		if (g_jcOk[JC_DOOR]) logf_("castle doors: inner %d, outer %d", doorIn, doorOut);
+		else logf_("castle doors: failed: unexpected code");
+	}
+	if (g_jcOk[JC_RECLAIM] && (work != g_jcNow.work || men != g_jcNow.men)) {
+		BOOL ok = reclaim_hold(g_jcNow.work, g_jcNow.men);
+		for (int i = 0; ok && i < 7; i++) ok = code_put(kReclaimWorkSites[i], &(DWORD){ (DWORD)work }, 4);
+		for (int i = 0; ok && i < 10; i++) ok = code_put(kReclaimMenSites[i], &(DWORD){ (DWORD)men }, 4);
+		for (int k = 0; ok && k < 3; k++) ok = code_put(kReclaimStageSites[k], &(DWORD){ reclaim_stage(k + 1, work) }, 4);
+		g_jcOk[JC_RECLAIM] = ok && reclaim_hold(work, men);
+		if (g_jcOk[JC_RECLAIM]) g_jcNow.work = work, g_jcNow.men = men;
+		if (g_jcOk[JC_RECLAIM]) logf_("field reclaim: %d work, %d a season", work, men);
+		else logf_("field reclaim: failed: unexpected code");
+	}
+	// (by the army limit as it is now: a garrison follows a changed army size)
+	DWORD lim = army_limit(), cap = on && g_jenGarrison ? lim : 0;
+	if (g_jcOk[JC_GARRISON] && cap != (DWORD)g_jcNow.garrison) {
+		BOOL garrison = cap != 0;
+		DWORD want[5], was[5];
+		for (int k = 0; k < 5; k++) {
+			want[k] = garrison ? cap : kCastleCap[k];
+			was[k] = g_jcNow.garrison ? (DWORD)g_jcNow.garrison : kCastleCap[k];
+		}
+		DWORD readWas = g_jcNow.garrison ? (DWORD)g_aiCap : (DWORD)CASTLE_CAP;
+		BOOL ok = memcmp(CASTLE_CAP, was, sizeof was) == 0 && *(const DWORD *)(AI_CAP_READ + 3) == readWas;
+		for (int k = 0; k < 5; k++) g_aiCap[k] = min(lim, kCastleCap[k]);
+		DWORD read = garrison ? (DWORD)g_aiCap : (DWORD)CASTLE_CAP;
+		ok = ok && code_put((DWORD)CASTLE_CAP, want, sizeof want) && code_put(AI_CAP_READ + 3, &read, 4);
+		g_jcOk[JC_GARRISON] = ok;
+		if (ok) g_jcNow.garrison = (int)cap;
+		if (!ok) logf_("castle garrisons: failed: unexpected code");
+		else if (garrison) logf_("castle garrisons: %lu in every castle (the AI plans for %lu %lu %lu %lu %lu)", (unsigned long)cap,
+			(unsigned long)g_aiCap[0], (unsigned long)g_aiCap[1], (unsigned long)g_aiCap[2], (unsigned long)g_aiCap[3], (unsigned long)g_aiCap[4]);
+		else logf_("castle garrisons: the game's own (150 200 200 400 600)");
+	}
+}
+static int clamp_ini(const char *key, int def, int most)
+{
+	int v = GetPrivateProfileIntA("Game", key, def, g_iniPath);
+	return v < 1 ? 1 : v > most ? most : v;
+}
+// Castle design (Jen's): a campaign siege fought on one of the game's skirmish castles instead of the castle's own
+// layout. A siege map is two 80x80 layers (the ground; the troops, gates and the rest), records 2*kind and 2*kind+1
+// of stnfield.pl8, read through the file loader by FUN_0047c4ba (its call at 0x47c5e4) and FUN_0047cec1 (0x47cf9d),
+// kind = DAT_00553528 (0 wooden palisade .. 4 royal castle). The skirmish sieges are the 15 castles of STNFIEL2.PL8,
+// in BATTLES.ENG's order (its 0, 1, 4, 5 and 6 are the campaign's five); each kind may take the ones Jen picked as
+// fitting it. From the next siege, in single player campaign games only (not the skirmish sieges, DAT_0057a0f0,
+// nor a multiplayer game); everything about the castle but its map (garrison, doors) stays its kind's.
+#define CD_REC 0x1900
+#define CD_LAYOUTS 15
+#define CD_KIND ((const int *)0x00553528)
+#define CD_SKIRMISH ((const int *)0x0057a0f0)
+static const char *const kCastleKind[5] = { "Wooden palisade", "Motte and bailey", "Norman keep", "Stone castle", "Royal castle" };
+static const char *const kCdKey[5] = { "PalisadeDesign", "MotteDesign", "KeepDesign", "StoneCastleDesign", "RoyalCastleDesign" };
+static const char *const kCdName[CD_LAYOUTS] = { "The Palisade", "Castle Acre", "River Island", "Wooden Palace", "Norman Keep",
+	"Bodiam Castle", "Royal Castle", "Leeds Castle", "Curtain Wall", "Chambers", "The Ell", "Island Castle", "Goodrich",
+	"Portchester", "Expanded Keep" };
+static const signed char kCdChoices[5][3] = { { 2, -1, -1 }, { 3, -1, -1 }, { 7, 14, -1 }, { 8, 10, 13 }, { 9, 11, 12 } }; // (Jen's)
+static int cd_count(int kind) { int n = 0; while (n < 3 && kCdChoices[kind][n] >= 0) n++; return n; }
+static int g_jenDesign[5];                          // each kind's choice: 0 its own layout, k its k-th skirmish castle
+static BYTE *g_cdRec;                               // STNFIEL2.PL8's 30 records (NULL: missing, or not as the game's)
+static BOOL g_cdCalls;                              // the two reads are the game's calls (their return addresses are known)
+static int g_cdKind = -1, g_cdLayout = -1;          // what the siege being set up got at its first read
+static int g_cdLastKind = -1, g_cdLastLayout = -1;  // the siege set up last (both layers given)
+static BOOL cd_ok(void) { return g_cdRec && g_cdCalls; }
+static void castle_design_load(void)
+{
+	static const char *const kWhere[2] = { "STNFIEL2.PL8", "Pl8\\STNFIEL2.PL8" };   // (where Jen's looks)
+	free(g_cdRec); g_cdRec = NULL;
+	for (int w = 0; w < 2 && !g_cdRec; w++) {
+		char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\%s", g_gameDir, kWhere[w]);
+		FILE *f = fopen(p, "rb");
+		if (!f) continue;
+		fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+		BYTE *b = n >= 0x1e8 + 30 * CD_REC && n < 0x1000000 ? malloc(n) : NULL;
+		BOOL ok = b && fread(b, 1, n, f) == (size_t)n;
+		fclose(f);
+		BYTE *rec = ok ? malloc(30 * CD_REC) : NULL;
+		for (int i = 0; rec && i < 30; i++) {   // record i's offset: 3 bytes at 16 * i + 12
+			long at = b[i * 16 + 12] | b[i * 16 + 13] << 8 | b[i * 16 + 14] << 16;
+			if (at < 0x1e8 || at > n - CD_REC) { free(rec); rec = NULL; break; }
+			memcpy(rec + i * CD_REC, b + at, CD_REC);
+		}
+		free(b);
+		g_cdRec = rec;
+	}
+	if (!g_cdRec) logf_("castle design: STNFIEL2.PL8 missing or not as the game's, so it is off");
+}
+static BOOL cd_file(const char *name)
+{
+	const char *b = name;
+	for (const char *p = name; *p; p++) if (*p == '\\' || *p == '/') b = p + 1;
+	return !lstrcmpiA(b, "stnfield.pl8");
+}
+// From the file loader (h_load_file), by its caller: the siege's ground (returning to 0x47c5e9) decides its layout,
+// the second layer (0x47cfa2) follows it. -1: the game reads its own.
+static int castle_design_read(const void *ret, const char *name, void *buffer, unsigned size)
+{
+	if (ret == (const void *)0x0047c5e9) {
+		g_cdKind = g_cdLayout = g_cdLastKind = g_cdLastLayout = -1;
+		int kind = *CD_KIND, k = kind >= 0 && kind < 5 ? g_jenDesign[kind] : 0;
+		if (!cd_ok() || !g_jenMods || *(const int *)0x00553030 || *CD_SKIRMISH || size != CD_REC || !cd_file(name) ||
+			k < 1 || k > cd_count(kind)) return -1;
+		g_cdKind = kind; g_cdLayout = kCdChoices[kind][k - 1];
+		memcpy(buffer, g_cdRec + 2 * g_cdLayout * CD_REC, CD_REC);
+		logf_("castle design: a siege on a %s, fought on %s", kCastleKind[kind], kCdName[g_cdLayout]);
+		return CD_REC;
+	}
+	if (ret != (const void *)0x0047cfa2) return -1;
+	int layout = g_cdLayout;
+	BOOL same = layout >= 0 && cd_ok() && *CD_KIND == g_cdKind && size == CD_REC && cd_file(name);
+	if (same) {
+		memcpy(buffer, g_cdRec + (2 * layout + 1) * CD_REC, CD_REC);
+		g_cdLastKind = g_cdKind; g_cdLastLayout = layout;
+	}
+	g_cdKind = g_cdLayout = -1;
+	return same ? CD_REC : -1;
+}
+// Expanded Keep on a Norman keep (Jen's fix): placing the troops (FUN_0046e4c8: FUN_0046e70e tries FUN_00496155, the
+// nearest free cell in a growing ring, at 0x46e73c), the one meant for (44,27) lands at (45,26), outside the walls. It
+// goes to (43,24) when that cell is free. Only on that layout as STNFIEL2.PL8 has it, and on the field as it was laid.
+#define FREE_SPOT_CALL 0x0046e73c
+typedef int (__cdecl *free_spot_t)(int x, int y, int ring);
+static free_spot_t g_freeSpot = (free_spot_t)0x00496155;
+static BOOL g_cdSpotHooked;
+static int __cdecl h_free_spot(int x, int y, int ring)
+{
+	int found = g_freeSpot(x, y, ring);
+	int *cx = (int *)0x00569570, *cy = (int *)0x00569578;   // (the cell it found)
+	const BYTE *cell = (const BYTE *)0x005440e0;            // the battlefield, 8 bytes a cell: +1 flags, +3 ground, +5 unit
+	enum { C1 = 26 * 80 + 44, C2 = 27 * 80 + 44, C3 = 24 * 80 + 43 };
+	if (!found || g_cdLastKind != 2 || g_cdLastLayout != 14 || !g_cdRec || x != 0x2c || y != 0x1b || ring != 1 ||
+		*cx != 0x2d || *cy != 0x1a) return found;
+	const BYTE *a = g_cdRec + 28 * CD_REC, *b = a + CD_REC;
+	int unit = *(const int *)0x0053f014;
+	if (*(const int *)0x005530ec != 0x11 || unit < 1 || unit > 0x50) return found;
+	if (a[C1] != 0xdb || b[C1] != 0x0a || a[C2] != 0x35 || b[C2] != 0x0a || a[C3] != 0xb9 || b[C3] != 0x28) return found;
+	if (cell[C1 * 8 + 3] != 0xdb || cell[C2 * 8 + 3] != 0x35 || cell[C3 * 8 + 3] != 0xb9) return found;
+	if (!(cell[C1 * 8 + 1] & 0x10) || !(cell[C2 * 8 + 1] & 0x10) || cell[C3 * 8 + 1] || cell[C3 * 8 + 5]) return found;
+	if (g_freeSpot(0x2b, 0x18, 0) && *cx == 0x2b && *cy == 0x18) logf_("castle design: Expanded Keep's troop %d at (43,24)", unit);
+	else { *cx = 0x2d; *cy = 0x1a; }
+	return found;
+}
+static void castle_design_check(void)
+{
+	static const BYTE kRead1[5] = { 0xE8, 0xF0, 0x32, 0x03, 0x00 }, kRead2[5] = { 0xE8, 0x37, 0x29, 0x03, 0x00 },  // call 004af8d9
+		kSpot[5] = { 0xE8, 0x14, 0x7A, 0x02, 0x00 };                                                                // call 00496155
+	castle_design_load();
+	g_cdCalls = !memcmp((const void *)0x0047c5e4, kRead1, 5) && !memcmp((const void *)0x0047cf9d, kRead2, 5);
+	if (!g_cdCalls) logf_("not hooked: unexpected code at 0047c5e4 (castle design)");
+	BYTE mine[5] = { 0xE8 };
+	*(DWORD *)(mine + 1) = (DWORD)h_free_spot - (FREE_SPOT_CALL + 5);
+	g_cdSpotHooked = !memcmp((const void *)FREE_SPOT_CALL, mine, 5) ||
+		(!memcmp((const void *)FREE_SPOT_CALL, kSpot, 5) && code_put(FREE_SPOT_CALL, mine, 5));
+	if (!g_cdSpotHooked) logf_("not hooked: unexpected code at 0046e73c (castle design: Expanded Keep's troops)");
+	g_cdKind = g_cdLayout = g_cdLastKind = g_cdLastLayout = -1;
+}
 enum { M_UPSCALE, M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_LIMIT, M_TUTORIAL, M_WASD, M_CYCLE, M_WIDE, M_ZOOM, M_ARMY, M_LETTERS, M_RESOUND, M_RENDERER, M_FPS, M_MINIPOP, M_ARROWS, M_WHEEL,
-	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_COUNT }; // (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys)
+	M_COUNTY, M_SEASONS, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_AI, M_JEN, M_JEN_RATION, M_JEN_MPMSG,
+	M_JEN_FIELDS, M_JEN_PILLAGE, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_WORK, M_JEN_MEN, M_JEN_GARRISON,
+	M_JEN_DESIGN, M_JEN_DESIGN_LAST = M_JEN_DESIGN + 4, M_JEN_SPEED, M_JEN_PLAGUE, M_JEN_POP, M_JEN_UNCAP, M_JEN_RESMUL,
+	M_JEN_ARMY, M_JEN_ICONS, M_JEN_UNIT, M_JEN_STAT, M_JEN_STAT_LAST = M_JEN_STAT + UNIT_STATS - 1, M_JEN_UNIT_C, M_JEN_COST,
+	M_JEN_COST_LAST = M_JEN_COST + UNIT_COSTS - 1, M_COUNT };
+	// (M_BF_*: in the order of BF_*; from M_BF_PATH on: [Game] keys, but the unit rows' [Units] ones; M_JEN_DESIGN + kind;
+	// M_JEN_UNIT / M_JEN_UNIT_C: the unit the rows after them show, M_JEN_STAT + US_*, M_JEN_COST + UC_* - UNIT_STATS)
+static BOOL menu_unit_row(int i) { return (i >= M_JEN_STAT && i <= M_JEN_STAT_LAST) || (i >= M_JEN_COST && i <= M_JEN_COST_LAST); }
+static int menu_unit_stat(int i) { return i <= M_JEN_STAT_LAST ? i - M_JEN_STAT : UNIT_STATS + i - M_JEN_COST; }
+static BOOL menu_design(int i) { return i >= M_JEN_DESIGN && i <= M_JEN_DESIGN_LAST; }
 #define MENU_ROWS 8 // the most rows a tab has: the panel's height
-static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles" };
+// Two panels share the tabs: F10's, the patch's own settings (tabs 0 to 3), and the Jen With a B's Mods panel (F11,
+// Mods > Mod Menu on the menu bar, or the link on Quality of life while Jen With a B's Mods is on), with its mods in
+// the groups of Jen's Mod Menu - Game, Economy, Building and Unit Mods - and its fixes (MODS_TAB0 on).
+#define MODS_TAB0 4
+#define TAB_GAME 4
+#define TAB_ECONOMY 5
+#define TAB_BUILDINGS 6
+#define TAB_UNITS 7
+#define TAB_STATS 8
+#define TAB_COSTS 9
+#define TAB_FIXES 10
+static BOOL g_menuMods;   // the open panel is the Jen With a B's Mods one
+static const char *const kMenuTab[MENU_TABS] = { "Display", "Performance", "Quality of life", "Battles",
+	"Game", "Economy", "Buildings", "Units", "Unit stats", "Unit costs", "Fixes" };
 static const int kMenuTabItems[MENU_TABS][MENU_ROWS + 1] = { // -1 ends a tab
 	{ M_SCREENS, M_TILES, M_TEXT, M_WAVES, M_WIDE, M_COUNTY, M_SEASONS, -1 },
 	{ M_UPSCALE, M_RENDERER, M_LIMIT, M_FPS, -1 },
-	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, -1 },
+	{ M_TUTORIAL, M_WASD, M_ARROWS, M_CYCLE, M_ARMY, M_LETTERS, M_RESOUND, M_JEN, -1 },
 	{ M_AI, M_BF_PATH, M_BF_GROUP, M_BF_ENGAGE, M_BF_MOPUP, M_ZOOM, M_WHEEL, M_MINIPOP, -1 },
+	{ M_JEN_FIELDS, M_JEN_SPEED, M_JEN_PLAGUE, M_JEN_POP, -1 },
+	{ M_JEN_WORK, M_JEN_MEN, M_JEN_UNCAP, M_JEN_RESMUL, -1 },
+	{ M_JEN_GARRISON, M_JEN_DOOR_IN, M_JEN_DOOR_OUT, M_JEN_DESIGN, M_JEN_DESIGN + 1, M_JEN_DESIGN + 2, M_JEN_DESIGN + 3, M_JEN_DESIGN + 4, -1 },
+	{ M_JEN_PILLAGE, M_JEN_ARMY, M_JEN_ICONS, -1 },
+	{ M_JEN_UNIT, M_JEN_STAT, M_JEN_STAT + 1, M_JEN_STAT + 2, M_JEN_STAT + 3, M_JEN_STAT + 4, M_JEN_STAT + 5, -1 },
+	{ M_JEN_UNIT_C, M_JEN_COST, M_JEN_COST + 1, M_JEN_COST + 2, M_JEN_COST + 3, -1 },
+	{ M_JEN_RATION, M_JEN_MPMSG, -1 },
 };
+// What the Jen With a B's Mods panel says under its rows about the chosen one (two lines).
+static const char *menu_desc(int i, int line)
+{
+	static const char *const kDesc[][2] = {
+		{ "A food that runs out is made up from the other one (the", "original fed the full ration). Off in multiplayer games" }, // M_JEN_RATION
+		{ "In a multiplayer game, messages stay up until you close", "them (the original closed most of them at once)" },          // M_JEN_MPMSG
+		{ "On: droughts and storms destroy fields (the original).", "Off: they don't. Single player games only" },                  // M_JEN_FIELDS
+		{ "On: armies in an enemy county destroy its fields (the", "original). Off: they don't. Single player games only" },       // M_JEN_PILLAGE
+		{ "Blows a castle's inner door takes before it gives way", "in a siege (original 5000). Single player games only" },       // M_JEN_DOOR_IN
+		{ "Blows a castle's outer door takes before it gives way", "in a siege (original 20000). Single player games only" },      // M_JEN_DOOR_OUT
+		{ "Work to reclaim one destroyed field (original 800).", "Single player games only" },                                     // M_JEN_WORK
+		{ "The most work a season puts into reclaiming a field", "(original 200). Single player games only" },                     // M_JEN_MEN
+		{ "Original: castles hold 150 to 600 men by their kind.", "Army size: as many as an army may. Single player only" },      // M_JEN_GARRISON
+	};   // (lines of up to about 57 letters fit the scroll)
+	static const char *const kDesc2[][2] = {
+		{ "On: the game speed goes past 10; any speed past 10 runs as", "fast as the PC can. Off again: 10. Single player games only" },       // M_JEN_SPEED
+		{ "Milder: the Black Death takes about half as many people.", "Off: it spares every county. Single player only" },     // M_JEN_PLAGUE
+		{ "Steers each county's births towards this population", "in the long run (Jen's). Single player games only" },       // M_JEN_POP
+		{ "On: an industry's output a season isn't capped at 999", "(wood, iron and stone). Single player games only" },       // M_JEN_UNCAP
+		{ "Wood, iron and stone a season times this; 2x and more", "turn Uncapped resources on. Single player games only" },   // M_JEN_RESMUL
+		{ "The most men in an army (original 1500); castle", "garrisons follow it. Single player games only" },              // M_JEN_ARMY
+		{ "On: an army's icon shows 2 and 3 men from a fifth and", "two fifths of the army size. Single player games only" },  // M_JEN_ICONS
+		{ "The unit the rows below change (each has its own).", "Click for the next one" },                                     // M_JEN_UNIT
+		{ "Its strength in close combat.", "Single player games only" },                                                       // US_MELEE
+		{ "How well it stands up to arrows and bolts.", "Single player games only" },                                          // US_RDEF
+		{ "Its strength when a battle is worked out without being", "fought. Single player games only" },                     // US_AUTO
+		{ "The strength of its arrows or bolts.", "Archers and crossbowmen only. Single player games only" },                  // US_RSTR
+		{ "How far it shoots, in cells.", "Archers and crossbowmen only. Single player games only" },                          // US_RANGE
+		{ "The time between its shots (faster: shorter).", "Archers and crossbowmen only. Single player games only" },         // US_SPEED
+		{ "The unit the rows below change (each has its own).", "Click for the next one" },                                     // M_JEN_UNIT_C
+		{ "Wood the blacksmith uses to make one.", "Single player games only" },                                               // UC_WOOD
+		{ "Iron the blacksmith uses to make one.", "Single player games only" },                                               // UC_IRON
+		{ "What the merchant pays for one (it asks for that plus", "a share, unless the buy price is set). Single player only" }, // UC_SELL
+		{ "What the merchant asks for one (never below its sell", "price) from you and the AI lords. Single player only" },        // UC_BUY
+	};
+	if (i >= M_JEN_SPEED && i < M_COUNT) return kDesc2[i - M_JEN_SPEED][line != 0];
+	if (menu_design(i)) return line ? "skirmish castles. From the next siege; single player only" : "The map its sieges are fought on: its own or one of the";
+	return i >= M_JEN_RATION && i < M_JEN_DESIGN ? kDesc[i - M_JEN_RATION][line != 0] : NULL;
+}
 static int menu_tab_count(int tab) { int n = 0; while (n < MENU_ROWS && kMenuTabItems[tab][n] >= 0) n++; return n; }
-static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY || i == M_SEASONS; } // marked "new"
+static BOOL menu_tab_shown(int tab) { return g_menuMods ? tab >= MODS_TAB0 : tab < MODS_TAB0; } // the open panel's
+static int menu_tabs_shown(void) { int n = 0; for (int k = 0; k < MENU_TABS; k++) n += menu_tab_shown(k); return n; }
+static BOOL menu_new(int i) { return i == M_ARROWS || i == M_AI || i == M_WHEEL || i == M_COUNTY || i == M_SEASONS || i == M_JEN; } // marked "new"
 static void menu_value(int i, char *v, int n, BOOL *restart)
 {
 	*restart = FALSE;
+	if (menu_design(i)) { // a castle kind's siege map
+		int k = i - M_JEN_DESIGN, c = g_jenDesign[k];
+		snprintf(v, n, "%s%s", c ? kCdName[kCdChoices[k][c - 1]] : "Original", cd_ok() ? "" : " (unavailable)");
+		return;
+	}
+	if (menu_unit_row(i)) { unit_text(g_unitSel, menu_unit_stat(i), v, n); return; }
 	switch (i) {
 	case M_UPSCALE: snprintf(v, n, "%s", g_upscaleCR == 2 ? "AMD FSR 1 (sharpest)" : g_upscaleCR ? "Catmull-Rom (sharp)" : "Bilinear (soft)"); break;
 	case M_SCREENS: snprintf(v, n, "%s", g_showScreens ? "On" : "Off"); *restart = g_showScreens && !g_hdScreens; break;
@@ -4059,12 +4767,48 @@ static void menu_value(int i, char *v, int n, BOOL *restart)
 		break;
 	}
 	case M_AI: snprintf(v, n, "%s", kAiLevel[g_aiLevelSet]); *restart = g_aiLevelSet && !g_aiOk; break; // from the next battle
+	case M_JEN: snprintf(v, n, "%s", g_jenMods ? "On (F11: its panel)" : "Off"); break;
+	case M_JEN_RATION: snprintf(v, n, "%s", !g_fixRation ? "Off" : g_rationHooked ? "On" : "On (unavailable)"); break;
+	case M_JEN_MPMSG: snprintf(v, n, "%s", g_mpMsgFix ? "On" : "Off"); break;
+	case M_JEN_FIELDS: snprintf(v, n, "%s%s", g_jenFieldLoss ? "On (original)" : "Off", g_jcOk[JC_FIELD] ? "" : " (unavailable)"); break;
+	case M_JEN_PILLAGE: snprintf(v, n, "%s%s", g_jenPillage ? "On (original)" : "Off", g_jcOk[JC_PILLAGE] ? "" : " (unavailable)"); break;
+	case M_JEN_DOOR_IN: case M_JEN_DOOR_OUT: case M_JEN_WORK: case M_JEN_MEN: {
+		int x = i == M_JEN_DOOR_IN ? g_jenDoorIn : i == M_JEN_DOOR_OUT ? g_jenDoorOut : i == M_JEN_WORK ? g_jenWork : g_jenMen;
+		int orig = i == M_JEN_DOOR_IN ? DOOR_IN : i == M_JEN_DOOR_OUT ? DOOR_OUT : i == M_JEN_WORK ? RECLAIM_WORK : RECLAIM_MEN;
+		BOOL ok = g_jcOk[i == M_JEN_DOOR_IN || i == M_JEN_DOOR_OUT ? JC_DOOR : JC_RECLAIM];
+		snprintf(v, n, "%d%s", x, !ok ? " (unavailable)" : x == orig ? " (original)" : "");
+		break;
+	}
+	case M_JEN_GARRISON:
+		if (g_jenGarrison) snprintf(v, n, "Army size (%lu each)%s", (unsigned long)army_limit(), g_jcOk[JC_GARRISON] ? "" : " (unavailable)");
+		else snprintf(v, n, "Original (150 to 600)%s", g_jcOk[JC_GARRISON] ? "" : " (unavailable)");
+		break;
+	case M_JEN_SPEED: snprintf(v, n, "%s%s", g_jenSpeed ? "On" : "Off (original)", g_jeOk[JE_SPEED] ? "" : " (unavailable)"); break;
+	case M_JEN_PLAGUE: snprintf(v, n, "%s%s", g_jenPlague == 2 ? "Off" : g_jenPlague ? "Milder" : "On (original)", g_jeOk[JE_PLAGUE] ? "" : " (unavailable)"); break;
+	case M_JEN_POP:
+		if (g_jenPop) snprintf(v, n, "%d%s", g_jenPop, g_jeOk[JE_POP] ? "" : " (unavailable)");
+		else snprintf(v, n, "Original%s", g_jeOk[JE_POP] ? "" : " (unavailable)");
+		break;
+	case M_JEN_UNCAP: snprintf(v, n, "%s%s", g_jenUncap ? "On (99,999,999)" : "Off (original: 999)", g_jeOk[JE_RESCAP] ? "" : " (unavailable)"); break;
+	case M_JEN_RESMUL: snprintf(v, n, "%dx%s%s", g_jenResMul, g_jenResMul == 1 ? " (original)" : "", g_jeOk[JE_RESMUL] ? "" : " (unavailable)"); break;
+	case M_JEN_ARMY: snprintf(v, n, "%d%s%s", g_jenArmy, g_jenArmy == ARMY_SIZE ? " (original)" : "", g_jeOk[JE_ARMY] ? "" : " (unavailable)"); break;
+	case M_JEN_ICONS:
+		if (g_jenIcons) snprintf(v, n, "On (2 men from %d, 3 from %d)%s", g_jenArmy / 5, g_jenArmy * 2 / 5, g_jeOk[JE_ICONS] ? "" : " (unavailable)");
+		else snprintf(v, n, "Off (original: 300 and 600)%s", g_jeOk[JE_ICONS] ? "" : " (unavailable)");
+		break;
+	case M_JEN_UNIT: case M_JEN_UNIT_C: snprintf(v, n, "%s", kUnitName[g_unitSel]); break;
 	}
 }
 static const char *const kMenuLabel[M_COUNT] = { "Upscaling", "AI art: paintings", "AI art: map, units", "Sharp lettering",
 	"Shore waves", "Frame limit", "Tutorial scrolls", "WASD scrolling", ", and . cycle", "Widescreen *", "Battle zoom-out *",
 	"Army panel", "Fresh letters", "Lords2Resounded", "Drawing", "FPS counter", "Minimap outlines", "Arrow key scrolling",
-	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics" };
+	"Wheel zoom", "County map zoom-out", "Seasonal Town Center", "Improved pathfinding", "Group cohesion", "Improved engagement", "Mop-Up fix", "Enemy tactics",
+	"Jen With a B's Mods", "Food ration fix", "Multiplayer messages", "Weather wrecks fields", "Pillaging", "Inner castle door",
+	"Outer castle door", "Field reclaim work", "Reclaim work a season", "Castle garrisons", "Wooden palisade", "Motte and bailey",
+	"Norman keep", "Stone castle", "Royal castle",   // (these five: kCastleKind)
+	"Uncapped game speed", "Black Death", "Population average", "Uncapped resources", "Resource multiplier", "Army size",
+	"Scaled army icons", "Stats of", "Melee strength", "Ranged defence", "Auto-calc strength", "Ranged strength", "Attack range",
+	"Attack speed", "Costs of", "Wood cost", "Iron cost", "Sell price", "Buy price" };
 static volatile LONG g_wzLevel;   // (the wheel zoom's, below)
 static int wz_top(void);
 static void ini_set(const char *sec, const char *key, int v)
@@ -4144,15 +4888,74 @@ static void resound_sample(void)
 		break;
 	}
 	case M_AI: g_aiLevelSet = (g_aiLevelSet + 1) % AI_LEVELS; ini_set("Game", "BattleAI", g_aiLevelSet); break;
+	case M_JEN: // (the menu bar's Mods title comes or goes: the county bar drawn again, FUN_00419c78's flag)
+		g_jenMods = !g_jenMods; ini_set("Game", "JenMods", g_jenMods); mpmsg_apply(g_jenMods && g_mpMsgFix);
+		*(int *)0x0056d6a0 = 1;
+		break;
+	case M_JEN_RATION: g_fixRation = !g_fixRation; ini_set("Game", "RationFix", g_fixRation); break; // (read at each county's food step)
+	case M_JEN_MPMSG: g_mpMsgFix = !g_mpMsgFix; ini_set("Game", "MpMessageFix", g_mpMsgFix); mpmsg_apply(g_jenMods && g_mpMsgFix); break;
+	case M_JEN_FIELDS: g_jenFieldLoss = !g_jenFieldLoss; ini_set("Game", "FieldDestruction", g_jenFieldLoss); break;
+	case M_JEN_PILLAGE: g_jenPillage = !g_jenPillage; ini_set("Game", "Pillaging", g_jenPillage); break;
+	case M_JEN_DOOR_IN: g_jenDoorIn = step_next(g_jenDoorIn, kDoorInSteps, 7); ini_set("Game", "InnerDoor", g_jenDoorIn); break;
+	case M_JEN_DOOR_OUT: g_jenDoorOut = step_next(g_jenDoorOut, kDoorOutSteps, 6); ini_set("Game", "OuterDoor", g_jenDoorOut); break;
+	case M_JEN_WORK: g_jenWork = step_next(g_jenWork, kReclaimWorkSteps, 5); ini_set("Game", "ReclaimWork", g_jenWork); break;
+	case M_JEN_MEN: g_jenMen = step_next(g_jenMen, kReclaimMenSteps, 4); ini_set("Game", "ReclaimPerSeason", g_jenMen); break;
+	case M_JEN_GARRISON: g_jenGarrison = !g_jenGarrison; ini_set("Game", "GarrisonLimits", g_jenGarrison); break;
+	case M_JEN_SPEED: g_jenSpeed = !g_jenSpeed; ini_set("Game", "UncappedSpeed", g_jenSpeed); break;
+	case M_JEN_PLAGUE: g_jenPlague = (g_jenPlague + 1) % 3; ini_set("Game", "BlackDeath", g_jenPlague); break;
+	case M_JEN_POP: g_jenPop = step_next(g_jenPop, kPopSteps, 9); ini_set("Game", "PopulationTarget", g_jenPop); break;
+	case M_JEN_UNCAP: g_jenUncap = !g_jenUncap; ini_set("Game", "UncappedResources", g_jenUncap); break;
+	case M_JEN_RESMUL: // (2x and more: Uncapped resources on, as Jen's)
+		g_jenResMul = g_jenResMul % RESMUL_MAX + 1; ini_set("Game", "ResourceMultiplier", g_jenResMul);
+		if (g_jenResMul > 1 && !g_jenUncap) { g_jenUncap = TRUE; ini_set("Game", "UncappedResources", 1); }
+		break;
+	case M_JEN_ARMY: g_jenArmy = step_next(g_jenArmy, kArmySteps, 7); ini_set("Game", "ArmySize", g_jenArmy); break;
+	case M_JEN_ICONS: g_jenIcons = !g_jenIcons; ini_set("Game", "ScaledArmyIcons", g_jenIcons); break;
+	case M_JEN_UNIT: case M_JEN_UNIT_C: g_unitSel = (g_unitSel + 1) % UNITS; break;
 	}
+	if (menu_unit_row(i)) unit_step(g_unitSel, menu_unit_stat(i));
+	if (menu_design(i)) { // Original -> its skirmish castles -> Original (read at the next siege)
+		int k = i - M_JEN_DESIGN;
+		g_jenDesign[k] = (g_jenDesign[k] + 1) % (cd_count(k) + 1);
+		WritePrivateProfileStringA("Game", kCdKey[k], g_jenDesign[k] ? kCdName[kCdChoices[k][g_jenDesign[k] - 1]] : "Original", g_iniPath);
+	}
+	if (i >= M_JEN) jen_sync();   // (in at once; the game's own in a multiplayer game)
 	logf_("settings panel: %s changed", kMenuLabel[i]);
+}
+// Reset All To Default (as on Jen's Mod Menu): every row of the Jen With a B's Mods panel back to what the patch
+// ships with - the mods the original game's, the two fixes on. The JenMods switch itself stays.
+static void menu_reset_jen(void)
+{
+	g_fixRation = TRUE; ini_set("Game", "RationFix", 1);
+	g_mpMsgFix = TRUE; ini_set("Game", "MpMessageFix", 1);
+	g_jenFieldLoss = TRUE; ini_set("Game", "FieldDestruction", 1);
+	g_jenPillage = TRUE; ini_set("Game", "Pillaging", 1);
+	g_jenDoorIn = DOOR_IN; ini_set("Game", "InnerDoor", DOOR_IN);
+	g_jenDoorOut = DOOR_OUT; ini_set("Game", "OuterDoor", DOOR_OUT);
+	g_jenWork = RECLAIM_WORK; ini_set("Game", "ReclaimWork", RECLAIM_WORK);
+	g_jenMen = RECLAIM_MEN; ini_set("Game", "ReclaimPerSeason", RECLAIM_MEN);
+	g_jenGarrison = FALSE; ini_set("Game", "GarrisonLimits", 0);
+	for (int k = 0; k < 5; k++) { g_jenDesign[k] = 0; WritePrivateProfileStringA("Game", kCdKey[k], "Original", g_iniPath); }
+	g_jenSpeed = 0; ini_set("Game", "UncappedSpeed", 0);
+	g_jenPlague = 0; ini_set("Game", "BlackDeath", 0);
+	g_jenPop = 0; ini_set("Game", "PopulationTarget", 0);
+	g_jenUncap = 0; ini_set("Game", "UncappedResources", 0);
+	g_jenResMul = 1; ini_set("Game", "ResourceMultiplier", 1);
+	g_jenArmy = ARMY_SIZE; ini_set("Game", "ArmySize", ARMY_SIZE);
+	g_jenIcons = 0; ini_set("Game", "ScaledArmyIcons", 0);
+	for (int u = 0; u < UNITS; u++) for (int s = 0; s < US_COUNT; s++) if (g_unitSet[u][s] >= 0) { g_unitSet[u][s] = -1; unit_write_ini(u, s); }
+	mpmsg_apply(g_jenMods && g_mpMsgFix);
+	jen_sync();
+	logf_("settings panel: Jen With a B's Mods reset to the defaults");
 }
 static volatile LONG g_menuGen; // bumped at every change: the scroll is drawn again
 static void menu_scroll_keep(void);
 // at once, not at the game's next frame (the main menu shows few)
 static void menu_redraw(void) { InterlockedIncrement(&g_menuGen); menu_scroll_keep(); InterlockedExchange(&g_forcePresent, 1); mark_dirty(); }
+static int g_tabOf[2] = { 0, MODS_TAB0 };   // the tab each panel was last left on (menu_show_panel)
 static void menu_toggle(void)
 {
+	if (g_menuOpen) g_tabOf[g_menuMods] = g_menuTab;
 	if (!g_menuOpen) {
 		g_wantWideSet = GetPrivateProfileIntA("Display", "Wide", 1, g_iniPath) != 0;
 		g_battleZoomSet = GetPrivateProfileIntA("Display", "BattleZoom", 1, g_iniPath) != 0;
@@ -4161,7 +4964,23 @@ static void menu_toggle(void)
 	if (g_menuOpen) InterlockedExchange(&g_ovl[0].on, 0); // the army scroll goes while the panel is up (army_panel_keep)
 	menu_redraw();
 }
-static void menu_set_tab(int tab) { g_menuTab = (tab + MENU_TABS) % MENU_TABS; g_menuSel = 0; }
+static void menu_set_tab(int tab) // (Tab / Shift+Tab step over a tab that isn't shown)
+{
+	int step = tab < g_menuTab ? -1 : 1;
+	tab = (tab + MENU_TABS) % MENU_TABS;
+	while (!menu_tab_shown(tab)) tab = (tab + step + MENU_TABS) % MENU_TABS;
+	g_menuTab = tab; g_menuSel = 0;
+}
+// Shows one of the two panels (opening it if closed), each back at the tab it was last left on.
+static void menu_show_panel(BOOL mods)
+{
+	if (g_menuOpen) g_tabOf[g_menuMods] = g_menuTab;
+	if (g_menuMods != mods) g_menuSel = 0;
+	g_menuMods = mods;
+	g_menuTab = g_tabOf[mods];
+	if (!menu_tab_shown(g_menuTab)) menu_set_tab(mods ? MODS_TAB0 : 0);
+	if (!g_menuOpen) menu_toggle(); else menu_redraw();
+}
 // A key while the panel is open (or F10 to open it). TRUE: it was the panel's.
 static const char *upscale_name(void) { return g_upscaleCR == 2 ? "FSR 1" : g_upscaleCR ? "Catmull-Rom" : "bilinear"; }
 static BOOL menu_key(int vk)
@@ -4174,7 +4993,9 @@ static BOOL menu_key(int vk)
 		InterlockedExchange(&g_forcePresent, 1); mark_dirty();
 		return TRUE;
 	}
-	if (vk == VK_F10) { menu_toggle(); return TRUE; }
+	// F10: the patch's settings; F11: Jen With a B's Mods (while on). The other panel's key switches to it; its own closes it.
+	if (vk == VK_F10) { if (g_menuOpen && !g_menuMods) menu_toggle(); else menu_show_panel(FALSE); return TRUE; }
+	if (vk == VK_F11 && (g_jenMods || (g_menuOpen && g_menuMods))) { if (g_menuOpen && g_menuMods) menu_toggle(); else menu_show_panel(TRUE); return TRUE; }
 	if (!g_menuOpen) return FALSE;
 	int n = menu_tab_count(g_menuTab);
 	switch (vk) {
@@ -4191,17 +5012,32 @@ static BOOL menu_key(int vk)
 // a drawing layer of their own; there it is the plain panel, drawn over the picture (menu_draw).
 static BOOL menu_as_scroll(void) { return TRUE; }
 static int g_msDrawn; // the scroll is up (menu_scroll_keep)
-static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW; // the plain panel's, in window coordinates
+static RECT g_menuRowW[16], g_menuTabRectW[MENU_TABS], g_menuBoxW, g_menuLinkW; // the plain panel's, in window coordinates
+static RECT g_menuReset, g_menuResetW; // the Jen With a B's Mods panel's Reset All To Default line (scroll, plain panel)
+static const char kResetLink[] = "Reset all to default";
+// The line under Quality of life's rows that opens the Jen With a B's Mods panel (while Jen With a B's Mods is on).
+static BOOL menu_link_shown(void) { return !g_menuMods && g_menuTab == 2 && g_jenMods; }
+static const char kModsLink[] = "Jen With a B's Mods: press F11 or click here";
 // A click while the panel is open: window and game coordinates.
 static void menu_click(int wx, int wy, int gx, int gy)
 {
 	BOOL sc = g_msDrawn;
 	POINT p = { sc ? gx : wx, sc ? gy : wy };
 	const RECT *tabs = sc ? g_menuTabRect : g_menuTabRectW, *rows = sc ? g_menuRow : g_menuRowW, *box = sc ? &g_menuBox : &g_menuBoxW;
+	if (menu_link_shown() && PtInRect(sc ? &g_menuLink : &g_menuLinkW, p)) { menu_show_panel(TRUE); return; }
+	if (g_menuMods && PtInRect(sc ? &g_menuReset : &g_menuResetW, p)) { menu_reset_jen(); menu_redraw(); return; }
 	for (int k = 0; k < MENU_TABS; k++) if (PtInRect(&tabs[k], p)) { if (k != g_menuTab) menu_set_tab(k); menu_redraw(); return; }
 	for (int i = 0; i < g_menuRows; i++)
 		if (PtInRect(&rows[i], p)) { g_menuSel = i; menu_change(kMenuTabItems[g_menuTab][i]); menu_redraw(); return; }
 	if (!PtInRect(box, p)) menu_toggle(); // outside closes it
+}
+// The mouse over a row chooses it (on the Jen With a B's Mods panel its description shows): game coordinates.
+static void menu_hover(int gx, int gy)
+{
+	POINT p = { gx, gy };
+	if (!g_msDrawn) return;
+	for (int i = 0; i < g_menuRows; i++)
+		if (PtInRect(&g_menuRow[i], p)) { if (i != g_menuSel) { g_menuSel = i; menu_redraw(); } return; }
 }
 // The plain panel, where the game's colours are not the county map's (menus, battles): onto a DC
 // holding the picture (vw x vh), at window offset ox, oy.
@@ -4217,7 +5053,9 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 		}
 		SelectObject(dc, o); DeleteObject(f);
 	}
-	int bw = max(pad * 2 + labelW + valueW, pad * 2 + MENU_TABS * fh * 8 + (MENU_TABS - 1) * (fh / 2)), bh = pad * 2 + rowH * (MENU_ROWS + 6);
+	if (!menu_tab_shown(g_menuTab)) menu_set_tab(0);
+	int tabs = menu_tabs_shown();
+	int bw = max(pad * 2 + labelW + valueW, pad * 2 + tabs * fh * 8 + (tabs - 1) * (fh / 2)), bh = pad * 2 + rowH * (MENU_ROWS + 6);
 	int bx = (vw - bw) / 2, by = (vh - bh) / 2;
 	COLORREF cPaper = RGB(222, 196, 140), cHi = RGB(244, 226, 180), cLine = RGB(120, 80, 40);
 	HBRUSH paper = CreateSolidBrush(cPaper), edge = CreateSolidBrush(RGB(92, 52, 24)), hi = CreateSolidBrush(cHi);
@@ -4235,13 +5073,15 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	SetBkMode(dc, TRANSPARENT);
 	SetTextColor(dc, RGB(120, 20, 10));
 	RECT t = { bx, by + pad / 2, bx + bw, by + pad / 2 + rowH * 3 / 2 };
-	DrawTextA(dc, "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, g_menuMods ? "Jen With a B's Mods" : "Lords of the Realm II HD", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	// the tabs, on a line across the panel; the open one joins the paper below it
-	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 8, gap = fh / 2, tx0 = bx + (bw - MENU_TABS * tw - (MENU_TABS - 1) * gap) / 2, lw = max(1, fh / 12);
+	int ty = by + pad / 2 + rowH * 2, th = rowH * 5 / 4, tw = fh * 8, gap = fh / 2, tx0 = bx + (bw - tabs * tw - (tabs - 1) * gap) / 2, lw = max(1, fh / 12);
 	RECT ln = { bx + pad / 2, ty + th - lw, bx + bw - pad / 2, ty + th };
 	FillRect(dc, &ln, line);
-	for (int k = 0; k < MENU_TABS; k++) {
-		RECT tr = { tx0 + k * (tw + gap), ty, tx0 + k * (tw + gap) + tw, ty + th };
+	for (int k = 0, slot = 0; k < MENU_TABS; k++) {
+		if (!menu_tab_shown(k)) { SetRectEmpty(&g_menuTabRectW[k]); continue; }
+		RECT tr = { tx0 + slot * (tw + gap), ty, tx0 + slot * (tw + gap) + tw, ty + th };
+		slot++;
 		SetRect(&g_menuTabRectW[k], ox + tr.left, oy + tr.top, ox + tr.right, oy + tr.bottom);
 		if (k == g_menuTab) {
 			RECT o = { tr.left - lw, tr.top - lw, tr.right + lw, tr.bottom };
@@ -4286,13 +5126,31 @@ static void menu_draw(HDC dc, int vw, int vh, int ox, int oy)
 	}
 	SelectObject(dc, small);
 	SetTextColor(dc, RGB(80, 56, 30));
-	if (g_menuTab == 0 || g_menuTab == 3) {
+	SetRectEmpty(&g_menuLinkW);
+	SetRectEmpty(&g_menuResetW);
+	if (g_menuMods) { // the chosen row's description, and Reset All To Default
+		int item = kMenuTabItems[g_menuTab][g_menuSel];
+		char d[160];
+		snprintf(d, sizeof d, "%s %s", menu_desc(item, 0) ? menu_desc(item, 0) : "", menu_desc(item, 1) ? menu_desc(item, 1) : "");
+		RECT f0 = { bx, by + bh - pad / 2 - 3 * rowH, bx + bw, by + bh - pad / 2 - 2 * rowH };
+		DrawTextA(dc, d, -1, &f0, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
-		DrawTextA(dc, g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
+		SetTextColor(dc, RGB(120, 20, 10));
+		DrawTextA(dc, kResetLink, -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SetRect(&g_menuResetW, ox + f1.left, oy + f1.top, ox + f1.right, oy + f1.bottom);
+		SetTextColor(dc, RGB(80, 56, 30));
+	}
+	else if (g_menuTab == 0 || g_menuTab == 3 || menu_link_shown()) {
+		RECT f1 = { bx, by + bh - pad / 2 - 2 * rowH, bx + bw, by + bh - pad / 2 - rowH };
+		if (menu_link_shown()) { SetTextColor(dc, RGB(120, 20, 10)); SetRect(&g_menuLinkW, ox + f1.left, oy + f1.top, ox + f1.right, oy + f1.bottom); }
+		DrawTextA(dc, menu_link_shown() ? kModsLink
+			: g_menuTab == 3 ? "* after a restart; the fixes from the next battle, off in multiplayer games"
 			: "* after a restart; seasons from the next Town Center visit; the rest at once", -1, &f1, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SetTextColor(dc, RGB(80, 56, 30));
 	}
 	RECT f = { bx, by + bh - pad / 2 - rowH, bx + bw, by + bh - pad / 2 };
-	DrawTextA(dc, "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, g_menuMods ? "Tab switches tabs  -  Click or Enter to change  -  F11 or Esc to close, F10 for the HD settings"
+		: "Tab switches tabs  -  Click or Enter to change  -  F10 or Esc to close", -1, &f, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	SelectObject(dc, old);
 	DeleteObject(title); DeleteObject(font); DeleteObject(bold); DeleteObject(small);
 	DeleteObject(paper); DeleteObject(edge); DeleteObject(hi); DeleteObject(back); DeleteObject(line);
@@ -7082,8 +7940,9 @@ static LRESULT remote_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	g_fake.x = fx;
 	g_fake.y = fy;
 	lp = MAKELPARAM((WORD)(short)fx, (WORD)(short)fy);
+	if (n == 2) g_lbDown = TRUE; else if (n == 3) g_lbDown = FALSE;
 	if (n == 6 && g_menuEatRUp) { g_menuEatRUp = FALSE; return 0; }
-	if (g_menuOpen) { if (n == 2) menu_click(-1, -1, fx, fy); if (n == 5) { menu_toggle(); g_menuEatRUp = TRUE; } return 0; } // the scroll only
+	if (g_menuOpen) { if (n == 1) menu_hover(fx, fy); if (n == 2) menu_click(-1, -1, fx, fy); if (n == 5) { menu_toggle(); g_menuEatRUp = TRUE; } return 0; } // the scroll only
 	{
 		static BOOL btnDown;
 		int btn = cycle_button_at(fx, fy);
@@ -7142,8 +8001,11 @@ static BOOL keep_running(void)
 	return sessionOpen && sessionOpen();
 }
 
+static void mp_rules_sync(void);
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+	jen_sync();   // Jen With a B's castle and field mods: out as a multiplayer game starts, back after it (the game's thread)
+	mp_rules_sync();   // multiplayer rules: who we are, for our dplayx.dll
 	if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || (msg == WM_KEYDOWN && !(lp & 0x40000000))) perf_input(); // latency (perf_end)
 	if (g_clickLog && (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_KEYDOWN ||
 		msg == WM_ACTIVATEAPP || msg == WM_ACTIVATE || msg == WM_SETFOCUS || msg == WM_KILLFOCUS ||
@@ -7174,6 +8036,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (msg == WM_KEYUP || msg == WM_SYSKEYUP || msg == WM_CHAR) return 0;
 		if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
 			if (msg == WM_LBUTTONDOWN) { int mx = (short)LOWORD(lp), my = (short)HIWORD(lp); client_to_game(&mx, &my); menu_click((short)LOWORD(lp), (short)HIWORD(lp), mx, my); }
+			if (msg == WM_MOUSEMOVE) { int mx = (short)LOWORD(lp), my = (short)HIWORD(lp); client_to_game(&mx, &my); menu_hover(mx, my); }
 			if (msg == WM_RBUTTONDOWN) { menu_toggle(); g_menuEatRUp = TRUE; } // a right-click closes it, as the game's own menus
 			return 0;
 		}
@@ -7711,7 +8574,8 @@ static int g_frameIndex = -1;
 
 static int __cdecl h_load_file(const char *name, void *buffer, unsigned size, long offset)
 {
-	int n = o_load_file(name, buffer, size, offset);
+	int n = castle_design_read(__builtin_return_address(0), name, buffer, size); // (a siege's map: Jen's castle design)
+	if (n < 0) n = o_load_file(name, buffer, size, offset);
 	base01_note_load(name, buffer, n, offset);
 	BOOL tiles = !_strnicmp(name, "base", 4) || !_strnicmp(name, "roads", 5) || !_strnicmp(name, "mtns", 4) ||
 		!_strnicmp(name, "town", 4) || !_strnicmp(name, "castle", 6);
@@ -7905,8 +8769,10 @@ static BOOL county_map_on(void);
 // The bar's menu titles (File, Options, Help): a table of {x, x end, y, text, items, count} at
 // 0x004dc428, drawn left to right from the first x (10), each 32 pixels after the last. Their drop-
 // downs open below them and clicks are matched against the x ranges the drawing wrote back, so
-// moving the first x to the wide map's left edge moves all of it.
-#define MENU_FIRST_X (*(short *)0x004dc428)
+// moving the first x to the wide map's left edge moves all of it. (menu_bar_install moves the table
+// to g_bar, with the HD title fourth.)
+static short *g_barTable = (short *)0x004dc428;
+#define MENU_FIRST_X (g_barTable[0])
 
 // The titles (FUN_0040c5b0) and an open drop-down (FUN_0040c725: panel and items, every frame)
 // are drawn with the clip reaching into the spare columns, where they now start.
@@ -7950,6 +8816,169 @@ static menu_hit_t o_menu_hit;
 static int __cdecl h_menu_hit(short *items, int n, int x, int y)
 {
 	return o_menu_hit(items, n, battle_zoom_on() ? menu_list_x(x) : x, y);
+}
+
+// The menu bar as AllYourBases asked: the game's File, Options and Help, then Mods (while Jen With a B's Mods
+// is on), whose list opens that panel at each of its tabs (Jen's Mod Menu groups), and HD, whose list opens
+// the F10 panel at each of its tabs. The game's table can't grow where it is (other data follows it), so
+// it is copied to g_bar and the four places that pass it (with its count, 3) are pointed there, with 5.
+// A title is {x, x end, y, text group, items, count}; an item {y, text index, function}. The new texts
+// have no group in the game's text file: the five calls that look a title's or item's text up are
+// pointed at menu_text / menu_text_find, which draw these from here and pass the game's own on.
+// Where the bar is short of room - the 4:3 county map, where the rival lords' shields follow the titles
+// from x 270 - Mods takes Help's place instead, as on Jen's Mod Manager: Help named Mods, with Mod Menu
+// first in its list. The layout is chosen as the bar is drawn (menu_bar_draw: its one drawing call).
+typedef struct { short x, xEnd, y, text; void *items; short count, pad; } bar_title_t;
+typedef struct { short y, text; void (__cdecl *fn)(void); int pad; } bar_item_t;
+_Static_assert(sizeof(bar_title_t) == 16 && sizeof(bar_item_t) == 12, "the game's menu bar records");
+#define BAR_TITLES 5
+#define BAR_HELP 2          // Help (Mods in the short layout)
+#define TXT_HELP 3          // the Help title's text group
+#define TXT_MODS 0x71       // the Mods title's (none of the game's)
+#define TXT_HD 0x70         // the HD title's (none of the game's)
+#define TXT_MOD_MENU 100    // Mod Menu in the Help group (beyond its 7)
+#define BAR_GAP 16          // between titles (the game's 32: five titles reached into the shields)
+#define BAR_DRAW_CALL 0x0041a0c3 // FUN_00419c78's call 0040c5b0 (g_bar, n): the bar's only drawing
+#define LORD_SHIELDS_X 270  // FUN_00419c78: one shield for each rival lord from here (not in battles)
+#define BAR_ROOM_X 266      // the five titles must end left of the shields
+// The open title's dark box is 16-pixel cells, its text's width / 16 + 2 (0x0040c677: add eax,2): with the
+// closer titles that reached into the next one; + 1 still holds the text with room to spare.
+#define BAR_BOX_ADD 0x0040c677
+static bar_title_t g_bar[BAR_TITLES];
+#define MODS_LINES 7 // the Mods list: one line for each tab of the Jen With a B's Mods panel
+static bar_item_t g_helpItems[8], g_hdItems[4], g_modsItems[MODS_LINES];
+static bar_title_t g_barFile, g_barOptions, g_barHelp, g_barMods, g_barHd; // the titles the layouts take from
+static BOOL g_barOk, g_helpAsMods;
+static int g_barShown = BAR_TITLES; // titles in the layout drawn last
+static volatile LONG g_menuPending; // a panel the menu bar asked for: 1-4 the F10 tabs, 5 the Mods panel, 6-12 its tabs
+static int g_menuPendingWait;
+static BOOL left_button_down(void)
+{
+	if (g_remote) return g_lbDown;
+	return GetAsyncKeyState(GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON) < 0; // (the physical button)
+}
+static void menu_ask(int what) { InterlockedExchange(&g_menuPending, what); g_menuPendingWait = 0; }
+static void __cdecl bar_mod_menu(void) { menu_ask(5); }
+static void __cdecl bar_hd0(void) { menu_ask(1); }
+static void __cdecl bar_hd1(void) { menu_ask(2); }
+static void __cdecl bar_hd2(void) { menu_ask(3); }
+static void __cdecl bar_hd3(void) { menu_ask(4); }
+static void __cdecl bar_mods0(void) { menu_ask(6); }
+static void __cdecl bar_mods1(void) { menu_ask(7); }
+static void __cdecl bar_mods2(void) { menu_ask(8); }
+static void __cdecl bar_mods3(void) { menu_ask(9); }
+static void __cdecl bar_mods4(void) { menu_ask(10); }
+static void __cdecl bar_mods5(void) { menu_ask(11); }
+static void __cdecl bar_mods6(void) { menu_ask(12); }
+// The Mods list's lines: Jen's names for the groups (the panel's tabs say them shorter)
+static const char *const kModsLine[MODS_LINES] = { "Game Mods", "Economy Mods", "Building Mods", "Unit Mods", "Unit Stats", "Unit Costs", "Fixes" };
+static const char *menu_bar_text(int group, int index)
+{
+	if (!g_barOk) return NULL;
+	if (group == TXT_HELP && index == 0 && g_helpAsMods) return "Mods";
+	if (group == TXT_HELP && index == TXT_MOD_MENU) return "Mod Menu";
+	if (group == TXT_MODS) return index >= 1 && index <= MODS_LINES ? kModsLine[index - 1] : "Mods";
+	if (group == TXT_HD) return index >= 1 && index <= 4 ? kMenuTab[index - 1] : "HD";
+	return NULL;
+}
+typedef void (__cdecl *text_lookup_t)(int, int, int, int, void *, int);
+typedef void (__cdecl *text_find_t)(int, int);
+static void __cdecl menu_text(int group, int index, int x, int y, void *font, int colour)
+{
+	const char *s = menu_bar_text(group, index);
+	if (!s) { ((text_lookup_t)0x00402d37)(group, index, x, y, font, colour); return; }
+	*(const char **)0x005c9270 = s; // as FUN_00402d37 leaves it
+	((void (__cdecl *)(const char *, int, int, void *, int))0x00402637)(s, x, y, font, colour);
+	*(int *)0x005aeb84 = 0;
+}
+static void __cdecl menu_text_find(int group, int index) // FUN_004018d7: the title's text, for its highlight's width
+{
+	const char *s = menu_bar_text(group, index);
+	if (s) *(const char **)0x005c9270 = s;
+	else ((text_find_t)0x004018d7)(group, index);
+}
+// The titles for now: File, Options, Help, [Mods,] HD - or, short of room with Jen With a B's Mods on, File,
+// Options, Help as Mods, HD. Titles past the layout's get an empty x range: the game's clicks (FUN_0040e00a,
+// counting 5) never land on them. Kept while a list is open (the game holds a pointer to its title).
+static int menu_bar_layout(void)
+{
+	if (!g_barOk) return BAR_TITLES;
+	if (*(void **)0x00522cac) return g_barShown;
+	BOOL battle = *(int *)0x0057c8fc != 0; // (no shields then: FUN_00419c78)
+	int x0 = g_bar[0].x; // the first title's x, moved left on the wide map (h_bar_tiles)
+	BOOL room = battle || x0 + 300 <= BAR_ROOM_X; // (five titles take about 300 pixels)
+	bar_title_t t[BAR_TITLES] = { g_barFile, g_barOptions, g_barHelp, g_barHd, g_barHd };
+	int n = 4;
+	g_helpAsMods = FALSE;
+	if (g_jenMods && room) { t[3] = g_barMods; n = 5; }
+	else if (g_jenMods) { g_helpAsMods = TRUE; t[2].items = g_helpItems; t[2].count = 8; }
+	t[0].x = (short)x0;
+	for (int i = n; i < BAR_TITLES; i++) t[i].x = t[i].xEnd = -0x7000;
+	memcpy(g_bar, t, sizeof t);
+	return g_barShown = n;
+}
+static void __cdecl menu_bar_draw(short *table, int n)
+{
+	(void)n;
+	((void (__cdecl *)(short *, int))0x0040c5b0)(table, menu_bar_layout());
+}
+// The panel opens a few frames after the click, once the button is up: the list is gone from the
+// picture by then (the scroll keeps what it covers), and the game has seen the release.
+static void menu_pending_tick(void)
+{
+	int what = g_menuPending;
+	if (!what || left_button_down() || g_menuOpen || ++g_menuPendingWait < 4) return;
+	InterlockedExchange(&g_menuPending, 0);
+	if (what >= 5) {
+		if (!g_jenMods) return;
+		if (what > 5) g_tabOf[1] = MODS_TAB0 + what - 6;
+		menu_show_panel(TRUE);
+	}
+	else { g_tabOf[0] = what - 1; menu_show_panel(FALSE); }
+	logf_("menu bar: %s", what == 5 ? "Mod Menu" : what > 5 ? kModsLine[what - 6] : kMenuTab[what - 1]);
+}
+static void menu_bar_install(void)
+{
+	static const DWORD kSites[4] = { 0x0041a0bf, 0x00430010, 0x004314d5, 0x00431911 }; // push 3; push 004dc428
+	static const DWORD kTextCalls[4] = { 0x0040c6b6, 0x0040c6e2, 0x0040c86e, 0x0040c89f }; // call 00402d37
+	static const BYTE kPush[7] = { 0x6A, 0x03, 0x68, 0x28, 0xC4, 0x4D, 0x00 }, kGap[7] = { 0x83, 0x05, 0x04, 0xD4, 0x5C, 0x00, 0x20 };
+	const bar_title_t *game = (const bar_title_t *)0x004dc428;
+	BOOL ok = game[BAR_HELP].text == TXT_HELP && game[BAR_HELP].count == 7 && game[BAR_HELP].items == (void *)0x004dc3d0 &&
+		!memcmp((const void *)0x0040c6f6, kGap, 7) && !memcmp((const void *)BAR_BOX_ADD, "\x83\xC0\x02", 3);
+	for (int i = 0; i < 4 && ok; i++) ok = !memcmp((const void *)(kSites[i] - 3), kPush, 7);
+	for (int i = 0; i < 4 && ok; i++) ok = *(BYTE *)kTextCalls[i] == 0xE8 && kTextCalls[i] + 5 + *(int *)(kTextCalls[i] + 1) == 0x00402d37;
+	ok = ok && *(BYTE *)0x0040c632 == 0xE8 && 0x0040c632 + 5 + *(int *)(0x0040c633) == 0x004018d7;
+	ok = ok && *(BYTE *)BAR_DRAW_CALL == 0xE8 && BAR_DRAW_CALL + 5 + *(int *)(BAR_DRAW_CALL + 1) == 0x0040c5b0;
+	if (!ok) { logf_("not hooked: unexpected code or data at the menu bar (0x004dc428): no Mods and HD titles"); return; }
+	g_barFile = game[0]; g_barOptions = game[1]; g_barHelp = game[2];
+	g_barMods = (bar_title_t){ 0, 0, game[0].y, TXT_MODS, g_modsItems, MODS_LINES, 0 };
+	g_barHd = (bar_title_t){ 0, 0, game[0].y, TXT_HD, g_hdItems, 4, 0 };
+	g_helpItems[0] = (bar_item_t){ 0, TXT_MOD_MENU, bar_mod_menu, 0 };
+	memcpy(g_helpItems + 1, (const void *)0x004dc3d0, 7 * sizeof *g_helpItems);
+	for (int i = 1; i < 8; i++) g_helpItems[i].y = (short)(i * 20);
+	void (__cdecl *const hd[4])(void) = { bar_hd0, bar_hd1, bar_hd2, bar_hd3 };
+	for (int i = 0; i < 4; i++) g_hdItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), hd[i], 0 };
+	void (__cdecl *const mods[MODS_LINES])(void) = { bar_mods0, bar_mods1, bar_mods2, bar_mods3, bar_mods4, bar_mods5, bar_mods6 };
+	for (int i = 0; i < MODS_LINES; i++) g_modsItems[i] = (bar_item_t){ (short)(i * 20), (short)(i + 1), mods[i], 0 };
+	g_bar[0].x = game[0].x;
+	g_barOk = TRUE;
+	menu_bar_layout();
+	for (int i = 0; i < 4; i++) {
+		BYTE b[7]; memcpy(b, kPush, 7);
+		b[1] = BAR_TITLES; *(DWORD *)(b + 3) = (DWORD)g_bar;
+		code_put(kSites[i] - 3, b, 7);
+	}
+	for (int i = 0; i < 4; i++) {
+		BYTE c[5] = { 0xE8 }; *(DWORD *)(c + 1) = (DWORD)menu_text - (kTextCalls[i] + 5);
+		code_put(kTextCalls[i], c, 5);
+	}
+	BYTE c[5] = { 0xE8 }; *(DWORD *)(c + 1) = (DWORD)menu_text_find - (0x0040c632 + 5);
+	code_put(0x0040c632, c, 5);
+	*(DWORD *)(c + 1) = (DWORD)menu_bar_draw - (BAR_DRAW_CALL + 5);
+	code_put(BAR_DRAW_CALL, c, 5);
+	BYTE gap = BAR_GAP, box = 1; code_put(0x0040c6fc, &gap, 1); code_put(BAR_BOX_ADD + 2, &box, 1);
+	g_barTable = (short *)g_bar;
+	logf_("menu bar: File, Options, Help, Mods (while Jen With a B's Mods is on), HD");
 }
 
 static void __cdecl h_bar_tiles(int x, int y, int nx, int ny)
@@ -8480,7 +9509,7 @@ static void army_panel_keep(void)
 // lettering into its picture, like the army scroll, before every flush that would show the place
 // without it. What it covered is kept and put back when it closes.
 #define MS_W (28 * 16) // (wide enough for the four tabs side by side)
-#define MS_H (17 * 16)
+#define MS_H (18 * 16) // (tall enough for the Jen With a B's Mods panel's eight rows, two lines of description and Reset)
 static BYTE g_msSnap[MS_W * MS_H], g_msUnder[MS_W * MS_H];
 static int g_msX, g_msY, g_msGen = -1;
 // The HD sprite layer under it, kept with g_msUnder: the scroll's own stamps replace it, and a picture
@@ -8541,14 +9570,26 @@ static void menu_scroll_draw(void)
 	BYTE savedScreen = *(BYTE *)0x004eac50;
 	if (savedScreen == 0x1c || savedScreen == 0x1f) *(BYTE *)0x004eac50 = 0;
 	((void (__cdecl *)(int, int, int, int))0x004093e0)(x0, y0, MS_W / 16, MS_H / 16);
-	ctext("Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
-	{ // the tabs side by side, spaced by their own widths; the open one red and underlined
-		int tw[MENU_TABS], total = 0, gap = 18;
-		for (int k = 0; k < MENU_TABS; k++) { tw[k] = width(kMenuTab[k], body); total += tw[k] + (k ? gap : 0); }
+	ctext(g_menuMods ? "Jen With a B's Mods" : "Lords of the Realm II HD", x0, y0 + 18, MS_W, title, ink);
+	if (!menu_tab_shown(g_menuTab)) menu_set_tab(0);
+	{ // the tabs side by side, spaced by their own widths; the open one red and underlined. With the
+	  // fifth (Jen With a B's Mods) they may not fit: the gaps shrink, then the small lettering is used.
+		int tw[MENU_TABS], total = 0, sum = 0, gap = 18, shown = menu_tabs_shown(), room = MS_W - 40;
+		void *tf = body;
+		for (int pass = 0; pass < 2; pass++) {
+			sum = 0;
+			for (int k = 0; k < MENU_TABS; k++) { tw[k] = menu_tab_shown(k) ? width(kMenuTab[k], tf) : 0; sum += tw[k]; }
+			gap = shown > 1 ? min(18, (room - sum) / (shown - 1)) : 18;
+			if (gap >= 8) break;
+			tf = small;
+		}
+		gap = max(gap, 4);
+		total = sum + (shown - 1) * gap;
 		int tx = x0 + (MS_W - total) / 2;
 		for (int k = 0; k < MENU_TABS; k++) {
+			if (!menu_tab_shown(k)) { SetRectEmpty(&g_menuTabRect[k]); continue; }
 			int w = tw[k], cx = tx + w / 2;
-			ctext(kMenuTab[k], cx - w / 2 - 4, y0 + 44, w + 8, body, k == g_menuTab ? red : ink);
+			ctext(kMenuTab[k], cx - w / 2 - 4, y0 + 44, w + 8, tf, k == g_menuTab ? red : ink);
 			if (k == g_menuTab) { line(cx - w / 2, y0 + 57, cx + w / 2, y0 + 57, red); line(cx - w / 2, y0 + 58, cx + w / 2, y0 + 58, red); }
 			SetRect(&g_menuTabRect[k], cx - w / 2 - gap / 2, y0 + 42, cx + w / 2 + gap / 2, y0 + 61);
 			tx += w + gap;
@@ -8580,7 +9621,21 @@ static void menu_scroll_draw(void)
 		ctext("* after a restart; the fixes from the next battle", x0, y0 + 200, MS_W, small, ink);
 		ctext("The fixes stay off in multiplayer games", x0, y0 + 214, MS_W, small, ink);
 	}
-	const char *keys = "Click to change, right-click to close";
+	SetRectEmpty(&g_menuLink);
+	if (menu_link_shown()) { // under Quality of life's 8 rows: the way to the Jen With a B's Mods panel
+		ctext(kModsLink, x0, y0 + 207, MS_W, small, red);
+		SetRect(&g_menuLink, x0 + 40, y0 + 203, x0 + MS_W - 40, y0 + 220);
+	}
+	SetRectEmpty(&g_menuReset);
+	if (g_menuMods) { // under its rows (8 at most, the last ending at y0 + 192): the chosen one's description, and
+		              // Reset All To Default as on Jen's Mod Menu
+		int item = kMenuTabItems[g_menuTab][g_menuSel];
+		for (int l = 0; l < 2; l++) if (menu_desc(item, l)) ctext(menu_desc(item, l), x0, y0 + 199 + l * 13, MS_W, small, ink);
+		ctext(kResetLink, x0, y0 + 230, MS_W, small, red);
+		int w = width(kResetLink, small);
+		SetRect(&g_menuReset, x0 + (MS_W - w) / 2 - 8, y0 + 227, x0 + (MS_W + w) / 2 + 8, y0 + 243);
+	}
+	const char *keys = g_menuMods ? "Click to change; F10: the HD settings" : "Click to change, right-click to close";
 	ctext(keys, x0, y0 + MS_H - 38, MS_W, (void *)0x005cbfb0, ink); // the keys apart, in the game's fourth lettering (its battle numbers)
 	SetRect(&g_menuBox, x0, y0, x0 + MS_W, y0 + MS_H);
 	*(BYTE *)0x004eac50 = savedScreen;
@@ -9633,7 +10688,6 @@ static void install_wide(void)
 	hook_code((BYTE *)0x0047309e, kMsgPrologueA, sizeof kMsgPrologueA, h_msg_a, &o_msg_a);
 	hook_code((BYTE *)0x00475e07, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_b, &o_msg_b);
 	hook_code((BYTE *)0x00476488, kMsgPrologueB, sizeof kMsgPrologueB, h_msg_c, &o_msg_c);
-	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
 	hook_code((BYTE *)0x0040ccfa, kBlockPrologue, sizeof kBlockPrologue, h_yesno_draw, &o_yesno_draw);
 	static const BYTE kTutorialPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x04 }; // push ebp; mov ebp,esp; sub esp,4
 	hook_code((BYTE *)0x00476da9, kTutorialPrologue, sizeof kTutorialPrologue, h_tutorial, &o_tutorial);
@@ -9797,6 +10851,7 @@ static void __cdecl h_show_frame(int force)
 	if (!*(void **)0x004eabd0) return;
 	stream_hold_tick();
 	army_panel_keep();
+	menu_pending_tick();
 	menu_scroll_keep();
 	// Old-game limit: unforced copies (the battle loop's, FUN_004b0000's and FUN_00430000's) go to the
 	// screen only once 50 ms have passed since the last (DAT_004eabe8), so battles showed at most 20
@@ -9975,6 +11030,8 @@ static char __cdecl h_game_frame(void)
 		// that patches that skip out (jmp at 0x4bbb92, Wolfe's dplayx) puts the gate back.
 		BOOL fastGated = *(int *)0x00553030 == 0 || *(BYTE *)0x004bbb92 == 0xE9;
 		if (slow >= 0 && slow < 10 && (slow != 0 || fastGated)) gateWait[0] = slow * 10 + 2;
+		if (slow < 0) gateWait[0] = 0;   // past speed 10 (Jen With a B's Uncapped game speed): no gate, a step every frame,
+		                                 // as fast as the game runs (held to the frame limit it would be slower than speed 10)
 		int scroll = (100 - *(int *)0x0053f234) / 10;
 		if (scroll >= 0 && scroll < 10) gateWait[1] = (scroll + (SCREEN_ID == 0x10 ? 2 : 0)) * 12 + 2;
 		DWORD t = timeGetTime();
@@ -10113,11 +11170,26 @@ static int __cdecl h_logic_steps(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Multiplayer safe mode: the game fixes below change what happens in the game, and nothing checks that
-// every player runs them, so in a multiplayer game (DAT_00553030) they stay off unless every player
-// has [Game] MultiplayerFixes=1; a player with the original game, or other settings, would drift apart.
-static BOOL g_mpFixes;
-static BOOL fix_on(BOOL fix) { return fix && (g_mpFixes || !*(int *)0x00553030); }
+// Multiplayer rules: the game fixes below change what happens in the game, and every PC works out the whole game
+// itself, so in a multiplayer game (DAT_00553030) a fix runs only when every player runs it. The host decides
+// (our dplayx.dll, multiplayer/dplayx/rules.c): with [Game] HostOffersFixes=1 (the default) the host offers its
+// campaign fixes (RU_*), and they run when every player has this same ddraw.dll (its CRC) with their code in;
+// otherwise, or with the Windows DirectPlay or an older dplayx.dll, every player plays the original rules.
+// mp_rules_sync tells dplayx who we are; rule_on reads the game's rules. The battle fixes and Enemy tactics
+// (fix_on) keep state of their own that the sync check and the resync don't cover: single player only for now.
+enum { RU_RATION, RU_WHEAT, RU_CASTLECAP, RU_SIEGE, RU_COUNT };
+static const char *const kRuleName[RU_COUNT] = { "ration fix", "wheat fix", "castle cap fix", "siege garrison fix" };
+typedef int (WINAPI *RulesGetFn)(DWORD *);
+static RulesGetFn g_rulesGet;   // dplayx's LF_NetRulesGet (NULL: not our dplayx)
+static BOOL g_mpOffer = TRUE;   // [Game] HostOffersFixes: when hosting, offer the campaign fixes
+static BOOL g_canWheat, g_canCastleCap, g_canSiege;   // their code went in (the ration fix's: g_rationHooked)
+static BOOL rule_on(int r, BOOL local)
+{
+	if (!*(int *)0x00553030) return local;
+	DWORD v = 0;
+	return g_rulesGet && g_rulesGet(&v) && (v >> r & 1);
+}
+static BOOL fix_on(BOOL fix) { return fix && !*(int *)0x00553030; }
 
 // Mop-Up fix. Mop-Up (FUN_0047a76d) marks each unit's group as hunting (DAT_0056654a, the flag the
 // AI's charge FUN_0048c8af also sets) and puts the unit in the chase state 8. The chase handler
@@ -10564,8 +11636,7 @@ static void __cdecl h_group_tick(void)
 
 // ---------------------------------------------------------------------------------------------
 // Enemy tactics, Hard and Legendary ([Game] BattleAI=1/2; field battles only, Normal = the game's own AI,
-// untouched). Changes how the computer plays, so in multiplayer only with MultiplayerFixes (every player
-// must then use the same level).
+// untouched). Changes how the computer plays: single player only (fix_on).
 // Steady mode: the game weighs both armies about every 100 steps (FUN_0047fc01: computer x 100 / human
 // - 100, the strength percentage) and in single player adds a random -10..+21 each time; above the
 // threshold (5) its groups run the attack rules, else the defence rules. Close to even, that switches
@@ -11375,7 +12446,7 @@ static void __cdecl h_setup_call(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Jitter fix ([Game] JitterFix=1, single player; multiplayer only with MultiplayerFixes=1).
+// Jitter fix ([Game] JitterFix=1, single player only).
 // 1. The mover FUN_0048f1dd throws a unit's whole path away when the next cell on it is taken by a
 //    friend (a groupmate that was moving when the path was searched, or any friend for the computer,
 //    whose units treat friends like terrain). With no path the unit heads straight at its goal, which is
@@ -11902,7 +12973,7 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Phase 5: idle units engage ([Game] EngageFix=1; multiplayer only with MultiplayerFixes=1).
+// Phase 5: idle units engage ([Game] EngageFix=1; single player only).
 // An idle melee unit (state 5, not on Mop-Up) fought only an enemy that walked into it. Now, checked
 // every 8 steps, it goes for an enemy that is close by walking distance (2 cells, 3 for knights),
 // within its leash, with the anti-bait rules agreed with the user:
@@ -12202,7 +13273,7 @@ static void __cdecl h_melee(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Group routes against the "snake" ([Game] GroupMoveFix=1; multiplayer only with MultiplayerFixes=1).
+// Group routes against the "snake" ([Game] GroupMoveFix=1; single player only).
 // FUN_00489b8d(x, y, fig, group) gives each unit of an ordered group its formation slot; the unit then
 // walks straight at it and only looks for a way round once blocked, with a search that follows the
 // obstacle's edge, so a whole group strings out along a forest edge in single file. Now, when the
@@ -13338,7 +14409,7 @@ static void __cdecl h_castle_start(int county, int kind)
 	if (g_aiBuilding > 0 && g_aiBuilding < 6) {
 		g_aiStarts++;
 		BYTE *building = (BYTE *)(0x0057bf4d + g_aiBuilding * 0x160);
-		if (fix_on(g_fixCastleCap) && *building < 255) ++*building;
+		if (rule_on(RU_CASTLECAP, g_fixCastleCap) && *building < 255) ++*building;
 	}
 }
 
@@ -13355,7 +14426,7 @@ static wheat_scale_t o_wheat_scale;
 
 static int __cdecl h_wheat_scale(int county, int grain)
 {
-	if (!fix_on(g_fixWheat)) return o_wheat_scale(county, grain);
+	if (!rule_on(RU_WHEAT, g_fixWheat)) return o_wheat_scale(county, grain);
 	BYTE now = *(BYTE *)(0x0053fbb1 + county * 0x300), live = *(BYTE *)(0x0053fbb6 + county * 0x300);
 	int asWas = o_wheat_scale(county, grain);
 	if (now < live) grain = grain * (now * 100 / live) / 100; // the game's own percent steps (FUN_00404dc1, FUN_00404d6b)
@@ -13364,6 +14435,157 @@ static int __cdecl h_wheat_scale(int county, int grain)
 		logged++, lastCounty = county, lastGrain = grain, logf_("wheat fix: county %d, %d wheat fields (%d as planted, %d with grain): %d grain counted, %d before",
 		county, now, *(BYTE *)(0x0053fbb2 + county * 0x300), live, grain, asWas);
 	return grain;
+}
+
+// Food ration fix. Bug found and fixed by Jen With a B (Lords II Mod Manager 1.4.1); rewritten here with Jen's
+// consent, following Jen's patch site and rule. A county's food for the season (FUN_0044df5f) is milk first, then the rest of the
+// ration split by the food slider (0x0053fb0f, percent from cattle): cattle at DAT_00567594 (10) food each,
+// grain at DAT_0057cb30 (6) each. Each share was then cut to what is in store on its own (0x0044e4a2 ..
+// 0x0044e523: cattle 0x0053fb34 -> 0x0053fb2c, grain 0x0053fb30 -> 0x0053fb28), so with one food run out the
+// county ate less than its ration, yet happiness comes from the ration level (0x0053f9c1), not from what
+// was eaten: setting the slider towards an empty food saved food for free. Now, with the slider between its
+// ends, a share that runs short is made up from the other food at those rates (rounded up), as far as it
+// lasts, so the county eats its ration. At 0% or 100% the player chose one food: unchanged. As in Jen's
+// DLL only this second cut is changed; the first (before the game lowers the ration to what the shares
+// allow) is left as it is. Part of Jen With a B's Mods; in a multiplayer game as the host decides (rule_on).
+static void ration_share(int haveCattle, int haveGrain, int needCattle, int needGrain, int cattlePct,
+	int cattleFood, int grainFood, int *cattle, int *grain)
+{
+	int c = haveCattle < needCattle ? haveCattle : needCattle;   // the game's own cut, each food on its own
+	int g = haveGrain < needGrain ? haveGrain : needGrain;
+	if (cattlePct > 0 && cattlePct < 100 && cattleFood > 0 && grainFood > 0) {
+		if (needGrain > g && haveCattle > c)
+			c = min(haveCattle, c + ((needGrain - g) * grainFood + cattleFood - 1) / cattleFood);
+		if (needCattle > c && haveGrain > g)
+			g = min(haveGrain, g + ((needCattle - c) * cattleFood + grainFood - 1) / grainFood);
+	}
+	*cattle = c; *grain = g;
+}
+// Called from ration_stub in place of the game's two cuts, with FUN_0044df5f's frame: county at +8, cattle
+// wanted at -4, grain wanted at -0x2c.
+__attribute__((used)) void __cdecl l2hd_ration_step(const BYTE *frame)
+{
+	int county = *(const int *)(frame + 8), c, g;
+	int haveCattle = *(int *)(0x0053fb34 + county * 0x300), haveGrain = *(int *)(0x0053fb30 + county * 0x300);
+	int needCattle = *(const int *)(frame - 4), needGrain = *(const int *)(frame - 0x2c);
+	int pct = rule_on(RU_RATION, g_jenMods && g_fixRation) ? *(BYTE *)(0x0053fb0f + county * 0x300) : 0;
+	ration_share(haveCattle, haveGrain, needCattle, needGrain, pct, *(int *)0x00567594, *(int *)0x0057cb30, &c, &g);
+	static int logged;
+	if (logged < 5 && (c != min(haveCattle, needCattle) || g != min(haveGrain, needGrain)))
+		logged++, logf_("ration fix: county %d, slider %d%%: wanted %d cattle %d grain, in store %d %d: eats %d cattle %d grain",
+			county, pct, needCattle, needGrain, haveCattle, haveGrain, c, g);
+	*(int *)(0x0053fb2c + county * 0x300) = c;
+	*(int *)(0x0053fb28 + county * 0x300) = g;
+}
+__attribute__((naked)) static void ration_stub(void)
+{
+	__asm__("pushal\n\t"
+		"pushl %ebp\n\t"
+		"call _l2hd_ration_step\n\t"
+		"addl $4, %esp\n\t"
+		"popal\n\t"
+		"pushl $0x0044e523\n\t"   // on after the game's two cuts
+		"ret");
+}
+
+// Jen With a B's resource multiplier, population average, game speed and merchant prices (jen_econ_sync): the stubs at
+// the game's sites, each doing what the game did there while its g_live* value says so.
+__attribute__((used)) void __cdecl l2hd_res_prod(BYTE *frame)   // FUN_0044ea92's frame: the industry at +0xc, its output at -0xc
+{
+	int mul = g_liveResMul, ind = *(const int *)(frame + 0xc), *out = (int *)(frame - 0xc);
+	if (mul <= 1 || ind == 2) return;   // (2: the blacksmith's weapons)
+	long long v = (long long)*out * mul;
+	if (!g_liveUncap && v > RES_CAP) v = RES_CAP;
+	*out = (int)min(v, 0x7fffffffLL);
+}
+__attribute__((used)) void __cdecl l2hd_res_ui(BYTE *frame)     // FUN_0044f318's: the industry at +0xc, the forecast at -0x18
+{
+	int mul = g_liveResMul, ind = *(const int *)(frame + 0xc), *out = (int *)(frame - 0x18);
+	if (mul <= 1 || ind == 2) return;
+	long long v = (long long)*out * mul;
+	if (!g_liveUncap && v > RES_CAP) v = RES_CAP;   // (as the season will give)
+	*out = (int)min(v, 0x7fffffffLL);
+}
+__attribute__((used)) void __cdecl l2hd_pop_step(BYTE *frame)   // FUN_00449ef3's: the county at -4
+{
+	int target = g_livePop, c = *(const int *)(frame - 4);
+	if (!target || c < 1 || c > 0x200 || c > *(const int *)0x0056d5dc) return;
+	BYTE *k = (BYTE *)0x0053f9d4 + c * 0x300;   // population; births +0xc, deaths +0x10, leaving +0x18, arriving +0x1c
+	int *births = (int *)(k + 0xc);
+	*births = pop_births(target, *(int *)k, *births, *(int *)(k + 0x10), *(int *)(k + 0x18), *(int *)(k + 0x1c));
+}
+__attribute__((used)) int __cdecl l2hd_speed_free(const int *slider) { return g_liveSpeed && slider == GAME_SPEED; }
+// A set price is held at or above what the merchant pays for one now (DAT_005532a0 + 16 item, the live sell price,
+// also an old save's), so buying and selling back can't make crowns (the user's call, 2026-11-27; Jen's allowed it).
+__attribute__((used)) int __cdecl l2hd_buy_price(int item)
+{
+	if (item < 9 || item > 14) return 0;
+	int buy = (int)g_liveBuy[item], sell = *(const int *)(0x005532a0 + 16 * item);
+	return buy > 0 && buy < sell ? sell : buy;
+}
+__attribute__((naked)) static void resprod_stub(void)
+{
+	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_res_prod\n\t" "addl $4, %esp\n\t" "popal\n\t"
+		"movl -0xc(%ebp), %eax\n\t" "movl 0xc(%ebp), %ecx\n\t" "pushl $0x0044ec7f\n\t" "ret");
+}
+__attribute__((naked)) static void resui_stub(void)
+{
+	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_res_ui\n\t" "addl $4, %esp\n\t" "popal\n\t"
+		"movl -0x18(%ebp), %eax\n\t" "movl 0xc(%ebp), %ecx\n\t" "pushl $0x0044f5f1\n\t" "ret");
+}
+__attribute__((naked)) static void pop_stub(void)
+{
+	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_pop_step\n\t" "addl $4, %esp\n\t" "popal\n\t"
+		"movl -4(%ebp), %eax\n\t" "shll $8, %eax\n\t" "pushl $0x0044a296\n\t" "ret");
+}
+__attribute__((naked)) static void speed_stub(void)   // after cmp [eax],ecx: the slider's value, its most
+{
+	__asm__("pushal\n\t" "pushl %eax\n\t" "call _l2hd_speed_free\n\t" "addl $4, %esp\n\t" "testl %eax, %eax\n\t" "popal\n\t"
+		"jnz 1f\n\t" "cmpl %ecx, (%eax)\n\t" "jl 1f\n\t" "pushl $0x00434ec4\n\t" "ret\n"
+		"1:\n\t" "pushl $0x00434eb7\n\t" "ret");
+}
+// The merchant's buy price (item 9-14: the weapons): a set price, else the game's sell price + share. The item from
+// DAT_0056d8ac (the trade screen) or the AI's third argument.
+#define MERCHANT_STUB(name, item, fixed, game, back) \
+	__attribute__((naked)) static void name(void) \
+	{ \
+		__asm__("pushal\n\t" "pushl " item "\n\t" "call _l2hd_buy_price\n\t" "addl $4, %esp\n\t" "movl %eax, 28(%esp)\n\t" "popal\n\t" \
+			"testl %eax, %eax\n\t" "jz 1f\n\t" fixed "pushl $" back "\n\t" "ret\n" "1:\n\t" game "pushl $" back "\n\t" "ret"); \
+	}
+MERCHANT_STUB(buy0_stub, "0x0056d8ac", "movl %eax, -4(%ebp)\n\t", "movl -0x10(%ebp), %eax\n\t" "addl %eax, -4(%ebp)\n\t", "0x004162b7")
+MERCHANT_STUB(buy1_stub, "0x0056d8ac", "", "movl -4(%ebp), %eax\n\t" "addl 0x0057c8c0, %eax\n\t", "0x00429088")
+MERCHANT_STUB(buy2_stub, "0x10(%ebp)", "", "movl -0xc(%ebp), %eax\n\t" "addl -4(%ebp), %eax\n\t", "0x004a4bb9")
+MERCHANT_STUB(buy3_stub, "0x10(%ebp)", "", "movl -0x10(%ebp), %eax\n\t" "addl -4(%ebp), %eax\n\t", "0x004a4ce8")
+typedef struct { DWORD at; BYTE n; BYTE game[9]; void (*stub)(void); int je; } JenHook;
+static const JenHook kJenHooks[] = {
+	{ SPEED_AT, 6, { 0x0F, 0x8D, 0x0D, 0x00, 0x00, 0x00 }, speed_stub, JE_SPEED },
+	{ RESMUL_PROD, 6, { 0x8B, 0x45, 0xF4, 0x8B, 0x4D, 0x0C }, resprod_stub, JE_RESMUL },
+	{ RESMUL_UI, 6, { 0x8B, 0x45, 0xE8, 0x8B, 0x4D, 0x0C }, resui_stub, JE_RESMUL },
+	{ POP_AT, 6, { 0x8B, 0x45, 0xFC, 0xC1, 0xE0, 0x08 }, pop_stub, JE_POP },
+	{ 0x004162b1, 6, { 0x8B, 0x45, 0xF0, 0x01, 0x45, 0xFC }, buy0_stub, JE_BUY },
+	{ 0x0042907f, 9, { 0x8B, 0x45, 0xFC, 0x03, 0x05, 0xC0, 0xC8, 0x57, 0x00 }, buy1_stub, JE_BUY },
+	{ 0x004a4bb3, 6, { 0x8B, 0x45, 0xF4, 0x03, 0x45, 0xFC }, buy2_stub, JE_BUY },
+	{ 0x004a4ce2, 6, { 0x8B, 0x45, 0xF0, 0x03, 0x45, 0xFC }, buy3_stub, JE_BUY },
+};
+#define JEN_HOOKS ((int)(sizeof kJenHooks / sizeof *kJenHooks))
+// Puts the stubs in (each mod's sites all or none), unless they are already there from an earlier start-up (the tests).
+static void jen_econ_hook(void)
+{
+	static const int kMods[] = { JE_SPEED, JE_RESMUL, JE_POP, JE_BUY };
+	for (int m = 0; m < 4; m++) {
+		int je = kMods[m];
+		BOOL ok = TRUE, mine = TRUE;
+		for (int h = 0; h < JEN_HOOKS; h++) {
+			if (kJenHooks[h].je != je) continue;
+			const BYTE *p = (const BYTE *)kJenHooks[h].at;
+			BOOL in = p[0] == 0xE9 && *(const DWORD *)(p + 1) + kJenHooks[h].at + 5 == (DWORD)kJenHooks[h].stub;
+			mine &= in;
+			ok &= in || !memcmp(p, kJenHooks[h].game, kJenHooks[h].n);
+		}
+		if (ok && !mine)
+			for (int h = 0; h < JEN_HOOKS; h++) if (kJenHooks[h].je == je) ok &= redirect((BYTE *)kJenHooks[h].at, kJenHooks[h].n, kJenHooks[h].stub);
+		g_jeHooked[je] = ok;
+	}
 }
 
 // Besieged castles. The game's rule (Readme, "Besieged Castles"): no army may enter a castle or
@@ -13408,7 +14630,7 @@ static void siege_unmark(const BYTE *saved)
 }
 static int marked_call(county_step_t f, unsigned a, int b)
 {
-	if (!fix_on(g_fixSiegeGarrison)) return f(a, b);
+	if (!rule_on(RU_SIEGE, g_fixSiegeGarrison)) return f(a, b);
 	BYTE saved[64];
 	int marked = siege_marks(saved), r = f(a, b);
 	if (marked) siege_unmark(saved);
@@ -13421,7 +14643,7 @@ static void __cdecl h_season_castles(void) { g_inUpgrade++; o_season_castles(); 
 
 static void __cdecl h_castle_enter(unsigned army, int county)
 {
-	if (fix_on(g_fixSiegeGarrison) && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
+	if (rule_on(RU_SIEGE, g_fixSiegeGarrison) && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
 		if (county_besieged(county) && (unsigned)*(int *)(0x0053fb6c + county * 0x300) != army) {
 			*(BYTE *)(0x0052f200 + army * 0x1a4) = 1;   // as the full-castle branch leaves it
 			*(BYTE *)(0x0052f0ca + army * 0x1a4) = 2;
@@ -13458,6 +14680,67 @@ static DWORD crc_file(const char *path)
 	fclose(f);
 	return ~h;
 }
+// Multiplayer rules (see rule_on): tells our dplayx.dll who this player is (this ddraw.dll's CRC), which campaign
+// fixes it can run and, as a host would offer them, which it wants. Called for every window message; dplayx hears
+// only of a change. Without our dplayx (no LF_NetRulesSet) a multiplayer game plays the original rules.
+typedef void (WINAPI *RulesSetFn)(const char *, DWORD, DWORD);
+// The id dplayx compares between players: "Lords2 HD <crc of this ddraw.dll>". FALSE (id left empty) when the file
+// can't be read: then no id is sent and the game plays the original rules.
+static BOOL mp_rules_id(char *id, size_t size, const char *path)
+{
+	DWORD crc = path && path[0] ? crc_file(path) : 0;
+	id[0] = 0;
+	if (!crc) return FALSE;
+	snprintf(id, size, "Lords2 HD %08lx", (unsigned long)crc);
+	return TRUE;
+}
+
+static void mp_rules_sync(void)
+{
+	static BOOL looked;
+	static RulesSetFn set;
+	static char id[24];
+	static DWORD lastCan = ~0u, lastWant = ~0u;
+	static int loggedGame = -1;
+	if (!looked) {
+		looked = TRUE;
+		HMODULE dp = GetModuleHandleA("dplayx.dll");
+		set = dp ? (RulesSetFn)GetProcAddress(dp, "LF_NetRulesSet") : NULL;
+		g_rulesGet = dp ? (RulesGetFn)GetProcAddress(dp, "LF_NetRulesGet") : NULL;
+		if (!set || !g_rulesGet) set = NULL, g_rulesGet = NULL;
+		// the id: this DLL's own file (wherever it was loaded from); none if it can't be read, and dplayx then
+		// plays the original rules (no id = not this patch)
+		char me[MAX_PATH] = "";
+		HMODULE self = NULL;
+		GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&mp_rules_sync, &self);
+		if (self) GetModuleFileNameA(self, me, sizeof me);
+		BOOL crc = mp_rules_id(id, sizeof id, me);
+		if (!crc) set = NULL, logf_("multiplayer rules: can't read %s - the original rules in a multiplayer game", me[0] ? me : "ddraw.dll");
+		else logf_("multiplayer rules: %s (id %s)", set ? "the host decides" : "dplayx.dll can't tell (not ours): the original rules in a multiplayer game", id);
+	}
+	if (set) {
+		DWORD can = (g_rationHooked ? 1u << RU_RATION : 0) | (g_canWheat ? 1u << RU_WHEAT : 0) |
+			(g_canCastleCap ? 1u << RU_CASTLECAP : 0) | (g_canSiege ? 1u << RU_SIEGE : 0);
+		DWORD want = !g_mpOffer ? 0 : ((g_jenMods && g_fixRation) ? 1u << RU_RATION : 0) | (g_fixWheat ? 1u << RU_WHEAT : 0) |
+			(g_fixCastleCap ? 1u << RU_CASTLECAP : 0) | (g_fixSiegeGarrison ? 1u << RU_SIEGE : 0);
+		if (can != lastCan || want != lastWant) set(id, can, want), lastCan = can, lastWant = want;
+	}
+	// in a multiplayer session (the lobby included, so they may change until the game starts): what it runs, each time
+	// that changes; the last line before the game is what it plays
+	int game = *(int *)0x00553030 != 0;
+	DWORD v = 0;
+	BOOL known = game && g_rulesGet && g_rulesGet(&v);
+	int now = !game ? -1 : !known ? -2 : (int)v;
+	if (now != loggedGame) {
+		loggedGame = now;
+		if (game) {
+			char s[160] = "";
+			for (int r = 0; r < RU_COUNT; r++) if (v >> r & 1) snprintf(s + strlen(s), sizeof s - strlen(s), "%s%s", s[0] ? ", " : "", kRuleName[r]);
+			logf_("multiplayer game: %s", !known ? "no rules from the host: the original rules" : v ? s : "the original rules (the host's choice, or a player without this patch)");
+		}
+	}
+}
+
 // dir = the session's folder, no trailing backslash; "" = none (MpLogs=0, or no dplayx.dll of ours)
 static void mp_session_start(char *dir, size_t size)
 {
@@ -13483,7 +14766,11 @@ static void mp_session_start(char *dir, size_t size)
 	// GameRanger always injects its GameRanger.dll into the game it launches (dplayx's gr_mode checks the same)
 	const char *conn = GetModuleHandleA("GameRanger.dll") ? "GameRanger" : "direct";
 	fprintf(f, "connection: %s\n", conn);
-	fprintf(f, "game fixes in this game: %s (MultiplayerFixes=%d)\n", g_mpFixes ? "on" : "off (multiplayer safe mode)", g_mpFixes);
+	DWORD rules = 0;
+	BOOL known = g_rulesGet && g_rulesGet(&rules);
+	fprintf(f, "game fixes in this game (the host decides): %s", !g_rulesGet ? "none (not our dplayx.dll: the original rules)" : !known ? "none (no rules from the host: the original rules)" : rules ? "" : "none (the original rules)");
+	for (int r = 0; known && r < RU_COUNT; r++) if (rules >> r & 1) fprintf(f, "%s%s", rules & ((1u << r) - 1) ? ", " : "", kRuleName[r]);
+	fprintf(f, " (HostOffersFixes=%d)\n", g_mpOffer);
 	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
 		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
 	fprintf(f, "this player: %d; game speed %d\n\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
@@ -13544,27 +14831,80 @@ static void install_game_fixes(void)
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
 	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
 		kStep18[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,n
-	if (!hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter) ||
-		!hook_code((BYTE *)0x004508de, kStep1C, sizeof kStep1C, h_season_castles, &o_season_castles) ||
-		!hook_code((BYTE *)0x0049f12f, kStep1C, sizeof kStep1C, h_ai_reinforce, &o_ai_reinforce) ||
-		!hook_code((BYTE *)0x004a07f2, kStep10, sizeof kStep10, h_ai_pick_castle, &o_ai_pick_castle) ||
-		!hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march))
-		g_fixSiegeGarrison = FALSE;
+	g_canSiege = hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter) &&
+		hook_code((BYTE *)0x004508de, kStep1C, sizeof kStep1C, h_season_castles, &o_season_castles) &&
+		hook_code((BYTE *)0x0049f12f, kStep1C, sizeof kStep1C, h_ai_reinforce, &o_ai_reinforce) &&
+		hook_code((BYTE *)0x004a07f2, kStep10, sizeof kStep10, h_ai_pick_castle, &o_ai_pick_castle) &&
+		hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march);
+	if (!g_canSiege) g_fixSiegeGarrison = FALSE;
 	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
 	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
-	g_mpFixes = GetPrivateProfileIntA("Game", "MultiplayerFixes", 0, g_iniPath) != 0;
+	// a new key: 1.6.0's ini had MultiplayerFixes=0 (off in multiplayer), and an update keeps the player's ini
+	g_mpOffer = GetPrivateProfileIntA("Game", "HostOffersFixes", 1, g_iniPath) != 0;
 	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
 	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
-	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
-		g_fixWheat = FALSE;
+	g_canWheat = hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale);
+	if (!g_canWheat) g_fixWheat = FALSE;
 	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
+
+	// Jen With a B's Mods: their code goes in whatever the switches say (it does the game's own while off), so the
+	// F10 switches work at once.
+	g_jenMods = GetPrivateProfileIntA("Game", "JenMods", 1, g_iniPath) != 0;
+	g_fixRation = GetPrivateProfileIntA("Game", "RationFix", 1, g_iniPath) != 0;
+	g_mpMsgFix = GetPrivateProfileIntA("Game", "MpMessageFix", 1, g_iniPath) != 0;
+	static const BYTE kRationCut[] = { 0x39, 0x8C, 0x40, 0x34, 0xFB, 0x53, 0x00 };   // cmp [eax*3+0x53fb34],ecx
+	static const BYTE kRationOn[] = { 0x8B, 0x45, 0xE0 };                              // 0x0044e523: mov eax,[ebp-20h]
+	g_rationHooked = (*(BYTE *)0x0044e4a2 == 0xE9 && *(DWORD *)0x0044e4a3 + 0x0044e4a7 == (DWORD)ration_stub) || // (already, from an earlier start-up in the tests)
+		(memcmp((BYTE *)0x0044e4a2, kRationCut, sizeof kRationCut) == 0 && memcmp((BYTE *)0x0044e523, kRationOn, sizeof kRationOn) == 0 &&
+		redirect((BYTE *)0x0044e4a2, sizeof kRationCut, ration_stub));
+	if (!g_rationHooked) logf_("not hooked: unexpected code at 0044e4a2 (ration fix)");
+	logf_("Jen With a B's Mods %s; ration fix %s%s", g_jenMods ? "on" : "off", g_fixRation ? "on" : "off", g_rationHooked ? "" : " (unavailable)");
+
+	// Multiplayer messages. Bug found by Jen With a B (Lords II Mod Manager), with Jen's consent. A message
+	// (FUN_00472e46) is kept up while its timer (DAT_0057c954, from 2000) counts down; in a multiplayer game
+	// (DAT_00553030) every kind but 4 and 14 was closed once the timer fell below 1601, 400 game steps after
+	// it opened (400 calls of the message step; players saw them close at once). Now only kind 4 closes on
+	// its own; in single player nothing closes before the player clicks. The jne after "kind == 4?" goes where kind 14's does.
+	// Only what this player sees changes, so it stays on in multiplayer. Part of Jen With a B's Mods (mpmsg_apply).
+	BOOL msgOn = g_jenMods && g_mpMsgFix;
+	logf_("multiplayer message fix %s", mpmsg_apply(msgOn) ? (msgOn ? "on" : "off") : "failed: unexpected code at 00472f20");
+
+	// Jen With a B's castle and field mods (jen_sync): single player only; each as the game's own unless its switch says
+	// otherwise.
+	g_jenFieldLoss = GetPrivateProfileIntA("Game", "FieldDestruction", 1, g_iniPath) != 0;
+	g_jenPillage = GetPrivateProfileIntA("Game", "Pillaging", 1, g_iniPath) != 0;
+	g_jenDoorIn = clamp_ini("InnerDoor", DOOR_IN, DOOR_MAX);
+	g_jenDoorOut = clamp_ini("OuterDoor", DOOR_OUT, DOOR_MAX);
+	g_jenWork = clamp_ini("ReclaimWork", RECLAIM_WORK, RECLAIM_MAX);
+	g_jenMen = clamp_ini("ReclaimPerSeason", RECLAIM_MEN, RECLAIM_MAX);
+	g_jenGarrison = GetPrivateProfileIntA("Game", "GarrisonLimits", 0, g_iniPath) != 0;
+	g_jenSpeed = GetPrivateProfileIntA("Game", "UncappedSpeed", 0, g_iniPath) != 0;
+	g_jenPlague = max(0, min(2, (int)GetPrivateProfileIntA("Game", "BlackDeath", 0, g_iniPath)));
+	g_jenPop = GetPrivateProfileIntA("Game", "PopulationTarget", 0, g_iniPath);
+	g_jenPop = g_jenPop <= 0 ? 0 : max(POP_MIN, min(POP_MAX, g_jenPop)) / 100 * 100;   // (Jen's: in hundreds)
+	g_jenUncap = GetPrivateProfileIntA("Game", "UncappedResources", 0, g_iniPath) != 0;
+	g_jenResMul = max(1, min(RESMUL_MAX, (int)GetPrivateProfileIntA("Game", "ResourceMultiplier", 1, g_iniPath)));
+	g_jenArmy = max(ARMY_MIN, min(ARMY_MAX, (int)GetPrivateProfileIntA("Game", "ArmySize", 1500, g_iniPath)));
+	g_jenIcons = GetPrivateProfileIntA("Game", "ScaledArmyIcons", 0, g_iniPath) != 0;
+	unit_read_ini();
+	jen_econ_hook();
+	jen_castle_check();
+	jen_sync();
+	for (int k = 0; k < 5; k++) {   // castle design: each kind's map by its name ("Original", or one of its skirmish castles)
+		char s[32];
+		GetPrivateProfileStringA("Game", kCdKey[k], "Original", s, sizeof s, g_iniPath);
+		g_jenDesign[k] = 0;
+		for (int c = 0; c < cd_count(k); c++) if (!lstrcmpiA(s, kCdName[kCdChoices[k][c]])) g_jenDesign[k] = c + 1;
+	}
+	castle_design_check();
+	logf_("castle design: %s%s", cd_ok() ? "ready" : "unavailable", g_cdSpotHooked ? "" : " (Expanded Keep's troop fix unavailable)");
 
 	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
 	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
-	if ((!hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) ||
-		!hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start)))
-		g_fixCastleCap = FALSE;
+	g_canCastleCap = hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) &&
+		hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start);
+	if (!g_canCastleCap) g_fixCastleCap = FALSE;
 	logf_("castle cap fix %s", g_fixCastleCap ? "on" : "off");
 
 	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;
@@ -13739,6 +15079,10 @@ static void install(void)
 		o_load_screen = make_trampoline(LOAD_SCREEN, sizeof kLoadScreenPrologue);
 		if (o_load_screen) redirect(LOAD_SCREEN, sizeof kLoadScreenPrologue, h_load_screen);
 	}
+	// The yes/no box opener in every mode, not only wide: its Esc-twice soft-lock fix (h_yesno_open) is for
+	// 4:3 too (the same bug Jen With a B's Double-Escape Fix covers); with g_off 0 it moves nothing.
+	hook_code((BYTE *)0x0040e6f2, kBlockPrologue, sizeof kBlockPrologue, h_yesno_open, &o_yesno_open);
+	menu_bar_install(); // (before install_wide: its title moves use the new table)
 	install_wide();
 	o_load_file = make_trampoline(LOAD_FILE, sizeof kLoadPrologue);
 	if (o_load_file && redirect(LOAD_FILE, sizeof kLoadPrologue, h_load_file)) logf_("file loader hooked");

@@ -6,7 +6,7 @@ param([string[]]$Sets = @('base1a','base1b','base1c','base1d','roads1a','roads1b
       [string]$Model = 'realesrgan-x4plus')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 Add-Type -AssemblyName System.Drawing

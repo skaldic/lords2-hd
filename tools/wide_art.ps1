@@ -10,7 +10,7 @@
 param([switch]$Export, [switch]$Import, [string]$Art = "", [string]$Out = "", [string]$In = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 if (-not $Art) { $Art = Join-Path $game "lords2hd" }
 Add-Type -AssemblyName System.Drawing
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs") -ReferencedAssemblies System.Drawing

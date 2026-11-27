@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DLL_VERSION 14  /* 14: the lords2-relay internet lobby (relay.c): a host lists its game, the address box's "Internet games" lists the rooms in the game's own session list, Open(join) of a room pairs through the relay; game wire unchanged, bumped so v13 and v14 never share a game; 13: session clock - the host's T_PONG carries its session time, every log line is stamped [S <s>] in it, on every PC (diag.c; a v12 peer would send 16-byte pings, so v12 is refused), a summary per session in session.txt, desync.txt gone (the summary and dplayx.log have it), settings in lords2hd.ini; 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
+#define DLL_VERSION 14  /* 14: the lords2-relay internet lobby (relay.c): a host lists its game, the address box's "Internet games" lists the rooms in the game's own session list, Open(join) of a room pairs through the relay; game wire unchanged, bumped so v13 and v14 never share a game; later in 14, no bump (Lords2 HD's rules.c, an older v14 ignores it): T_INFO 100 bytes with the "L2RU" marker, T_CAPS 15, T_RULES 16 - the host decides the game's fixes, so one game runs the host's rules and another the original ones, never mixed within a game; 13: session clock - the host's T_PONG carries its session time, every log line is stamped [S <s>] in it, on every PC (diag.c; a v12 peer would send 16-byte pings, so v12 is refused), a summary per session in session.txt, desync.txt gone (the summary and dplayx.log have it), settings in lords2hd.ini; 12: diag.c, T_PING / T_PONG between the DLLs (a v11 peer would not answer them, so v11 is refused) and one DIAG line per second instead of per-message heartbeat lines; game traffic unchanged; 11: AI rally globals (0x56d89c, 0x522f70/74) zeroed at every battle setup on every peer + hashed as battle region ai-rally - battles differ from v10, so v10 is refused; 10: ghost hub (the host's game leaves a locked game -> this process keeps relaying for the joiners and T_HOST makes the lowest remaining player the game host via DPSYS_HOST); 9: peer trust (host validates every game message header and the sender rules, joiner takes host-only messages only from the host), resync authority = host by default, idle-socket caps, receive-queue backpressure; 8: victory fix (standings recomputed after a remote lord is removed), speed-10 and battle pace gated like SP, resync F1-F3 - game results differ from v7, so v7 is refused; 7: per-conn writer threads, sync v7 (epoch, stamped player, save-rest region), T_RESYNC (resync.c, RS_VER 1), pace in PROTO; 6 (+ Connect address box, wire unchanged): pace patch (peers must step alike); 5: T_SYNC frames (sync.c, per-turn sync check); 4: re-host bind fallback, mismatched peers see the game listed; the wire value is PROTO */
 /* PROTO digits: thousands = DLL_VERSION, hundreds = pace patch applied (0/1), tens = 2*exe_ok + slowlink (0..3),
  * units = mpfix (0/1). g_exe_ok / g_pace_ok / g_mpfix are set in exepatch.c, g_slowlink once at load from
  * LOTR2NET_SLOWLINK. DLL_VERSION 7 carries resync wire version RS_VER 1 (a peer of another DLL version is refused). */
@@ -89,6 +89,9 @@ static GUID SPGUID_TCPIP = {0x36E95EE0, 0x8577, 0x11CF, {0x96, 0x0C, 0x00, 0x80,
 /* ---- wire protocol: [u32 len][u8 type][payload]; len counts type+payload ---- */
 enum { T_HELLO = 1, T_INFO, T_REJECT, T_CREATEPL, T_PLAYERID, T_SYS_CREATE, T_SYS_DESTROY, T_DATA, T_DESTROYPL }; /* 10 = T_SYNC (sync.c), 11 = T_RESYNC (resync.c) */
 #define T_HOST 12   /* v10 hub -> joiners: [u32 DPID] plays the game host from now on (ghost hub) */
+#define T_CAPS 15   /* rules.c: joiner -> host, who this player is and which fixes it can run (13/14: diag.c) */
+#define T_RULES 16  /* rules.c: host -> joiners, the game's fixes */
+#define RU_ID 24    /* rules.c: the id's bytes (the HD ddraw's version and build) */
 #define MODE_ENUM 1
 #define MODE_JOIN 2
 static const char MAGIC[8] = {'L', 'O', 'T', 'R', '2', 'N', 'E', 'T'};
@@ -109,7 +112,8 @@ typedef struct Out {
     volatile LONG refs, stop, dead, wdone;
     char tag[16];
 } Out;
-typedef struct { int used; SOCKET s; Out *o; int haveplayer, ncreate, sync_n, rs_n, bad_lord, dt_tok, dt_over, dt_rate, dg_n; DWORD sync_t, rs_t, lord, dt_t, dg_t; u_long ip; } Conn;   /* ip: the peer's address (F3 per-address caps) */   /* lord: the one lord slot this conn may speak for (resync.c rs_conn_lord) */
+typedef struct { int used; SOCKET s; Out *o; int haveplayer, ncreate, sync_n, rs_n, bad_lord, dt_tok, dt_over, dt_rate, dg_n; DWORD sync_t, rs_t, lord, dt_t, dg_t; u_long ip;
+    int ru_has; DWORD ru_can; char ru_id[RU_ID]; } Conn;   /* ru_*: its T_CAPS (rules.c) */   /* ip: the peer's address (F3 per-address caps) */   /* lord: the one lord slot this conn may speak for (resync.c rs_conn_lord) */
 
 static CRITICAL_SECTION cs;
 static struct {
@@ -832,6 +836,7 @@ static int jsend(BYTE type, const void *p, DWORD n)
 #include "trust.c"
 #include "diag.c"
 #include "sesslog.c"
+#include "rules.c"
 
 /* ---- v10 ghost hub. The game asks for DPSESSION_MIGRATEHOST and handles DPSYS_HOST (FUN_004b8c3a ->
  * FUN_0043e6a2(4): that peer's game takes the host flag 0x553248 and the host duties). Our joiners reach only the hub
@@ -945,6 +950,7 @@ static void host_drop_conn(int i)
     G.conns[i].used = 0;
     for (k = 0; k < MAXPL; k++) if (G.pl[k].used && G.pl[k].conn == i) host_remove_player(&G.pl[k], i);
     logf_("conn %d dropped", i);
+    ru_recompute("a player left");   /* rules.c: only until the game starts */
     ghost_check_end();
 }
 
@@ -1004,7 +1010,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
     SOCKET s = ca->s;
     int gen = ca->gen, ci = -1, i, have = 0, tmo = 0;
     DWORD tj;
-    BYTE type, *f, info[92];
+    BYTE type, *f, info[RU_INFO];
     DWORD n, ver, mode;
     Out *o;
     u_long ip = ca->ip;
@@ -1057,7 +1063,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
         return 0;
     }
     if (mode == MODE_ENUM) {
-        int locked = G.locked;
+        int locked = G.locked || ru_frozen;
         fill_info(info);
         LeaveCriticalSection(&cs);
         if (locked) reject(s, DPERR_NOSESSIONS); else sendf(s, T_INFO, info, 92);   /* direct: an enum conn has no writer */
@@ -1065,9 +1071,10 @@ static DWORD WINAPI conn_thread(LPVOID a)
         closesocket(s);
         return 0;
     }
-    if (G.locked || (DWORD)(pl_count() + conns_pending()) >= G.maxpl || conns_pending_ip(ip) >= MAXPEND_IP) {
+    if (G.locked || ru_frozen || (DWORD)(pl_count() + conns_pending()) >= G.maxpl || conns_pending_ip(ip) >= MAXPEND_IP) {
         LeaveCriticalSection(&cs);
-        logf_("join refused: locked=%d players=%d pending from this address=%d", G.locked, pl_count(), conns_pending_ip(ip));
+        /* rules.c: once the rules are frozen (the game's start message went out) the game has started: no new player */
+        logf_("join refused: locked=%d rules frozen=%d players=%d pending from this address=%d", G.locked, ru_frozen, pl_count(), conns_pending_ip(ip));
         reject(s, DPERR_ACTIVEPLAYERS);
         closesocket(s);
         return 0;
@@ -1092,11 +1099,13 @@ static DWORD WINAPI conn_thread(LPVOID a)
     G.conns[ci].sync_n = 0; G.conns[ci].sync_t = 0;
     G.conns[ci].rs_n = 0; G.conns[ci].rs_t = 0;
     G.conns[ci].dg_n = 0; G.conns[ci].dg_t = 0;
+    G.conns[ci].ru_has = 0; G.conns[ci].ru_can = 0;   /* rules.c: until its T_CAPS */
     G.conns[ci].dt_tok = DATA_BURST; G.conns[ci].dt_over = 0; G.conns[ci].dt_t = GetTickCount(); G.conns[ci].dt_rate = data_rate();
     InterlockedIncrement(&g_live);
     tj = GetTickCount();
     fill_info(info);
-    osend(o, T_INFO, info, 92);
+    ru_info(info);   /* rules.c: + the marker (an older joiner reads only the first 92 bytes) */
+    osend(o, T_INFO, info, RU_INFO);
     logf_("joiner connected as conn %d", ci);
     LeaveCriticalSection(&cs);
 
@@ -1128,9 +1137,9 @@ static DWORD WINAPI conn_thread(LPVOID a)
         if (type == T_CREATEPL && n >= 32) {
             DPID id = 0;
             Player *p = NULL;
-            if (G.locked || G.conns[ci].haveplayer || G.conns[ci].ncreate >= MAXCREATE || !sys_room()) {
-                logf_("CREATEPL refused on conn %d (locked=%d, already has player=%d, created=%d, queue=%d)", ci,
-                      G.locked, G.conns[ci].haveplayer, G.conns[ci].ncreate, G.qcount);
+            if (G.locked || ru_frozen || G.conns[ci].haveplayer || G.conns[ci].ncreate >= MAXCREATE || !sys_room()) {
+                logf_("CREATEPL refused on conn %d (locked=%d, rules frozen=%d, already has player=%d, created=%d, queue=%d)", ci,
+                      G.locked, ru_frozen, G.conns[ci].haveplayer, G.conns[ci].ncreate, G.qcount);
                 osend(o, T_PLAYERID, &id, 4);
             } else if ((DWORD)pl_count() < G.maxpl && (p = pl_add(G.nextid, (char *)f, ci)) != NULL &&
                        queue_sys(DPSYS_CREATEPLAYERORGROUP, G.nextid)) {
@@ -1151,6 +1160,7 @@ static DWORD WINAPI conn_thread(LPVOID a)
                 }
                 { BYTE m[36]; *(DWORD *)m = id; memcpy(m + 4, p->name, 32); bcast(ci, T_SYS_CREATE, m, 36); }
                 logf_("player %08lx '%s' created for conn %d", id, p->name, ci);
+                ru_recompute("a player joined");   /* rules.c */
                 lf_begin();
             } else osend(o, T_PLAYERID, &id, 4);
         } else if (type == T_SYNC && n >= SY_HDR && n <= SY_HDR + SYNC_MAXR * 4) {
@@ -1188,7 +1198,9 @@ static DWORD WINAPI conn_thread(LPVOID a)
             dg_on_frame(ci, type, f, n);   /* diag.c: answered or relayed here, never queued for the game */
         } else if (type == T_DESTROYPL && n >= 4) {
             Player *p = pl_find(*(DWORD *)f);
-            if (p && p->conn == ci) { host_remove_player(p, ci); G.conns[ci].haveplayer = 0; }
+            if (p && p->conn == ci) { host_remove_player(p, ci); G.conns[ci].haveplayer = 0; ru_recompute("a player left"); }
+        } else if (type == T_CAPS) {
+            ru_on_caps(ci, f, n);   /* rules.c */
         } else if (type == T_DATA && n >= 8) {
             DPID from = ((DWORD *)f)[0], to = ((DWORD *)f)[1];
             DWORD len = n - 8;
@@ -1394,6 +1406,8 @@ static DWORD join_body(LPVOID a)
             sy_on_peer(f, n);
         } else if (type == T_PING || type == T_PONG) {
             dg_on_frame(-1, type, f, n);
+        } else if (type == T_RULES) {
+            ru_on_rules(f, n);   /* rules.c */
         } else if (type == T_HOST && n >= 4) {   /* v10: the hub's game left; this player plays the game host now */
             DPID id = *(DWORD *)f;
             logf_("game host is now player %08lx%s", (unsigned long)id, id == G.myid ? " - this game (DPSYS_HOST)" : "");
@@ -1527,6 +1541,7 @@ static void do_close(int may_ghost)
         sy_reset();
         rs_reset();
         tr_reset();
+        ru_reset();   /* rules.c: no rules outside a session */
         G.open = 0; G.host = 0; G.locked = 0; G.connected = 0; G.myid = 0; G.pidWaiting = 0; G.gamehost = 0;
     }
     LeaveCriticalSection(&cs);
@@ -1618,6 +1633,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.lsock = l; G.jsock = INVALID_SOCKET;
         G.host = 1; G.open = 1; G.locked = 0; G.nextid = 0x1000; G.myid = 0;
         G.gen++;
+        ru_reset(); ru_recompute("hosting");   /* rules.c: the host alone, so far */
         clk_open(1);
         aa->s = l; aa->gen = aagen = G.gen;
         LeaveCriticalSection(&cs);
@@ -1681,6 +1697,7 @@ static DPHR WINAPI dp2_Open(Obj *t, DPSD2 *d, DWORD flags)
         G.sname[63] = 0;
         G.jsock = s; G.jout = jo; G.lsock = INVALID_SOCKET; G.host = 0; G.open = 1; G.connected = 1; G.myid = 0;
         G.gen++;
+        ru_reset(); ru_join(f, n);   /* rules.c: T_CAPS to a host that decides the rules, before our CREATEPL */
         clk_open(0);
         ja->s = s; ja->gen = jagen = G.gen; ja->o = jo;
         if (!G.evPid) G.evPid = CreateEventA(NULL, FALSE, FALSE, NULL);
@@ -2689,6 +2706,7 @@ static DPHR WINAPI dp2_Send(Obj *t, DPID from, DPID to, DWORD flags, BYTE *buf, 
     logmsg("SEND", from, to, buf, size);
     if (!G.open) r = DPERR_INVALIDOBJECT;
     else if (G.host) {
+        ru_on_send(to, buf, size);   /* rules.c: the start message freezes the rules, sent ahead of it */
         if (to == 0) bcast(-1, T_DATA, m, 8 + size);   /* only queued: a stalled peer never blocks the game thread */
         else {
             Player *p = pl_find(to);
@@ -2734,7 +2752,7 @@ static DPHR WINAPI dp2_SetSessionDesc(Obj *t, DPSD2 *d, DWORD flags)
 {
     logf_("SetSessionDesc flags=%lu -> session locked", flags);
     EnterCriticalSection(&cs);
-    if (G.open && G.host) G.locked = 1;
+    if (G.open && G.host) { ru_lock("session locked"); G.locked = 1; }   /* rules.c: normally frozen already at the start message */
     LeaveCriticalSection(&cs);
     return DP_OK;
 }

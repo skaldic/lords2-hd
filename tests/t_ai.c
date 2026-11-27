@@ -241,12 +241,8 @@ TEST(ai_normal_sieges_and_multiplayer_keep_the_games_weighing)
 	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
 	t_ai_battle(1); *(int *)0x0053e8fc = 1;                 // a siege
 	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
-	t_ai_battle(1); *(int *)0x00553030 = 1;                 // multiplayer, MultiplayerFixes off
-	g_mpFixes = FALSE;
+	t_ai_battle(1); *(int *)0x00553030 = 1;                 // multiplayer: Enemy tactics are single player only
 	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
-	g_mpFixes = TRUE;                                       // on for every player: Hard (no random term there)
-	CHECK_EQ(t_weigh_at(10, 0), 10); CHECK_EQ(t_weigh_at(-5, 0), 6);
-	g_mpFixes = FALSE;
 	t_ai_battle(1); g_aiOk = FALSE; battle_reset();         // its hooks never went in: Normal
 	CHECK_EQ(t_weigh_at(0, 12), 12); CHECK_EQ(t_weigh_at(0, -10), -10);
 	t_ai_battle(1); g_aiParts = AI_ARCHERS | AI_MELEE;      // (measuring the other rules alone)
@@ -581,10 +577,9 @@ TEST(ai_counters_only_on_legendary_in_field_battles)
 	t_ai_battle(0); t_hit(6, 4); CHECK_EQ(t_hitDmg, 20);            // Normal
 	t_ai_battle(2); *(int *)0x0053e8fc = 1; t_hit(6, 4);            // a siege
 	CHECK_EQ(t_hitDmg, 20);
-	t_ai_battle(2); *(int *)0x00553030 = 1; g_mpFixes = FALSE; t_hit(6, 4);   // multiplayer without MultiplayerFixes
+	t_ai_battle(2); *(int *)0x00553030 = 1; t_hit(6, 4);            // multiplayer: the game's own
 	CHECK_EQ(t_hitDmg, 20);
-	g_mpFixes = TRUE; t_hit(6, 4); CHECK_EQ(t_hitDmg, 40);          // with them (every player on Legendary)
-	g_mpFixes = FALSE; *(int *)0x00553030 = 0;
+	*(int *)0x00553030 = 0;
 	t_ai_battle(2); g_aiParts = AI_ALL & ~AI_COUNTERS; t_hit(6, 4);   // switched off for measuring
 	CHECK_EQ(t_hitDmg, 20);
 	t_ai_battle(2); t_hit(6, 4); FIG(2)[0x12] = 8;                  // a siege engine: left alone
@@ -1096,7 +1091,7 @@ TEST(ai_fire_leaves_your_units_engines_and_normal_alone)
 	t_unit(8, 2, 60, 52, 5); t_oil(60, 52, 10);
 	fire_step();
 	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
-	t_ai_battle(1); *(int *)0x00553030 = 1; g_mpFixes = FALSE;      // multiplayer, MultiplayerFixes off
+	t_ai_battle(1); *(int *)0x00553030 = 1;                         // multiplayer: single player only
 	fire_step();
 	CHECK_EQ(FIG(8)[0x31], ST_IDLE);
 	*(int *)0x00553030 = 0;

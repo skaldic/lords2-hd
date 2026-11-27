@@ -2,7 +2,7 @@
 #   assets\preview\sheet_<sample>.png  columns: game's current smoothing / x4plus / anime / x4plus + grain
 param([string]$Palette = "assets\palettes\pal_005.256")
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = if ($env:L2HD_TOOLS) { $env:L2HD_TOOLS } else { "D:\Tools" }
 $esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs") -ReferencedAssemblies System.Drawing

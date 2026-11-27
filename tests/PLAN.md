@@ -154,8 +154,11 @@ tests/
   - each case must return without a fault and without drawing
   - `h_mini_paint` with an origin that would draw off the buffer
 - **Battle switches:** `battle_reset` turns each fix on only when its F10 switch is on and its hooks are in place, and
-  turns all of them off in a multiplayer game unless `MultiplayerFixes=1`. A switch change takes effect only at the next
+  turns all of them off in a multiplayer game (single player only). A switch change takes effect only at the next
   battle.
+- **Multiplayer rules:** in a multiplayer game a campaign fix runs only when the host's rules (dplayx's
+  `LF_NetRulesGet`) have its bit; with no rules (no getter, or none from the host) it stays off whatever the player's
+  own switch says.
 - **Campaign fixes on made-up counties:**
   - `h_wheat_scale`: one lost field is charged once (the save-2 example: 11 fields, one lost)
   - `h_castle_start`: the count goes up

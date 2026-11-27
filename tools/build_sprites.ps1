@@ -7,7 +7,7 @@ param([string[]]$Files = @('sprite1a','sprite1b','sprite2a','sprite2b','flags1a'
 $ErrorActionPreference = 'Stop'
 $Files = $Files | ForEach-Object { $_ -split ',' } # "a,b" as one argument, as powershell -File passes it
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 Add-Type -AssemblyName System.Drawing

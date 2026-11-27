@@ -5,7 +5,7 @@
 param([string]$Out = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 if (-not $Out) { $Out = Join-Path $root "dist\stage\lords2hd.pak" }
 New-Item -ItemType Directory -Force (Split-Path $Out -Parent) | Out-Null
 $tools = & "$PSScriptRoot\tools_dir.ps1"

@@ -5,7 +5,7 @@
 param([string[]]$Files = @('faces'), [string]$Palette = "Base01.256", [double]$Grain = 0.25)
 $ErrorActionPreference = 'Stop'
 $Files = $Files | ForEach-Object { $_ -split ',' }
-$root = Split-Path $PSScriptRoot -Parent; $game = Split-Path $root -Parent
+$root = Split-Path $PSScriptRoot -Parent; . "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $store = Join-Path $root "assets\sprites\upscaled"; New-Item -ItemType Directory -Force $store | Out-Null
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs"), (Join-Path $PSScriptRoot "Bleed.cs") -ReferencedAssemblies System.Drawing
 $pal = [Pl8]::ReadPalette((Join-Path $game $Palette))

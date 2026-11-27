@@ -146,6 +146,11 @@ static int hello(DWORD proto, DWORD mode, BYTE *out, SOCKET *keep)
     len = *(DWORD *)hdr - 1;
     got = 0;
     while ((DWORD)got < len && got < 92 && (r = recv(s, (char *)out + got, (int)(len < 92 ? len : 92) - got, 0)) > 0) got += r;
+    while ((DWORD)got < len && got >= 92) {   /* the rest of the frame (v14 rules.c: INFO is 100 bytes): the conn stays in step */
+        char tmp[64];
+        if ((r = recv(s, tmp, (int)(len - got < sizeof tmp ? len - got : sizeof tmp), 0)) <= 0) break;
+        got += r;
+    }
     if (keep) *keep = s; else closesocket(s);
     return hdr[4];
 }
@@ -242,6 +247,11 @@ static int hello_on(SOCKET s, DWORD proto, DWORD mode, BYTE *out)
     len = *(DWORD *)hdr - 1;
     got = 0;
     while ((DWORD)got < len && got < 92 && (r = recv(s, (char *)out + got, (int)(len < 92 ? len : 92) - got, 0)) > 0) got += r;
+    while ((DWORD)got < len && got >= 92) {   /* the rest of the frame (v14 rules.c: INFO is 100 bytes) */
+        char tmp[64];
+        if ((r = recv(s, tmp, (int)(len - got < sizeof tmp ? len - got : sizeof tmp), 0)) <= 0) break;
+        got += r;
+    }
     return hdr[4];
 }
 
@@ -458,6 +468,95 @@ static DWORD WINAPI fake_host3(LPVOID p)
     send(s, (char *)d, 9, 0);
     Sleep(300);
     for (k = 0; k < 3; k++) { *(DWORD *)d = 5; d[4] = 12; *(DWORD *)(d + 5) = ids[k]; send(s, (char *)d, 9, 0); Sleep(100); }   /* T_HOST */
+    Sleep(3000);
+    closesocket(s);
+    return 0;
+}
+
+/* T43 (rules.c): a raw joiner's hello; the answer's type, *len = its payload length, up to cap bytes in out */
+static int hello_len(DWORD proto, BYTE *out, int cap, int *len, SOCKET *keep)
+{
+    struct sockaddr_in a;
+    BYTE h[21], hdr[5];
+    DWORD tmo = 3000;
+    int r, got = 0;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = inet_addr("127.0.0.1");
+    a.sin_port = htons(47700);
+    *len = 0;
+    if (connect(s, (struct sockaddr *)&a, sizeof a)) { closesocket(s); return 0; }
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&tmo, sizeof tmo);
+    *(DWORD *)h = 17; h[4] = 1;
+    memcpy(h + 5, "LOTR2NET", 8);
+    *(DWORD *)(h + 13) = proto;
+    *(DWORD *)(h + 17) = 2;                           /* MODE_JOIN */
+    send(s, (char *)h, 21, 0);
+    while (got < 5 && (r = recv(s, (char *)hdr + got, 5 - got, 0)) > 0) got += r;
+    if (got < 5) { closesocket(s); return 0; }
+    *len = (int)(*(DWORD *)hdr - 1);
+    for (got = 0; got < *len && (r = recv(s, (char *)out + got, (*len < cap ? *len : cap) - got, 0)) > 0; ) got += r;
+    *keep = s;
+    return hdr[4];
+}
+/* T43: T_CAPS from a raw joiner: id (24 bytes), can */
+static void send_caps(SOCKET s, const char *id, DWORD can)
+{
+    BYTE f[33];
+    *(DWORD *)f = 29; f[4] = 15;
+    memset(f + 5, 0, 24);
+    strcpy((char *)f + 5, id);
+    *(DWORD *)(f + 29) = can;
+    send(s, (char *)f, 33, 0);
+}
+/* T43: the next T_RULES on a raw joiner's conn (0xdead = none within its timeout); its locked word in g43_locked */
+static DWORD g43_locked;
+static DWORD next_rules(SOCKET s)
+{
+    BYTE b[300];
+    int k, ty;
+    for (k = 0; k < 30; k++) {
+        ty = readframe(s, b, sizeof b);
+        if (!ty) break;
+        if (ty == 16) { g43_locked = *(DWORD *)(b + 4); return *(DWORD *)b; }
+    }
+    return 0xdead;
+}
+/* T43 joiner side: a host with the marker; it keeps the joiner's T_CAPS and answers with rules 0x05, then 0x07 for
+ * the game (locked) and a late 0x01 the joiner must ignore */
+static char g43_id[25];
+static DWORD g43_can = 0xdead;
+static DWORD WINAPI fake_host43(LPVOID p)
+{
+    SOCKET l = (SOCKET)p, s = accept(l, NULL, NULL);
+    BYTE in[64], f[105], d[13];
+    int ty, k;
+    DWORD to = 3000;
+    if (s == INVALID_SOCKET) return 0;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char *)&to, sizeof to);
+    recv(s, (char *)in, 21, 0);
+    memset(f, 0, sizeof f);
+    *(DWORD *)f = 101; f[4] = 2;                      /* T_INFO, 92 bytes + "L2RU" + RU_VER 1 */
+    *(DWORD *)(f + 9) = 4;
+    strcpy((char *)f + 33, "fake43");
+    memcpy(f + 97, "L2RU", 4); *(DWORD *)(f + 101) = 1;
+    send(s, (char *)f, 105, 0);
+    for (k = 0; k < 5; k++) {
+        BYTE b[64];
+        ty = readframe(s, b, sizeof b);
+        if (ty == 15) { memcpy(g43_id, b, 24); g43_id[24] = 0; g43_can = *(DWORD *)(b + 24); }
+        if (ty == 4 || !ty) break;                     /* T_CREATEPL */
+    }
+    *(DWORD *)d = 5; d[4] = 5; *(DWORD *)(d + 5) = 0x1002;   /* T_PLAYERID */
+    send(s, (char *)d, 9, 0);
+    *(DWORD *)d = 9; d[4] = 16; *(DWORD *)(d + 5) = 0x05; *(DWORD *)(d + 9) = 0;   /* T_RULES */
+    send(s, (char *)d, 13, 0);
+    Sleep(2000);                                       /* the joiner reads 0x05 first */
+    *(DWORD *)(d + 5) = 0x07; *(DWORD *)(d + 9) = 1;   /* for this game */
+    send(s, (char *)d, 13, 0);
+    *(DWORD *)(d + 5) = 0x01; *(DWORD *)(d + 9) = 0;   /* too late: kept out */
+    send(s, (char *)d, 13, 0);
     Sleep(3000);
     closesocket(s);
     return 0;
@@ -1796,6 +1895,118 @@ int main(int argc, char **argv)
         sprintf(buf, "no joiner %d folders, joined %d, '%.40s' moved %d start kept %d goes on %d, gone from exe folder %d, next session: %d folders (want 10), old left %d (want 8), first kept %d, LF_NetLogSession '%.60s' ok %d, host alone %d, after Close none %d, summary %d (want 15)",
                 empty, one, first, moved, kept, grew, rootgone, two, oldleft, firstleft, ld, dirok, solo, closed, summ);
         result("T36 session folders", empty == 0 && one == 1 && moved && kept && grew && rootgone && two == 10 && oldleft == 8 && firstleft && dirok && solo && closed && summ == 15, buf);
+    }
+    {   /* T43 (rules.c): the host decides the game's fixes: its want & every player's can, 0 when anyone is not the same
+         * patch; settled before the game starts and frozen at its start message. Then the joiner side against a host with
+         * the marker */
+        typedef void (WINAPI *RSET)(const char *, DWORD, DWORD);
+        typedef int (WINAPI *RGET)(DWORD *);
+        RSET rset = (RSET)GetProcAddress(m, "LF_NetRulesSet");
+        RGET rget = (RGET)GetProcAddress(m, "LF_NetRulesGet");
+        NAME_ nm = {sizeof nm, 0, "host43", NULL};
+        DWORD me43 = 0, alone = 0, a1 = 0, b1 = 0, b2 = 0, c1 = 0, c2 = 0, w1 = 0, s1 = 0, s1lk = 0, d1 = 0, l1 = 0, l1lk = 0, lk = 0, after = 0, j1 = 0, j2 = 0, id43 = 0, hostv = 0;
+        int have_alone = 0, len = 0, mark = 0, ty, none = 0, jhave = 0, sdata = 0, late = 0, k43;
+        SOCKET ja = INVALID_SOCKET, jb = INVALID_SOCKET, jc = INVALID_SOCKET;
+        BYTE ib[128];
+        char *oldhost = getenv("LOTR2NET_HOST"), keephost[160] = "";
+        if (oldhost) snprintf(keephost, sizeof keephost, "LOTR2NET_HOST=%s", oldhost);
+        if (!rset || !rget) result("T43 the host decides the game's fixes", 0, "LF_NetRulesSet / LF_NetRulesGet not exported");
+        else {
+            ((CLOSE)dp->vt[4])(dp);
+            none = rget(&hostv) == 0;                                  /* no session: no rules */
+            rset("L2HD test 1", 0x0f, 0x0b);                           /* can 1111, wants 1011 */
+            hr = ((OPEN)dp->vt[24])(dp, &sd, 2);
+            ((CPL)dp->vt[6])(dp, &me43, &nm, NULL, NULL, 0, 0);
+            have_alone = rget(&alone);                                 /* the host alone: 0x0b */
+            ty = hello_len(proto, ib, sizeof ib, &len, &ja);           /* A: this patch, can 0111 -> 0011 */
+            mark = ty == 2 && len == 100 && !memcmp(ib + 92, "L2RU", 4) && *(DWORD *)(ib + 96) == 1;
+            send_caps(ja, "L2HD test 1", 0x07);
+            make_player(ja, "a43");
+            a1 = next_rules(ja);
+            hello_len(proto, ib, sizeof ib, &len, &jb);                /* B: an older dplayx, no T_CAPS -> 0 for everyone */
+            make_player(jb, "b43");
+            b1 = next_rules(ja);
+            closesocket(jb);                                           /* B leaves before the start -> 0011 again */
+            b2 = next_rules(ja);
+            hello_len(proto, ib, sizeof ib, &len, &jc);                /* C: another build -> 0, and back once it leaves */
+            send_caps(jc, "L2HD test 2", 0x0f);
+            make_player(jc, "c43");
+            c1 = next_rules(ja);
+            closesocket(jc);
+            c2 = next_rules(ja);
+            rset("L2HD test 1", 0x0f, 0x09);                           /* the host's settings before the start: 1001 & 0111 */
+            w1 = next_rules(ja);
+            {   /* the game's start message (type 0x04, 12 bytes): frozen, sent once more with locked = 1 ahead of it */
+                BYTE st[12] = {0x04, 0x08, 0x2f, 0x22}, fb[300];
+                ((SEND)dp->vt[26])(dp, me43, 0, 0, st, sizeof st);
+                g43_locked = 0;
+                s1 = next_rules(ja);
+                s1lk = g43_locked;
+                sdata = readframe(ja, fb, sizeof fb) == 8 && fb[8] == 0x04;   /* T_DATA: from, to, the message */
+                {   /* a player joining after the start message, before the lock: refused (it would have no rules) */
+                    SOCKET jl = INVALID_SOCKET;
+                    late = hello_len(proto, ib, sizeof ib, &len, &jl) == 3;   /* T_REJECT */
+                    if (jl != INVALID_SOCKET) closesocket(jl);
+                }
+                rset("L2HD test 1", 0x0f, 0x0f);                       /* settings after the start change nothing */
+                ((SETSD)dp->vt[31])(dp, &sd, 0);
+                rget(&lk);
+                closesocket(ja);                                       /* A leaves after the start: nothing changes */
+                Sleep(1000);                                           /* the host has seen it go (not from the log: see below) */
+                rget(&after);
+            }
+            ((CLOSE)dp->vt[4])(dp);
+            {   /* the backup: the session locks with no start message seen; frozen there, sent with locked = 1 */
+                SOCKET jd = INVALID_SOCKET;
+                DWORD me2 = 0;
+                NAME_ n2 = {sizeof n2, 0, "host43b", NULL};
+                rset("L2HD test 1", 0x0f, 0x0b);
+                ((OPEN)dp->vt[24])(dp, &sd, 2);
+                ((CPL)dp->vt[6])(dp, &me2, &n2, NULL, NULL, 0, 0);
+                hello_len(proto, ib, sizeof ib, &len, &jd);
+                send_caps(jd, "L2HD test 1", 0x0f);
+                make_player(jd, "d43");
+                d1 = next_rules(jd);
+                g43_locked = 0;
+                ((SETSD)dp->vt[31])(dp, &sd, 0);
+                l1 = next_rules(jd);
+                l1lk = g43_locked;
+                closesocket(jd);
+                ((CLOSE)dp->vt[4])(dp);
+            }
+            {   /* joiner side: our T_CAPS goes to a host with the marker, its T_RULES comes back */
+                SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
+                struct sockaddr_in a;
+                HANDLE th;
+                NAME_ nj = {sizeof nj, 0, "j43", NULL};
+                memset(&a, 0, sizeof a);
+                a.sin_family = AF_INET;
+                a.sin_addr.s_addr = inet_addr("127.0.0.1");
+                a.sin_port = htons(47704);
+                bind(l, (struct sockaddr *)&a, sizeof a);
+                listen(l, 1);
+                th = CreateThread(NULL, 0, fake_host43, (LPVOID)l, 0, NULL);
+                _putenv("LOTR2NET_HOST=127.0.0.1:47704");
+                rset("L2HD test 1", 0x06, 0x00);
+                ((OPEN)dp->vt[24])(dp, &sd, 1);
+                ((CPL)dp->vt[6])(dp, &id43, &nj, NULL, NULL, 0, 0);
+                /* polled, not from the log: after T36 the log is in a session folder */
+                for (k43 = 0; k43 < 30 && !(jhave = rget(&j1)); k43++) Sleep(50);
+                for (k43 = 0; k43 < 80 && rget(&j2) && j2 != 0x07; k43++) Sleep(50);
+                Sleep(500);                                            /* the late 0x01 is in by now */
+                rget(&j2);
+                ((CLOSE)dp->vt[4])(dp);
+                WaitForSingleObject(th, 10000);
+                closesocket(l);
+                if (keephost[0]) _putenv(keephost); else _putenv("LOTR2NET_HOST=");
+            }
+            rset(NULL, 0, 0);
+            sprintf(buf, "no session %d; host alone %d %02lx (want 0b); INFO marker %d; A %02lx (03), old joiner B %02lx (00), B gone %02lx (03), other build C %02lx (00), C gone %02lx (03), host settings %02lx (01); start: rules %02lx locked %lu then the message %d, a late joiner refused %d; locked %02lx and after A left %02lx (01); lock only: %02lx then %02lx locked %lu (0b, 0b 1); joiner: caps '%s' %02lx (06), rules %d %02lx (05), for the game %02lx (07)",
+                    none, have_alone, alone, mark, a1, b1, b2, c1, c2, w1, s1, (unsigned long)s1lk, sdata, late, lk, after, d1, l1, (unsigned long)l1lk, g43_id, g43_can, jhave, j1, j2);
+            result("T43 the host decides the game's fixes", none && hr == 0 && have_alone && alone == 0x0b && mark && a1 == 0x03 && b1 == 0 && b2 == 0x03 &&
+                   c1 == 0 && c2 == 0x03 && w1 == 0x01 && s1 == 0x01 && s1lk == 1 && sdata && late && lk == 0x01 && after == 0x01 && d1 == 0x0b && l1 == 0x0b && l1lk == 1 &&
+                   !strcmp(g43_id, "L2HD test 1") && g43_can == 0x06 && jhave && j1 == 0x05 && j2 == 0x07, buf);
+        }
     }
     if (rl_raw_list(NULL, 0) < 0) printf("SKIP T42: no lords2-relay on 127.0.0.1:%d\n", RELAY_PORT);
     else {   /* T42 (v14): inside GameRanger the relay is never used. Last: GameRanger.dll stays loaded from here on */

@@ -3,7 +3,7 @@
 #   <game>\lords2hd\tiles\<set>.bin = frames x 116x60 BGRX, one slot per frame (others left black)
 param([string[]]$Sets = @('base1a','base1b','base1c','base1d','roads1a','roads1b','roads1c','roads1d','mtns1a','mtns1b','mtns1c','mtns1d'), [double]$Plain = 0.25, [switch]$Recut)
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 $ErrorActionPreference = 'Stop'

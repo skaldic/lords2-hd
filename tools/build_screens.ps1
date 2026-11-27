@@ -3,7 +3,7 @@
 #   <game>\lords2hd\screens\<name>.bin = 768 bytes palette (6-bit, as in the .256) + 1280x960 BGRX
 param([string]$Upscaler = "")
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 if (-not $Upscaler) { $Upscaler = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe" }
 Add-Type -Path (Join-Path $PSScriptRoot "Pl8.cs") -ReferencedAssemblies System.Drawing

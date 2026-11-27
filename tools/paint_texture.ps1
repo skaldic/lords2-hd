@@ -14,7 +14,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $sd = Join-Path $tools "sdcpp\bin\sd-cli.exe"
 $model = Join-Path $tools "sdcpp\models\sdxl_inpaint.safetensors"
