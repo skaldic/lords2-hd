@@ -32,3 +32,6 @@
 
 # Multiplayer DLL build output
 /multiplayer/dplayx/dplayx.dll
+
+# This machine's game folder (tools\game_folder.ps1)
+/.game-folder

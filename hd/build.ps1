@@ -1,4 +1,4 @@
-# Builds the HD DLL. Pass -Install to also copy it next to the game as ddraw.dll.
+# Builds the HD DLL. Pass -Install to also copy it next to the game as ddraw.dll (game folder: tools\game_folder.ps1).
 # Needs llvm-mingw's 32-bit clang (i686-w64-mingw32-clang): on PATH, or in an llvm-mingw-*
 # folder of the external tools folder (tools\tools_dir.ps1).
 param([switch]$Install)
@@ -12,6 +12,7 @@ if ($LASTEXITCODE -ne 0) { throw "build failed" }
 "built $out ($((Get-Item $out).Length) bytes)"
 
 if ($Install) {
-    Copy-Item $out "$PSScriptRoot\..\..\ddraw.dll" -Force -ErrorAction Stop
+    . "$PSScriptRoot\..\tools\game_folder.ps1"
+    Copy-Item $out (Join-Path (Get-GameFolder) "ddraw.dll") -Force -ErrorAction Stop
     "installed to game folder"
 }

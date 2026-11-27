@@ -12,7 +12,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$tiles = Join-Path (Split-Path $root -Parent) "lords2hd\tiles"
+. "$PSScriptRoot\game_folder.ps1"
+$tiles = Join-Path (Get-GameFolder) "lords2hd\tiles"
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System; using System.Drawing; using System.Drawing.Imaging;
 public static class Sea {

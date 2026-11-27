@@ -13,7 +13,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tiles = Join-Path $game "lords2hd\tiles"
 $in = Join-Path $root "assets\tiles\in"
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'

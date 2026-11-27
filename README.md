@@ -152,8 +152,7 @@ Legendary plays like Hard, and also:
   swordsmen are strong against pikemen and maces against knights, and knights and swordsmen cut down the
   lightly armoured (peasants, archers and macemen, who hit hard but fall fast; crossbowmen are armoured).
 
-In multiplayer they stay off, so everyone plays the same rules, unless every player sets
-`MultiplayerFixes=1`.
+In multiplayer, Enemy tactics and the battle fixes stay off, so everyone plays the same battles.
 
 ## Multiplayer
 
@@ -171,6 +170,9 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
   must reach the host's TCP port 47700 (same network, a port forward, or a VPN such as ZeroTier,
   Tailscale or Radmin) and type the host's address. GameRanger works as before.
 - The game keeps running when you switch windows, so nobody waits for you.
+- **Game fixes:** the host decides. Its campaign fixes (food ration, wheat, castle cap, siege garrison)
+  run when every player has the same version of the patch; otherwise everyone plays the original rules.
+  The battle fixes and Enemy tactics stay off in multiplayer.
 - **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
   game's folder from the moment a second player joins the lobby, with what's needed to debug the
   session: the logs (stamped with one session clock, so all players' logs line up) and a summary of the
@@ -235,6 +237,12 @@ it, right-click to close. Most changes apply at once; those marked * (widescreen
 drawing on the graphics card or the processor) after a restart, and the battle fixes from the next
 battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed timings.
 
+The same can be reached with the mouse from the menu bar at the top of the county map and battles,
+which reads File, Options, Help, **Mods**, **HD**: HD opens the scroll at any of its four tabs, and
+Mods (while Jen With a B's Mods is on) opens that panel at any of its groups. On the county map at 4:3
+the rival lords' shields leave room for four titles only: there Help is named Mods and its list starts
+with **Mod Menu**, as in Jen's Mod Manager, with the game's help below it.
+
 | Tab | Setting | Choices | Default | In `lords2hd.ini` |
 |---|---|---|---|---|
 | Display | AI art: paintings | On, Off | On | `HDScreens` |
@@ -255,6 +263,7 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Quality of life | Army panel | On, Off | On | `ArmyPanel` |
 | Quality of life | Fresh letters | On, Off | On | `Letters` |
 | Quality of life | Lords2Resounded | On, Off | On | `Resounded` |
+| Quality of life | Jen With a B's Mods | On (F11: its panel), Off | On | `JenMods` |
 | Battles | Enemy tactics | Normal, Hard, Legendary | Normal | `BattleAI` |
 | Battles | Improved pathfinding | On, Off | On | `JitterFix` |
 | Battles | Group cohesion | On, Off | On | `GroupMoveFix` |
@@ -263,9 +272,82 @@ battle. **Ctrl+F10** switches the FPS counter: off, frames a second, or detailed
 | Battles | Battle zoom-out * | On, Off | On | `BattleZoom` |
 | Battles | Wheel zoom | Up to 2x (normal size), Up to 4x, Off | Up to 2x | `WheelZoom` |
 | Battles | Minimap outlines | On, Off | Off | `MinimapPop` |
+| Game | Weather wrecks fields | On (original), Off | On | `FieldDestruction` |
+| Game | Uncapped game speed | Off (original), On | Off | `UncappedSpeed` |
+| Game | Black Death | On (original), Milder, Off | On | `BlackDeath` |
+| Game | Population average | Original, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000 | Original | `PopulationTarget` |
+| Economy | Field reclaim work | 200, 400, 800, 1600, 3200 | 800 | `ReclaimWork` |
+| Economy | Reclaim work a season | 100, 200, 400, 800 | 200 | `ReclaimPerSeason` |
+| Economy | Uncapped resources | Off (original: 999 a season), On (99,999,999) | Off | `UncappedResources` |
+| Economy | Resource multiplier | 1x (original) to 10x | 1x | `ResourceMultiplier` |
+| Buildings | Castle garrisons | Original (150 to 600), Army size (1500 each, or the Army size below) | Original | `GarrisonLimits` |
+| Buildings | Inner castle door | 1000, 2500, 5000, 10000, 20000, 50000, 100000 | 5000 | `InnerDoor` |
+| Buildings | Outer castle door | 5000, 10000, 20000, 40000, 80000, 100000 | 20000 | `OuterDoor` |
+| Buildings | Wooden palisade | Original, River Island | Original | `PalisadeDesign` |
+| Buildings | Motte and bailey | Original, Wooden Palace | Original | `MotteDesign` |
+| Buildings | Norman keep | Original, Leeds Castle, Expanded Keep | Original | `KeepDesign` |
+| Buildings | Stone castle | Original, Curtain Wall, The Ell, Portchester | Original | `StoneCastleDesign` |
+| Buildings | Royal castle | Original, Chambers, Island Castle, Goodrich | Original | `RoyalCastleDesign` |
+| Units | Pillaging | On (original), Off | On | `Pillaging` |
+| Units | Army size | 500, 1000, 1500, 2000, 3000, 5000, 10000 | 1500 | `ArmySize` |
+| Units | Scaled army icons | Off (original: 300 and 600), On | Off | `ScaledArmyIcons` |
+| Unit stats | Stats of | Peasants, Archers, Swordsmen, Macemen, Pikemen, Crossbowmen, Knights | Archers | (the unit the rows below show) |
+| Unit stats | Melee strength | half to three times the original (1 to 100) | Original | `<Unit>MeleeStrength` in `[Units]` |
+| Unit stats | Ranged defence | half to three times the original (0 to 100) | Original | `<Unit>RangedDefence` in `[Units]` |
+| Unit stats | Auto-calc strength | half to three times the original (0 to 100) | Original | `<Unit>AutoCalcStrength` in `[Units]` |
+| Unit stats | Ranged strength | half to three times the original (0 to 1000) | Original | `<Unit>RangedStrength` in `[Units]` |
+| Unit stats | Attack range | half to three times the original (0 to 50 cells) | Original | `<Unit>AttackRange` in `[Units]` |
+| Unit stats | Attack speed | 25, 50, 100 (the time between shots) | Original | `<Unit>AttackSpeed` in `[Units]` |
+| Unit costs | Costs of | Peasants, Archers, Swordsmen, Macemen, Pikemen, Crossbowmen, Knights | Archers | (the unit the rows below show) |
+| Unit costs | Wood cost | half to three times the original (0 to 10000) | Original | `<Unit>WoodCost` in `[Units]` |
+| Unit costs | Iron cost | half to three times the original (0 to 10000) | Original | `<Unit>IronCost` in `[Units]` |
+| Unit costs | Sell price | half to three times the original (1 to 10000) | Original | `<Unit>SellPrice` in `[Units]` |
+| Unit costs | Buy price | Original (sell price + the merchant's share), or a price (never below the sell price) | Original | `<Unit>BuyPrice` in `[Units]` |
+| Fixes | Food ration fix | On, Off | On | `RationFix` |
+| Fixes | Multiplayer messages | On, Off | On | `MpMessageFix` |
 
-The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
-`MultiplayerFixes=1`.
+The four battle fixes stay off in multiplayer. The campaign fixes (the food ration fix, the wheat fix, the
+castle cap fix and the siege garrison fix) run in a multiplayer game when the host has them on and every
+player has the same version of the patch; the host's settings decide, and a joiner's don't count. If any
+player has another version, the original game or another multiplayer DLL, everyone plays the original rules.
+`HostOffersFixes=0` in the host's `lords2hd.ini` plays the original rules in its games. It replaces 1.6.0's
+`MultiplayerFixes`, which is ignored now (an update keeps the old line in your `lords2hd.ini`; it does nothing).
+So one game can play the fixes and the next the original rules, with the same versions: that is the host's choice
+(each player's `lords2hd-mp` folder notes it in `session.txt`), not a desync. Once the game starts, no one can join.
+
+The Game, Economy, Buildings, Units, Unit stats, Unit costs and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
+as on Jen's Mod Menu: F11 or the Mods title opens it while Quality of life → Jen With a B's Mods is On (or
+click the line under that tab's rows); F10 goes back to the HD settings. Pointing at a line shows what it
+does below the list, and Reset all to default puts every line back as the patch ships it.
+It holds the fixes and mods from Jen With a B's Lords II Mod Manager, rewritten for this patch with
+Jen's consent; with the switch Off the game is as without them. Its switches work at once. Weather
+wrecks fields: droughts and storms destroy fields. Pillaging: armies in an enemy county destroy its
+fields; Off also stops computer lords raising the people of a threatened county that has no castle,
+as in Jen's. The castle doors take that many blows before they give way in a siege. A destroyed
+field needs the reclaim work in all, and a season puts at most the second number into it. Castle
+garrisons: every castle holds as many men as an army may; computer lords still plan their garrisons
+by the original sizes. The mods (all but the Fixes tab) work in single player games only: in a
+multiplayer game everyone plays the original rules. In `lords2hd.ini` the door and reclaim numbers can be anything
+from 1 to 100000 (doors) or 10000 (reclaim).
+
+Uncapped game speed lets the game speed go past 10 (set back to 10 when turned off); every speed past 10 is the same, as fast as the PC runs the game. The Black Death can be milder
+(Jen's 50% Reduced: about half as deadly) or off (it spares every county; the event still comes up). Population
+average steers each county's births towards that population in the long run, by Jen's formula. Uncapped resources
+lifts the cap of 999 on a season's wood, iron and stone, and the resource multiplier multiplies them (not the
+blacksmith's weapons); choosing 2x or more in the panel turns Uncapped resources on (in the ini, set both). Army size is the most men in an army; castle
+garrisons set to Army size follow it, and Scaled army icons moves the two- and three-man army icons to a fifth and
+two fifths of it. Unit stats and Unit costs change one unit at a time: pick it on the first row, then click a
+stat to step through half to three times its original value (attack speed: 2x or 4x faster or slower; peasants
+have no ranged stats or price). The sell price applies at once in the game being played; a buy price replaces
+the merchant's sell price plus share for you and the computer lords, and is never below the sell price (so
+buying and selling back can't make crowns). Each unit's values are kept in `[Units]`
+in `lords2hd.ini` (a missing key is the original), where any value in the range is allowed.
+
+The five castle kinds on the Buildings tab (Jen's Castle Design): a siege on each kind of castle can be fought on one of the game's own
+skirmish castles instead of its usual map, from the next siege. Each kind offers the ones Jen picked as
+fitting it; only the map changes, the castle's garrison and doors stay its kind's. The maps come from the
+game's STNFIEL2.PL8 (it is off if the file is missing). Single player campaign games only, like the
+other mods.
 
 ![The Performance tab and the FPS counter](https://github.com/skaldic/lords2-hd/releases/latest/download/performance.jpg)
 
@@ -318,6 +400,8 @@ Better versions are welcome on the Discord.
 - **Wolfe** and **Socius**, for the LotR2 Fix multiplayer layer included as `dplayx.dll` (built from
   `multiplayer/`, see its `CREDITS.md`); Wolfe also for the ideas behind the battle wheel zoom and the
   county map zoom-out (his ZoomUI).
+- **Jen With a B** (jenwithab), for the fixes and mods of the Lords II Mod Manager behind Jen With a B's Mods,
+  brought in with Jen's consent.
 - **AllYourBases** and **CaptainRoberts**, for the seasonal Town Center art; CaptainRoberts also for
   the new idle serfs.
 - The Discord community, for the bug reports and ideas behind this release (the minimap outlines
@@ -340,6 +424,9 @@ The repository holds only original code: nothing extracted from the game is in i
 - `tools/make_pak.ps1` packs the art, voices, videos and video frames into `lords2hd.pak`;
   `tools/make_release.ps1 -Version x.y.z` makes the installer (Inno Setup 6, `tools/lords2hd.iss`)
   and the zip, with `dplayx.dll` built from `multiplayer/` (`multiplayer/dplayx/build.ps1`)
+- The scripts find the game folder (the one with `Lords2.exe`) from `-Game`, the `L2HD_GAME`
+  environment variable, a `.game-folder` file in the repository's root holding its path, or the
+  folder the repository sits in (`tools/game_folder.ps1`)
 - External tools (llvm-mingw, Real-ESRGAN, stable-diffusion.cpp and its models) are found through
   the `L2HD_TOOLS` environment variable, or `tools\external`
 - `NOTES.md` holds the reverse-engineering notes

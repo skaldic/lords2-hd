@@ -101,6 +101,9 @@ TEST(hooks_all_go_in_4_3)
 	CHECK_EQ(t_count_lines(log, "import not found"), 0);
 	CHECK(!on);
 	for (int f = 0; f < BF_COUNT; f++) CHECK(g_bfOk[f]);   // every battle fix can be switched in F10
+	CHECK(o_yesno_open != NULL);                            // the Esc-twice yes/no fix in 4:3 too
+	CHECK_EQ(*(BYTE *)0x00472f20, 0x75);                    // Jen With a B's Mods on by default: messages kept up
+	CHECK(g_rationHooked && g_jenMods);
 	free(log);
 	t_unmap_game();
 }
@@ -117,6 +120,148 @@ TEST(hooks_all_go_in_widescreen)
 	else CHECK(on);
 	free(log);
 	t_unmap_game();
+}
+
+TEST(hooks_jen_fixes_go_in)   // Jen With a B's Mods (on by default): the ration and multiplayer message fixes
+{
+	BOOL on;
+	char *log = t_install(0, &on);
+	if (!log) return;
+	CHECK_EQ(t_count_lines(log, "Jen With a B's Mods on; ration fix on"), 1);
+	CHECK_EQ(t_count_lines(log, "multiplayer message fix on"), 1);
+	CHECK_EQ(*(BYTE *)0x0044e4a2, 0xE9);                   // jumps to ration_stub
+	CHECK_EQ(*(DWORD *)0x0044e4a3 + 0x0044e4a7, (DWORD)ration_stub);
+	CHECK_EQ(*(BYTE *)0x0044e4a7, 0x90); CHECK_EQ(*(BYTE *)0x0044e4a8, 0x90);
+	static const BYTE keep[] = { 0x75, 0x35, 0x90, 0x90, 0x90, 0x90 };
+	CHECK(memcmp((BYTE *)0x00472f20, keep, sizeof keep) == 0);
+	CHECK_EQ(0x00472f22 + 0x35, 0x00472f13 + 6 + 0x3e);    // where kind 14's je goes (0x472f13: je +3Eh)
+	CHECK_EQ(*(WORD *)0x00472f13, 0x840F);
+	CHECK_EQ(*(DWORD *)0x00472f15, 0x3e);
+	// the other mods: every site holds what they expect in the game's exe (code and data), the hooks in
+	for (int j = 0; j < JC_COUNT; j++) CHECK(g_jcOk[j]);
+	for (int j = 0; j < JE_COUNT; j++) { if (!g_jeOk[j]) printf("    Jen mod %d not in with the game's exe\n", j); CHECK(g_jeOk[j]); }
+	for (int u = 0; u < UNITS; u++) {   // each unit's ranged defence in its own type's battle set-up handler (0x4d9140 + 4 type)
+		int type = kUnitAuto[u];
+		DWORD fn = *(const DWORD *)(0x004d9140 + 4 * type), end = type < 6 ? *(const DWORD *)(0x004d9140 + 4 * (type + 1)) : fn + 0xd9;
+		CHECK(kUnitRdefAt[u] > fn && kUnitRdefAt[u] < end); CHECK_EQ(kUnitMelee[u], type);
+		CHECK_EQ(kUnitCost[u], type - 1);   // the weapons: type - 1
+	}
+	for (int h = 0; h < JEN_HOOKS; h++) {
+		CHECK_EQ(*(BYTE *)kJenHooks[h].at, 0xE9);
+		CHECK_EQ(*(DWORD *)(kJenHooks[h].at + 1) + kJenHooks[h].at + 5, (DWORD)kJenHooks[h].stub);
+		for (int i = 5; i < kJenHooks[h].n; i++) CHECK_EQ(*(BYTE *)(kJenHooks[h].at + i), 0x90);
+	}
+	CHECK_EQ(*(DWORD *)0x004a97c4, ARMY_SIZE); CHECK_EQ(*(DWORD *)0x004aa1b5, ARMY_SIZE); CHECK_EQ(*(DWORD *)RES_CAP_AT, RES_CAP);
+	CHECK_EQ(*(BYTE *)0x00448f83, 0x0F);                   // shipped: the game's own
+	free(log);
+	t_unmap_game();
+}
+
+TEST(hooks_menu_bar_mods_and_hd)   // the menu bar: Help named Mods (Mod Menu first) while Jen With a B's Mods is on, and HD
+{
+	BOOL on;
+	char *log = t_install(0, &on);
+	if (!log) return;
+	CHECK_EQ(t_count_lines(log, "menu bar: File, Options, Help, Mods"), 1);
+	CHECK(g_barOk);
+	static const DWORD sites[4] = { 0x0041a0bf, 0x00430010, 0x004314d5, 0x00431911 };
+	for (int i = 0; i < 4; i++) { CHECK_EQ(*(BYTE *)(sites[i] - 2), BAR_TITLES); CHECK_EQ(*(DWORD *)sites[i], (DWORD)g_bar); }
+	static const DWORD texts[4] = { 0x0040c6b6, 0x0040c6e2, 0x0040c86e, 0x0040c89f };
+	for (int i = 0; i < 4; i++) CHECK_EQ(texts[i] + 5 + *(int *)(texts[i] + 1), (DWORD)menu_text);
+	CHECK_EQ(0x0040c632 + 5 + *(int *)0x0040c633, (DWORD)menu_text_find);
+	CHECK_EQ(*(BYTE *)0x0040c6fc, BAR_GAP);
+	CHECK_EQ(*(BYTE *)(BAR_BOX_ADD + 2), 1);
+	CHECK_EQ(BAR_DRAW_CALL + 5 + *(int *)(BAR_DRAW_CALL + 1), (DWORD)menu_bar_draw);
+	CHECK(g_jenMods);
+	// in a battle (no lords' shields on the bar): File, Options, Help (the game's), Mods, HD
+	*(int *)0x0057c8fc = 1; g_bar[0].x = 10;
+	CHECK_EQ(menu_bar_layout(), 5);
+	CHECK_EQ(g_bar[0].text, 1); CHECK_EQ(g_bar[1].text, 2); CHECK_EQ(g_bar[2].text, TXT_HELP); CHECK_EQ(g_bar[3].text, TXT_MODS); CHECK_EQ(g_bar[4].text, TXT_HD);
+	CHECK_EQ((DWORD)g_bar[2].items, 0x004dc3d0); CHECK_EQ(g_bar[2].count, 7);
+	CHECK(menu_bar_text(TXT_HELP, 0) == NULL);                // Help keeps its name
+	CHECK(g_bar[3].items == g_modsItems && g_bar[3].count == MODS_LINES && g_modsItems[6].fn == bar_mods6 && g_modsItems[6].y == 120);
+	CHECK(!strcmp(menu_bar_text(TXT_MODS, 0), "Mods"));
+	CHECK(!strcmp(menu_bar_text(TXT_MODS, 3), "Building Mods")); CHECK(!strcmp(menu_bar_text(TXT_MODS, 7), "Fixes"));
+	CHECK(!strcmp(menu_bar_text(TXT_HD, 0), "HD"));
+	CHECK(!strcmp(menu_bar_text(TXT_HD, 3), "Quality of life"));
+	// the 4:3 county map (the shields from x 270): Help named Mods, Mod Menu first, then HD; the fifth unclickable
+	*(int *)0x0057c8fc = 0;
+	CHECK_EQ(menu_bar_layout(), 4);
+	CHECK_EQ(g_bar[2].text, TXT_HELP); CHECK_EQ(g_bar[3].text, TXT_HD);
+	CHECK(g_bar[2].items == g_helpItems && g_bar[2].count == 8);
+	CHECK(g_helpItems[0].fn == bar_mod_menu);
+	CHECK_EQ((DWORD)g_helpItems[7].fn, 0x00434d60);          // the game's About, last
+	CHECK_EQ(g_helpItems[7].y, 140);
+	CHECK(!strcmp(menu_bar_text(TXT_HELP, 0), "Mods"));
+	CHECK(!strcmp(menu_bar_text(TXT_HELP, TXT_MOD_MENU), "Mod Menu"));
+	CHECK(menu_bar_text(TXT_HELP, 7) == NULL);                // About: the game's own text
+	CHECK(g_bar[4].x >= g_bar[4].xEnd);
+	g_bar[0].x = 10 - 104;                                    // the wide county map (16:9): room for all five
+	CHECK_EQ(menu_bar_layout(), 5);
+	CHECK(MENU_FIRST_X == g_bar[0].x && g_bar[0].x == 10 - 104);
+	g_bar[0].x = 10;
+	g_jenMods = FALSE;                                        // off: the game's three and HD, everywhere
+	CHECK_EQ(menu_bar_layout(), 4);
+	CHECK_EQ((DWORD)g_bar[2].items, 0x004dc3d0); CHECK_EQ(g_bar[3].text, TXT_HD);
+	CHECK(menu_bar_text(TXT_HELP, 0) == NULL);
+	*(int *)0x0057c8fc = 1;
+	CHECK_EQ(menu_bar_layout(), 4);
+	g_jenMods = TRUE; *(int *)0x0057c8fc = 0;
+	*(void **)0x00522cac = &g_bar[2];                         // a list open: the layout stays
+	*(int *)0x0057c8fc = 1; CHECK_EQ(menu_bar_layout(), 4); *(int *)0x0057c8fc = 0;
+	*(void **)0x00522cac = NULL;
+	// HD > Quality of life: the panel opens at that tab once the button is up, a few frames on
+	Surface *back = g_back; g_back = NULL;
+	BOOL remote = g_remote; g_remote = TRUE; g_lbDown = TRUE;
+	g_menuOpen = FALSE;
+	bar_hd2();
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(!g_menuOpen);                                       // the button still down
+	g_lbDown = FALSE;
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && !g_menuMods); CHECK_EQ(g_menuTab, 2);
+	menu_toggle();
+	bar_mod_menu();                                           // (Help as) Mods > Mod Menu: the Jen With a B's Mods panel
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && g_menuMods);
+	menu_toggle();
+	bar_mods2();                                              // Mods > Building Mods: that tab
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && g_menuMods); CHECK_EQ(g_menuTab, TAB_BUILDINGS);
+	menu_toggle();
+	bar_mods6();                                              // Mods > Fixes, the last line: the last tab
+	for (int i = 0; i < 6; i++) menu_pending_tick();
+	CHECK(g_menuOpen && g_menuMods); CHECK_EQ(g_menuTab, TAB_FIXES);
+	menu_toggle();
+	g_menuMods = FALSE; g_menuTab = 0; g_remote = remote; g_back = back;
+	free(log);
+	t_unmap_game();
+}
+
+TEST(jen_reset_all_to_default)
+{
+	t_shipped_settings();
+	menu_change(M_JEN_RATION); menu_change(M_JEN_FIELDS); menu_change(M_JEN_DOOR_IN); menu_change(M_JEN_WORK);
+	menu_change(M_JEN_GARRISON); menu_change(M_JEN_DESIGN + 4);
+	menu_change(M_JEN_SPEED); menu_change(M_JEN_PLAGUE); menu_change(M_JEN_POP); menu_change(M_JEN_RESMUL); menu_change(M_JEN_ARMY);
+	menu_change(M_JEN_ICONS); menu_change(M_JEN_STAT + US_MELEE); menu_change(M_JEN_COST + UC_BUY - UNIT_STATS);
+	CHECK(!g_fixRation && !g_jenFieldLoss && g_jenGarrison && g_jenDesign[4]);
+	CHECK(g_jenSpeed && g_jenPlague && g_jenPop && g_jenUncap && g_jenResMul == 2 && g_jenArmy == 2000 && g_jenIcons);
+	CHECK(g_unitSet[g_unitSel][US_MELEE] > 0 && g_unitSet[g_unitSel][UC_BUY] > 0);
+	menu_reset_jen();
+	CHECK(!g_jenSpeed && !g_jenPlague && !g_jenPop && !g_jenUncap && g_jenResMul == 1 && g_jenArmy == ARMY_SIZE && !g_jenIcons);
+	for (int u = 0; u < UNITS; u++) for (int s = 0; s < US_COUNT; s++) CHECK_EQ(g_unitSet[u][s], -1);
+	{ char k[48]; snprintf(k, sizeof k, "%sMeleeStrength", kUnitKey[g_unitSel]); CHECK_EQ((int)GetPrivateProfileIntA("Units", k, -7, g_iniPath), -7); }
+	CHECK(g_fixRation && g_mpMsgFix && g_jenFieldLoss && g_jenPillage && !g_jenGarrison);
+	CHECK_EQ(g_jenDoorIn, DOOR_IN); CHECK_EQ(g_jenDoorOut, DOOR_OUT); CHECK_EQ(g_jenWork, RECLAIM_WORK); CHECK_EQ(g_jenMen, RECLAIM_MEN);
+	for (int k = 0; k < 5; k++) CHECK_EQ(g_jenDesign[k], 0);
+	char v[32];
+	GetPrivateProfileStringA("Game", "RoyalCastleDesign", "?", v, sizeof v, g_iniPath); CHECK(!strcmp(v, "Original"));
+	CHECK_EQ(GetPrivateProfileIntA("Game", "RationFix", 0, g_iniPath), 1);
+	CHECK_EQ(GetPrivateProfileIntA("Game", "InnerDoor", 0, g_iniPath), DOOR_IN);
+	CHECK(g_jenMods);                                         // the switch itself stays
+	for (int i = M_JEN_RATION; i < M_COUNT; i++) CHECK(menu_desc(i, 0) != NULL && menu_desc(i, 1) != NULL); // every row described
+	t_shipped_settings();
 }
 
 /* ---- the 1.4.0 crash: a NULL trampoline called from code that runs without its hook ---- */

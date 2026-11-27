@@ -8,7 +8,7 @@ param([string]$Name, [string]$Prompt, [int]$Seed = 11, [int]$Count = 2, [int]$Ov
     [string]$From = "", [double]$Strength = 1.0) # -From: a 1708x960 picture of the whole wide screen to start the sides from (with -Strength below 1 the model keeps its layout and light and only redraws the detail)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $sd = Join-Path $tools "sdcpp\bin\sd-cli.exe"
 $models = Join-Path $tools "sdcpp\models"

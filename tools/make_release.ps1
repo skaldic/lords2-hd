@@ -9,7 +9,6 @@ param([Parameter(Mandatory)][string]$Version, [string]$Pak = "", [string]$GameEx
     [string]$Integration, [string]$RefDll)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$game = Split-Path $root -Parent
 
 if (-not $GameExe -or -not (Test-Path $GameExe)) {
     throw "make_release: give -GameExe (or L2HD_GAME_EXE) a test copy's Lords2.exe: the hook tests must run before a release"

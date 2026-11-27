@@ -6,7 +6,7 @@ param([string[]]$Sets = @('t32_bat1','t32_stn1','t32_stn2','t32_wod1','t32_wod2'
 $ErrorActionPreference = 'Stop'
 $Sets = $Sets | ForEach-Object { $_ -split ',' } # "a,b" as one argument, as powershell -File passes it
 $root = Split-Path $PSScriptRoot -Parent
-$game = if ($Game) { $Game } else { Split-Path $root -Parent }
+. "$PSScriptRoot\game_folder.ps1"; $game = Get-GameFolder $Game
 $tools = & (Join-Path $PSScriptRoot "tools_dir.ps1")
 $esr = Join-Path $tools "realesrgan\realesrgan-ncnn-vulkan.exe"
 Add-Type -AssemblyName System.Drawing
