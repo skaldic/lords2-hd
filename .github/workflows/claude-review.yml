@@ -1,0 +1,71 @@
+# Claude reviews every pull request and leaves inline comments plus one summary comment.
+# Advisory only: it is not a required check, and a human code owner still approves the merge.
+# Needs, once per repo: the Claude GitHub App (https://github.com/apps/claude) and the secret
+# CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`). Until the secret exists the job skips itself.
+# To review again without a new push, re-run the job from the PR's Checks tab.
+name: Claude review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Check for the token
+        id: token
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is not set, skipping the Claude review"; fi
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.ok == 'true'
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.token.outputs.ok == 'true'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for Lords of the Realm II HD, an unofficial, non-commercial fan
+            patch for the 1996 game. It is C code built with llvm-mingw into proxy DLLs that hook
+            the original Lords2.exe: hd/ (ddraw.dll: scaling, widescreen, HD art, fixes),
+            multiplayer/dplayx/ (dplayx.dll: DirectPlay replacement, LAN/internet relay), tests/
+            (PowerShell unit tests), installer and docs.
+
+            Report only real problems, most important first:
+            1. Correctness bugs: wrong addresses or offsets into Lords2.exe, hook prologues and
+               calling conventions, buffer sizes, off-by-one, null pointers, leaks of GDI or
+               DirectDraw objects, thread safety, ini parsing and defaults.
+            2. Multiplayer: anything that can make two players' games differ (desync), protocol
+               or DLL_VERSION changes without a version bump, security of data read from the
+               network (lengths, bounds), and compatibility with players on the last release.
+            3. Game rules: flag any change to economy, combat or AI rules that the description
+               doesn't call out. Rule changes need the maintainer's agreement.
+            4. Missing tests for new logic that tests/ could cover, and docs (README, INSTALL.txt,
+               lords2hd.ini comments) that no longer match the code.
+
+            Leave out style nits and praise. Put each specific issue on its line with an inline
+            comment. Then post one short top-level comment with `gh pr comment` that lists the
+            findings by severity, or says that you found nothing that needs changing.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
