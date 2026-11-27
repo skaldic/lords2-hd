@@ -193,7 +193,8 @@ TEST(map_finds_the_bridge_and_the_way_round)
 	CHECK(m->x == 20 || m->x == 21); CHECK_EQ(m->y, 40);
 	CHECK_EQ(m->width, 2); CHECK_EQ(m->cells, 6); CHECK_EQ(m->water, 1);
 	CHECK(m->detour > 90);                      // round by the ford
-	CHECK_EQ(m->dist[1], 9); CHECK_EQ(m->dist[2], 19);
+	CHECK_EQ(g_mapSide[0], 1); CHECK_EQ(g_mapSide[1], 2);
+	CHECK_EQ(m->dist[0], 9); CHECK_EQ(m->dist[1], 19);
 	for (int y = 39; y <= 41; y++) for (int x = 75; x <= 79; x++) BCELL(x, y)[1] = FL_WATER;
 	map_read();                                 // no ford: the only way
 	REQUIRE(g_ncross == 1);
@@ -217,7 +218,7 @@ TEST(map_a_gap_in_a_line_of_stakes)
 	map_read();
 	REQUIRE(g_ncross == 1);
 	CHECK_EQ(g_cross[0].width, 1); CHECK_EQ(g_cross[0].water, 0); CHECK_EQ(g_cross[0].detour, -1);
-	CHECK_EQ(g_cross[0].dist[1], 5); CHECK_EQ(g_cross[0].dist[2], -1);   // no side 2 on the field
+	CHECK_EQ(g_cross[0].dist[0], 5); CHECK_EQ(g_cross[0].dist[1], -1);   // no side 2 on the field
 }
 TEST(map_watch_tells_who_holds_the_bridge)
 {

@@ -166,6 +166,7 @@ static void t_ai_battle(int level)
 {
 	g_aiOk = TRUE; g_aiLevelSet = level; g_aiParts = AI_ALL;
 	*(int *)0x0053e8fc = 0; *(int *)0x00553030 = 0;
+	*(int *)0x00568210 = 0; *(int *)0x0057a0f0 = 0;         // no campaign mover, not a custom battle
 	AI_THRESHOLD = 5;
 	o_strength = t_weigh;
 	battle_reset();
@@ -224,6 +225,41 @@ TEST(ai_legendary_weaker_defender_sallies_after_the_wait)
 	t_ai_battle(1);                                         // Hard
 	CHECK(t_weigh_at(-15, -10) <= 5);
 	for (int i = 0; i < 3 * AI_DEF_WAIT; i++) CHECK(t_weigh_at(-15, 21) <= 5);
+}
+
+static void t_group(int g, int side, int kind, int count, int cx, int cy);
+/* lord 5's army 7 marched on yours on the campaign map (the battle's first army); its pikemen on the field */
+static void t_invasion(int level, int owner)
+{
+	t_ai_battle(level);
+	((signed char *)0x0052f0b0)[7 * 0x1a4] = (signed char)owner; *(int *)0x00568210 = 7;
+	t_group(4, 5, 2, 10, 33, 9);
+}
+TEST(ai_invader_attacks_unless_far_weaker)
+{
+	static char buf[1 << 16];
+	InitializeCriticalSection(&g_blogLock);
+	g_blogBuf = buf; g_blogLen = 0; g_blog = (FILE *)1;
+	t_invasion(2, 5);
+	CHECK_EQ(t_weigh_at(-13, -1), 6);                       // the user's save 7 (-13): it attacks
+	CHECK_EQ(t_weigh_at(-45, 0), 6);                        // losing, 50 below the threshold: still attacking
+	CHECK(t_weigh_at(-46, 0) <= 5);                         // beaten: defence
+	CHECK_EQ(t_weigh_at(-25, 0), 6);                        // back within 30 of the threshold: attacks again
+	buf[g_blogLen] = 0;
+	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
+	DeleteCriticalSection(&g_blogLock);
+	CHECK(strstr(buf, "ai Legendary: decided ATTACK (strength -13, with the random term -14, threshold 5; it marched on you on the campaign map)") != NULL);
+	t_invasion(1, 5);                                       // Hard the same
+	CHECK_EQ(t_weigh_at(-25, 0), 6);
+	t_invasion(2, 5);
+	CHECK(t_weigh_at(-26, 0) <= 5);                         // more than 30 below from the start: it defends
+	t_invasion(2, 1);                                       // your army marched on it: as before
+	CHECK(t_weigh_at(-13, -1) <= 5);
+	t_invasion(2, 5); *(int *)0x0057a0f0 = 1;               // a custom battle: as before
+	CHECK(t_weigh_at(-13, -1) <= 5);
+	t_invasion(0, 5);                                       // Normal: the game's weighing
+	CHECK_EQ(t_weigh_at(-13, -1), -14);
+	*(int *)0x00568210 = 0; *(int *)0x0057a0f0 = 0;
 }
 
 TEST(ai_hard_each_battle_decides_afresh)
@@ -396,6 +432,26 @@ TEST(ai_hard_melee_in_place_waits_for_the_volleys_then_charges_together)
 	t_ai_think_melee(5);
 	CHECK_EQ(t_nCharged, 1); CHECK_EQ(t_charged[0], 5);             // ...and charge too
 	CHECK_EQ(G_THINK(2), 0);                                        // (not the archers)
+}
+
+/* A campaign battle's sides are the lords' numbers: against lord 5 its melee stood still for the whole battle
+ * (the user's Legendary battle in save 7: the melee AI took sides 1 and 2 only and the game's own was replaced) */
+TEST(ai_melee_of_any_lord_advances_and_charges)
+{
+	for (int side = 2; side <= 5; side++) {
+		t_ai_battle(2); AI_RATIO = 30;
+		t_unit(4, side, 30, 40, 4); t_group(4, side, 3, 1, 30, 40);   // 20 cells from the enemy
+		t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+		t_ai_think_melee(4);
+		CHECK_EQ(t_ordG, 4); CHECK_EQ(t_ordX, 36);                      // it advances 6 cells
+		t_ai_battle(2); AI_RATIO = 30;
+		t_unit(4, side, 44, 40, 4); t_group(4, side, 3, 1, 44, 40);   // in place, no archers
+		t_human(t_unit(6, 1, 50, 40, 6)); t_group(6, 1, 3, 1, 50, 40);
+		t_ai_think_melee(4);
+		CHECK(g_aiCharge[side]);                                        // and charges: Legendary walks to its target
+		CHECK_EQ(t_ordG, 4); CHECK_EQ(t_ordX, 50); CHECK_EQ(t_ordY, 40);
+		CHECK(side == 2 || !g_aiCharge[2]);
+	}
 }
 
 TEST(ai_hard_melee_turned_to_attack_late_still_advances_first)
@@ -718,6 +774,23 @@ TEST(ai_hard_no_storm_from_across_the_field_or_while_walking)
 	CHECK_EQ(g_asPhase[2], 2);                                      // in place, 5 men there: storm
 }
 
+TEST(ai_a_unit_stuck_short_of_its_place_does_not_hold_the_storm)
+{
+	t_bridge_battle(1);
+	t_men(6, 5); t_men(7, 0); FIG(7)[0x31] = ST_DYING;             // 5 of yours at the bridge
+	t_unit_at(4, 20, 52); t_unit_at(5, 22, 52); t_unit_at(8, 21, 52);
+	t_assault_at(50);
+	REQUIRE(g_asPhase[2] == 1);
+	FIG(4)[0x31] = ST_MARCH; FIG(5)[0x31] = ST_IDLE; FIG(8)[0x31] = ST_IDLE;
+	t_assault_at(100);
+	CHECK_EQ(g_asIn[2], 0);                                         // fig 4 walking (it hasn't been seen stuck yet)
+	for (unsigned t = 150; t < 200; t += 50) { FIG(4)[0x31] = t % 100 ? ST_WAIT : ST_MARCH; t_assault_at(t); }
+	CHECK_EQ(g_asIn[2], 0);
+	FIG(4)[0x31] = ST_MARCH;                                        // still flipping on the same cell...
+	t_assault_at(200);
+	CHECK_EQ(g_asPhase[2], 2);                                      // ...stuck AS_STUCK steps: in place, it storms
+}
+
 TEST(ai_hard_storms_the_bridge_when_its_defenders_are_down_to_half)
 {
 	static char buf[1 << 16];
@@ -740,6 +813,22 @@ TEST(ai_hard_storms_the_bridge_when_its_defenders_are_down_to_half)
 	g_blog = NULL; g_blogBuf = NULL; g_blogLen = 0;
 	DeleteCriticalSection(&g_blogLock);
 	CHECK(strstr(buf, "ai Hard: side 2 charges (storms crossing 1: 35 enemy men there, its melee 70)") != NULL);
+}
+
+TEST(ai_assault_works_for_any_lord)
+{
+	t_bridge_battle(1);
+	FIG(4)[0x2c] = FIG(5)[0x2c] = FIG(8)[0x2c] = 5; GRP_B(4, 0x00) = 5;   // lord 5's army, not side 2
+	g_aiCharge[2] = FALSE; g_aiCharge[5] = TRUE;
+	map_read();
+	CHECK_EQ(g_mapSide[0], 1); CHECK_EQ(g_mapSide[1], 5);
+	t_assault_at(50);
+	CHECK_EQ(g_asPhase[5], 1); CHECK(as_parked(5)); CHECK(!as_parked(2)); CHECK_EQ(t_ordG, 4);
+	t_men(7, 5);
+	t_assault_at(100);
+	CHECK_EQ(g_asPhase[5], 2); CHECK(!as_parked(5));                 // storms
+	t_ai_think_melee(4);
+	CHECK_EQ(t_nCharged, 1);
 }
 
 TEST(ai_hard_archers_soften_the_bridge_before_the_storm)
