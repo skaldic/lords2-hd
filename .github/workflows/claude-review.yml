@@ -1,0 +1,107 @@
+# Claude reviews every pull request and posts one comment with all its findings (no inline comments).
+# On each new push it reviews again, posts a new comment and hides the previous one as outdated.
+# Advisory only: it is not a required check, and a human code owner still approves the merge.
+# Needs, once per repo: the Claude GitHub App (https://github.com/apps/claude) and the secret
+# CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`). Until the secret exists the job skips itself.
+# To review again without a new push, re-run the workflow from the PR's Checks tab.
+name: Claude review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # Marks the review comments, so the next run can find and hide them
+  MARKER: "<!-- claude-review -->"
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Check for the token
+        id: token
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is not set, skipping the Claude review"; fi
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.ok == 'true'
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.token.outputs.ok == 'true'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            COMMIT: ${{ github.event.pull_request.head.sha }}
+
+            Review this pull request for Lords of the Realm II HD, an unofficial, non-commercial fan
+            patch for the 1996 game. It is C code built with llvm-mingw into proxy DLLs that hook
+            the original Lords2.exe: hd/ (ddraw.dll: scaling, widescreen, HD art, fixes),
+            multiplayer/dplayx/ (dplayx.dll: DirectPlay replacement, LAN/internet relay), tests/
+            (PowerShell unit tests), installer and docs.
+
+            Report only real problems, most important first:
+            1. Correctness bugs: wrong addresses or offsets into Lords2.exe, hook prologues and
+               calling conventions, buffer sizes, off-by-one, null pointers, leaks of GDI or
+               DirectDraw objects, thread safety, ini parsing and defaults.
+            2. Multiplayer: anything that can make two players' games differ (desync), protocol
+               or DLL_VERSION changes without a version bump, security of data read from the
+               network (lengths, bounds), and compatibility with players on the last release.
+            3. Game rules: flag any change to economy, combat or AI rules that the description
+               doesn't call out. Rule changes need the maintainer's agreement.
+            4. Missing tests for new logic that tests/ could cover, and docs (README, INSTALL.txt,
+               lords2hd.ini comments) that no longer match the code.
+
+            Leave out style nits and praise. Review the whole pull request as it is at COMMIT,
+            not only the last push.
+
+            Post exactly ONE comment with `gh pr comment`, and nothing else: no inline comments,
+            no reviews, no edits of other comments. Format of the comment:
+            - first line, exactly: ${{ env.MARKER }}
+            - a heading "Claude review" and the short COMMIT hash it covers;
+            - the findings grouped by severity (Important, then Minor), each with file:line, what
+              is wrong and what to do about it;
+            - or, if there are none, one line saying that you found nothing that needs changing.
+          claude_args: |
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
+
+  # After a new review is posted, hide the older review comments on this PR as outdated
+  hide-old:
+    needs: review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Hide previous review comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Review comments by a bot, oldest first; all but the newest get hidden
+          ids=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" --jq \
+            "[.[] | select(.user.type == \"Bot\" and (.body | contains(\"$MARKER\")))] | sort_by(.created_at) | .[:-1][] | .node_id")
+          for id in $ids; do
+            gh api graphql -f id="$id" -f query='mutation($id: ID!) {
+              minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { minimizedComment { isMinimized } } }' >/dev/null
+            echo "hid $id"
+          done
