@@ -2244,6 +2244,9 @@ static void seasons_rebind(void)
 // a little past the 1x mask, into the figure pixels next to it: their near-black HD pixels on the side
 // facing a shadow pixel darken the ground too (troop_shade; a figure pixel brighter than that never does).
 // Over 25 unit sheets this took away about 3/4 of the dark specks left round the shadows.
+// In winter the 1995 art's anti-aliasing against grass shows too: a few olive entries (105, 231, 232, 234,
+// 237-239) on the figures' outer edge, ~20 pixels a figure, a summer-green halo on the snow. Such an edge
+// pixel (open on one side, not a 1-pixel line, next to the figure proper) shows the ground under it instead.
 // The ground under a shadow: during a battlefield redraw every stamp is checked against the finished frame
 // (bt_flush), where the troop already covers its cell's ground, so the ground's stamp fails exactly there.
 // With soft shadows a ground stamp also writes its HD pixels where the frame no longer shows it (and no
@@ -2256,6 +2259,8 @@ static void seasons_rebind(void)
 static const BYTE g_shadowIdx[256] = { [59] = 1, [60] = 1, [61] = 1, [63] = 1, [116] = 1, [176] = 1, [177] = 1 };
 enum { BT_OTHER, BT_GROUND, BT_TROOP }; // what a stamp is, for soft shadows (stamp_kind)
 static int g_shMul[3]; // b, g, r of 256, for the troops being stamped (stamp_kind)
+static BOOL g_shHalo;  // winter: the troops' olive edge pixels show the ground (troop_shade)
+static const BYTE g_haloIdx[256] = { [105] = 1, [231] = 1, [232] = 1, [234] = 1, [237] = 1, [238] = 1, [239] = 1 };
 static BYTE *g_btGnd;  // per frame pixel, with soft shadows: 1 the battle layer holds the ground there, 2 that ground darkened, 3 partly
 static int stamp_kind(const char *setName)
 {
@@ -2272,6 +2277,7 @@ static int stamp_kind(const char *setName)
 	const char *s = season_name();
 	int k = !s ? 0 : s[1] == 'p' ? 1 : s[1] == 'u' ? 2 : s[0] == 'a' ? 3 : 4;
 	memcpy(g_shMul, mul[k], sizeof g_shMul);
+	g_shHalo = k == 4;
 	return BT_TROOP;
 }
 static BOOL shadow_core(const BYTE *idx, int w, int h, int r, int c)
@@ -2284,12 +2290,28 @@ static BOOL shadow_core(const BYTE *idx, int w, int h, int r, int c)
 	return n >= 3;
 }
 #define SH_FULL 16
+#define SH_HALO_OPEN 32   // a halo pixel touching transparency: the ground as it is
+#define SH_HALO_SHADOW 33 // one touching only the shadow: the ground darkened
 static int lum_px(DWORD q) { return ((q >> 16 & 0xff) * 77 + (q >> 8 & 0xff) * 150 + (q & 0xff) * 29) >> 8; }
-// A troop pixel's soft shadow (above): SH_FULL the whole pixel is shadow, else a mask of its HD pixels
-// (bit k: h0[0], h0[1], h1[0], h1[1]) that are the shadow running past the 1x mask, 0 none.
+// A troop pixel's soft shadow (above): SH_FULL the whole pixel is shadow, SH_HALO_* a winter halo pixel,
+// else a mask of its HD pixels (bit k: h0[0], h0[1], h1[0], h1[1]) that are the shadow running past the
+// 1x mask, 0 none.
 static int troop_shade(const BYTE *idx, const DWORD *hd, int w, int h, int r, int c)
 {
 	const BYTE *p = idx + r * w + c;
+	if (g_shHalo && g_haloIdx[*p]) {
+		const int dc[4] = { -1, 1, 0, 0 }, dr[4] = { 0, 0, -1, 1 };
+		int open[4], any = 0, shadowOnly = 1, solid = 0;
+		for (int k = 0; k < 4; k++) {
+			int rr = r + dr[k], cc = c + dc[k];
+			BYTE q = rr < 0 || rr >= h || cc < 0 || cc >= w ? 0 : idx[rr * w + cc];
+			BOOL sh = q && shadow_core(idx, w, h, rr, cc);
+			open[k] = !q || sh;
+			if (!q) shadowOnly = 0;
+			if (open[k]) any = 1; else if (!g_haloIdx[q]) solid = 1;
+		}
+		if (any && solid && !(open[0] && open[1]) && !(open[2] && open[3])) return shadowOnly ? SH_HALO_SHADOW : SH_HALO_OPEN;
+	}
 	const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
 	const DWORD q[4] = { h0[0], h0[1], h1[0], h1[1] };
 	if (g_shadowIdx[*p]) {
@@ -2321,7 +2343,12 @@ static void bt_put(int f, BYTE v, const DWORD *h0, const DWORD *h1, BOOL match, 
 		if (kind == BT_GROUND && !g_btValid[f]) { p[0] = h0[0]; p[1] = h0[1]; p[2] = h1[0]; p[3] = h1[1]; g_btGnd[f] = 1; }
 		return;
 	}
-	if (kind == BT_TROOP && sh && sh != SH_FULL && (g_btGnd[f] == 1 || (g_btGnd[f] == 3 && g_btValid[f]))) { // partly shadow
+	if (kind == BT_TROOP && sh >= SH_HALO_OPEN && (g_btGnd[f] == 1 || g_btGnd[f] == 2)) { // winter halo: the ground shows
+		if (sh == SH_HALO_SHADOW && g_btGnd[f] == 1) { for (int k = 0; k < 4; k++) p[k] = shade_px(p[k]); g_btGnd[f] = 2; }
+		g_btShadow[f] = v; g_btValid[f] = 1;
+		return;
+	}
+	if (kind == BT_TROOP && sh && sh < SH_FULL && (g_btGnd[f] == 1 || (g_btGnd[f] == 3 && g_btValid[f]))) { // partly shadow
 		const DWORD q[4] = { h0[0], h0[1], h1[0], h1[1] };
 		for (int k = 0; k < 4; k++) p[k] = !(sh >> k & 1) ? q[k] : g_btGnd[f] == 1 ? shade_px(p[k]) : p[k];
 		g_btShadow[f] = v; g_btValid[f] = 1; g_btGnd[f] = 3;
