@@ -4142,7 +4142,8 @@ static const DWORD kIconSites[2] = { 0x00465257, 0x004652b7 };
 //   wood, iron      the blacksmith's cost of one, dwords at 0x4d8990 + 8 w and + 4
 //   sell price      the merchant's, a dword at 0x4d8910 + 4 s, copied to 0x5532a0 + 16 s at a new game (FUN_0042847c)
 //   buy price       the game's is the sell price + the merchant's share (FUN_0041608b, FUN_00428xxx and the AI's
-//                   FUN_004a4xxx); a set price replaces it there, by four hooks (merchant stubs)
+//                   FUN_004a4xxx); a set price replaces it there, by four hooks (merchant stubs), held at or above
+//                   the live sell price
 //   ranged          archers' and crossbowmen's at 0x4d97b0 + 20 k: range in cells x 8, attack speed (25, 50 or 100:
 //                   the time between shots), ranged strength at + 12
 #define UNITS 7
@@ -4219,7 +4220,8 @@ static volatile LONG g_liveSpeed, g_liveResMul = 1, g_liveUncap, g_livePop, g_li
 static int unit_orig(int u, int s) { return kUnitGame[u][s]; }
 static int unit_value(int u, int s) { return g_unitSet[u][s] >= 0 ? g_unitSet[u][s] : unit_orig(u, s); }
 // The panel's choices for a unit's stat, ascending, its original among them: half to three times it (for an original
-// 0, a few small ones); attack speed 25, 50 or 100 (Jen's); the buy price the game's own (0), then round twice the sell price.
+// 0, a few small ones); attack speed 25, 50 or 100 (Jen's); the buy price the game's own (0), then from the sell price (as
+// set now) up to six times it, round twice it (never below it: l2hd_buy_price holds it there).
 static int unit_steps(int u, int s, int *out)
 {
 	static const int kPct[] = { 50, 75, 100, 125, 150, 200, 300 }, kFromZero[] = { 0, 5, 10, 25, 50 };
@@ -4227,7 +4229,7 @@ static int unit_steps(int u, int s, int *out)
 	int n = 0, o = unit_orig(u, s);
 	if (!unit_has(u, s)) return 0;
 	if (s == US_SPEED) { for (int i = 0; i < 3; i++) out[n++] = kSpeed[i]; return n; }
-	if (s == UC_BUY) { out[n++] = 0; o = 2 * unit_orig(u, UC_SELL); }
+	if (s == UC_BUY) { out[n++] = 0; o = 2 * unit_value(u, UC_SELL); }
 	for (int i = 0; i < (o ? 7 : 5); i++) {
 		int v = o ? (o * kPct[i] + 50) / 100 : kFromZero[i];
 		v = max(kStatMin[s], min(kStatMax[s], v));
@@ -4273,6 +4275,7 @@ static void unit_text(int u, int s, char *v, int n)
 	}
 	else if (s == UC_BUY) {
 		if (g_unitSet[u][s] <= 0) snprintf(v, n, "Original (sell price + share)");
+		else if (x < unit_value(u, UC_SELL)) snprintf(v, n, "%d (the sell price)", unit_value(u, UC_SELL));   // (held there)
 		else snprintf(v, n, "%d", x);
 	}
 	else if (x == o) snprintf(v, n, "Original (%d%s)", x, s == US_RANGE ? " cells" : "");
@@ -4668,7 +4671,7 @@ static const char *menu_desc(int i, int line)
 		{ "Wood the blacksmith uses to make one.", "Single player games only" },                                               // UC_WOOD
 		{ "Iron the blacksmith uses to make one.", "Single player games only" },                                               // UC_IRON
 		{ "What the merchant pays for one (it asks for that plus", "a share, unless the buy price is set). Single player only" }, // UC_SELL
-		{ "What the merchant asks for one, from you and the", "computer lords. Single player games only" },                    // UC_BUY
+		{ "What the merchant asks for one (never below its sell", "price) from you and the AI lords. Single player only" },        // UC_BUY
 	};
 	if (i >= M_JEN_SPEED && i < M_COUNT) return kDesc2[i - M_JEN_SPEED][line != 0];
 	if (menu_design(i)) return line ? "skirmish castles. From the next siege; single player only" : "The map its sieges are fought on: its own or one of the";
@@ -14408,7 +14411,14 @@ __attribute__((used)) void __cdecl l2hd_pop_step(BYTE *frame)   // FUN_00449ef3'
 	*births = pop_births(target, *(int *)k, *births, *(int *)(k + 0x10), *(int *)(k + 0x18), *(int *)(k + 0x1c));
 }
 __attribute__((used)) int __cdecl l2hd_speed_free(const int *slider) { return g_liveSpeed && slider == GAME_SPEED; }
-__attribute__((used)) int __cdecl l2hd_buy_price(int item) { return item >= 9 && item <= 14 ? (int)g_liveBuy[item] : 0; }
+// A set price is held at or above what the merchant pays for one now (DAT_005532a0 + 16 item, the live sell price,
+// also an old save's), so buying and selling back can't make crowns (the user's call, 2026-11-27; Jen's allowed it).
+__attribute__((used)) int __cdecl l2hd_buy_price(int item)
+{
+	if (item < 9 || item > 14) return 0;
+	int buy = (int)g_liveBuy[item], sell = *(const int *)(0x005532a0 + 16 * item);
+	return buy > 0 && buy < sell ? sell : buy;
+}
 __attribute__((naked)) static void resprod_stub(void)
 {
 	__asm__("pushal\n\t" "pushl %ebp\n\t" "call _l2hd_res_prod\n\t" "addl $4, %esp\n\t" "popal\n\t"

@@ -527,8 +527,15 @@ TEST(jen_econ_mods_go_in_and_out)
 	menu_change(M_JEN_COST + UC_SELL - UNIT_STATS);   // 16 -> 20
 	CHECK_EQ(*(DWORD *)0x004d8938, 20); CHECK_EQ(*(int *)(0x005532a0 + 16 * 10), 20);
 	CHECK_EQ(l2hd_buy_price(10), 0);            // the game's own buy price
-	menu_change(M_JEN_COST + UC_BUY - UNIT_STATS);    // a price of its own: round twice the original sell price, half of it first
-	CHECK_EQ(g_unitSet[1][UC_BUY], 16); CHECK_EQ(l2hd_buy_price(10), 16); CHECK_EQ(l2hd_buy_price(4), 0);
+	menu_change(M_JEN_COST + UC_BUY - UNIT_STATS);    // a price of its own: round twice the sell price as set now, the sell price first
+	CHECK_EQ(g_unitSet[1][UC_BUY], 20); CHECK_EQ(l2hd_buy_price(10), 20); CHECK_EQ(l2hd_buy_price(4), 0);
+	menu_change(M_JEN_COST + UC_BUY - UNIT_STATS); CHECK_EQ(g_unitSet[1][UC_BUY], 30);
+	g_unitSet[1][UC_BUY] = 12; jen_sync();          // below the sell price (the ini, or the sell price raised since): held at it
+	CHECK_EQ(l2hd_buy_price(10), 20);
+	menu_value(M_JEN_COST + UC_BUY - UNIT_STATS, v, sizeof v, &rs); CHECK(!strcmp(v, "20 (the sell price)"));
+	*(int *)(0x005532a0 + 16 * 10) = 8; CHECK_EQ(l2hd_buy_price(10), 12);   // (an old save's lower sell price: the set price)
+	*(int *)(0x005532a0 + 16 * 10) = 20;
+	g_unitSet[1][UC_BUY] = 16; jen_sync();
 	char key[48]; snprintf(key, sizeof key, "ArcherMeleeStrength");
 	CHECK_EQ((int)GetPrivateProfileIntA("Units", key, -1, g_iniPath), 6);
 	g_unitSel = 6;                              // knights: a ranged defence in the code (imm8 at 0x482b56)
@@ -549,7 +556,7 @@ TEST(jen_econ_mods_go_in_and_out)
 	CHECK(g_jenArmy == 2000 && g_jenIcons && g_unitSet[1][US_MELEE] == 6);
 	*(int *)0x00553030 = 0;                     // back to single player: in again
 	jen_sync();
-	CHECK_EQ(*(DWORD *)0x004a97c4, 2000); CHECK_EQ(mw[0], 6); CHECK_EQ(*(int *)(0x005532a0 + 16 * 10), 20); CHECK_EQ(l2hd_buy_price(10), 16);
+	CHECK_EQ(*(DWORD *)0x004a97c4, 2000); CHECK_EQ(mw[0], 6); CHECK_EQ(*(int *)(0x005532a0 + 16 * 10), 20); CHECK_EQ(l2hd_buy_price(10), 20);
 	CHECK_EQ(*(DWORD *)0x004652b7, 800);
 	t_shipped_settings();                       // the ini's [Units]: read back; anything in range, attack speed one of Jen's three
 	WritePrivateProfileStringA("Units", "KnightMeleeStrength", "500", g_iniPath);

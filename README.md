@@ -294,7 +294,7 @@ with **Mod Menu**, as in Jen's Mod Manager, with the game's help below it.
 | Unit costs | Wood cost | half to three times the original (0 to 10000) | Original | `<Unit>WoodCost` in `[Units]` |
 | Unit costs | Iron cost | half to three times the original (0 to 10000) | Original | `<Unit>IronCost` in `[Units]` |
 | Unit costs | Sell price | half to three times the original (1 to 10000) | Original | `<Unit>SellPrice` in `[Units]` |
-| Unit costs | Buy price | Original (sell price + the merchant's share), or a price | Original | `<Unit>BuyPrice` in `[Units]` |
+| Unit costs | Buy price | Original (sell price + the merchant's share), or a price (never below the sell price) | Original | `<Unit>BuyPrice` in `[Units]` |
 | Fixes | Food ration fix | On, Off | On | `RationFix` |
 | Fixes | Multiplayer messages | On, Off | On | `MpMessageFix` |
 
@@ -325,7 +325,8 @@ garrisons set to Army size follow it, and Scaled army icons moves the two- and t
 two fifths of it. Unit stats and Unit costs change one unit at a time: pick it on the first row, then click a
 stat to step through half to three times its original value (attack speed: 2x or 4x faster or slower; peasants
 have no ranged stats or price). The sell price applies at once in the game being played; a buy price replaces
-the merchant's sell price plus share for you and the computer lords. Each unit's values are kept in `[Units]`
+the merchant's sell price plus share for you and the computer lords, and is never below the sell price (so
+buying and selling back can't make crowns). Each unit's values are kept in `[Units]`
 in `lords2hd.ini` (a missing key is the original), where any value in the range is allowed.
 
 The five castle kinds on the Buildings tab (Jen's Castle Design): a siege on each kind of castle can be fought on one of the game's own
