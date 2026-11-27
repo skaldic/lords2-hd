@@ -152,8 +152,7 @@ Legendary plays like Hard, and also:
   swordsmen are strong against pikemen and maces against knights, and knights and swordsmen cut down the
   lightly armoured (peasants, archers and macemen, who hit hard but fall fast; crossbowmen are armoured).
 
-In multiplayer they stay off, so everyone plays the same rules, unless every player sets
-`MultiplayerFixes=1`.
+In multiplayer, Enemy tactics and the battle fixes stay off, so everyone plays the same battles.
 
 ## Multiplayer
 
@@ -171,6 +170,9 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
   must reach the host's TCP port 47700 (same network, a port forward, or a VPN such as ZeroTier,
   Tailscale or Radmin) and type the host's address. GameRanger works as before.
 - The game keeps running when you switch windows, so nobody waits for you.
+- **Game fixes:** the host decides. Its campaign fixes (food ration, wheat, castle cap, siege garrison)
+  run when every player has the same version of the patch; otherwise everyone plays the original rules.
+  The battle fixes and Enemy tactics stay off in multiplayer.
 - **Multiplayer logs:** each multiplayer game writes a folder `lords2hd-mp\<date and time>\` in the
   game's folder from the moment a second player joins the lobby, with what's needed to debug the
   session: the logs (stamped with one session clock, so all players' logs line up) and a summary of the
@@ -304,8 +306,11 @@ with **Mod Menu**, as in Jen's Mod Manager, with the game's help below it.
 | Fixes | Food ration fix | On, Off | On | `RationFix` |
 | Fixes | Multiplayer messages | On, Off | On | `MpMessageFix` |
 
-The four battle fixes, like the other game fixes, stay off in multiplayer unless every player sets
-`MultiplayerFixes=1`.
+The four battle fixes stay off in multiplayer. The campaign fixes (the food ration fix, the wheat fix, the
+castle cap fix and the siege garrison fix) run in a multiplayer game when the host has them on and every
+player has the same version of the patch; the host's settings decide, and a joiner's don't count. If any
+player has another version, the original game or another multiplayer DLL, everyone plays the original rules.
+`MultiplayerFixes=0` in the host's `lords2hd.ini` plays the original rules in its games.
 
 The Game, Economy, Buildings, Units, Unit stats, Unit costs and Fixes tabs are on a panel of their own, Jen With a B's Mods, grouped
 as on Jen's Mod Menu: F11 or the Mods title opens it while Quality of life → Jen With a B's Mods is On (or

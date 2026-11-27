@@ -73,7 +73,7 @@ static void t_battle_reset(void)
 	for (int f = 0; f < BF_COUNT; f++) g_bfSet[f] = g_bfOk[f] = TRUE;
 	g_aiOk = FALSE; g_aiLevelSet = 0; g_aiParts = AI_ALL;     // enemy tactics: Normal
 	battle_reset();
-	g_mpFixes = FALSE;
+	g_rulesGet = NULL;   // (multiplayer rules: no dplayx of ours)
 	g_dmMaxDepth = 0x7fff; g_dmFullThisStep = 0;
 	g_grSolo = FALSE; g_grAvoid = -1; g_grOut = NULL; g_grLeaderSet = FALSE; g_grLeadN = 0;
 	memset(g_grCong, 0, sizeof g_grCong); memset(g_grCorr, 0, sizeof g_grCorr);

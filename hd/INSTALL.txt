@@ -23,9 +23,10 @@ MULTIPLAYER
 - PRIVATE GAMES / BY ADDRESS: the host allows the Firewall prompt; the other players need to reach the
   host's TCP port 47700 (same network, a port forward, or a VPN such as ZeroTier, Tailscale or Radmin)
   and type the host's address. GameRanger works as before.
-- The patch's own game fixes (Mop-Up, the computer's castles, wheat, besieged castles) are switched
-  off in multiplayer, so players with different setups stay in step; set MultiplayerFixes=1 only if
-  every player does. The game keeps running when you switch windows, so nobody waits for you.
+- The patch's campaign fixes (food ration, wheat, the computer's castles, besieged castles) run in a
+  multiplayer game when the host has them on and every player has this same version of the patch;
+  otherwise everyone plays the original rules. The battle fixes and Enemy tactics stay off in
+  multiplayer. The game keeps running when you switch windows, so nobody waits for you.
 - MULTIPLAYER LOGS: each multiplayer game writes a folder lords2hd-mp\<date and time>\ with what is
   needed to debug the session (versions, settings, all the logs and a summary of the session; the
   logs of all players share one clock, so they line up). If a game desyncs or crashes, every player zips their folder for that game and posts it

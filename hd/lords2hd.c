@@ -8001,9 +8001,11 @@ static BOOL keep_running(void)
 	return sessionOpen && sessionOpen();
 }
 
+static void mp_rules_sync(void);
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	jen_sync();   // Jen With a B's castle and field mods: out as a multiplayer game starts, back after it (the game's thread)
+	mp_rules_sync();   // multiplayer rules: who we are, for our dplayx.dll
 	if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || (msg == WM_KEYDOWN && !(lp & 0x40000000))) perf_input(); // latency (perf_end)
 	if (g_clickLog && (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_KEYDOWN ||
 		msg == WM_ACTIVATEAPP || msg == WM_ACTIVATE || msg == WM_SETFOCUS || msg == WM_KILLFOCUS ||
@@ -11168,11 +11170,26 @@ static int __cdecl h_logic_steps(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Multiplayer safe mode: the game fixes below change what happens in the game, and nothing checks that
-// every player runs them, so in a multiplayer game (DAT_00553030) they stay off unless every player
-// has [Game] MultiplayerFixes=1; a player with the original game, or other settings, would drift apart.
-static BOOL g_mpFixes;
-static BOOL fix_on(BOOL fix) { return fix && (g_mpFixes || !*(int *)0x00553030); }
+// Multiplayer rules: the game fixes below change what happens in the game, and every PC works out the whole game
+// itself, so in a multiplayer game (DAT_00553030) a fix runs only when every player runs it. The host decides
+// (our dplayx.dll, multiplayer/dplayx/rules.c): with [Game] MultiplayerFixes=1 (the default) the host offers its
+// campaign fixes (RU_*), and they run when every player has this same ddraw.dll (its CRC) with their code in;
+// otherwise, or with the Windows DirectPlay or an older dplayx.dll, every player plays the original rules.
+// mp_rules_sync tells dplayx who we are; rule_on reads the game's rules. The battle fixes and Enemy tactics
+// (fix_on) keep state of their own that the sync check and the resync don't cover: single player only for now.
+enum { RU_RATION, RU_WHEAT, RU_CASTLECAP, RU_SIEGE, RU_COUNT };
+static const char *const kRuleName[RU_COUNT] = { "ration fix", "wheat fix", "castle cap fix", "siege garrison fix" };
+typedef int (WINAPI *RulesGetFn)(DWORD *);
+static RulesGetFn g_rulesGet;   // dplayx's LF_NetRulesGet (NULL: not our dplayx)
+static BOOL g_mpOffer = TRUE;   // [Game] MultiplayerFixes: when hosting, offer the campaign fixes
+static BOOL g_canWheat, g_canCastleCap, g_canSiege;   // their code went in (the ration fix's: g_rationHooked)
+static BOOL rule_on(int r, BOOL local)
+{
+	if (!*(int *)0x00553030) return local;
+	DWORD v = 0;
+	return g_rulesGet && g_rulesGet(&v) && (v >> r & 1);
+}
+static BOOL fix_on(BOOL fix) { return fix && !*(int *)0x00553030; }
 
 // Mop-Up fix. Mop-Up (FUN_0047a76d) marks each unit's group as hunting (DAT_0056654a, the flag the
 // AI's charge FUN_0048c8af also sets) and puts the unit in the chase state 8. The chase handler
@@ -11619,8 +11636,7 @@ static void __cdecl h_group_tick(void)
 
 // ---------------------------------------------------------------------------------------------
 // Enemy tactics, Hard and Legendary ([Game] BattleAI=1/2; field battles only, Normal = the game's own AI,
-// untouched). Changes how the computer plays, so in multiplayer only with MultiplayerFixes (every player
-// must then use the same level).
+// untouched). Changes how the computer plays: single player only (fix_on).
 // Steady mode: the game weighs both armies about every 100 steps (FUN_0047fc01: computer x 100 / human
 // - 100, the strength percentage) and in single player adds a random -10..+21 each time; above the
 // threshold (5) its groups run the attack rules, else the defence rules. Close to even, that switches
@@ -12430,7 +12446,7 @@ static void __cdecl h_setup_call(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Jitter fix ([Game] JitterFix=1, single player; multiplayer only with MultiplayerFixes=1).
+// Jitter fix ([Game] JitterFix=1, single player only).
 // 1. The mover FUN_0048f1dd throws a unit's whole path away when the next cell on it is taken by a
 //    friend (a groupmate that was moving when the path was searched, or any friend for the computer,
 //    whose units treat friends like terrain). With no path the unit heads straight at its goal, which is
@@ -12957,7 +12973,7 @@ static int __cdecl h_adj_enemy(int x, int y, int cell)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Phase 5: idle units engage ([Game] EngageFix=1; multiplayer only with MultiplayerFixes=1).
+// Phase 5: idle units engage ([Game] EngageFix=1; single player only).
 // An idle melee unit (state 5, not on Mop-Up) fought only an enemy that walked into it. Now, checked
 // every 8 steps, it goes for an enemy that is close by walking distance (2 cells, 3 for knights),
 // within its leash, with the anti-bait rules agreed with the user:
@@ -13257,7 +13273,7 @@ static void __cdecl h_melee(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Group routes against the "snake" ([Game] GroupMoveFix=1; multiplayer only with MultiplayerFixes=1).
+// Group routes against the "snake" ([Game] GroupMoveFix=1; single player only).
 // FUN_00489b8d(x, y, fig, group) gives each unit of an ordered group its formation slot; the unit then
 // walks straight at it and only looks for a way round once blocked, with a search that follows the
 // obstacle's edge, so a whole group strings out along a forest edge in single file. Now, when the
@@ -14393,7 +14409,7 @@ static void __cdecl h_castle_start(int county, int kind)
 	if (g_aiBuilding > 0 && g_aiBuilding < 6) {
 		g_aiStarts++;
 		BYTE *building = (BYTE *)(0x0057bf4d + g_aiBuilding * 0x160);
-		if (fix_on(g_fixCastleCap) && *building < 255) ++*building;
+		if (rule_on(RU_CASTLECAP, g_fixCastleCap) && *building < 255) ++*building;
 	}
 }
 
@@ -14410,7 +14426,7 @@ static wheat_scale_t o_wheat_scale;
 
 static int __cdecl h_wheat_scale(int county, int grain)
 {
-	if (!fix_on(g_fixWheat)) return o_wheat_scale(county, grain);
+	if (!rule_on(RU_WHEAT, g_fixWheat)) return o_wheat_scale(county, grain);
 	BYTE now = *(BYTE *)(0x0053fbb1 + county * 0x300), live = *(BYTE *)(0x0053fbb6 + county * 0x300);
 	int asWas = o_wheat_scale(county, grain);
 	if (now < live) grain = grain * (now * 100 / live) / 100; // the game's own percent steps (FUN_00404dc1, FUN_00404d6b)
@@ -14431,7 +14447,7 @@ static int __cdecl h_wheat_scale(int county, int grain)
 // ends, a share that runs short is made up from the other food at those rates (rounded up), as far as it
 // lasts, so the county eats its ration. At 0% or 100% the player chose one food: unchanged. As in Jen's
 // DLL only this second cut is changed; the first (before the game lowers the ration to what the shares
-// allow) is left as it is. Part of Jen With a B's Mods; off in multiplayer unless MultiplayerFixes=1.
+// allow) is left as it is. Part of Jen With a B's Mods; in a multiplayer game as the host decides (rule_on).
 static void ration_share(int haveCattle, int haveGrain, int needCattle, int needGrain, int cattlePct,
 	int cattleFood, int grainFood, int *cattle, int *grain)
 {
@@ -14452,7 +14468,7 @@ __attribute__((used)) void __cdecl l2hd_ration_step(const BYTE *frame)
 	int county = *(const int *)(frame + 8), c, g;
 	int haveCattle = *(int *)(0x0053fb34 + county * 0x300), haveGrain = *(int *)(0x0053fb30 + county * 0x300);
 	int needCattle = *(const int *)(frame - 4), needGrain = *(const int *)(frame - 0x2c);
-	int pct = fix_on(g_jenMods && g_fixRation) ? *(BYTE *)(0x0053fb0f + county * 0x300) : 0;
+	int pct = rule_on(RU_RATION, g_jenMods && g_fixRation) ? *(BYTE *)(0x0053fb0f + county * 0x300) : 0;
 	ration_share(haveCattle, haveGrain, needCattle, needGrain, pct, *(int *)0x00567594, *(int *)0x0057cb30, &c, &g);
 	static int logged;
 	if (logged < 5 && (c != min(haveCattle, needCattle) || g != min(haveGrain, needGrain)))
@@ -14614,7 +14630,7 @@ static void siege_unmark(const BYTE *saved)
 }
 static int marked_call(county_step_t f, unsigned a, int b)
 {
-	if (!fix_on(g_fixSiegeGarrison)) return f(a, b);
+	if (!rule_on(RU_SIEGE, g_fixSiegeGarrison)) return f(a, b);
 	BYTE saved[64];
 	int marked = siege_marks(saved), r = f(a, b);
 	if (marked) siege_unmark(saved);
@@ -14627,7 +14643,7 @@ static void __cdecl h_season_castles(void) { g_inUpgrade++; o_season_castles(); 
 
 static void __cdecl h_castle_enter(unsigned army, int county)
 {
-	if (fix_on(g_fixSiegeGarrison) && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
+	if (rule_on(RU_SIEGE, g_fixSiegeGarrison) && !g_inUpgrade && army > 0 && army < 0x97 && county > 0) {
 		if (county_besieged(county) && (unsigned)*(int *)(0x0053fb6c + county * 0x300) != army) {
 			*(BYTE *)(0x0052f200 + army * 0x1a4) = 1;   // as the full-castle branch leaves it
 			*(BYTE *)(0x0052f0ca + army * 0x1a4) = 2;
@@ -14664,6 +14680,48 @@ static DWORD crc_file(const char *path)
 	fclose(f);
 	return ~h;
 }
+// Multiplayer rules (see rule_on): tells our dplayx.dll who this player is (this ddraw.dll's CRC), which campaign
+// fixes it can run and, as a host would offer them, which it wants. Called for every window message; dplayx hears
+// only of a change. Without our dplayx (no LF_NetRulesSet) a multiplayer game plays the original rules.
+typedef void (WINAPI *RulesSetFn)(const char *, DWORD, DWORD);
+static void mp_rules_sync(void)
+{
+	static BOOL looked;
+	static RulesSetFn set;
+	static char id[24];
+	static DWORD lastCan = ~0u, lastWant = ~0u;
+	static int loggedGame = -1;
+	if (!looked) {
+		looked = TRUE;
+		HMODULE dp = GetModuleHandleA("dplayx.dll");
+		set = dp ? (RulesSetFn)GetProcAddress(dp, "LF_NetRulesSet") : NULL;
+		g_rulesGet = dp ? (RulesGetFn)GetProcAddress(dp, "LF_NetRulesGet") : NULL;
+		if (!set || !g_rulesGet) set = NULL, g_rulesGet = NULL;
+		char me[MAX_PATH];
+		snprintf(me, sizeof me, "%s\\ddraw.dll", g_gameDir);
+		snprintf(id, sizeof id, "Lords2 HD %08lx", (unsigned long)crc_file(me));
+		logf_("multiplayer rules: %s (id %s)", set ? "the host decides" : "dplayx.dll can't tell (not ours): the original rules in a multiplayer game", id);
+	}
+	if (set) {
+		DWORD can = (g_rationHooked ? 1u << RU_RATION : 0) | (g_canWheat ? 1u << RU_WHEAT : 0) |
+			(g_canCastleCap ? 1u << RU_CASTLECAP : 0) | (g_canSiege ? 1u << RU_SIEGE : 0);
+		DWORD want = !g_mpOffer ? 0 : ((g_jenMods && g_fixRation) ? 1u << RU_RATION : 0) | (g_fixWheat ? 1u << RU_WHEAT : 0) |
+			(g_fixCastleCap ? 1u << RU_CASTLECAP : 0) | (g_fixSiegeGarrison ? 1u << RU_SIEGE : 0);
+		if (can != lastCan || want != lastWant) set(id, can, want), lastCan = can, lastWant = want;
+	}
+	int game = *(int *)0x00553030 != 0;
+	if (game != loggedGame) {   // once as a multiplayer game starts: what it runs
+		loggedGame = game;
+		if (game) {
+			DWORD v = 0;
+			BOOL known = g_rulesGet && g_rulesGet(&v);
+			char s[160] = "";
+			for (int r = 0; r < RU_COUNT; r++) if (v >> r & 1) snprintf(s + strlen(s), sizeof s - strlen(s), "%s%s", s[0] ? ", " : "", kRuleName[r]);
+			logf_("multiplayer game: %s", !known ? "no rules from the host: the original rules" : v ? s : "the original rules (the host's choice, or a player without this patch)");
+		}
+	}
+}
+
 // dir = the session's folder, no trailing backslash; "" = none (MpLogs=0, or no dplayx.dll of ours)
 static void mp_session_start(char *dir, size_t size)
 {
@@ -14689,7 +14747,11 @@ static void mp_session_start(char *dir, size_t size)
 	// GameRanger always injects its GameRanger.dll into the game it launches (dplayx's gr_mode checks the same)
 	const char *conn = GetModuleHandleA("GameRanger.dll") ? "GameRanger" : "direct";
 	fprintf(f, "connection: %s\n", conn);
-	fprintf(f, "game fixes in this game: %s (MultiplayerFixes=%d)\n", g_mpFixes ? "on" : "off (multiplayer safe mode)", g_mpFixes);
+	DWORD rules = 0;
+	BOOL known = g_rulesGet && g_rulesGet(&rules);
+	fprintf(f, "game fixes in this game (the host decides): %s", !g_rulesGet ? "none (not our dplayx.dll: the original rules)" : !known ? "none (no rules from the host: the original rules)" : rules ? "" : "none (the original rules)");
+	for (int r = 0; known && r < RU_COUNT; r++) if (rules >> r & 1) fprintf(f, "%s%s", rules & ((1u << r) - 1) ? ", " : "", kRuleName[r]);
+	fprintf(f, " (MultiplayerFixes=%d)\n", g_mpOffer);
 	fprintf(f, "  MopUpFix=%d CastleCapFix=%d WheatFix=%d SiegeGarrisonFix=%d RunInBackground=%d\n",
 		g_fixMopUp, g_fixCastleCap, g_fixWheat, g_fixSiegeGarrison, g_runBackground);
 	fprintf(f, "this player: %d; game speed %d\n\n", *(int *)0x0057c8cc, *(int *)0x0053f230);
@@ -14750,19 +14812,19 @@ static void install_game_fixes(void)
 	static const BYTE kEnterPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C }; // push ebp; mov ebp,esp; sub esp,0Ch
 	static const BYTE kStep1C[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C }, kStep10[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x10 },
 		kStep18[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x18 }; // push ebp; mov ebp,esp; sub esp,n
-	if (!hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter) ||
-		!hook_code((BYTE *)0x004508de, kStep1C, sizeof kStep1C, h_season_castles, &o_season_castles) ||
-		!hook_code((BYTE *)0x0049f12f, kStep1C, sizeof kStep1C, h_ai_reinforce, &o_ai_reinforce) ||
-		!hook_code((BYTE *)0x004a07f2, kStep10, sizeof kStep10, h_ai_pick_castle, &o_ai_pick_castle) ||
-		!hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march))
-		g_fixSiegeGarrison = FALSE;
+	g_canSiege = hook_code((BYTE *)0x004a79a3, kEnterPrologue, sizeof kEnterPrologue, h_castle_enter, &o_castle_enter) &&
+		hook_code((BYTE *)0x004508de, kStep1C, sizeof kStep1C, h_season_castles, &o_season_castles) &&
+		hook_code((BYTE *)0x0049f12f, kStep1C, sizeof kStep1C, h_ai_reinforce, &o_ai_reinforce) &&
+		hook_code((BYTE *)0x004a07f2, kStep10, sizeof kStep10, h_ai_pick_castle, &o_ai_pick_castle) &&
+		hook_code((BYTE *)0x004a6270, kStep18, sizeof kStep18, h_ai_march, &o_ai_march);
+	if (!g_canSiege) g_fixSiegeGarrison = FALSE;
 	logf_("siege garrison fix %s", g_fixSiegeGarrison ? "on" : "off");
 	g_runBackground = GetPrivateProfileIntA("Game", "RunInBackground", 2, g_iniPath);
-	g_mpFixes = GetPrivateProfileIntA("Game", "MultiplayerFixes", 0, g_iniPath) != 0;
+	g_mpOffer = GetPrivateProfileIntA("Game", "MultiplayerFixes", 1, g_iniPath) != 0;
 	g_fixWheat =GetPrivateProfileIntA("Game", "WheatFix", 1, g_iniPath) != 0;
 	static const BYTE kWheatPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
-	if (!hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale))
-		g_fixWheat = FALSE;
+	g_canWheat = hook_code((BYTE *)0x0044d281, kWheatPrologue, sizeof kWheatPrologue, h_wheat_scale, &o_wheat_scale);
+	if (!g_canWheat) g_fixWheat = FALSE;
 	logf_("wheat fix %s", g_fixWheat ? "on" : "off");
 
 	// Jen With a B's Mods: their code goes in whatever the switches say (it does the game's own while off), so the
@@ -14820,9 +14882,9 @@ static void install_game_fixes(void)
 	g_fixCastleCap = GetPrivateProfileIntA("Game", "CastleCapFix", 1, g_iniPath) != 0;
 	static const BYTE kAiBuildPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 }; // push ebp; mov ebp,esp; sub esp,8
 	static const BYTE kCastlePrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x0C };  // push ebp; mov ebp,esp; sub esp,0Ch
-	if ((!hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) ||
-		!hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start)))
-		g_fixCastleCap = FALSE;
+	g_canCastleCap = hook_code((BYTE *)0x0049edc7, kAiBuildPrologue, sizeof kAiBuildPrologue, h_ai_build, &o_ai_build) &&
+		hook_code((BYTE *)0x00436d02, kCastlePrologue, sizeof kCastlePrologue, h_castle_start, &o_castle_start);
+	if (!g_canCastleCap) g_fixCastleCap = FALSE;
 	logf_("castle cap fix %s", g_fixCastleCap ? "on" : "off");
 
 	g_fixMopUp = GetPrivateProfileIntA("Game", "MopUpFix", 1, g_iniPath) != 0;

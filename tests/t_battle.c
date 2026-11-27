@@ -120,11 +120,9 @@ TEST(mopup_target_hook)
 	g_fixMopUp = FALSE;                         // off: the game's own pick
 	CHECK_EQ(h_target(), 77);
 	g_fixMopUp = TRUE;
-	MP_SESSION = 1;                             // multiplayer without MultiplayerFixes: the game's own
+	MP_SESSION = 1;                             // multiplayer: the game's own (battle fixes are single player only)
 	CHECK_EQ(h_target(), 77);
-	g_mpFixes = TRUE;
-	CHECK_EQ(h_target(), 2);
-	MP_SESSION = 0; g_mpFixes = FALSE;
+	MP_SESSION = 0;
 	g_dmFullThisStep = DM_FULL_PER_STEP;       // over this step's search cap: the game's quick pick
 	CHECK_EQ(h_target(), 77);
 	g_dmFullThisStep = 0;
@@ -982,11 +980,31 @@ TEST(fixes_stay_off_in_multiplayer)
 {
 	CHECK(fix_on(TRUE));
 	CHECK(!fix_on(FALSE));
-	MP_SESSION = 1;
+	MP_SESSION = 1;                             // the battle fixes and Enemy tactics: single player only
 	CHECK(!fix_on(TRUE));
-	g_mpFixes = TRUE;                           // every player set MultiplayerFixes=1
-	CHECK(fix_on(TRUE));
-	CHECK(!fix_on(FALSE));
+	MP_SESSION = 0;
+}
+
+// The campaign fixes in a multiplayer game: what the host decided (dplayx's LF_NetRulesGet), whatever this
+// player's own settings say; none without our dplayx or before the host's rules came.
+static DWORD t_rulesV;
+static int t_rulesHave;
+static int WINAPI t_rules_get(DWORD *v) { *v = t_rulesV; return t_rulesHave; }
+TEST(mp_rules_the_host_decides)
+{
+	CHECK(rule_on(RU_RATION, TRUE)); CHECK(!rule_on(RU_RATION, FALSE));   // single player: this player's settings
+	MP_SESSION = 1;
+	g_rulesGet = NULL;                          // the Windows DirectPlay or an older dplayx: the original rules
+	CHECK(!rule_on(RU_RATION, TRUE)); CHECK(!rule_on(RU_WHEAT, TRUE));
+	g_rulesGet = t_rules_get; t_rulesHave = 0; t_rulesV = ~0u;   // no rules from the host (yet)
+	CHECK(!rule_on(RU_RATION, TRUE));
+	t_rulesHave = 1; t_rulesV = 1u << RU_RATION | 1u << RU_SIEGE;  // the host's: ration and siege garrison
+	CHECK(rule_on(RU_RATION, FALSE));           // on here too, though this player switched it off
+	CHECK(rule_on(RU_SIEGE, FALSE));
+	CHECK(!rule_on(RU_WHEAT, TRUE)); CHECK(!rule_on(RU_CASTLECAP, TRUE));
+	t_rulesV = 0; CHECK(!rule_on(RU_SIEGE, TRUE));   // the original rules
+	MP_SESSION = 0; g_rulesGet = NULL;
+	CHECK(rule_on(RU_WHEAT, TRUE));
 }
 
 /* The fixes' hook sites with the code the patch expects there (the start of each game function). */
