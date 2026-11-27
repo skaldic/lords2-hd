@@ -128,12 +128,78 @@ def season_rgb(rgb, season):
         out = out * (1 - rest) + (cool * (1 - dust) + white * dust) * rest
     return np.clip(out, 0, 1)
 
-def recolour_sheet(b, season):
+# Where the ground is wet. Two sources, both inside the one tile (so nothing depends on the tile's neighbours):
+#  - the water in the tile: land within a few pixels of it is the bank, water within a few pixels of land is
+#    the river's edge (where ice forms first);
+#  - the open field's dark wet patches (t32_bat1 16-31 and 249-251: marsh or rough ground, dark with glints
+#    of water), whose edges are plain grass, so whatever is done inside them joins the tiles around.
+MARSH = {'t32_bat1': set(range(16, 32)) | {249, 250, 251}}
+
+def wet_maps(rgb, sheet, frame):
+    from scipy import ndimage
+    h, s, v, green, water, grey, leaf, straw = weights(rgb)
+    wm = water > 0.5
+    bank = np.zeros(rgb.shape[:2], np.float32); rim = np.zeros_like(bank); marsh = np.zeros_like(bank)
+    if wm.any() and not wm.all():
+        dl = ndimage.distance_transform_edt(~wm)           # land: 2x pixels to the nearest water
+        dw = ndimage.distance_transform_edt(wm)            # water: 2x pixels to the nearest land
+        bank = (1 - smooth(3.0, 14.0, dl)) * ~wm * green * (1 - leaf)
+        rim = (1 - smooth(1.0, 4.5, dw)) * wm                # narrow: water still blocks, so no stream may look frozen over
+    if frame in MARSH.get(sheet, ()):
+        dark = (1 - smooth(0.07, 0.16, v)) * lit_mask(v)
+        marsh = np.clip(ndimage.gaussian_filter(dark.astype(np.float32), 2.0, mode='nearest') * 1.6, 0, 1)
+    return bank, rim, marsh
+
+def lit_mask(v): return smooth(0.006, 0.02, v)
+
+def mud(L, base, lo=0.6, gain=1.5):
+    """earth with the original's texture: base colour scaled by the pixel's own brightness"""
+    return np.clip(np.asarray(base) * (lo + gain * L)[..., None], 0, 1)
+
+def wet_season(out, rgb, season, bank, rim, marsh):
+    """the season's look where it is wet, over the season's base colours"""
+    L = luma(rgb)
+    glint = smooth(0.35, 0.60, L) * marsh                  # the light specks in the marsh: standing water
+    if season == 'winter':
+        # banks: the snow broken by frozen mud, more mud in the grass's dark gaps; river edges: a rim of ice,
+        # the middle stays open; marsh: frozen puddles (pale ice) in the middle, mud round them
+        m = bank * (0.55 + 0.45 * (1 - smooth(0.15, 0.30, L)))
+        out = mix(out, mud(L, [0.30, 0.25, 0.20]), m)
+        ice = np.clip(np.array([0.74, 0.80, 0.86]) * (0.82 + 0.5 * L)[..., None], 0, 1)
+        out = mix(out, ice, rim * 0.75)
+        core = smooth(0.75, 0.98, marsh)
+        out = mix(out, mud(L, [0.26, 0.22, 0.18]), marsh * (1 - core))
+        frozen = np.clip(np.array([0.48, 0.54, 0.60]) * (0.75 + 2.2 * L)[..., None], 0, 1)   # dark ice, the patch's texture showing
+        out = mix(out, mix(frozen, np.array([0.92, 0.95, 1.0]) + 0 * out, glint), core * 0.85)
+    elif season == 'autumn':
+        # banks: damp grass that stays greener, a strip of wet earth at the water; marsh: dark mud, the water
+        # in it catching the light
+        out = mix(out, rgb * np.array([0.92, 1.0, 0.85]), bank * smooth(0.25, 0.6, bank) * 0.75)
+        out = mix(out, mud(L, [0.27, 0.21, 0.14]), smooth(0.70, 0.95, bank))
+        out = mix(out, mud(L, [0.20, 0.16, 0.10], 0.5, 1.2), marsh)
+        out = mix(out, np.array([0.45, 0.50, 0.48]) * (0.6 + L)[..., None], glint)
+    elif season == 'spring':
+        # banks: lush, deeper green, then wet mud right at the water (meltwater); marsh: brown puddles
+        lush = from_hsv(*hsv_tuple(rgb, hue=96, sat=1.05, val=1.12))
+        out = mix(out, lush, bank * 0.7)
+        out = mix(out, mud(L, [0.24, 0.19, 0.13]), smooth(0.80, 0.98, bank))
+        core = smooth(0.50, 0.90, marsh)
+        out = mix(out, mud(L, [0.22, 0.18, 0.12]), marsh * (1 - core))
+        out = mix(out, np.array([0.16, 0.18, 0.15]) * (0.7 + 2.5 * L)[..., None], core * 0.6)
+        out = mix(out, np.array([0.55, 0.60, 0.55]) * (0.6 + L)[..., None], glint)
+    return np.clip(out, 0, 1)
+
+def hsv_tuple(rgb, hue, sat, val):
+    h, s, v = hsv(rgb)
+    return h + (hue - h) * 0.3, np.clip(s * sat, 0, 1), np.clip(v * val, 0, 1)
+
+def recolour_sheet(b, season, sheet=''):
     out = bytearray(b)
-    for _, w, h, p in frames(b):
+    for frame, w, h, p in frames(b):
         px = np.frombuffer(b, np.uint8, w * h * 16, p).reshape(2 * h, 2 * w, 4)
         rgb = px[..., 2::-1].astype(np.float32) / 255
         new = season_rgb(rgb, season)
+        new = wet_season(new, rgb, season, *wet_maps(rgb, sheet, frame))
         o = px.copy()
         o[..., 2::-1] = np.round(new * 255).astype(np.uint8)
         out[p:p + w * h * 16] = o.tobytes()
@@ -175,7 +241,7 @@ def main():
     for n, b in sheets.items():
         made = {'summer': b}
         for season in SEASONS:
-            out = recolour_sheet(b, season)
+            out = recolour_sheet(b, season, n)
             check_same_frames(b, out)
             with open(os.path.join(dst, '%s_%s.bin' % (n, season)), 'wb') as f: f.write(out)
             made[season] = out
