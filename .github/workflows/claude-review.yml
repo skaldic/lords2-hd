@@ -1,9 +1,12 @@
 # Claude reviews every pull request and posts one comment with all its findings (no inline comments).
 # On each new push it reviews again, posts a new comment and hides the previous one as outdated.
 # Advisory only: it is not a required check, and a human code owner still approves the merge.
-# Needs, once per repo: the Claude GitHub App (https://github.com/apps/claude) and the secret
-# CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`). Until the secret exists the job skips itself.
-# To review again without a new push, re-run the workflow from the PR's Checks tab.
+# Needs, once per repo, the secret CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`). Until it exists
+# the job skips itself. To review again without a new push, re-run the workflow from the PR's Checks tab.
+# It comments with the workflow's own token (as github-actions), not the Claude GitHub App's: the App's
+# token is only handed out when this file is the same as on main, so a PR that changes this file would
+# skip its own review (that is why PR #17's runs passed without a review).
+# If Claude fails, "Show why Claude failed" prints its error (only the final result, no tool output).
 name: Claude review
 
 on:
@@ -26,8 +29,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: read
-      id-token: write
+      issues: write
     steps:
       - name: Check for the token
         id: token
@@ -43,9 +45,11 @@ jobs:
           fetch-depth: 1
 
       - uses: anthropics/claude-code-action@v1
+        id: claude
         if: steps.token.outputs.ok == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -81,6 +85,16 @@ jobs:
             - or, if there are none, one line saying that you found nothing that needs changing.
           claude_args: |
             --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
+
+      # The action hides Claude's messages, so a failed run says only "is_error:true". Print the final
+      # result's text (for example a usage limit or an invalid token), never the tool results.
+      - name: Show why Claude failed
+        if: failure() && steps.claude.outputs.execution_file != ''
+        env:
+          FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          jq -r '[.[] | select(.type == "result")] | last | "result: \(.subtype), error: \(.is_error)\n\((.result // "") | tostring | .[0:1000])\n\((.errors // []) | tostring | .[0:1000])"' "$FILE" || true
+          jq -r '.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text | .[0:500]' "$FILE" | head -n 20 || true
 
   # After a new review is posted, hide the older review comments on this PR as outdated
   hide-old:
