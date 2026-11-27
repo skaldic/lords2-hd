@@ -87,6 +87,12 @@ def weights(rgb):
     straw = smooth(18, 26, h) * (1 - smooth(50, 58, h)) * smooth(0.35, 0.55, s) * smooth(0.45, 0.70, v) * (1 - green)
     return h, s, v, green, water, grey, leaf, straw
 
+def thatch_mask(h, s, v, green, straw):
+    """thatch, lit and shaded: the straw mask plus the roofs' shaded half, a deep saturated tan (hue 31-42,
+    saturation 0.78-0.97); earth patches are duller (0.52-0.68) and redder, the stakes' dark sides darker"""
+    shaded = smooth(29, 33, h) * (1 - smooth(42, 48, h)) * smooth(0.68, 0.78, s) * smooth(0.25, 0.38, v) * (1 - green)
+    return np.maximum(straw, shaded)
+
 def mix(a, b, w): return a * (1 - w[..., None]) + b * w[..., None]
 
 def season_rgb(rgb, season):
@@ -114,8 +120,12 @@ def season_rgb(rgb, season):
         # snow on the grass, its brightness following the grass's (its shading stays); the woods stay dark
         # and blue-grey under the trees, snow on the sunlit tops of the leaves
         cold = np.array([0.70, 0.77, 0.90]); white = np.array([0.95, 0.97, 1.0])
-        # gain 1.1: more made the grass tiles' small differences in brightness show as bands in the snow
-        k = np.clip(0.70 + 1.1 * (L - 0.12), 0.45, 1.0) * (1 - 0.12 * leaf)
+        # gain 1.1: more made the grass tiles' small differences in brightness show as bands in the snow; and
+        # each tile's snow is evened out to the open field's mean grass brightness (0.199; tiles differ by ~0.017,
+        # which on white showed every tile with a hut or a rock on it as a square of another white)
+        g = (green > 0.8) & (leaf < 0.2)
+        shift = float(np.clip(0.199 - L[g].mean(), -0.04, 0.04)) * float(smooth(0.05, 0.25, g.mean())) if g.any() else 0.0
+        k = np.clip(0.70 + 1.1 * (L + shift - 0.12), 0.45, 1.0) * (1 - 0.12 * leaf)
         t = smooth(0.55, 0.95, k)[..., None]
         snow = k[..., None] * (cold * (1 - t) + white * t)
         shade = np.array([0.30, 0.36, 0.45]) * (0.55 + 2.2 * v)[..., None] + rgb * 0.25
@@ -124,8 +134,15 @@ def season_rgb(rgb, season):
         # stone, rock, wood and thatch: colder, with snow on the brightest (sunlit, upward) faces
         rest = (1 - green - water)[..., None]
         cool = rgb * np.array([0.94, 0.97, 1.03])
-        dust = np.maximum(smooth(0.50, 0.80, L) * (0.35 + 0.35 * grey), 0.70 * straw)[..., None]
+        dust = (smooth(0.50, 0.80, L) * (0.35 + 0.35 * grey))[..., None]
         out = out * (1 - rest) + (cool * (1 - dust) + white * dust) * rest
+        # thatch roofs: snow over the whole roof, its own shading kept (the straw mask alone missed the shaded
+        # half of a hut's roof, which left the roofs half white, half brown)
+        roof = thatch_mask(h, s, v, green, straw)
+        if roof.any():
+            kr = np.clip(0.40 + 0.95 * L, 0.35, 1.0)
+            tr = smooth(0.55, 0.95, kr)[..., None]
+            out = mix(out, kr[..., None] * (cold * (1 - tr) + white * tr), 0.85 * roof)
     return np.clip(out, 0, 1)
 
 # Where the ground is wet. Two sources, both inside the one tile (so nothing depends on the tile's neighbours):
