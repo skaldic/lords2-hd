@@ -1,8 +1,8 @@
-Lords of the Realm II HD 1.6.0: an unofficial fan patch for the GOG and Steam versions of the game.
+Lords of the Realm II HD 1.7.0: an unofficial fan patch for the GOG and Steam versions of the game.
 You need your own copy of the game.
 
 INSTALL
-Run Lords2-HD-1.6.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
+Run Lords2-HD-1.7.0-setup.exe with the game closed: it finds the GOG or Steam game (or asks for the
 folder holding Lords2.exe). From the zip instead: unzip everything into the game's folder, so that
 ddraw.dll, dplayx.dll, lords2hd.ini and lords2hd.pak sit next to Lords2.exe. Then start the game as usual.
 
@@ -53,6 +53,21 @@ ENEMY TACTICS (BattleAI, F10 Battles; not a fix but a choice): Normal (the game'
 (the computer keeps to attack or defence, keeps its archers behind its soldiers, charges together and
 storms a bridge you hold together), Legendary (Hard plus picked targets, regrouping and unit counters
 for both sides). See the README on GitHub for the full rules.
+
+NEW IN 1.7.0
+- Jen With a B's Mods (from Lords II Mod Manager by Jen With a B, built into the patch): F11 or Mods
+  on the menu bar. Fixes: the food ration exploit, multiplayer messages that closed by themselves,
+  Esc twice in 4:3. Mods (all at the original game's values until you change them): fields wrecked
+  by weather, pillaging, castle doors, field reclaim, castle garrisons, the map a siege is fought on,
+  uncapped game speed, the Black Death, a population target, resources, army size and scaled army
+  icons, each unit's stats and costs ([Units]). Switch: JenMods (F10, Quality of life)
+- Multiplayer: internet games on the mod's lobby server; the host decides the campaign fixes
+  (HostOffersFixes); 1.6.0 and 1.7.0 players can't play together
+- Enemy tactics: every computer lord's army fights (lords 3 to 5 stood still on Hard and Legendary),
+  and a lord that marched on you on the campaign map attacks in the battle
+- Games with the CD's folder layout (Base01.256 in a PL8 folder) no longer get a black F10 scroll;
+  game folders with names outside Windows' language work; the county map stays zoomed out while a
+  letter is up
 
 NEW IN 1.6.0
 - Enemy tactics: Hard and Legendary (above)
@@ -109,7 +124,8 @@ SETTINGS
 Press F10 in the game for the settings panel (four tabs: Display, Performance, Quality of life and
 Battles; Tab switches them; a right-click closes it): most changes apply at once and are saved, the
 battle fixes from the next battle. F8 is the
-game's own key again. Ctrl+F10 switches the FPS counter. Or edit lords2hd.ini:
+game's own key again. Ctrl+F10 switches the FPS counter. F11 (or Mods on the menu bar) opens Jen With a
+B's Mods. Or edit lords2hd.ini:
 Enabled=0       the stock game
 Fullscreen=0    a window; WindowScale sets its size, or WindowHeight its height in pixels
 Wide=0          4:3 instead of widescreen
