@@ -14684,6 +14684,17 @@ static DWORD crc_file(const char *path)
 // fixes it can run and, as a host would offer them, which it wants. Called for every window message; dplayx hears
 // only of a change. Without our dplayx (no LF_NetRulesSet) a multiplayer game plays the original rules.
 typedef void (WINAPI *RulesSetFn)(const char *, DWORD, DWORD);
+// The id dplayx compares between players: "Lords2 HD <crc of this ddraw.dll>". FALSE (id left empty) when the file
+// can't be read: then no id is sent and the game plays the original rules.
+static BOOL mp_rules_id(char *id, size_t size, const char *path)
+{
+	DWORD crc = path && path[0] ? crc_file(path) : 0;
+	id[0] = 0;
+	if (!crc) return FALSE;
+	snprintf(id, size, "Lords2 HD %08lx", (unsigned long)crc);
+	return TRUE;
+}
+
 static void mp_rules_sync(void)
 {
 	static BOOL looked;
@@ -14702,8 +14713,8 @@ static void mp_rules_sync(void)
 		char me[MAX_PATH] = "";
 		HMODULE self = NULL;
 		GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&mp_rules_sync, &self);
-		DWORD crc = self && GetModuleFileNameA(self, me, sizeof me) ? crc_file(me) : 0;
-		if (crc) snprintf(id, sizeof id, "Lords2 HD %08lx", (unsigned long)crc);
+		if (self) GetModuleFileNameA(self, me, sizeof me);
+		BOOL crc = mp_rules_id(id, sizeof id, me);
 		if (!crc) set = NULL, logf_("multiplayer rules: can't read %s - the original rules in a multiplayer game", me[0] ? me : "ddraw.dll");
 		else logf_("multiplayer rules: %s (id %s)", set ? "the host decides" : "dplayx.dll can't tell (not ours): the original rules in a multiplayer game", id);
 	}

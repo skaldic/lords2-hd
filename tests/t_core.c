@@ -697,6 +697,20 @@ TEST(crc32_known_values)
 	CHECK_EQ(crc_file(p), 0u);
 }
 
+TEST(mp_rules_id_from_the_dll_file)
+{
+	char id[24], p[MAX_PATH];
+	t_write("c.bin", "123456789", 9);
+	t_path(p, sizeof p, "c.bin");
+	CHECK(mp_rules_id(id, sizeof id, p));
+	CHECK(!strcmp(id, "Lords2 HD cbf43926"));                  // fits the 24 bytes dplayx keeps, with its 0
+	t_path(p, sizeof p, "missing.bin");                         // can't be read: no id, the original rules
+	CHECK(!mp_rules_id(id, sizeof id, p));
+	CHECK_EQ(id[0], 0);
+	CHECK(!mp_rules_id(id, sizeof id, ""));
+	CHECK(!mp_rules_id(id, sizeof id, NULL));
+}
+
 /* ================================ small helpers */
 
 TEST(chebyshev_distance)

@@ -1904,7 +1904,7 @@ int main(int argc, char **argv)
         RSET rset = (RSET)GetProcAddress(m, "LF_NetRulesSet");
         RGET rget = (RGET)GetProcAddress(m, "LF_NetRulesGet");
         NAME_ nm = {sizeof nm, 0, "host43", NULL};
-        DWORD me43 = 0, alone = 0, a1 = 0, b1 = 0, b2 = 0, c1 = 0, c2 = 0, w1 = 0, s1 = 0, s1lk = 0, lk = 0, after = 0, j1 = 0, j2 = 0, id43 = 0, hostv = 0;
+        DWORD me43 = 0, alone = 0, a1 = 0, b1 = 0, b2 = 0, c1 = 0, c2 = 0, w1 = 0, s1 = 0, s1lk = 0, d1 = 0, l1 = 0, l1lk = 0, lk = 0, after = 0, j1 = 0, j2 = 0, id43 = 0, hostv = 0;
         int have_alone = 0, len = 0, mark = 0, ty, none = 0, jhave = 0, sdata = 0, k43;
         SOCKET ja = INVALID_SOCKET, jb = INVALID_SOCKET, jc = INVALID_SOCKET;
         BYTE ib[128];
@@ -1951,6 +1951,24 @@ int main(int argc, char **argv)
                 rget(&after);
             }
             ((CLOSE)dp->vt[4])(dp);
+            {   /* the backup: the session locks with no start message seen; frozen there, sent with locked = 1 */
+                SOCKET jd = INVALID_SOCKET;
+                DWORD me2 = 0;
+                NAME_ n2 = {sizeof n2, 0, "host43b", NULL};
+                rset("L2HD test 1", 0x0f, 0x0b);
+                ((OPEN)dp->vt[24])(dp, &sd, 2);
+                ((CPL)dp->vt[6])(dp, &me2, &n2, NULL, NULL, 0, 0);
+                hello_len(proto, ib, sizeof ib, &len, &jd);
+                send_caps(jd, "L2HD test 1", 0x0f);
+                make_player(jd, "d43");
+                d1 = next_rules(jd);
+                g43_locked = 0;
+                ((SETSD)dp->vt[31])(dp, &sd, 0);
+                l1 = next_rules(jd);
+                l1lk = g43_locked;
+                closesocket(jd);
+                ((CLOSE)dp->vt[4])(dp);
+            }
             {   /* joiner side: our T_CAPS goes to a host with the marker, its T_RULES comes back */
                 SOCKET l = socket(AF_INET, SOCK_STREAM, 0);
                 struct sockaddr_in a;
@@ -1978,10 +1996,10 @@ int main(int argc, char **argv)
                 if (keephost[0]) _putenv(keephost); else _putenv("LOTR2NET_HOST=");
             }
             rset(NULL, 0, 0);
-            sprintf(buf, "no session %d; host alone %d %02lx (want 0b); INFO marker %d; A %02lx (03), old joiner B %02lx (00), B gone %02lx (03), other build C %02lx (00), C gone %02lx (03), host settings %02lx (01); start: rules %02lx locked %lu then the message %d; locked %02lx and after A left %02lx (01); joiner: caps '%s' %02lx (06), rules %d %02lx (05), for the game %02lx (07)",
-                    none, have_alone, alone, mark, a1, b1, b2, c1, c2, w1, s1, (unsigned long)s1lk, sdata, lk, after, g43_id, g43_can, jhave, j1, j2);
+            sprintf(buf, "no session %d; host alone %d %02lx (want 0b); INFO marker %d; A %02lx (03), old joiner B %02lx (00), B gone %02lx (03), other build C %02lx (00), C gone %02lx (03), host settings %02lx (01); start: rules %02lx locked %lu then the message %d; locked %02lx and after A left %02lx (01); lock only: %02lx then %02lx locked %lu (0b, 0b 1); joiner: caps '%s' %02lx (06), rules %d %02lx (05), for the game %02lx (07)",
+                    none, have_alone, alone, mark, a1, b1, b2, c1, c2, w1, s1, (unsigned long)s1lk, sdata, lk, after, d1, l1, (unsigned long)l1lk, g43_id, g43_can, jhave, j1, j2);
             result("T43 the host decides the game's fixes", none && hr == 0 && have_alone && alone == 0x0b && mark && a1 == 0x03 && b1 == 0 && b2 == 0x03 &&
-                   c1 == 0 && c2 == 0x03 && w1 == 0x01 && s1 == 0x01 && s1lk == 1 && sdata && lk == 0x01 && after == 0x01 &&
+                   c1 == 0 && c2 == 0x03 && w1 == 0x01 && s1 == 0x01 && s1lk == 1 && sdata && lk == 0x01 && after == 0x01 && d1 == 0x0b && l1 == 0x0b && l1lk == 1 &&
                    !strcmp(g43_id, "L2HD test 1") && g43_can == 0x06 && jhave && j1 == 0x05 && j2 == 0x07, buf);
         }
     }
