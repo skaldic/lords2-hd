@@ -2239,19 +2239,24 @@ static void seasons_rebind(void)
 // over summer grass baked into the art (59-61 near-black greys, 116/176/177 dark greens: the pixels that
 // border the 63s in the unit sheets), which showed as a green-black rim on snow: they count as shadow too.
 // Only a shadow pixel that touches transparency or more shadow on 3 sides counts, so dark spots and
-// outlines inside a figure stay solid.
+// outlines inside a figure stay solid; one that touches such a shadow pixel and is near-black in all its
+// HD pixels joins it (a notch or a thin bridge between figure and shadow). The HD art's shadow also runs
+// a little past the 1x mask, into the figure pixels next to it: their near-black HD pixels on the side
+// facing a shadow pixel darken the ground too (troop_shade; a figure pixel brighter than that never does).
+// Over 25 unit sheets this took away about 3/4 of the dark specks left round the shadows.
 // The ground under a shadow: during a battlefield redraw every stamp is checked against the finished frame
 // (bt_flush), where the troop already covers its cell's ground, so the ground's stamp fails exactly there.
 // With soft shadows a ground stamp also writes its HD pixels where the frame no longer shows it (and no
 // valid pixel is there), marking them in g_btGnd (1: "the layer holds this cell's ground here"). A troop's
 // shadow pixel darkens such ground once (mark 2); a pixel already darkened is left so, so a troop standing
-// still never darkens the same ground twice. Anything else stamped there takes the mark away; the cell's
-// next redraw clears it with the rest.
+// still never darkens the same ground twice. A figure pixel with part of it darkened ground is mark 3: a
+// later stamp of it redraws only its figure part. Anything else stamped there takes the mark away; the
+// cell's next redraw clears it with the rest.
 #define SHADOW_IDX 63
 static const BYTE g_shadowIdx[256] = { [59] = 1, [60] = 1, [61] = 1, [63] = 1, [116] = 1, [176] = 1, [177] = 1 };
 enum { BT_OTHER, BT_GROUND, BT_TROOP }; // what a stamp is, for soft shadows (stamp_kind)
 static int g_shMul[3]; // b, g, r of 256, for the troops being stamped (stamp_kind)
-static BYTE *g_btGnd;  // per frame pixel, with soft shadows: 1 the battle layer holds the ground there, 2 that ground darkened
+static BYTE *g_btGnd;  // per frame pixel, with soft shadows: 1 the battle layer holds the ground there, 2 that ground darkened, 3 partly
 static int stamp_kind(const char *setName)
 {
 	if (!g_softShadows || !IN_BATTLE_NOW() || g_ownScroll) return BT_OTHER;
@@ -2269,7 +2274,7 @@ static int stamp_kind(const char *setName)
 	memcpy(g_shMul, mul[k], sizeof g_shMul);
 	return BT_TROOP;
 }
-static BOOL shadow_px(const BYTE *idx, int w, int h, int r, int c)
+static BOOL shadow_core(const BYTE *idx, int w, int h, int r, int c)
 {
 	const BYTE *p = idx + r * w + c;
 	if (!g_shadowIdx[*p]) return FALSE;
@@ -2278,21 +2283,51 @@ static BOOL shadow_px(const BYTE *idx, int w, int h, int r, int c)
 #undef SH_OPEN
 	return n >= 3;
 }
+#define SH_FULL 16
+static int lum_px(DWORD q) { return ((q >> 16 & 0xff) * 77 + (q >> 8 & 0xff) * 150 + (q & 0xff) * 29) >> 8; }
+// A troop pixel's soft shadow (above): SH_FULL the whole pixel is shadow, else a mask of its HD pixels
+// (bit k: h0[0], h0[1], h1[0], h1[1]) that are the shadow running past the 1x mask, 0 none.
+static int troop_shade(const BYTE *idx, const DWORD *hd, int w, int h, int r, int c)
+{
+	const BYTE *p = idx + r * w + c;
+	const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
+	const DWORD q[4] = { h0[0], h0[1], h1[0], h1[1] };
+	if (g_shadowIdx[*p]) {
+		if (shadow_core(idx, w, h, r, c)) return SH_FULL;
+		if (lum_px(q[0]) < 32 && lum_px(q[1]) < 32 && lum_px(q[2]) < 32 && lum_px(q[3]) < 32 &&
+			((c > 0 && shadow_core(idx, w, h, r, c - 1)) || (c < w - 1 && shadow_core(idx, w, h, r, c + 1)) ||
+			 (r > 0 && shadow_core(idx, w, h, r - 1, c)) || (r < h - 1 && shadow_core(idx, w, h, r + 1, c))))
+			return SH_FULL;
+	}
+	int m = 0;
+	for (int k = 0; k < 4; k++) {
+		if (lum_px(q[k]) >= 28) continue;
+		int ch = c + (k & 1 ? 1 : -1), rv = r + (k & 2 ? 1 : -1); // its neighbours on the side it faces
+		if ((ch >= 0 && ch < w && shadow_core(idx, w, h, r, ch)) || (rv >= 0 && rv < h && shadow_core(idx, w, h, rv, c))) m |= 1 << k;
+	}
+	return m;
+}
 static DWORD shade_px(DWORD g)
 {
 	DWORD b = (g & 0xff) * g_shMul[0] >> 8, gg = (g >> 8 & 0xff) * g_shMul[1] >> 8, r = (g >> 16 & 0xff) * g_shMul[2] >> 8;
 	return (g & 0xff000000) | min(r, 255) << 16 | min(gg, 255) << 8 | min(b, 255);
 }
 // One frame pixel f of the battle layer from a stamp: v its 1x value, h0/h1 its two 2x rows, match whether
-// the frame shows it, kind the stamp's (stamp_kind), shadow whether it is a troop's shadow pixel.
-static void bt_put(int f, BYTE v, const DWORD *h0, const DWORD *h1, BOOL match, int kind, BOOL shadow)
+// the frame shows it, kind the stamp's (stamp_kind), sh for a troop's pixel its troop_shade.
+static void bt_put(int f, BYTE v, const DWORD *h0, const DWORD *h1, BOOL match, int kind, int sh)
 {
 	DWORD *p = g_btLayer + (size_t)f * 4;
 	if (!match) { // covered already: only the ground is kept, for a shadow to darken
 		if (kind == BT_GROUND && !g_btValid[f]) { p[0] = h0[0]; p[1] = h0[1]; p[2] = h1[0]; p[3] = h1[1]; g_btGnd[f] = 1; }
 		return;
 	}
-	if (kind == BT_TROOP && shadow) {
+	if (kind == BT_TROOP && sh && sh != SH_FULL && (g_btGnd[f] == 1 || (g_btGnd[f] == 3 && g_btValid[f]))) { // partly shadow
+		const DWORD q[4] = { h0[0], h0[1], h1[0], h1[1] };
+		for (int k = 0; k < 4; k++) p[k] = !(sh >> k & 1) ? q[k] : g_btGnd[f] == 1 ? shade_px(p[k]) : p[k];
+		g_btShadow[f] = v; g_btValid[f] = 1; g_btGnd[f] = 3;
+		return;
+	}
+	if (kind == BT_TROOP && sh == SH_FULL) {
 		if (g_btGnd[f] == 1) {
 			for (int k = 0; k < 4; k++) p[k] = shade_px(p[k]);
 			g_btShadow[f] = v; g_btValid[f] = 1; g_btGnd[f] = 2;
@@ -2340,7 +2375,7 @@ static void bt_apply(const bt_job *j, int r0, int r1)
 				continue;
 			}
 			bt_put(fy * g_frameW + fx, v, h0row + 2 * c, h1row + 2 * c, row[fx] == v, j->kind,
-				j->kind == BT_TROOP && g_shadowIdx[v] && shadow_px(j->idx, w, j->h, r, c));
+				j->kind == BT_TROOP && row[fx] == v ? troop_shade(j->idx, j->hd, w, j->h, r, c) : 0);
 		}
 	}
 }
@@ -2481,7 +2516,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 				if (!v || fx < 0 || fx >= g_frameW) continue;
 				const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
 				if (kind != BT_OTHER) { // soft shadows: the ground kept, troops' shadows darken it (bt_put)
-					bt_put(fy * g_frameW + fx, v, h0, h1, row[fx] == v, kind, kind == BT_TROOP && g_shadowIdx[v] && shadow_px(idx, w, h, r, c));
+					bt_put(fy * g_frameW + fx, v, h0, h1, row[fx] == v, kind, kind == BT_TROOP && row[fx] == v ? troop_shade(idx, hd, w, h, r, c) : 0);
 					continue;
 				}
 				if (row[fx] != v) continue;
@@ -2517,7 +2552,7 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			if (!v || fx < 0 || fx >= g_back->w || row[fx] != v) continue;
 			const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
 			DWORD *o0 = g_sprLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
-			if (kind == BT_TROOP && v == SHADOW_IDX && g_sprValid[fy * MAX_W + fx] && shadow_px(idx, w, h, r, c)) { // soft shadow over the ground (stamped at once here, so it is there)
+			if (kind == BT_TROOP && g_shadowIdx[v] && g_sprValid[fy * MAX_W + fx] && troop_shade(idx, hd, w, h, r, c) == SH_FULL) { // soft shadow over the ground (stamped at once here, so it is there)
 				if (g_sprShadow[fy * MAX_W + fx] != SHADOW_IDX) {
 					o0[0] = shade_px(o0[0]); o0[1] = shade_px(o0[1]); o1[0] = shade_px(o1[0]); o1[1] = shade_px(o1[1]);
 					g_sprShadow[fy * MAX_W + fx] = SHADOW_IDX;
