@@ -4,11 +4,27 @@ An unofficial fan patch for the GOG and Steam versions of **Lords of the Realm I
 modern widescreen monitor, shows the game's art and videos at double detail, and fixes how battles
 play. You need your own copy of the game; the patch changes none of its files.
 
-Current version: **1.6.0** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
-[Watch what's new (67 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.6.0.mp4) ·
+Current version: **1.7.0** · [Download](https://github.com/skaldic/lords2-hd/releases/latest) ·
+[Watch 1.6.0's new features (67 s)](https://github.com/skaldic/lords2-hd/releases/latest/download/lords2hd-1.6.0.mp4) ·
 [Community Discord](https://discord.gg/uBzaMGjUR)
 
 ![The armoury, widened](https://github.com/skaldic/lords2-hd/releases/latest/download/armoury.jpg)
+
+## New in 1.7.0
+
+- **Jen With a B's Mods**: Jen With a B's Lords II Mod Manager, built into the patch with Jen's
+  consent, so one `ddraw.dll` does it all. Open it with F11 or Mods on the menu bar. It has fixes (the
+  food ration exploit, multiplayer messages that closed by themselves, Esc twice in 4:3) and mods for
+  fields, pillaging, castle doors and garrisons, siege maps, game speed, the Black Death, population,
+  resources, army size and each unit's stats and costs. Every mod starts at the original game's value;
+  see [Settings](#settings).
+- **Internet games**: host or join a game listed on the mod's lobby server, with no address and no
+  port forward. The host decides the campaign fixes; see [Multiplayer](#multiplayer). 1.6.0 and
+  1.7.0 players can't play together.
+- **Enemy tactics**: on Hard and Legendary every computer lord's army fights (in a campaign, lords 3
+  to 5 used to stand still), and a lord that marched on you on the campaign map attacks in the battle.
+- Games installed with the CD's folder layout no longer get a black F10 scroll, and the county map
+  stays zoomed out while a letter is up.
 
 ## New in 1.6.0
 
@@ -181,7 +197,7 @@ game's own multiplayer desyncs. Every player needs the same `dplayx.dll`.
 
 ## Install
 
-Download `Lords2-HD-1.6.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
+Download `Lords2-HD-1.7.0-setup.exe` from the [releases page](https://github.com/skaldic/lords2-hd/releases)
 and run it with the game closed. It finds the GOG or Steam game by itself (or asks for the folder
 holding `Lords2.exe`), adds the patch, and leaves the game's own files alone. Uninstall it from
 Windows' Apps list. Windows may warn that the publisher is unknown: the installer is not code-signed.
@@ -195,7 +211,7 @@ these replace them.
 back to the 1.5.0 defaults once (widescreen, the battle fixes and the sharper videos on); the old
 ones are kept as `lords2hd-before-1.5.0.ini` beside it. Later updates keep your settings.
 
-Rather unzip by hand? `Lords2-HD-1.6.0.zip` holds the same files: unzip it into the game's folder,
+Rather unzip by hand? `Lords2-HD-1.7.0.zip` holds the same files: unzip it into the game's folder,
 replacing the old files (`lords2hd.ini` too, for the new defaults).
 
 ## Videos and music
