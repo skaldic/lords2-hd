@@ -11259,7 +11259,26 @@ static int g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_btwitch, g_bstate1, g
 static int g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bshots, g_bstepback, g_bplanned;
 static int g_bsupport;   // archers' shots turned to back up a fight (h_pick)
 static int g_bfire;      // computer units sent out of burning oil (fire_step)
-static int g_bshotsBy[3];   // shots in the last second by side
+// A battle side is the army's lord number (a byte): you are 1, the computer lords 2-5 in a campaign, and a
+// custom battle uses 1 and 2. Everything kept per side is sized for any byte, so no side is ever left out:
+// with room for sides 1 and 2 only, a campaign battle against lord 5 skipped that side's melee AI and its
+// army stood still (the user's Legendary battle in save 7).
+#define AI_SIDES 256
+// The two sides on the field (the lower number first; 1 and 2 when there is no one).
+static void battle_sides(int *a, int *b)
+{
+	*a = *b = 0;
+	for (int i = 1; i < 0x51; i++) {
+		int s = FIG(i)[0x2c];
+		if (!s || s == *a || s == *b) continue;
+		if (!*a || s < *a) { *b = *a; *a = s; }
+		else if (!*b || s < *b) *b = s;
+	}
+	if (!*a) *a = 1;
+	if (!*b) *b = *a == 2 ? 1 : 2;
+	if (*b < *a) { int t = *a; *a = *b; *b = t; }
+}
+static int g_bshotsBy[AI_SIDES];   // shots in the last second by side
 static LONGLONG g_bcpuLoop;   // time in the figure loop (all units' logic, with the patch's hooks)
 static LONGLONG g_bcpuBfs;    // of which in the patch's walking-distance searches
 
@@ -11458,10 +11477,11 @@ static BOOL ai_archer_cover(const fig_snap *n, int side, ai_cover *c)
 
 static void battle_second(const fig_snap *n)
 {
-	int alive[3] = { 0 }, moving = 0, waiting = 0, idle = 0, chasing = 0, melee = 0;
+	int alive[AI_SIDES] = { 0 }, moving = 0, waiting = 0, idle = 0, chasing = 0, melee = 0, s1, s2;
+	battle_sides(&s1, &s2);
 	for (int i = 1; i < 0x51; i++) {
 		if (!n[i].live) continue;
-		alive[n[i].side < 3 ? n[i].side : 0]++;
+		alive[n[i].side]++;
 		switch (n[i].state) { case 3: moving++; break; case 1: waiting++; break; case 5: idle++; break;
 			case 8: chasing++; break; case 4: melee++; break; }
 	}
@@ -11507,8 +11527,8 @@ static void battle_second(const fig_snap *n)
 	blog("hash %08x", h);
 	char tw[300] = "", *q = tw;
 	for (int i = 1; i < 0x51 && q < tw + sizeof tw - 12; i++) if (g_twitchSec[i]) q += sprintf(q, " %d:%u", i, g_twitchSec[i]);
-	blog("sec side1 %d side2 %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d support %d fire %d [%s] | groups%s",
-		alive[1], alive[2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
+	blog("sec side%d %d side%d %d | moving %d waiting %d idle %d chasing %d melee %d | swaps %d edge-walks %d not-found %d dropped %d waits %d twitches %d held %d swaps-blocked %d targets %d woken %d gave-up %d engaged %d let-go %d resyncs %d support %d fire %d [%s] | groups%s",
+		s1, alive[s1], s2, alive[s2], moving, waiting, idle, chasing, melee, g_bswaps, g_bsearch, g_bsearchFail, g_bdrops, g_bstate1,
 		g_btwitch, g_bheld, g_bswapsBlocked, g_bretarget, g_bwake, g_bdropTarget, g_bengage, g_bdisengage, g_bresync, g_bsupport, g_bfire, tw, cols);
 	g_bretarget = g_bwake = g_bdropTarget = g_bengage = g_bdisengage = g_bresync = g_bsupport = g_bfire = 0;
 	LARGE_INTEGER fq; QueryPerformanceFrequency(&fq);
@@ -11534,12 +11554,14 @@ static void battle_second(const fig_snap *n)
 					break;
 				}
 	}
-	for (int side = 1; side < 3; side++) {
+	int shots = 0;
+	for (int side = 1; side < AI_SIDES; side++) shots += g_bshotsBy[side];
+	for (int side = 1; side < AI_SIDES; side++) {
 		ai_cover c;
-		if (!ai_archer_cover(n, side, &c)) continue;
+		if (!alive[side] || !ai_archer_cover(n, side, &c)) continue;
 		blog("cover side %d (computer): archers %d, own melee within %d cells of each: nearest avg %d max %d | isolated %d (enemy melee within %d, no own melee within %d) | archers in melee %d | men melee %d ranged %d, enemy melee %d ranged %d | shots %d, enemy shots %d",
 			side, c.archers, AI_COVER_NEAR, c.archers ? c.ownSum / c.archers : -1, c.ownMax, c.isolated, AI_COVER_THREAT,
-			AI_COVER_NEAR, c.inMelee, c.menMelee, c.menRanged, c.enemyMenMelee, c.enemyMenRanged, g_bshotsBy[side], g_bshotsBy[3 - side]);
+			AI_COVER_NEAR, c.inMelee, c.menMelee, c.menRanged, c.enemyMenMelee, c.enemyMenRanged, g_bshotsBy[side], shots - g_bshotsBy[side]);
 	}
 	memset(g_bshotsBy, 0, sizeof g_bshotsBy);
 }
@@ -11670,6 +11692,14 @@ static ai_fn_t o_strength;
 // Legendary's sally (AI_SALLY): after the same wait, a defender attacks unless it's more than AI_SALLY_BAND
 // below the threshold (Hard: AI_DEF_EVEN), so a player who only holds their ground is attacked too.
 #define AI_SALLY_BAND 30
+// The invader (Hard and Legendary, campaign battles): the game weighs the armies by type (a maceman or swordsman
+// counts 3, a pikeman 2, a peasant 1) and never asks who attacked, so a lord whose army marched on yours on the
+// campaign map then stood and waited in the battle (the user's save 7: lord 5's 306 pikemen and peasants against
+// 243 men, mostly macemen, weighed -13: defence). When the computer's army is the one that moved (the battle's
+// first army, 0x00568210; FUN_004a6c68 and FUN_004a7158 put the mover there), it attacks from the start unless
+// it is more than AI_INVADE_BAND below the threshold, and turns to defence only AI_MODE_SLACK below that.
+// Custom battles (0x0057a0f0) are as before.
+#define AI_INVADE_BAND 30
 static int g_aiParts = AI_ALL;
 
 static BOOL ai_on(void) { return g_aiLevel >= 1 && fix_on(TRUE) && *(int *)0x0053e8fc == 0; }
@@ -11680,17 +11710,34 @@ static BOOL ai_legend(int p) { return g_aiLevel >= 2 && ai_part(p); }   // one o
 // A Legendary attack that began below the threshold (the sally) goes back to defence only AI_MODE_SLACK
 // below where it began, not at once when the strength dips a point.
 static int g_aiBackAt;             // attack turns to defence below this
+static BOOL g_aiInvader;           // the computer's army moved on the campaign map (ai_invader; per battle)
 static int ai_mode_step(int raw, int rolled, int thr)
 {
-	if (!g_aiDecided) { g_aiDecided = TRUE; g_aiAttack = rolled > thr; g_aiWeighs = 0; g_aiBackAt = thr - AI_MODE_SLACK; }
+	int band = thr - AI_INVADE_BAND;   // (the invader's: it attacks down to here)
+	if (!g_aiDecided) {
+		g_aiDecided = TRUE; g_aiAttack = rolled > thr || (g_aiInvader && raw >= band); g_aiWeighs = 0;
+		g_aiBackAt = g_aiInvader ? band - AI_MODE_SLACK : thr - AI_MODE_SLACK;
+	}
 	else if (g_aiAttack && raw < g_aiBackAt) { g_aiAttack = FALSE; g_aiWeighs = 0; }
-	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiWeighs >= AI_DEF_WAIT && raw >= thr - (ai_legend(AI_SALLY) ? AI_SALLY_BAND : AI_DEF_EVEN)))) {
+	else if (!g_aiAttack && (raw > thr + AI_MODE_SLACK || (g_aiInvader && raw >= band) ||
+		(g_aiWeighs >= AI_DEF_WAIT && raw >= thr - (ai_legend(AI_SALLY) ? AI_SALLY_BAND : AI_DEF_EVEN)))) {
 		g_aiAttack = TRUE; g_aiWeighs = 0;
-		g_aiBackAt = thr - AI_MODE_SLACK;
+		g_aiBackAt = g_aiInvader ? band - AI_MODE_SLACK : thr - AI_MODE_SLACK;
 		if (ai_legend(AI_SALLY) && raw - AI_MODE_SLACK < g_aiBackAt) g_aiBackAt = raw - AI_MODE_SLACK;
 	}
 	g_aiWeighs++;
 	return g_aiAttack ? max(raw, thr + 1) : min(raw, thr);
+}
+// TRUE when the battle's first army (the one that moved on the campaign map) belongs to a side with computer
+// groups on the field; never in a custom battle.
+static BOOL ai_invader(void)
+{
+	int a = *(int *)0x00568210;
+	if (*(int *)0x0057a0f0 || a < 1 || a > 150) return FALSE;
+	int side = ((signed char *)0x0052f0b0)[a * 0x1a4];
+	if (side < 1) return FALSE;
+	for (int g = 1; g < 0x51; g++) if (GRP_B(g, 0x00) == side && !GRP_B(g, 0x01) && GRP_B(g, 0x02)) return TRUE;
+	return FALSE;
 }
 
 static void __cdecl h_strength(void)
@@ -11700,10 +11747,11 @@ static void __cdecl h_strength(void)
 	int rolled = *(int *)0x004eea98, thr = *(int *)0x0057c8b4;
 	int raw = *(int *)0x00553030 ? rolled : rolled - ((*(int *)0x0058fd7c & 0x1f) - 10);   // (the random term, single player only)
 	BOOL decided = g_aiDecided, attack = g_aiAttack;
+	if (!decided) g_aiInvader = ai_invader();
 	*(int *)0x004eea98 = ai_mode_step(raw, rolled, thr);
 	if (g_blog && (!decided || attack != g_aiAttack))
-		blog("ai %s: %s %s (strength %+d, with the random term %+d, threshold %d)", kAiLevel[g_aiLevel], decided ? "now" : "decided",
-			g_aiAttack ? "ATTACK" : "DEFEND", raw, rolled, thr);
+		blog("ai %s: %s %s (strength %+d, with the random term %+d, threshold %d%s)", kAiLevel[g_aiLevel], decided ? "now" : "decided",
+			g_aiAttack ? "ATTACK" : "DEFEND", raw, rolled, thr, g_aiInvader ? "; it marched on you on the campaign map" : "");
 }
 
 // Archers that keep their distance (Hard). The game's archer handler (FUN_0048a9d2) waits, then walks its
@@ -11974,10 +12022,10 @@ static void ai_archers_think(int g)
 typedef void (__cdecl *ai_grpv_t)(int);
 static ai_grpv_t ai_game_charge = (ai_grpv_t)0x0048c8af;   // FUN_0048c8af(group): its units chase the nearest enemy
 static ai_fn_t o_ai_melee2, o_ai_melee34;
-static BOOL g_aiCharge[3];           // the side's melee charges (per battle)
-static int g_aiMenStart[3];          // the side's computer men at its first AI step
-static unsigned g_aiReadySince[3];   // the step its melee was first in place (0 = not yet)
-static unsigned g_aiAttackSince[3];  // the step its melee began attacking (0 = defending)
+static BOOL g_aiCharge[AI_SIDES];           // the side's melee charges (per battle)
+static int g_aiMenStart[AI_SIDES];          // the side's computer men at its first AI step
+static unsigned g_aiReadySince[AI_SIDES];   // the step its melee was first in place (0 = not yet)
+static unsigned g_aiAttackSince[AI_SIDES];  // the step its melee began attacking (0 = defending)
 
 static int ai_side_men(int side)
 {
@@ -12009,7 +12057,7 @@ static int ai_nearest_enemy_at(int side, int x, int y, int *ux, int *uy, BOOL me
 	return best;
 }
 
-static BOOL g_aiChargeAtt[3];        // it charged from attack at a moment it picked, before contact (Legendary's
+static BOOL g_aiChargeAtt[AI_SIDES]; // it charged from attack at a moment it picked, before contact (Legendary's
                                      // target picks; per battle)
 static void ai_side_charges(int side, const char *why)
 {
@@ -12230,7 +12278,7 @@ static void ai_rescue_wake(int a)
 static void ai_melee_think(int g)
 {
 	int side = GRP_B(g, 0x00);
-	if (side < 1 || side > 2) return;
+	if (side < 1) return;
 	if (ai_rescue(g)) return;
 	if (as_parked(side)) return;   // parked before a crossing the enemy holds: the assault moves it (ai_assault_step)
 	if (g_aiCharge[side]) { ai_charge(g); return; }
@@ -12315,7 +12363,7 @@ static void ai_melee_think(int g)
 
 static void ai_melee_tick(int g)
 {
-	int side = GRP_B(g, 0x00) < 3 ? GRP_B(g, 0x00) : 0;
+	int side = GRP_B(g, 0x00);
 	if (!g_aiMenStart[side]) g_aiMenStart[side] = ai_side_men(side);
 	if (!g_aiGrpMen[g]) g_aiGrpMen[g] = (short)ai_group_men(g);
 	if (++GRP_S(g, 0x1c) > 199 && !GRP_B(g, 0x0d)) {
@@ -13736,12 +13784,13 @@ static void fire_step(void)
 #define MAP_MAX 12
 typedef struct {
 	short x, y, cells, width, detour;   // detour: extra steps to go round, -1 = the only way
-	short dist[3];                      // walking steps from each side's nearest unit at the start
-	BYTE water, holder;                 // holder: 0 none, 1 or 2 a side, 3 both
+	short dist[2];                      // walking steps from each side's nearest unit at the start (g_mapSide)
+	BYTE water, holder;                 // holder: 0 none, 1 or 2 a side (g_mapSide[holder - 1]), 3 both
 	short ax, ay, bx, by;               // the open ground at its two ends (bank 1 and bank 2)
 } map_cross;
 static map_cross g_cross[MAP_MAX];
 static int g_ncross;
+static int g_mapSide[2];                // the two sides on the field (battle_sides), for dist and holder
 static short g_crossOf[6400];           // the crossing a cell belongs to (+1; 0 = none)
 static BYTE g_crossBank[MAP_MAX][6400]; // per crossing: 1 or 2 the bank a cell is on, 0 the crossing or cut off
 static short g_mapMark[6400], g_mapQ[6400], g_mapD[6400];
@@ -13905,13 +13954,14 @@ static void map_read(void)
 		for (int c = 0; c < 6400; c++)
 			bank[c] = g_crossOf[c] ? 0 : da[c] < 0 && g_mapD[c] < 0 ? 0 : g_mapD[c] < 0 || (da[c] >= 0 && da[c] <= g_mapD[c]) ? 1 : 2;
 	}
-	for (int side = 1; side <= 2; side++) {
-		map_from_side(side);
+	battle_sides(&g_mapSide[0], &g_mapSide[1]);
+	for (int s = 0; s < 2; s++) {
+		map_from_side(g_mapSide[s]);
 		for (int k = 0; k < g_ncross; k++) {
 			int best = -1;
 			for (int c = 0; c < 6400; c++)
 				if (g_crossOf[c] == k + 1 && g_mapD[c] >= 0 && (best < 0 || g_mapD[c] < best)) best = g_mapD[c];
-			g_cross[k].dist[side] = (short)best;
+			g_cross[k].dist[s] = (short)best;
 		}
 	}
 	if (!g_blog) return;
@@ -13922,9 +13972,9 @@ static void map_read(void)
 		char round[32];
 		if (m->detour < 0) snprintf(round, sizeof round, "the only way");
 		else snprintf(round, sizeof round, "going round +%d steps", m->detour);
-		blog("  crossing %d at %d,%d: %d cells, %d across%s, %s; side 1%s %d steps from it, side 2%s %d", k + 1, m->x, m->y,
-			m->cells, m->width, m->water ? ", over water" : "", round, map_side_human(1) ? " (yours)" : "", m->dist[1],
-			map_side_human(2) ? " (yours)" : "", m->dist[2]);
+		blog("  crossing %d at %d,%d: %d cells, %d across%s, %s; side %d%s %d steps from it, side %d%s %d", k + 1, m->x, m->y,
+			m->cells, m->width, m->water ? ", over water" : "", round, g_mapSide[0], map_side_human(g_mapSide[0]) ? " (yours)" : "",
+			m->dist[0], g_mapSide[1], map_side_human(g_mapSide[1]) ? " (yours)" : "", m->dist[1]);
 	}
 }
 
@@ -13933,11 +13983,11 @@ static void map_watch(void)
 {
 	if (g_btick % 200 || !g_ncross) return;
 	for (int k = 0; k < g_ncross; k++) {
-		int units[3] = { 0 }, men[3] = { 0 };
+		int units[3] = { 0 }, men[3] = { 0 };   // [1] g_mapSide[0], [2] g_mapSide[1]
 		for (int i = 1; i < 0x51; i++) {
 			BYTE *f = FIG(i);
-			int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), s = f[0x2c];
-			if (s < 1 || s > 2 || f[0x31] == 2 || f[0x12] >= 7 || x < 0 || x > 79 || y < 0 || y > 79) continue;
+			int x = FIG_S(i, 0x20), y = FIG_S(i, 0x22), s = f[0x2c] == g_mapSide[0] ? 1 : f[0x2c] == g_mapSide[1] ? 2 : 0;
+			if (!s || !f[0x2c] || f[0x31] == 2 || f[0x12] >= 7 || x < 0 || x > 79 || y < 0 || y > 79) continue;
 			BOOL close = FALSE;
 			for (int dy = -MAP_HOLD; dy <= MAP_HOLD && !close; dy++) for (int dx = -MAP_HOLD; dx <= MAP_HOLD && !close; dx++) {
 				int vx = x + dx, vy = y + dy;
@@ -13950,10 +14000,10 @@ static void map_watch(void)
 		g_cross[k].holder = h;
 		if (!g_blog) continue;
 		if (!h) blog("map: crossing %d at %d,%d is free", k + 1, g_cross[k].x, g_cross[k].y);
-		else if (h == 3) blog("map: crossing %d at %d,%d is fought over: side 1 %d units (%d men), side 2 %d units (%d men)", k + 1,
-			g_cross[k].x, g_cross[k].y, units[1], men[1], units[2], men[2]);
-		else blog("map: crossing %d at %d,%d is held by side %d%s with %d units (%d men)", k + 1, g_cross[k].x, g_cross[k].y, h,
-			map_side_human(h) ? " (yours)" : "", units[h], men[h]);
+		else if (h == 3) blog("map: crossing %d at %d,%d is fought over: side %d %d units (%d men), side %d %d units (%d men)", k + 1,
+			g_cross[k].x, g_cross[k].y, g_mapSide[0], units[1], men[1], g_mapSide[1], units[2], men[2]);
+		else blog("map: crossing %d at %d,%d is held by side %d%s with %d units (%d men)", k + 1, g_cross[k].x, g_cross[k].y,
+			g_mapSide[h - 1], map_side_human(g_mapSide[h - 1]) ? " (yours)" : "", units[h], men[h]);
 	}
 }
 
@@ -13987,8 +14037,29 @@ static void map_watch(void)
 #define AS_NEAR 20         // its melee's centre at most this far from the crossing
 #define AS_OVER 10         // an enemy on its bank this close to one of its units calls the assault off
 #define AS_JAM_EVERY 8     // jam_scan's period
-static BYTE g_asCross[3], g_asPhase[3];   // per side: the crossing (k + 1); 1 parked, 2 storming
-static unsigned g_asSince[3], g_asIn[3];  // when it parked; when every group was in place (0: not yet)
+static BYTE g_asCross[AI_SIDES], g_asPhase[AI_SIDES];   // per side: the crossing (k + 1); 1 parked, 2 storming
+static unsigned g_asSince[AI_SIDES], g_asIn[AI_SIDES];  // when it parked; when every group was in place (0: not yet)
+// Each unit's cell at the last look and the look it last changed cell (as_track). A unit that can't reach its
+// place flips between walking and waiting on one cell for ever (the user's save 7: a pikeman at 43,49 for its
+// place at 44,52, 200 times), so its group looked to be walking and the storm waited out AS_WAIT (a minute
+// before 27 men with 306); a group is walking only while a walking member has changed cell within AS_STUCK.
+#define AS_STUCK 150
+static short g_asX[0x51], g_asY[0x51];
+static unsigned g_asMoved[0x51];
+static void as_track(void)
+{
+	for (int i = 1; i < 0x51; i++) {
+		short x = FIG_S(i, 0x20), y = FIG_S(i, 0x22);
+		if (x != g_asX[i] || y != g_asY[i]) { g_asX[i] = x; g_asY[i] = y; g_asMoved[i] = g_btick; }
+	}
+}
+static BOOL as_group_walking(int h)
+{
+	for (int i = 1; i < 0x51; i++)
+		if (FIG(i)[0x2c] && FIG_S(i, 0x178) == h && (FIG(i)[0x31] == 3 || FIG(i)[0x31] == 1 || FIG(i)[0x31] == 9) &&
+			g_btick - g_asMoved[i] < AS_STUCK) return TRUE;
+	return FALSE;
+}
 
 static BOOL as_near(int k, int x, int y, int r)   // a cell of crossing k within r cells of x,y
 {
@@ -14148,7 +14219,7 @@ static void as_side(int side)
 	// after parking). The storm's clocks run from then, so it never storms from across the field.
 	if (!g_asIn[side] && g_btick - g_asSince[side] >= AS_EVERY) {
 		BOOL walking = FALSE;
-		for (int h = 1; h < 0x51; h++) if (ai_melee_group(h, side) && ai_group_walking(h)) walking = TRUE;
+		for (int h = 1; h < 0x51; h++) if (ai_melee_group(h, side) && as_group_walking(h)) walking = TRUE;
 		if (!walking || g_btick - g_asSince[side] >= AS_WAIT) {
 			g_asIn[side] = g_btick ? g_btick : 1;
 			if (g_blog) blog("ai %s: side %d in place before crossing %d", kAiLevel[g_aiLevel], side, k + 1);
@@ -14172,9 +14243,10 @@ static void as_side(int side)
 static void ai_assault_step(void)
 {
 	if (!ai_part(AI_MELEE) || !g_ncross || g_btick % AS_EVERY) return;
-	for (int side = 1; side <= 2; side++) as_side(side);
+	as_track();
+	for (int side = 1; side < AI_SIDES; side++) as_side(side);   // (one with no computer melee returns at once)
 }
-static BOOL as_parked(int side) { return side >= 1 && side <= 2 && g_asPhase[side] == 1; }
+static BOOL as_parked(int side) { return side >= 1 && side < AI_SIDES && g_asPhase[side] == 1; }
 // Where archer group g (centre cx,cy, range r) of side shoots from while its side is parked: beside the lane
 // (at least AS_LANE cells off it; groups alternate sides), on its own bank, with the far end within
 // r - AS_REACH (a fire order needs its target 2 inside range, and the defenders stand round the far end),
@@ -14236,10 +14308,11 @@ static void battle_reset(void)
 {
 	g_btick = 0;
 	g_ncross = 0; memset(g_asCross, 0, sizeof g_asCross); memset(g_asPhase, 0, sizeof g_asPhase); memset(g_asSince, 0, sizeof g_asSince); memset(g_asIn, 0, sizeof g_asIn);
+	memset(g_asX, 0xff, sizeof g_asX); memset(g_asY, 0xff, sizeof g_asY); memset(g_asMoved, 0, sizeof g_asMoved);
 	memset(g_fHold, 0, sizeof g_fHold); memset(g_fLogNext, 0, sizeof g_fLogNext); g_bfire = 0;
 	memset(g_fEnter, 0, sizeof g_fEnter);
 	g_aiListed = FALSE; g_aiStatsDone = FALSE;
-	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0;
+	g_aiLevel = g_aiOk ? g_aiLevelSet : 0; g_aiDecided = FALSE; g_aiAttack = FALSE; g_aiWeighs = 0; g_aiInvader = FALSE;
 	memset(g_aiCharge, 0, sizeof g_aiCharge); memset(g_aiChargeAtt, 0, sizeof g_aiChargeAtt); memset(g_aiMenStart, 0, sizeof g_aiMenStart); memset(g_aiReadySince, 0, sizeof g_aiReadySince);
 	memset(g_aiAttackSince, 0, sizeof g_aiAttackSince);
 	memset(g_aiGrpMen, 0, sizeof g_aiGrpMen); memset(g_aiTarget, 0, sizeof g_aiTarget);
@@ -14298,7 +14371,7 @@ static void __cdecl h_fig_loop(void)
 	static fig_snap n[81];
 	for (int i = 1; i < 0x51; i++) {
 		fig_take(i, &n[i]);
-		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++, g_bshotsBy[n[i].side < 3 ? n[i].side : 0]++;   // set to 120 by a shot (FUN_00483337), counted down each step
+		if (n[i].live && FIG(i)[0x182] == 0x78) g_bshots++, g_bshotsBy[n[i].side]++;   // set to 120 by a shot (FUN_00483337), counted down each step
 	}
 	for (int i = 1; i < 0x51; i++) {
 		fig_snap *o = &g_snap[i], *c = &n[i];
