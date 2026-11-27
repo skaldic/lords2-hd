@@ -87,6 +87,16 @@ def weights(rgb):
     straw = smooth(18, 26, h) * (1 - smooth(50, 58, h)) * smooth(0.35, 0.55, s) * smooth(0.45, 0.70, v) * (1 - green)
     return h, s, v, green, water, grey, leaf, straw
 
+def cast_shadow_mask(v, green, leaf):
+    """near-black next to open grass (not woods): a shadow cast on the ground, fading back to black within
+    ~5-16 2x pixels, so the crevices between rocks stay dark"""
+    from scipy import ndimage
+    blk = v < 0.05
+    grass = (green > 0.5) & (leaf < 0.3)
+    if not blk.any() or not grass.any(): return np.zeros(v.shape, np.float32)
+    d = ndimage.distance_transform_edt(~grass)
+    return (blk * (1 - smooth(5.0, 16.0, d))).astype(np.float32)
+
 def thatch_mask(h, s, v, green, straw):
     """thatch, lit and shaded: the straw mask plus the roofs' shaded half, a deep saturated tan (hue 31-42,
     saturation 0.78-0.97); earth patches are duller (0.52-0.68) and redder, the stakes' dark sides darker"""
@@ -131,6 +141,11 @@ def season_rgb(rgb, season):
         shade = np.array([0.30, 0.36, 0.45]) * (0.55 + 2.2 * v)[..., None] + rgb * 0.25
         out = mix(out, mix(shade, snow, smooth(0.07, 0.22, v) * (1 - 0.25 * leaf)), green)
         out = mix(out, from_hsv(h + 8, s * 0.55, v * 0.80), water)  # dark grey winter water (not frozen)
+        # the rocks', logs' and huts' cast shadows are drawn pure black, which on snow looked like holes: a black
+        # pixel near the grass is a shadow on the snow, blue-grey; deeper in, by the rock (a crevice), it stays
+        cast = cast_shadow_mask(v, green, leaf)
+        if cast.any():
+            out = mix(out, np.array([0.40, 0.46, 0.58]) * (0.85 + 0.3 * smooth(0.0, 0.05, v))[..., None], 0.9 * cast)
         # stone, rock, wood and thatch: colder, with snow on the brightest (sunlit, upward) faces
         rest = (1 - green - water)[..., None]
         cool = rgb * np.array([0.94, 0.97, 1.03])
