@@ -162,6 +162,8 @@ static double gpu_ms(void);     // the card's time for a recent frame
 static volatile LONG g_statsOn; // [Debug] Stats / Ctrl+F10: the frame-timing overlay (perf_draw)
 static BOOL g_miniPop; // [Display] MinimapPop: battle minimap troops outlined (minimap_dots_paint)
 static BOOL g_seasons = TRUE; // [Display] Seasons: the Town Center's picture follows the season (season_name)
+static BOOL g_softShadows;    // [Display] SoftShadows: battle troops' shadows darken the ground instead of being black (shade_px)
+static int g_testSeason;      // [Debug] TestSeason=1..4: season_name answers this season (to test seasonal art in custom battles)
 static int g_wheelZoom = 1;     // [Display] WheelZoom: the wheel zooms a zoomed-out battle's field in and out (wz_wheel): 0 off,
                                 // 1 up to 2x (the game's normal size), 2 up to 4x
 static BOOL g_countyZoom = TRUE; // [Display] CountyZoom: the wheel shows the county map zoomed out (cz_draw)
@@ -239,6 +241,8 @@ static void read_settings(void)
 	g_countyZoom = GetPrivateProfileIntA("Display", "CountyZoom", 1, g_iniPath) != 0;
 	g_czCheckAll = GetPrivateProfileIntA("Debug", "CountyZoomCheck", 0, g_iniPath) != 0;
 	g_seasons = GetPrivateProfileIntA("Display", "Seasons", 1, g_iniPath) != 0;
+	g_softShadows = GetPrivateProfileIntA("Display", "SoftShadows", 0, g_iniPath) != 0;
+	g_testSeason = max(0, min(4, (int)GetPrivateProfileIntA("Debug", "TestSeason", 0, g_iniPath)));
 	g_perfLogOn = GetPrivateProfileIntA("Debug", "PerfLog", 0, g_iniPath) != 0;
 	g_frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", 120, g_iniPath);
 	if (g_frameLimit < 0) g_frameLimit = 0;
@@ -2122,7 +2126,7 @@ static const char *season_name(void)
 {
 	static const char *names[] = { "spring", "summer", "autumn", "winter" };
 	if (!g_seasons) return NULL;
-	int s = *(const int *)0x0057c934;
+	int s = g_testSeason ? g_testSeason : *(const int *)0x0057c934;
 	return s >= 1 && s <= 4 ? names[s - 1] : NULL;
 }
 
@@ -2229,7 +2233,143 @@ static void seasons_rebind(void)
 // finished frame instead of the frame as it stood then, which gives the same layer: a pixel drawn
 // over later fails the check, and its new owner stamps it. A scroll redraws ~1500 cells: stamped one
 // by one they took ~9 ms of every game frame and the battle ran 30% slow.
-typedef struct { const BYTE *idx; const DWORD *hd; int x, y, w, h; } bt_job; // idx NULL: clear w x h
+// Soft shadows ([Display] SoftShadows): in a zoomed battle a troop's shadow (palette index 63, near-black in every
+// unit sheet) darkens the HD ground under it instead of covering it in black, tinted by the season:
+// blue-grey on snow, warmer in autumn. The shadow's edge is drawn in other dark entries, partly the shadow
+// over summer grass baked into the art (59-61 near-black greys, 116/176/177 dark greens: the pixels that
+// border the 63s in the unit sheets), which showed as a green-black rim on snow: they count as shadow too.
+// Only a shadow pixel that touches transparency or more shadow on 3 sides counts, so dark spots and
+// outlines inside a figure stay solid; one that touches such a shadow pixel and is near-black in all its
+// HD pixels joins it (a notch or a thin bridge between figure and shadow). The HD art's shadow also runs
+// a little past the 1x mask, into the figure pixels next to it: their near-black HD pixels on the side
+// facing a shadow pixel darken the ground too (troop_shade; a figure pixel brighter than that never does).
+// Over 25 unit sheets this took away about 3/4 of the dark specks left round the shadows.
+// In winter the 1995 art's anti-aliasing against grass shows too: a few olive entries (105, 231, 232, 234,
+// 237-239) on the figures' outer edge, ~20 pixels a figure, a summer-green halo on the snow. Such an edge
+// pixel (open on one side, not a 1-pixel line, next to the figure proper) shows the ground under it instead.
+// The ground under a shadow: during a battlefield redraw every stamp is checked against the finished frame
+// (bt_flush), where the troop already covers its cell's ground, so the ground's stamp fails exactly there.
+// With soft shadows a ground stamp also writes its HD pixels where the frame no longer shows it (and no
+// valid pixel is there), marking them in g_btGnd (1: "the layer holds this cell's ground here"). A troop's
+// shadow pixel darkens such ground once (mark 2); a pixel already darkened is left so, so a troop standing
+// still never darkens the same ground twice. A figure pixel with part of it darkened ground is mark 3: a
+// later stamp of it redraws only its figure part. Anything else stamped there takes the mark away; the
+// cell's next redraw clears it with the rest.
+#define SHADOW_IDX 63
+static const BYTE g_shadowIdx[256] = { [59] = 1, [60] = 1, [61] = 1, [63] = 1, [116] = 1, [176] = 1, [177] = 1 };
+enum { BT_OTHER, BT_GROUND, BT_TROOP }; // what a stamp is, for soft shadows (stamp_kind)
+static int g_shMul[3]; // b, g, r of 256, for the troops being stamped (stamp_kind)
+static BOOL g_shHalo;  // winter: the troops' olive edge pixels show the ground (troop_shade)
+static const BYTE g_haloIdx[256] = { [105] = 1, [231] = 1, [232] = 1, [234] = 1, [237] = 1, [238] = 1, [239] = 1 };
+static BYTE *g_btGnd;  // per frame pixel, with soft shadows: 1 the battle layer holds the ground there, 2 that ground darkened, 3 partly
+static int stamp_kind(const char *setName)
+{
+	// (only the zoomed battle has the HD ground under the troops to darken: the normal view's ground is the
+	// game's own, so a shadow there would darken whatever HD pixel was left, a stale figure)
+	if (!g_softShadows || !IN_BATTLE_NOW() || g_ownScroll || !battle_zoom_on()) return BT_OTHER;
+	if (!_strnicmp(setName, "t32_", 4)) return BT_GROUND;
+	if (_strnicmp(setName, "a2", 2) && _strnicmp(setName, "engine", 6) && _strnicmp(setName, "catarm", 6)) return BT_OTHER;
+	static const int mul[5][3] = { // b, g, r
+		{ 124, 120, 116 },  // no season (custom battles): as summer
+		{ 118, 124, 114 },  // spring
+		{ 124, 120, 116 },  // summer
+		{ 96, 110, 124 },   // autumn: warmer
+		{ 168, 146, 130 },  // winter: blue-grey on snow
+	};
+	const char *s = season_name();
+	int k = !s ? 0 : s[1] == 'p' ? 1 : s[1] == 'u' ? 2 : s[0] == 'a' ? 3 : 4;
+	memcpy(g_shMul, mul[k], sizeof g_shMul);
+	g_shHalo = k == 4;
+	return BT_TROOP;
+}
+static BOOL shadow_core(const BYTE *idx, int w, int h, int r, int c)
+{
+	const BYTE *p = idx + r * w + c;
+	if (!g_shadowIdx[*p]) return FALSE;
+#define SH_OPEN(q) ((q) == 0 || g_shadowIdx[q])
+	int n = (c == 0 || SH_OPEN(p[-1])) + (c == w - 1 || SH_OPEN(p[1])) + (r == 0 || SH_OPEN(p[-w])) + (r == h - 1 || SH_OPEN(p[w]));
+#undef SH_OPEN
+	return n >= 3;
+}
+#define SH_FULL 16
+#define SH_HALO_OPEN 32   // a halo pixel touching transparency: the ground as it is
+#define SH_HALO_SHADOW 33 // one touching only the shadow: the ground darkened
+static int lum_px(DWORD q) { return ((q >> 16 & 0xff) * 77 + (q >> 8 & 0xff) * 150 + (q & 0xff) * 29) >> 8; }
+// A troop pixel's soft shadow (above): SH_FULL the whole pixel is shadow, SH_HALO_* a winter halo pixel,
+// else a mask of its HD pixels (bit k: h0[0], h0[1], h1[0], h1[1]) that are the shadow running past the
+// 1x mask, 0 none.
+static int troop_shade(const BYTE *idx, const DWORD *hd, int w, int h, int r, int c)
+{
+	const BYTE *p = idx + r * w + c;
+	if (g_shHalo && g_haloIdx[*p]) {
+		const int dc[4] = { -1, 1, 0, 0 }, dr[4] = { 0, 0, -1, 1 };
+		int open[4], any = 0, shadowOnly = 1, solid = 0;
+		for (int k = 0; k < 4; k++) {
+			int rr = r + dr[k], cc = c + dc[k];
+			BYTE q = rr < 0 || rr >= h || cc < 0 || cc >= w ? 0 : idx[rr * w + cc];
+			BOOL sh = q && shadow_core(idx, w, h, rr, cc);
+			open[k] = !q || sh;
+			if (!q) shadowOnly = 0;
+			if (open[k]) any = 1; else if (!g_haloIdx[q]) solid = 1;
+		}
+		if (any && solid && !(open[0] && open[1]) && !(open[2] && open[3])) return shadowOnly ? SH_HALO_SHADOW : SH_HALO_OPEN;
+	}
+	const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
+	const DWORD q[4] = { h0[0], h0[1], h1[0], h1[1] };
+	if (g_shadowIdx[*p]) {
+		if (shadow_core(idx, w, h, r, c)) return SH_FULL;
+		if (lum_px(q[0]) < 32 && lum_px(q[1]) < 32 && lum_px(q[2]) < 32 && lum_px(q[3]) < 32 &&
+			((c > 0 && shadow_core(idx, w, h, r, c - 1)) || (c < w - 1 && shadow_core(idx, w, h, r, c + 1)) ||
+			 (r > 0 && shadow_core(idx, w, h, r - 1, c)) || (r < h - 1 && shadow_core(idx, w, h, r + 1, c))))
+			return SH_FULL;
+	}
+	int m = 0;
+	for (int k = 0; k < 4; k++) {
+		if (lum_px(q[k]) >= 28) continue;
+		int ch = c + (k & 1 ? 1 : -1), rv = r + (k & 2 ? 1 : -1); // its neighbours on the side it faces
+		if ((ch >= 0 && ch < w && shadow_core(idx, w, h, r, ch)) || (rv >= 0 && rv < h && shadow_core(idx, w, h, rv, c))) m |= 1 << k;
+	}
+	return m;
+}
+static DWORD shade_px(DWORD g)
+{
+	DWORD b = (g & 0xff) * g_shMul[0] >> 8, gg = (g >> 8 & 0xff) * g_shMul[1] >> 8, r = (g >> 16 & 0xff) * g_shMul[2] >> 8;
+	return (g & 0xff000000) | min(r, 255) << 16 | min(gg, 255) << 8 | min(b, 255);
+}
+// One frame pixel f of the battle layer from a stamp: v its 1x value, h0/h1 its two 2x rows, match whether
+// the frame shows it, kind the stamp's (stamp_kind), sh for a troop's pixel its troop_shade.
+static void bt_put(int f, BYTE v, const DWORD *h0, const DWORD *h1, BOOL match, int kind, int sh)
+{
+	DWORD *p = g_btLayer + (size_t)f * 4;
+	if (!match) { // covered already: only the ground is kept, for a shadow to darken
+		if (kind == BT_GROUND && !g_btValid[f]) { p[0] = h0[0]; p[1] = h0[1]; p[2] = h1[0]; p[3] = h1[1]; g_btGnd[f] = 1; }
+		return;
+	}
+	if (kind == BT_TROOP && sh >= SH_HALO_OPEN && (g_btGnd[f] == 1 || g_btGnd[f] == 2)) { // winter halo: the ground shows
+		if (sh == SH_HALO_SHADOW && g_btGnd[f] == 1) { for (int k = 0; k < 4; k++) p[k] = shade_px(p[k]); g_btGnd[f] = 2; }
+		g_btShadow[f] = v; g_btValid[f] = 1;
+		return;
+	}
+	if (kind == BT_TROOP && sh && sh < SH_FULL && (g_btGnd[f] == 1 || (g_btGnd[f] == 3 && g_btValid[f]))) { // partly shadow
+		const DWORD q[4] = { h0[0], h0[1], h1[0], h1[1] };
+		for (int k = 0; k < 4; k++) p[k] = !(sh >> k & 1) ? q[k] : g_btGnd[f] == 1 ? shade_px(p[k]) : p[k];
+		g_btShadow[f] = v; g_btValid[f] = 1; g_btGnd[f] = 3;
+		return;
+	}
+	if (kind == BT_TROOP && sh == SH_FULL) {
+		if (g_btGnd[f] == 1) {
+			for (int k = 0; k < 4; k++) p[k] = shade_px(p[k]);
+			g_btShadow[f] = v; g_btValid[f] = 1; g_btGnd[f] = 2;
+			return;
+		}
+		if (g_btGnd[f] == 2 && g_btValid[f]) { g_btShadow[f] = v; return; } // darkened before
+	}
+	p[0] = h0[0]; p[1] = h0[1]; p[2] = h1[0]; p[3] = h1[1];
+	g_btShadow[f] = v; g_btValid[f] = 1;
+	if (g_btGnd) g_btGnd[f] = kind == BT_GROUND;
+}
+
+typedef struct { const BYTE *idx; const DWORD *hd; int x, y, w, h, kind; } bt_job; // idx NULL: clear w x h
 #define BT_QUEUE 16384
 static bt_job g_btQ[BT_QUEUE];
 static int g_btQN;
@@ -2239,7 +2379,10 @@ static void bt_apply(const bt_job *j, int r0, int r1)
 	int y0 = max(max(j->y, 0), r0), y1 = min(min(j->y + j->h, g_frameH), r1);
 	if (!j->idx) { // a cell about to be redrawn: its HD pixels forgotten
 		int x0 = max(j->x, 0), x1 = min(j->x + j->w, g_frameW);
-		for (int r = y0; r < y1; r++) if (x1 > x0) memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
+		for (int r = y0; r < y1; r++) if (x1 > x0) {
+			memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
+			if (g_btGnd) memset(g_btGnd + r * g_frameW + x0, 0, x1 - x0);
+		}
 		return;
 	}
 	int w = j->w;
@@ -2247,16 +2390,21 @@ static void bt_apply(const bt_job *j, int r0, int r1)
 		int r = fy - j->y;
 		const BYTE *row = g_back->bits + fy * g_back->pitch, *src = j->idx + r * w;
 		const DWORD *h0row = j->hd + (2 * r) * (2 * w), *h1row = h0row + 2 * w;
-		DWORD *o = g_btLayer + (size_t)fy * g_frameW * 4;
-		BYTE *sh = g_btShadow + fy * g_frameW, *va = g_btValid + fy * g_frameW;
 		int c0 = max(0, -(j->x + g_back->org)), c1 = min(w, g_frameW - (j->x + g_back->org));
 		for (int c = c0; c < c1; c++) {
 			BYTE v = src[c];
 			int fx = j->x + g_back->org + c;
-			if (!v || row[fx] != v) continue;
-			DWORD *p = o + fx * 4;
-			p[0] = h0row[2 * c]; p[1] = h0row[2 * c + 1]; p[2] = h1row[2 * c]; p[3] = h1row[2 * c + 1];
-			sh[fx] = v; va[fx] = 1;
+			if (!v) continue;
+			if (j->kind == BT_OTHER) { // as before soft shadows
+				if (row[fx] != v) continue;
+				DWORD *p = g_btLayer + ((size_t)fy * g_frameW + fx) * 4;
+				p[0] = h0row[2 * c]; p[1] = h0row[2 * c + 1]; p[2] = h1row[2 * c]; p[3] = h1row[2 * c + 1];
+				g_btShadow[fy * g_frameW + fx] = v; g_btValid[fy * g_frameW + fx] = 1;
+				if (g_btGnd) g_btGnd[fy * g_frameW + fx] = 0;
+				continue;
+			}
+			bt_put(fy * g_frameW + fx, v, h0row + 2 * c, h1row + 2 * c, row[fx] == v, j->kind,
+				j->kind == BT_TROOP && row[fx] == v ? troop_shade(j->idx, j->hd, w, j->h, r, c) : 0);
 		}
 	}
 }
@@ -2279,10 +2427,10 @@ static void bt_flush(void)
 	if (g_btLayer && g_back) pool_run((g_frameH + BT_FLUSH_BAND - 1) / BT_FLUSH_BAND, bt_flush_job);
 	g_btQN = 0;
 }
-static void bt_queue(const BYTE *idx, const DWORD *hd, int x, int y, int w, int h)
+static void bt_queue(const BYTE *idx, const DWORD *hd, int x, int y, int w, int h, int kind)
 {
 	if (g_btQN >= BT_QUEUE) bt_flush(); // (in order: what was queued first is done first)
-	g_btQ[g_btQN++] = (bt_job){ idx, hd, x, y, w, h };
+	g_btQ[g_btQN++] = (bt_job){ idx, hd, x, y, w, h, kind };
 }
 
 // A frame of the Town Center's ground (g_gndLayer): the picture (vill, frame 0) and the overlays drawn
@@ -2381,9 +2529,12 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 	int w = *(const WORD *)p, h = *(const WORD *)(p + 2);
 	const BYTE *idx = p + 4;
 	const DWORD *hd = (const DWORD *)(idx + w * h);
+	if (g_softShadows && battle_zoom_on() && g_btLayer && !g_btGnd) g_btGnd = calloc(g_frameW, g_frameH);
+	int kind = stamp_kind(setName);
+	if (battle_zoom_on() && !g_btGnd) kind = BT_OTHER; // (no memory for the ground marks)
 	if (battle_zoom_on() && g_btLayer && !g_ownScroll) { // (the settings scroll is not the battle's: its ground keeps its HD art)
 		rows_dirty(g_btDirty, y, y + h);
-		if (g_btDefer) { bt_queue(idx, hd, x, y, w, h); return; } // during a battlefield redraw: batched (bt_flush)
+		if (g_btDefer) { bt_queue(idx, hd, x, y, w, h, kind); return; } // during a battlefield redraw: batched (bt_flush)
 		for (int r = 0; r < h; r++) {
 			int fy = y + r;
 			if (fy < 0 || fy >= g_frameH) continue;
@@ -2391,12 +2542,18 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			for (int c = 0; c < w; c++) {
 				BYTE v = idx[r * w + c];
 				int fx = x + g_back->org + c;
-				if (!v || fx < 0 || fx >= g_frameW || row[fx] != v) continue;
+				if (!v || fx < 0 || fx >= g_frameW) continue;
 				const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
+				if (kind != BT_OTHER) { // soft shadows: the ground kept, troops' shadows darken it (bt_put)
+					bt_put(fy * g_frameW + fx, v, h0, h1, row[fx] == v, kind, kind == BT_TROOP && row[fx] == v ? troop_shade(idx, hd, w, h, r, c) : 0);
+					continue;
+				}
+				if (row[fx] != v) continue;
 				DWORD *o = g_btLayer + (fy * g_frameW + fx) * 4;
 				o[0] = h0[0]; o[1] = h0[1]; o[2] = h1[0]; o[3] = h1[1];
 				g_btShadow[fy * g_frameW + fx] = v;
 				g_btValid[fy * g_frameW + fx] = 1;
+				if (g_btGnd) g_btGnd[fy * g_frameW + fx] = 0;
 			}
 		}
 		return;
@@ -10227,7 +10384,7 @@ static cell_32_t o_cell_32;
 static void __cdecl h_cell_32(const BYTE *buf)
 {
 	if (g_btValid && battle_zoom_on() && g_back && g_btDefer) { // queued, in order with the stamps (bt_flush)
-		bt_queue(NULL, NULL, BLOCK_X + g_back->org, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70);
+		bt_queue(NULL, NULL, BLOCK_X + g_back->org, BLOCK_Y, *(short *)0x005c9258, *(short *)0x005aeb70, BT_OTHER);
 		rows_dirty(g_btDirty, BLOCK_Y, BLOCK_Y + *(short *)0x005aeb70);
 	}
 	else if (g_btValid && battle_zoom_on() && g_back) {
@@ -10235,6 +10392,7 @@ static void __cdecl h_cell_32(const BYTE *buf)
 		for (int r = max(y, 0); r < min(y + h, g_frameH); r++) {
 			int x0 = max(x, 0), x1 = min(x + w, g_frameW);
 			if (x1 > x0) memset(g_btValid + r * g_frameW + x0, 0, x1 - x0);
+			if (x1 > x0 && g_btGnd) memset(g_btGnd + r * g_frameW + x0, 0, x1 - x0);
 		}
 		rows_dirty(g_btDirty, y, y + h);
 	}
@@ -10737,7 +10895,7 @@ static void minimap_rings_clear(void)
 {
 	for (int i = 0; i < g_ringN; i++) {
 		int fx = g_ringFx[i], fy = g_ringFy[i];
-		if (g_ringBt) { if (g_btValid && fx < g_frameW && fy < g_frameH) g_btValid[fy * g_frameW + fx] = 0; rows_dirty(g_btDirty, fy, fy + 1); }
+		if (g_ringBt) { if (g_btValid && fx < g_frameW && fy < g_frameH) { g_btValid[fy * g_frameW + fx] = 0; if (g_btGnd) g_btGnd[fy * g_frameW + fx] = 0; } rows_dirty(g_btDirty, fy, fy + 1); }
 		else if (g_sprValid && fx < MAX_W && fy < GAME_H) { g_sprValid[fy * MAX_W + fx] = 0; g_sprDirty[fy] = 1; }
 	}
 	g_ringN = 0;
@@ -10825,6 +10983,7 @@ static void minimap_dots_paint(void)
 			DWORD *o = g_btLayer + (fy * g_frameW + fx) * 4;
 			o[0] = q[0]; o[1] = q[1]; o[2] = q[2]; o[3] = q[3];
 			g_btShadow[fy * g_frameW + fx] = v; g_btValid[fy * g_frameW + fx] = 1;
+			if (g_btGnd) g_btGnd[fy * g_frameW + fx] = 0;
 			rows_dirty(g_btDirty, fy, fy + 1);
 		}
 		else {
