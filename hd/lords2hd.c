@@ -2233,7 +2233,7 @@ static void seasons_rebind(void)
 // finished frame instead of the frame as it stood then, which gives the same layer: a pixel drawn
 // over later fails the check, and its new owner stamps it. A scroll redraws ~1500 cells: stamped one
 // by one they took ~9 ms of every game frame and the battle ran 30% slow.
-// Soft shadows ([Display] SoftShadows): in a battle a troop's shadow (palette index 63, near-black in every
+// Soft shadows ([Display] SoftShadows): in a zoomed battle a troop's shadow (palette index 63, near-black in every
 // unit sheet) darkens the HD ground under it instead of covering it in black, tinted by the season:
 // blue-grey on snow, warmer in autumn. The shadow's edge is drawn in other dark entries, partly the shadow
 // over summer grass baked into the art (59-61 near-black greys, 116/176/177 dark greens: the pixels that
@@ -2264,7 +2264,9 @@ static const BYTE g_haloIdx[256] = { [105] = 1, [231] = 1, [232] = 1, [234] = 1,
 static BYTE *g_btGnd;  // per frame pixel, with soft shadows: 1 the battle layer holds the ground there, 2 that ground darkened, 3 partly
 static int stamp_kind(const char *setName)
 {
-	if (!g_softShadows || !IN_BATTLE_NOW() || g_ownScroll) return BT_OTHER;
+	// (only the zoomed battle has the HD ground under the troops to darken: the normal view's ground is the
+	// game's own, so a shadow there would darken whatever HD pixel was left, a stale figure)
+	if (!g_softShadows || !IN_BATTLE_NOW() || g_ownScroll || !battle_zoom_on()) return BT_OTHER;
 	if (!_strnicmp(setName, "t32_", 4)) return BT_GROUND;
 	if (_strnicmp(setName, "a2", 2) && _strnicmp(setName, "engine", 6) && _strnicmp(setName, "catarm", 6)) return BT_OTHER;
 	static const int mul[5][3] = { // b, g, r
@@ -2579,14 +2581,6 @@ static void stamp_sprite(const BYTE *buf, int index, int x, int y)
 			if (!v || fx < 0 || fx >= g_back->w || row[fx] != v) continue;
 			const DWORD *h0 = hd + (2 * r) * (2 * w) + 2 * c, *h1 = h0 + 2 * w;
 			DWORD *o0 = g_sprLayer + (2 * fy) * (2 * MAX_W) + 2 * fx, *o1 = o0 + 2 * MAX_W;
-			if (kind == BT_TROOP && g_shadowIdx[v] && g_sprValid[fy * MAX_W + fx] && troop_shade(idx, hd, w, h, r, c) == SH_FULL) { // soft shadow over the ground (stamped at once here, so it is there)
-				if (g_sprShadow[fy * MAX_W + fx] != SHADOW_IDX) {
-					o0[0] = shade_px(o0[0]); o0[1] = shade_px(o0[1]); o1[0] = shade_px(o1[0]); o1[1] = shade_px(o1[1]);
-					g_sprShadow[fy * MAX_W + fx] = SHADOW_IDX;
-					g_sprDirty[fy] = 1;
-				}
-				continue;
-			}
 			o0[0] = h0[0]; o0[1] = h0[1];
 			o1[0] = h1[0]; o1[1] = h1[1];
 			g_sprShadow[fy * MAX_W + fx] = v;
