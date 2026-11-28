@@ -87,15 +87,19 @@ def weights(rgb):
     straw = smooth(18, 26, h) * (1 - smooth(50, 58, h)) * smooth(0.35, 0.55, s) * smooth(0.45, 0.70, v) * (1 - green)
     return h, s, v, green, water, grey, leaf, straw
 
-def cast_shadow_mask(v, green, leaf):
-    """near-black next to open grass (not woods): a shadow cast on the ground, fading back to black within
-    ~5-16 2x pixels, so the crevices between rocks stay dark"""
+def cast_shadow_mask(v, green, leaf, dark=0.05):
+    """(cast, specks): cast, near-black next to open grass (not woods), a shadow cast on the ground, fading
+    back to black within ~5-16 2x pixels so the crevices between rocks stay dark (dark = 0.10 in the castle
+    sheets, whose boulders cast dark green shadows, with no woods to confuse); specks, grass pixels too few
+    and scattered to be open ground (inside a shadow), which count as shadow"""
     from scipy import ndimage
-    blk = v < 0.05
-    grass = (green > 0.5) & (leaf < 0.3)
-    if not blk.any() or not grass.any(): return np.zeros(v.shape, np.float32)
+    grass_all = (green > 0.5) & (leaf < 0.3)
+    grass = ndimage.binary_opening(grass_all, iterations=2)
+    specks = (grass_all & ~grass).astype(np.float32)
+    blk = (v < dark) | (specks > 0)
+    if not blk.any() or not grass.any(): return np.zeros(v.shape, np.float32), specks
     d = ndimage.distance_transform_edt(~grass)
-    return (blk * (1 - smooth(5.0, 16.0, d))).astype(np.float32)
+    return (blk * (1 - smooth(5.0, 16.0, d))).astype(np.float32), specks
 
 def thatch_mask(h, s, v, green, straw):
     """thatch, lit and shaded: the straw mask plus the roofs' shaded half, a deep saturated tan (hue 31-42,
@@ -105,9 +109,14 @@ def thatch_mask(h, s, v, green, straw):
 
 def mix(a, b, w): return a * (1 - w[..., None]) + b * w[..., None]
 
-def season_rgb(rgb, season):
+WOODS = {'t32_bat1'}  # the sheets with woods; in the castle sheets dark blue-green is grass in a wall's shadow
+
+def season_rgb(rgb, season, sheet='t32_bat1'):
     """rgb: float 0..1, (..., 3) -> the season's colours"""
     h, s, v, green, water, grey, leaf, straw = weights(rgb)
+    woods = float(leaf.mean()) > 0.15  # a woods tile: its black is the depth between the trees, not a cast shadow
+    if sheet not in WOODS:
+        leaf = np.zeros_like(leaf)  # (autumn turned the castles' shadowed grass rust, as if it were leaves)
     L = luma(rgb)
     out = rgb.copy()
     if season == 'spring':
@@ -141,16 +150,18 @@ def season_rgb(rgb, season):
         shade = np.array([0.30, 0.36, 0.45]) * (0.55 + 2.2 * v)[..., None] + rgb * 0.25
         out = mix(out, mix(shade, snow, smooth(0.07, 0.22, v) * (1 - 0.25 * leaf)), green)
         out = mix(out, from_hsv(h + 8, s * 0.55, v * 0.80), water)  # dark grey winter water (not frozen)
-        # the rocks', logs' and huts' cast shadows are drawn pure black, which on snow looked like holes: a black
-        # pixel near the grass is a shadow on the snow, blue-grey; deeper in, by the rock (a crevice), it stays
-        cast = cast_shadow_mask(v, green, leaf)
-        if cast.any():
-            out = mix(out, np.array([0.40, 0.46, 0.58]) * (0.85 + 0.3 * smooth(0.0, 0.05, v))[..., None], 0.9 * cast)
         # stone, rock, wood and thatch: colder, with snow on the brightest (sunlit, upward) faces
         rest = (1 - green - water)[..., None]
         cool = rgb * np.array([0.94, 0.97, 1.03])
         dust = (smooth(0.50, 0.80, L) * (0.35 + 0.35 * grey))[..., None]
         out = out * (1 - rest) + (cool * (1 - dust) + white * dust) * rest
+        # the rocks', logs' and huts' cast shadows are drawn black, which on snow looked like holes: a black
+        # pixel near the grass is a shadow on the snow, blue-grey; deeper in, by the rock (a crevice), it stays.
+        # Lone grass pixels inside such a shadow (which the snow had turned into white specks) go with it.
+        if not woods:
+            cast, specks = cast_shadow_mask(v, green, leaf, 0.05 if sheet in WOODS else 0.10)
+            out = mix(out, cool, 0.9 * specks * (1 - cast))
+            out = mix(out, np.array([0.40, 0.46, 0.58]) * (0.85 + 0.3 * smooth(0.0, 0.05, v))[..., None], 0.9 * cast)
         # thatch roofs: snow over the whole roof, its own shading kept (the straw mask alone missed the shaded
         # half of a hut's roof, which left the roofs half white, half brown)
         roof = thatch_mask(h, s, v, green, straw)
@@ -233,7 +244,7 @@ def recolour_sheet(b, season, sheet=''):
     for frame, w, h, p in frames(b):
         px = np.frombuffer(b, np.uint8, w * h * 16, p).reshape(2 * h, 2 * w, 4)
         rgb = px[..., 2::-1].astype(np.float32) / 255
-        new = season_rgb(rgb, season)
+        new = season_rgb(rgb, season, sheet)
         new = wet_season(new, rgb, season, *wet_maps(rgb, sheet, frame))
         o = px.copy()
         o[..., 2::-1] = np.round(new * 255).astype(np.uint8)
